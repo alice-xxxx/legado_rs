@@ -61,7 +61,9 @@ jobs:
           java-version: 21
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools platforms;android-37 ndk;30.0.14904198 cmake;3.31.1'
+          packages: 'platform-tools ndk;30.0.14904198 cmake;3.31.1'
+      - name: Install Android API 37 preview platform
+        run: sdkmanager --install 'platforms;android-37.0' --channel=3
       - name: Install Rust Android targets
         run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
       - name: Build KMP Android AAR and native libraries
