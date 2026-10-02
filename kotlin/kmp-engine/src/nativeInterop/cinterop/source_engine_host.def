@@ -1,0 +1,2 @@
+headers = source_engine_host.h
+package = io.legado.sourceengine.rust

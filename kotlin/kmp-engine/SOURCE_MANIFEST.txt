@@ -1,0 +1,21 @@
+# KMP 源码来源
+
+来源平台提交：`79e14b3dc78289ae09ca8d457d6f446aa82c0a08`。下表按目标 source set 汇总源码目录；目录下选用的文件递归归入，不表示整个目录都被复制。
+
+| 目标 source set | 来源目录 |
+| --- | --- |
+| `commonMain` | `data/src/commonMain`、`data/src/nonOhosCompatMain`、`data/src/roomEntitiesMain`、`foundation/src/commonMain`、`modules/js-api/src/commonMain`、`modules/rjpath/src/commonMain` |
+| `jvmMain` | `data/src/jvmAndAndroidMain`、`data/src/jvmMain`、`foundation/src/jvmAndAndroidMain`、`foundation/src/jvmMain`、`modules/quickjs/src/commonMain` |
+| `androidMain` | `data/src/androidMain`、`data/src/jvmAndAndroidMain`、`foundation/src/androidMain`、`foundation/src/jvmAndAndroidMain`、`modules/quickjs/src/androidMain`、`modules/quickjs/src/commonMain` |
+| `nativeMain` | `data/src/nativeMain`、`foundation/src/nativeMain` |
+| `iosMain` | `data/src/iosMain`、`foundation/src/iosMain` |
+
+`kotlin/kmp-engine/src/*Main/.../sourceengine` 下的平台入口和规则执行器由本仓库实现。桌面、Android 的 JNI 与 iOS 的 C ABI 实现位于 `src-tauri/src` 和 `src-tauri/include`。
+
+## 构建输入来源
+
+- `kotlin/quickjs-processor`：`modules/quickjs-processor/src/main`
+- `kotlin/src/native/cpp`：`modules/quickjs-android-native/src/main`
+- `kotlin/src/native/quickjs-ng`：`modules/quickjs/src/main`
+- `kotlin/kmp-engine/src/nativeInterop/cinterop`：`data/src/cinterop`
+- `kotlin/kmp-engine/scripts/build-ios-native.sh`：`scripts/build-ios-native.sh`

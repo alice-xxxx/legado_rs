@@ -1,0 +1,85 @@
+name: Build all platforms
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libayatana-appindicator3-dev libssl-dev \
+            librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Build frontend
+        run: |
+          npm ci
+          npm run build
+      - name: Check desktop Rust host
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
+      - name: Build KMP JVM and QuickJS from repository sources
+        if: runner.os != 'Windows'
+        working-directory: kotlin
+        run: ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
+      - name: Build KMP JVM and QuickJS from repository sources
+        if: runner.os == 'Windows'
+        working-directory: kotlin
+        run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
+
+  android:
+    name: Android AAR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-37 ndk;30.0.14904198 cmake;3.31.1'
+      - name: Install Rust Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - name: Build KMP Android AAR and native libraries
+        working-directory: kotlin
+        run: ./gradlew --no-daemon --console=plain :kmp-engine:bundleAndroidMainAar
+
+  ios:
+    name: iOS frameworks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install Rust Apple targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - name: Build device and simulator frameworks
+        working-directory: kotlin
+        run: ./gradlew --no-daemon --console=plain :kmp-engine:linkReleaseFrameworkIosArm64 :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
