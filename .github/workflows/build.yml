@@ -45,8 +45,6 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Check desktop Rust host
-        run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
       - name: Build KMP JVM and QuickJS from repository sources
         if: runner.os != 'Windows'
         working-directory: kotlin
@@ -61,6 +59,8 @@ jobs:
           CC: gcc
           CXX: g++
         run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
+      - name: Check desktop Rust host
+        run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
       - name: Build unsigned desktop installers
         run: npm run tauri -- build --no-sign
       - name: Upload desktop installers
@@ -100,11 +100,13 @@ jobs:
           workspaces: src-tauri -> target
       - name: Build KMP Android AAR and native libraries
         working-directory: kotlin
-        run: ./gradlew --no-daemon --console=plain :kmp-engine:bundleAndroidMainAar
+        run: ./gradlew --no-daemon --console=plain stageTauriAndroidAar
       - name: Install frontend dependencies
         run: npm ci
       - name: Generate Android project
         run: npm run tauri -- android init --ci
+      - name: Configure Android resource packaging
+        run: node scripts/configure-tauri-android.mjs
       # The debug variant uses Gradle's default debug key so testers can install it without a release key.
       - name: Build test APKs
         run: npm run tauri -- android build --debug --apk --ci
@@ -149,8 +151,15 @@ jobs:
       - name: Build device and simulator frameworks
         working-directory: kotlin
         env:
-          IPHONEOS_DEPLOYMENT_TARGET: '18.0'
+          IPHONEOS_DEPLOYMENT_TARGET: '15.0'
         run: ./gradlew --no-daemon --console=plain :kmp-engine:linkReleaseFrameworkIosArm64 :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
+      - name: Package Kotlin/Native framework for the iOS Tauri plugin
+        run: |
+          mkdir -p src-tauri/plugins/source-engine/ios/Frameworks
+          xcodebuild -create-xcframework \
+            -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework \
+            -framework kotlin/kmp-engine/build/bin/iosSimulatorArm64/releaseFramework/LegadoSourceEngine.framework \
+            -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
       - name: Install frontend dependencies
         run: npm ci
       - name: Generate iOS project

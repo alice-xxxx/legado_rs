@@ -70,4 +70,15 @@ object AndroidSourceEngine {
         AndroidSourceEngineRuntime.install()
         return WebBookSourceRuleExecutor.execute(call, AndroidRustSourceEngineHost(appDataDirectory))
     }
+
+    /** Native Tauri commands pass the same JSON wire request used by the desktop Rust command. */
+    suspend fun executeJson(requestJson: String, appDataDirectory: String): String =
+        execute(decodeSourceEngineCall(requestJson), appDataDirectory)
+}
+
+/** Java Tauri plugins have no suspend ABI; execute on their background executor via runBlocking. */
+object AndroidSourceEngineBlocking {
+    @JvmStatic
+    fun executeJson(requestJson: String, appDataDirectory: String): String =
+        kotlinx.coroutines.runBlocking { AndroidSourceEngine.executeJson(requestJson, appDataDirectory) }
 }

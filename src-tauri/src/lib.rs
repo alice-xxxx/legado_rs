@@ -12,15 +12,50 @@ async fn execute_source_engine(
     app: tauri::AppHandle,
     request: source_engine::SourceEngineRequest,
 ) -> Result<serde_json::Value, String> {
-    use tauri::Manager;
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        use tauri_plugin_source_engine::{SourceEngineCall, SourceEngineExt};
 
-    // 将 cookie jar 等宿主数据放在应用数据目录，使同一桌面应用的多次测试可复用。
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| format!("Cannot locate application data directory: {error}"))?
-        .join("source-engine");
-    source_engine::execute(request, data_dir).await
+        // Mobile platforms enter their KMP-native parser through the Tauri plugin. Keep the
+        // existing request shape intact; the platform adapter decodes it with the shared codec.
+        let request_json = serde_json::json!({
+            "operation": request.operation,
+            "source": request.source,
+            "keyword": request.keyword,
+            "page": request.page,
+            "book": request.book,
+            "chapter": request.chapter,
+            "nextChapterUrl": request.next_chapter_url,
+        })
+        .to_string();
+        let response = app
+            .source_engine()
+            .execute(SourceEngineCall { request_json })
+            .map_err(|error| error.to_string())?;
+        let result: serde_json::Value = serde_json::from_str(&response.result_json)
+            .map_err(|error| format!("Kotlin source engine returned invalid JSON: {error}"))?;
+        if let Some(error) = result
+            .get("__sourceEngineError")
+            .and_then(serde_json::Value::as_str)
+        {
+            return Err(format!("Kotlin source engine failed:\n{error}"));
+        }
+        Ok(result)
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        use tauri::Manager;
+
+        // Keep mobile data access native; desktop state remains under Tauri's app-data directory.
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| format!("Cannot locate application data directory: {error}"))?
+            .join("source-engine");
+        let resource_dir = app.path().resource_dir().ok();
+        source_engine::execute_with_resource_dir(request, data_dir, resource_dir).await
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -28,6 +63,7 @@ async fn execute_source_engine(
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_source_engine::init())
         .invoke_handler(tauri::generate_handler![execute_source_engine])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

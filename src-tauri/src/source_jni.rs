@@ -61,17 +61,22 @@ mod desktop {
         quickjs_library: &Path,
         request_json: &str,
         data_dir: PathBuf,
+        bundled_java_home: Option<PathBuf>,
     ) -> Result<String, String> {
         let _execution = EXECUTION_LOCK
             .lock()
             .map_err(|_| "Embedded source-engine execution lock is poisoned".to_owned())?;
         let _data_dir = DataDirScope::enter(data_dir);
-        let vm = get_or_start_vm(classpath, quickjs_library)?;
+        let vm = get_or_start_vm(classpath, quickjs_library, bundled_java_home)?;
         vm.attach_current_thread(|env| call_kotlin(env, request_json))
             .map_err(|error| format!("JNI call to Kotlin source engine failed: {error}"))
     }
 
-    fn get_or_start_vm(classpath: &str, quickjs_library: &Path) -> Result<&'static JavaVM, String> {
+    fn get_or_start_vm(
+        classpath: &str,
+        quickjs_library: &Path,
+        bundled_java_home: Option<PathBuf>,
+    ) -> Result<&'static JavaVM, String> {
         if let Some(vm) = JVM.get() {
             return Ok(vm);
         }
@@ -82,7 +87,18 @@ mod desktop {
             return Ok(vm);
         }
 
-        let java_home = java_home()?;
+        // Packaged desktop apps carry the exact Java image used for this runtime. Development runs
+        // still fall back to JAVA_HOME/Gradle toolchains/PATH through source_engine.
+        let java_home = match bundled_java_home {
+            Some(java_home) if java_home.is_dir() => java_home,
+            Some(java_home) => {
+                return Err(format!(
+                    "Bundled Java runtime is missing: {}",
+                    java_home.display()
+                ));
+            }
+            None => java_home()?,
+        };
         let libjvm = libjvm_path(&java_home);
         if !libjvm.is_file() {
             return Err(format!(
@@ -322,6 +338,7 @@ pub(super) fn execute(
     _quickjs_library: &std::path::Path,
     _request_json: &str,
     _data_dir: std::path::PathBuf,
+    _bundled_java_home: Option<std::path::PathBuf>,
 ) -> Result<String, String> {
     Err("Desktop JVM embedding is unavailable on mobile targets".to_owned())
 }

@@ -93,4 +93,8 @@ object IosSourceEngine {
         IosSourceEngineRuntime.install()
         return WebBookSourceRuleExecutor.execute(call, IosRustSourceEngineHost(appDataDirectory))
     }
+
+    /** Swift/Tauri sends the Rust command's JSON wire format, keeping platform adapters thin. */
+    suspend fun executeJson(requestJson: String, appDataDirectory: String): String =
+        execute(decodeSourceEngineCall(requestJson), appDataDirectory)
 }

@@ -1,39 +1,52 @@
 # Legado 书源解析核心
 
-本仓库提供可独立构建的 Kotlin Multiplatform 书源解析器和 Rust 宿主。Kotlin 执行 `WebBook`、`AnalyzeUrlCore`、`AnalyzeRuleCore` 等规则并解析响应；Rust 负责 HTTP、Cookie、代理、重定向和持久化存储。构建输入和源码来源见 [`kotlin/kmp-engine/SOURCE_MANIFEST.txt`](kotlin/kmp-engine/SOURCE_MANIFEST.txt)。
+本仓库包含独立的 Kotlin Multiplatform 书源解析器和 Rust 宿主。Kotlin 执行 `WebBook`、`AnalyzeUrlCore`、`AnalyzeRuleCore` 等规则；Rust 执行 HTTP、Cookie、代理、重定向和持久化存储。源码来源见 [`kotlin/kmp-engine/SOURCE_MANIFEST.txt`](kotlin/kmp-engine/SOURCE_MANIFEST.txt)。
 
-## 平台调用路径
+## 平台调用
 
-| 平台 | 解析与宿主调用 |
+| 平台 | 解析器入口与宿主 |
 | --- | --- |
-| Windows、Linux、macOS | 测试界面 → Tauri command → Rust → JNI/JVM → KMP；KMP 的网络与存储请求回到 Rust |
-| Android | `AndroidSourceEngine.execute` → KMP → JNI → Rust |
-| iOS | Swift → `IosSourceEngine.execute` → Kotlin/Native → cinterop → Rust C ABI |
+| Windows、Linux、macOS | Tauri command → Rust → JNI/JVM → KMP；安装包携带 JVM、依赖和 QuickJS |
+| Android | Tauri command → Rust mobile plugin → Android KMP AAR；KMP 通过 JNI 调用 Rust Host |
+| iOS | Tauri command → Rust mobile plugin → Swift → Kotlin/Native framework；KMP 通过 C ABI 调用 Rust Host |
 
-Android AAR 包含 Rust 与 QuickJS 的 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 原生库。iOS framework 需要与对应架构的 Rust staticlib 一起链接。桌面测试界面只提交操作请求，解析、HTTP 和存储由上述 Rust/KMP 链路执行。
+移动端原生插件和 KMP framework/AAR 由构建任务生成，不提交编译产物。移动端解析请求、HTTP 和存储都经过 Rust 宿主。
 
 ## 构建
 
-桌面需要 JDK 21、Rust stable、Node.js 24、CMake 和 C/C++ 编译器；Linux 另需 Tauri 的 GTK/WebKitGTK 开发包。Android 另需 Android SDK、NDK 和 Rust Android targets。iOS 需要 macOS、Xcode 和 Rust Apple targets。
+桌面需要 JDK 21、Rust stable、Node.js 24、CMake 和 C/C++ 编译器；Linux 另需 Tauri 的 GTK/WebKitGTK 开发包。
 
 ```sh
 npm ci
 npm run build
+cd kotlin
+./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
 ```
+
+Android 另需 Android SDK、NDK 和 Rust Android targets：
 
 ```sh
 cd kotlin
-./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
-./gradlew --no-daemon --console=plain :kmp-engine:bundleAndroidMainAar
+./gradlew --no-daemon --console=plain stageTauriAndroidAar
+cd ..
+npm run tauri -- android init --ci
+node scripts/configure-tauri-android.mjs
+npm run tauri -- android build --debug --apk --ci
 ```
 
-iOS 在 macOS 上构建设备和模拟器 framework：
+iOS 需要 macOS、Xcode 和 Rust Apple targets。构建设备与模拟器 framework 后，将其合并为插件所用 XCFramework：
 
 ```sh
 cd kotlin
 ./gradlew --no-daemon --console=plain \
   :kmp-engine:linkReleaseFrameworkIosArm64 \
   :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
+cd ..
+mkdir -p src-tauri/plugins/source-engine/ios/Frameworks
+xcodebuild -create-xcframework \
+  -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework \
+  -framework kotlin/kmp-engine/build/bin/iosSimulatorArm64/releaseFramework/LegadoSourceEngine.framework \
+  -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
 ```
 
-GitHub Actions 在 Windows、Linux、macOS 检查前端与 Rust，并构建 KMP JVM/QuickJS；另构建 Android AAR 和 iOS framework。当前尚未接入 JS `image.*` 的图片像素处理；依赖图片解密、切片、拼接或旋转的规则尚不可用。桌面安装包仍需集成 JVM 和 QuickJS 运行库。
+GitHub Actions 为 Windows、Linux、macOS、Android 和 iOS 构建测试安装包。当前尚未接入 JS `image.*` 的图片像素处理；依赖图片解密、切片、拼接或旋转的规则尚不可用。

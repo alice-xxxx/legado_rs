@@ -30,23 +30,79 @@ struct EngineRequestWire<'a> {
 
 /// 执行桌面书源操作：Rust 通过 JNI 调用 KMP 解析器，并由 Rust Host 提供 HTTP 与存储。
 pub async fn execute(request: SourceEngineRequest, data_dir: PathBuf) -> Result<Value, String> {
-    let project_dir = source_engine_project_dir()?;
-    let classpath_file = project_dir.join("build/source-engine/classpath.txt");
-    let quickjs_library = quickjs_native_library(&project_dir);
-    if !classpath_file.is_file() || !quickjs_library.is_file() {
-        let module = project_dir.clone();
-        tokio::task::spawn_blocking(move || prepare_source_engine(&module))
-            .await
-            .map_err(|error| format!("Failed to prepare Kotlin source engine: {error}"))??;
+    execute_with_resource_dir(request, data_dir, None).await
+}
+
+/// Prefer the self-contained runtime from Tauri's resource directory; the Kotlin checkout is a
+/// development fallback only and must never be required by an installed desktop package.
+pub async fn execute_with_resource_dir(
+    request: SourceEngineRequest,
+    data_dir: PathBuf,
+    resource_dir: Option<PathBuf>,
+) -> Result<Value, String> {
+    let bundled_runtime = resource_dir
+        .map(|directory| directory.join("source-engine"))
+        .filter(|directory| directory.join("classpath.txt").is_file());
+
+    let (runtime_dir, bundled_java_home) = if let Some(runtime_dir) = bundled_runtime {
+        (runtime_dir.clone(), Some(runtime_dir.join("jre")))
+    } else {
+        let project_dir = source_engine_project_dir()?;
+        let runtime_dir = project_dir.join("build/source-engine/runtime");
+        let classpath_file = runtime_dir.join("classpath.txt");
+        let quickjs_library = quickjs_native_library(&runtime_dir);
+        if !classpath_file.is_file() || !quickjs_library.is_file() {
+            let module = project_dir.clone();
+            tokio::task::spawn_blocking(move || prepare_source_engine(&module))
+                .await
+                .map_err(|error| format!("Failed to prepare Kotlin source engine: {error}"))??;
+        }
+        let bundled_java_home = runtime_dir.join("jre");
+        (
+            runtime_dir,
+            bundled_java_home.is_dir().then_some(bundled_java_home),
+        )
+    };
+
+    let classpath_file = runtime_dir.join("classpath.txt");
+    let quickjs_library = quickjs_native_library(&runtime_dir);
+    if !classpath_file.is_file() {
+        return Err(format!(
+            "Source-engine runtime is missing its classpath: {}",
+            classpath_file.display()
+        ));
     }
-    let classpath = tokio::fs::read_to_string(&classpath_file)
+    if !quickjs_library.is_file() {
+        return Err(format!(
+            "Source-engine runtime is missing QuickJS: {}",
+            quickjs_library.display()
+        ));
+    }
+    let classpath_entries = tokio::fs::read_to_string(&classpath_file)
         .await
         .map_err(|error| format!("Cannot read source-engine classpath: {error}"))?;
-    if classpath.trim().is_empty() {
+    let classpath_entries = classpath_entries
+        .lines()
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            let path = PathBuf::from(entry);
+            if path.is_absolute() {
+                path
+            } else {
+                runtime_dir.join(path)
+            }
+        })
+        .collect::<Vec<_>>();
+    if classpath_entries.is_empty() {
         return Err(
             "Source-engine classpath is empty; prepare the Kotlin source engine first".into(),
         );
     }
+    let classpath = std::env::join_paths(classpath_entries)
+        .map_err(|error| format!("Cannot assemble source-engine classpath: {error}"))?
+        .to_string_lossy()
+        .into_owned();
     tokio::fs::create_dir_all(&data_dir)
         .await
         .map_err(|error| format!("Cannot create source-engine data directory: {error}"))?;
@@ -64,10 +120,11 @@ pub async fn execute(request: SourceEngineRequest, data_dir: PathBuf) -> Result<
     let quickjs_for_thread = quickjs_library.clone();
     let result = tokio::task::spawn_blocking(move || {
         crate::source_jni::execute(
-            classpath.trim(),
+            &classpath,
             &quickjs_for_thread,
             &request_json,
             data_dir,
+            bundled_java_home,
         )
     })
     .await
@@ -92,30 +149,8 @@ fn source_engine_project_dir() -> Result<PathBuf, String> {
         .ok_or_else(|| "Cannot locate the standalone Kotlin source-engine module".to_owned())
 }
 
-fn quickjs_native_library(module_dir: &Path) -> PathBuf {
-    // QuickJS JNI 产物由独立 Kotlin 模块准备，按 Rust 当前目标定位，不查询源平台的构建目录。
-    let os = if cfg!(target_os = "windows") {
-        "windows"
-    } else if cfg!(target_os = "macos") {
-        "macos"
-    } else {
-        "linux"
-    };
-    let arch = match std::env::consts::ARCH {
-        "x86_64" | "amd64" | "x64" => "x86_64".to_owned(),
-        "aarch64" | "arm64" => "aarch64".to_owned(),
-        other => other
-            .to_ascii_lowercase()
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() || "_.-".contains(ch) {
-                    ch
-                } else {
-                    '_'
-                }
-            })
-            .collect(),
-    };
+fn quickjs_native_library(runtime_dir: &Path) -> PathBuf {
+    // Gradle stages one target-matched QuickJS library beside the portable classpath.
     let library = if cfg!(target_os = "windows") {
         "legado_quickjs.dll"
     } else if cfg!(target_os = "macos") {
@@ -123,10 +158,7 @@ fn quickjs_native_library(module_dir: &Path) -> PathBuf {
     } else {
         "liblegado_quickjs.so"
     };
-    module_dir
-        .join("build/native-jvm")
-        .join(format!("{os}-{arch}"))
-        .join(library)
+    runtime_dir.join("native").join(library)
 }
 
 pub(super) fn java_executable() -> Result<PathBuf, String> {

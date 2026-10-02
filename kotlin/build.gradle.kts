@@ -1,3 +1,7 @@
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
+
 plugins {
     kotlin("multiplatform") version "2.3.20" apply false
     kotlin("jvm") version "2.3.20" apply false
@@ -65,7 +69,19 @@ tasks.register("prepareQuickJsNative") {
     doLast {
         preparedQuickJsLibrary.parentFile.mkdirs()
         val javaHome = java21Launcher.get().metadata.installationPath.asFile
-        val cmakeBuildDir = layout.buildDirectory.dir("cmake-quickjs/$hostPlatform").get().asFile
+        // CMake caches its selected generator in CMakeCache.txt. Keep generator-specific build
+        // directories so changing from a local IDE generator to CI's Ninja cannot reuse stale state.
+        val generatorSuffix = System.getenv("CMAKE_GENERATOR")
+            ?.lowercase()
+            ?.replace(Regex("[^a-z0-9]+"), "-")
+            ?.trim('-')
+            ?.takeIf(String::isNotEmpty)
+            ?.let { "-$it" }
+            .orEmpty()
+        val cmakeBuildDir = layout.buildDirectory
+            .dir("cmake-quickjs/$hostPlatform$generatorSuffix")
+            .get()
+            .asFile
         cmakeBuildDir.parentFile.mkdirs()
 
         runNativeBuildTool(
@@ -94,7 +110,7 @@ tasks.register("prepareQuickJsNative") {
     }
 }
 
-val desktopJvmClasspathFile = layout.buildDirectory.file("source-engine/classpath.txt")
+val desktopJvmRuntimeDirectory = layout.buildDirectory.dir("source-engine/runtime")
 
 /**
  * Emit the exact JVM classpath consumed by Rust. Maven dependencies may live in Gradle's cache,
@@ -102,15 +118,15 @@ val desktopJvmClasspathFile = layout.buildDirectory.file("source-engine/classpat
  */
 tasks.register("prepareDesktopJvmRuntime") {
     group = "application"
-    description = "Prepare the embedded desktop JVM runtime for the Rust/JNI source-engine host"
+    description = "Stage the embedded desktop JVM, Kotlin classes, dependencies, and QuickJS library"
     dependsOn(tasks.named("classes"), tasks.named("prepareQuickJsNative"), ":kmp-engine:jvmJar")
     inputs.files(sourceEngineRuntimeClasspath)
-    outputs.file(desktopJvmClasspathFile)
+    outputs.dir(desktopJvmRuntimeDirectory)
 
     doLast {
         val extractionRoot = projectDir.parentFile.toPath().toAbsolutePath().normalize()
         val originalProjectRoot = extractionRoot.parent
-        val runtimeEntries = sourceEngineRuntimeClasspath.files
+        val runtimeEntries = sourceEngineRuntimeClasspath.files.filter(File::exists)
         val originalProjectEntries = runtimeEntries.filter { entry ->
             val path = entry.toPath().toAbsolutePath().normalize()
             path.startsWith(originalProjectRoot) && !path.startsWith(extractionRoot)
@@ -120,8 +136,89 @@ tasks.register("prepareDesktopJvmRuntime") {
                 originalProjectEntries.joinToString { it.absolutePath }
         }
 
-        val output = desktopJvmClasspathFile.get().asFile
-        output.parentFile.mkdirs()
-        output.writeText(sourceEngineRuntimeClasspath.asPath, Charsets.UTF_8)
+        val runtimeRoot = desktopJvmRuntimeDirectory.get().asFile
+        runtimeRoot.deleteRecursively()
+        val librariesDirectory = runtimeRoot.resolve("lib")
+        val nativeDirectory = runtimeRoot.resolve("native")
+        librariesDirectory.mkdirs()
+        nativeDirectory.mkdirs()
+
+        // Package each Gradle runtime entry beside the app. The Gradle cache and extraction
+        // checkout are build-time inputs only; an installed app must not use either path.
+        val stagedEntries = runtimeEntries.mapIndexed { index, entry ->
+            val stagedName = "%03d-%s".format(index, entry.name)
+            val stagedEntry = librariesDirectory.resolve(stagedName)
+            if (entry.isDirectory) {
+                entry.copyRecursively(stagedEntry, overwrite = true)
+                check(stagedEntry.isDirectory) {
+                    "Could not stage Kotlin runtime directory: ${entry.absolutePath}"
+                }
+            } else {
+                check(entry.copyTo(stagedEntry, overwrite = true).isFile) {
+                    "Could not stage Kotlin runtime artifact: ${entry.absolutePath}"
+                }
+            }
+            "lib/$stagedName"
+        }
+        runtimeRoot.resolve("classpath.txt").writeText(stagedEntries.joinToString("\n"), Charsets.UTF_8)
+
+        val stagedQuickJs = nativeDirectory.resolve(quickJsFileName)
+        check(preparedQuickJsLibrary.copyTo(stagedQuickJs, overwrite = true).isFile) {
+            "Could not stage QuickJS JNI library: ${preparedQuickJsLibrary.absolutePath}"
+        }
+
+        // The app embeds HotSpot through JNI, so bundle a matching Java runtime instead of
+        // requiring a user-installed JDK or relying on machine-specific Gradle toolchains.
+        val javaHome = java21Launcher.get().metadata.installationPath.asFile
+        val jlinkName = if (hostOs == "windows") "jlink.exe" else "jlink"
+        val jlink = javaHome.resolve("bin/$jlinkName")
+        check(jlink.isFile) { "Java 21 jlink executable is missing: ${jlink.absolutePath}" }
+        runNativeBuildTool(
+            listOf(
+                jlink.absolutePath,
+                "--add-modules", "ALL-MODULE-PATH",
+                "--strip-debug", "--no-man-pages", "--no-header-files", "--compress=2",
+                "--output", runtimeRoot.resolve("jre").absolutePath,
+            ),
+        )
+        val javaName = if (hostOs == "windows") "java.exe" else "java"
+        check(runtimeRoot.resolve("jre/bin/$javaName").isFile) {
+            "jlink completed without creating the bundled Java runtime"
+        }
+    }
+}
+
+val stagedTauriAndroidAar = projectDir.parentFile.resolve(
+    "src-tauri/plugins/source-engine/android/libs/kmp-engine.aar",
+)
+tasks.register("stageTauriAndroidAar") {
+    group = "application"
+    description = "Stage the KMP Android engine AAR for the Tauri mobile plugin"
+    dependsOn(":kmp-engine:bundleAndroidMainAar")
+    inputs.file(projectDir.resolve("kmp-engine/build/outputs/aar/kmp-engine.aar"))
+    outputs.file(stagedTauriAndroidAar)
+
+    doLast {
+        val sourceAar = projectDir.resolve("kmp-engine/build/outputs/aar/kmp-engine.aar")
+        check(sourceAar.isFile) { "KMP Android AAR was not produced: ${sourceAar.absolutePath}" }
+        stagedTauriAndroidAar.parentFile.mkdirs()
+
+        // The standalone AAR contains the same Rust crate that Tauri already loads as its Android
+        // app library. Keep QuickJS JNI in the AAR, but omit the duplicate Rust .so to avoid APK
+        // merge collisions and ensure Kotlin callbacks enter the app's single Rust Host instance.
+        ZipFile(sourceAar).use { input ->
+            ZipOutputStream(stagedTauriAndroidAar.outputStream().buffered()).use { output ->
+                input.entries().asSequence()
+                    .filterNot { it.name.startsWith("jni/") && it.name.endsWith("/liblegado_lib.so") }
+                    .forEach { entry ->
+                        output.putNextEntry(ZipEntry(entry.name))
+                        input.getInputStream(entry).use { it.copyTo(output) }
+                        output.closeEntry()
+                    }
+            }
+        }
+        check(stagedTauriAndroidAar.isFile && stagedTauriAndroidAar.length() > 0L) {
+            "Could not stage the KMP Android AAR for Tauri"
+        }
     }
 }
