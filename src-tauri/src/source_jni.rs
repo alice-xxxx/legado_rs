@@ -99,6 +99,12 @@ mod desktop {
             }
             None => java_home()?,
         };
+        // Tauri can return Windows `\\?\` device paths for packaged resources. Rust file I/O
+        // accepts them, but HotSpot's Invocation API can pass that prefix into jimage lookup and
+        // crash while opening `lib/modules`; normalize every path before it crosses into the JVM.
+        let java_home = jvm_compatible_path(&java_home);
+        let classpath = jvm_compatible_classpath(classpath)?;
+        let quickjs_library = jvm_compatible_path(quickjs_library);
         let libjvm = libjvm_path(&java_home);
         if !libjvm.is_file() {
             return Err(format!(
@@ -317,6 +323,36 @@ mod desktop {
             .and_then(Path::parent)
             .map(Path::to_path_buf)
             .ok_or_else(|| format!("Cannot determine JAVA_HOME from {}", java.display()))
+    }
+
+    fn jvm_compatible_path(path: &Path) -> PathBuf {
+        #[cfg(windows)]
+        {
+            let value = path.to_string_lossy();
+            if let Some(value) = value.strip_prefix(r"\\?\") {
+                if value
+                    .get(..4)
+                    .is_some_and(|prefix| prefix.eq_ignore_ascii_case(r"UNC\"))
+                {
+                    return PathBuf::from(format!(r"\\{}", &value[4..]));
+                }
+                // Preserve non-drive device paths; only `\\?\C:\...` has a safe ordinary
+                // Win32 spelling that HotSpot can use for its runtime image lookup.
+                if value.as_bytes().get(1) == Some(&b':') {
+                    return PathBuf::from(value.into_owned());
+                }
+            }
+        }
+        path.to_path_buf()
+    }
+
+    fn jvm_compatible_classpath(classpath: &str) -> Result<String, String> {
+        let paths = std::env::split_paths(classpath)
+            .map(|path| jvm_compatible_path(&path))
+            .collect::<Vec<_>>();
+        std::env::join_paths(paths)
+            .map(|classpath| classpath.to_string_lossy().into_owned())
+            .map_err(|error| format!("Cannot normalize JVM classpath: {error}"))
     }
 
     fn libjvm_path(java_home: &Path) -> PathBuf {
