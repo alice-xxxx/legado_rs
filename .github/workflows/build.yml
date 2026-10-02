@@ -54,12 +54,25 @@ jobs:
           CC: gcc
           CXX: g++
         run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
+      - name: Build unsigned desktop installers
+        run: npm run tauri -- build --no-sign
+      - name: Upload desktop installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-installers-${{ matrix.os }}
+          path: src-tauri/target/release/bundle/**/*
+          if-no-files-found: error
+          retention-days: 14
 
   android:
-    name: Android AAR
+    name: Android APK and AAR
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v6
         with:
@@ -67,7 +80,7 @@ jobs:
           java-version: 21
       - uses: android-actions/setup-android@v4
         with:
-          packages: 'platform-tools ndk;30.0.14904198 cmake;3.31.1'
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;30.0.14904198 cmake;3.31.1'
       - name: Install Android API 37 preview platform
         run: sdkmanager --install 'platforms;android-37.0' --channel=3
       - name: Install Rust Android targets
@@ -75,12 +88,30 @@ jobs:
       - name: Build KMP Android AAR and native libraries
         working-directory: kotlin
         run: ./gradlew --no-daemon --console=plain :kmp-engine:bundleAndroidMainAar
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Generate Android project
+        run: npm run tauri -- android init --ci
+      # The debug variant uses Gradle's default debug key so testers can install it without a release key.
+      - name: Build test APKs
+        run: npm run tauri -- android build --debug --apk --ci
+      - name: Upload Android APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apks
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
 
   ios:
-    name: iOS frameworks
+    name: iOS unsigned IPA and frameworks
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-java@v6
         with:
@@ -93,3 +124,17 @@ jobs:
         env:
           IPHONEOS_DEPLOYMENT_TARGET: '18.0'
         run: ./gradlew --no-daemon --console=plain :kmp-engine:linkReleaseFrameworkIosArm64 :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Generate iOS project
+        run: npm run tauri -- ios init --ci
+      # Deliberately omit Apple signing credentials; the IPA must be re-signed before device installation.
+      - name: Build unsigned test IPA
+        run: npm run tauri -- ios build --no-sign --ci
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-unsigned-ipa
+          path: src-tauri/gen/apple/build/**/*.ipa
+          if-no-files-found: error
+          retention-days: 14
