@@ -79,7 +79,7 @@ class IosRustSourceEngineHost(appDataDirectory: String) : SourceEngineHost {
         // because the Rust-owned allocation must be copied and explicitly freed below.
         val response = call(requestJson)
             ?: error("Rust source host returned a null response")
-        try {
+        return try {
             response.toKString()
         } finally {
             legado_source_host_string_free(response)
