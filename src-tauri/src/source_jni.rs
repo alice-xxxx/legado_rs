@@ -339,7 +339,7 @@ mod desktop {
                 // Preserve non-drive device paths; only `\\?\C:\...` has a safe ordinary
                 // Win32 spelling that HotSpot can use for its runtime image lookup.
                 if value.as_bytes().get(1) == Some(&b':') {
-                    return PathBuf::from(value.into_owned());
+                    return PathBuf::from(value.to_owned());
                 }
             }
         }
