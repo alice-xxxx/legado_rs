@@ -47,6 +47,12 @@ jobs:
       - name: Build KMP JVM and QuickJS from repository sources
         if: runner.os == 'Windows'
         working-directory: kotlin
+        # Windows' inherited CMake generator may select NMake outside a VS developer shell.
+        # Pin the available Ninja + GCC toolchain so QuickJS configures consistently in CI.
+        env:
+          CMAKE_GENERATOR: Ninja
+          CC: gcc
+          CXX: g++
         run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
 
   android:
