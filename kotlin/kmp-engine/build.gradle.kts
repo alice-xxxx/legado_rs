@@ -414,8 +414,9 @@ dependencies {
 }
 
 tasks.matching {
-    it.name.startsWith("compileKotlinIos")
+    it.name.startsWith("compileKotlinIos") || it.name.startsWith("kspKotlinIos")
 }.configureEach {
+    // KSP also reads the generated C interop aliases, so it must wait for the staging task explicitly.
     dependsOn(stageNativeInteropForIos)
 }
 
