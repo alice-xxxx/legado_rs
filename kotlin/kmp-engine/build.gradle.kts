@@ -413,6 +413,23 @@ dependencies {
     add("kspIosSimulatorArm64", project(":quickjs-processor"))
 }
 
+// iOS 用手写的 QuickJS native bridge，不具备 JVM 反射分发器运行环境；让 KSP 生成
+// NativeGeneratedDispatch 和 JS 方法表，供 NativeJsExtensionsBridge 按 handle 分派。
+ksp {
+    arg("jsapi.native", "true")
+    arg(
+        "jsapi.nativeTargets",
+        listOf(
+            "io.legado.app.data.entities.BaseSource",
+            "io.legado.app.help.http.StrResponse",
+            "org.jsoup.Connection.Response",
+            "org.jsoup.Connection.Base",
+            "io.legado.app.model.analyzeRule.QueryTTF",
+            "io.legado.app.utils.JsURL",
+        ).joinToString(","),
+    )
+}
+
 tasks.matching {
     it.name.startsWith("compileKotlinIos") || it.name.startsWith("kspKotlinIos")
 }.configureEach {

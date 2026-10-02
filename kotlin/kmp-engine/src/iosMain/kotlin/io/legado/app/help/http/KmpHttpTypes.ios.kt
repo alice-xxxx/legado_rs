@@ -124,8 +124,8 @@ actual interface KmpInterceptorChain {
 actual class KmpHttpClient {
     var ktorClient: HttpClient? = null
         private set
-    private var readTimeoutMillis: Long = 0L
-    private var callTimeoutMillis: Long = 0L
+    internal var readTimeoutMillis: Long = 0L
+    internal var callTimeoutMillis: Long = 0L
     internal var proxyHost: String? = null
         private set
     internal var proxyPort: Int = 0
@@ -1075,8 +1075,12 @@ private val RUST_OWNED_HEADERS = setOf(
 /** Reqwest expects credentials inside a conventional proxy URL; encode user info bytewise. */
 private fun KmpHttpClient.rustProxyUrl(): String? {
     val host = proxyHost ?: return null
-    val credentials = if (!proxyUsername.isNullOrEmpty() && !proxyPassword.isNullOrEmpty()) {
-        "${proxyUsername.percentEncodeUserInfo()}:${proxyPassword.percentEncodeUserInfo()}@"
+    // Kotlin/Native treats mutable properties as concurrently changeable across worker threads;
+    // capture both credentials before null checks so one request uses a consistent proxy value.
+    val username = proxyUsername
+    val password = proxyPassword
+    val credentials = if (!username.isNullOrEmpty() && !password.isNullOrEmpty()) {
+        "${username.percentEncodeUserInfo()}:${password.percentEncodeUserInfo()}@"
     } else {
         ""
     }

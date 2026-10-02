@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.cinterop.ExperimentalForeignApi::class)
+
 package io.legado.sourceengine.bridge
 
 import io.legado.sourceengine.rust.legado_source_host_http
@@ -5,9 +7,6 @@ import io.legado.sourceengine.rust.legado_source_host_storage
 import io.legado.sourceengine.rust.legado_source_host_string_free
 import kotlinx.cinterop.ByteVar
 import kotlinx.cinterop.CPointer
-import kotlinx.cinterop.cstr
-import kotlinx.cinterop.getPointer
-import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.toKString
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -67,26 +66,25 @@ class IosRustSourceEngineHost(appDataDirectory: String) : SourceEngineHost {
     private suspend fun storageCall(requestJson: String): String? = withContext(Dispatchers.Default) {
         SourceEngineHostWire.decodeStorageResponse(
             rustResponse(requestJson) { request ->
-                memScoped {
-                    legado_source_host_storage(request, dataDirectory.cstr.getPointer(this))
-                }
+                legado_source_host_storage(request, dataDirectory)
             },
         )
     }
 
     private inline fun rustResponse(
         requestJson: String,
-        call: (CPointer<ByteVar>) -> CPointer<ByteVar>?,
-    ): String =
-        memScoped {
-            val response = call(requestJson.cstr.getPointer(this))
-                ?: error("Rust source host returned a null response")
-            try {
-                response.toKString()
-            } finally {
-                legado_source_host_string_free(response)
-            }
+        call: (String) -> CPointer<ByteVar>?,
+    ): String {
+        // cinterop maps const char* inputs to Kotlin String; returned char* stays a raw pointer
+        // because the Rust-owned allocation must be copied and explicitly freed below.
+        val response = call(requestJson)
+            ?: error("Rust source host returned a null response")
+        try {
+            response.toKString()
+        } finally {
+            legado_source_host_string_free(response)
         }
+    }
 }
 
 /** Swift 直接调用的 Kotlin/Native framework 入口。 */
