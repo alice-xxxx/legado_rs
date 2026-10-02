@@ -23,10 +23,17 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # Keep the CI cache on GitHub's open-source cache service.
+          cache-provider: basic
       - name: Install Linux Tauri build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -78,6 +85,9 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;30.0.14904198 cmake;3.31.1'
@@ -85,6 +95,9 @@ jobs:
         run: sdkmanager --install 'platforms;android-37.0' --channel=3
       - name: Install Rust Android targets
         run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
       - name: Build KMP Android AAR and native libraries
         working-directory: kotlin
         run: ./gradlew --no-daemon --console=plain :kmp-engine:bundleAndroidMainAar
@@ -117,8 +130,22 @@ jobs:
         with:
           distribution: temurin
           java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
       - name: Install Rust Apple targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      # Kotlin/Native keeps its compiler and platform dependencies outside Gradle User Home.
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('kotlin/build.gradle.kts', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            konan-${{ runner.os }}-${{ runner.arch }}-
       - name: Build device and simulator frameworks
         working-directory: kotlin
         env:
