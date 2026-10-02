@@ -61,6 +61,11 @@ jobs:
         run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
       - name: Check desktop Rust host
         run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
+      # linuxdeploy inspects bundled JNI libraries and needs the JRE's nested shared-library paths.
+      - name: Add bundled JVM libraries to the Linux linker search path
+        if: runner.os == 'Linux'
+        run: |
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib/server:$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib:$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib/jli${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Build unsigned desktop installers
         # Preserve linuxdeploy's detailed failure output in CI instead of only the generic exit error.
         run: npm run tauri -- build --no-sign --verbose

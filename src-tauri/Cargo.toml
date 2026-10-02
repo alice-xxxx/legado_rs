@@ -28,6 +28,7 @@ desktop = [
     "tauri/x11",
     "tauri/dbus",
 ]
+source-engine-ios-bootstrap = ["tauri-plugin-source-engine/native-mobile"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

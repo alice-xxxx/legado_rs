@@ -8,6 +8,10 @@ rust-version = "1.90"
 exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-source-engine"
 
+[features]
+# Kotlin/Native bootstraps mobile Rust archives without enabling the desktop app feature.
+native-mobile = ["tauri/wry"]
+
 [dependencies]
 tauri = { version = "2", default-features = false }
 serde = "1.0"

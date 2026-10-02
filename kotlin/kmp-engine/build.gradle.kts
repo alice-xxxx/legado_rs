@@ -52,7 +52,10 @@ iosRustTargets.forEach { (taskName, rustTarget) ->
     tasks.register<Exec>(taskName) {
         val rustRoot = projectDir.resolve("../../src-tauri").canonicalFile
         workingDir(rustRoot)
-        commandLine("cargo", "build", "--release", "--lib", "--no-default-features", "--target", rustTarget)
+        commandLine(
+            "cargo", "build", "--release", "--lib", "--no-default-features",
+            "--features", "source-engine-ios-bootstrap", "--target", rustTarget,
+        )
         // KMP needs the Rust archive before the iOS XCFramework exists; defer Swift package generation to the later Tauri iOS build.
         environment("LEGADO_KMP_BOOTSTRAP", "1")
         inputs.files(rustRoot.resolve("Cargo.toml"), rustRoot.resolve("Cargo.lock"))
