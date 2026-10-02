@@ -62,7 +62,8 @@ jobs:
       - name: Check desktop Rust host
         run: cargo check --manifest-path src-tauri/Cargo.toml --features desktop
       - name: Build unsigned desktop installers
-        run: npm run tauri -- build --no-sign
+        # Preserve linuxdeploy's detailed failure output in CI instead of only the generic exit error.
+        run: npm run tauri -- build --no-sign --verbose
       - name: Upload desktop installers
         uses: actions/upload-artifact@v7
         with:
