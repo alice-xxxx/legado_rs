@@ -14,7 +14,8 @@ let package = Package(
         .library(
             name: "tauri-plugin-source-engine",
             type: .static,
-            targets: ["tauri-plugin-source-engine"]),
+            // Include the local KMP binary target in the exported product so Swift can import it.
+            targets: ["tauri-plugin-source-engine", "LegadoSourceEngine"]),
     ],
     dependencies: [
         .package(name: "Tauri", path: "../.tauri/tauri-api")
