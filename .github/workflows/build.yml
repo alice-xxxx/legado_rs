@@ -219,6 +219,8 @@ jobs:
   ios:
     name: iOS unsigned IPA and frameworks
     runs-on: macos-latest
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '15.0'
     needs: changes
     if: >-
       always() &&
@@ -257,13 +259,7 @@ jobs:
         id: ios-framework-key
         shell: bash
         run: |
-          toolchain_hash="$({
-          xcodebuild -version
-          printf 'IPHONEOS_DEPLOYMENT_TARGET=%s\n' '15.0'
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphonesimulator --show-sdk-version
-          printf 'targets=iosArm64,iosSimulatorArm64\n'
-          } | shasum -a 256 | cut -c1-16)"
+          toolchain_hash="$(./scripts/build-ios-frameworks.sh cache-key)"
           echo "toolchain=$toolchain_hash" >> "$GITHUB_OUTPUT"
       - name: Restore exact iOS frameworks and native archive cache
         id: ios-framework-cache
@@ -273,21 +269,13 @@ jobs:
             kotlin/kmp-engine/build/iosNativeLibs/ios_arm64
             kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64
             src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
-          key: ios-framework-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-framework-key.outputs.toolchain }}-${{ hashFiles('kotlin/*.gradle.kts', 'kotlin/gradle.properties', 'kotlin/gradle/**', 'kotlin/gradlew', 'kotlin/gradlew.bat', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/kmp-engine/src/**', 'kotlin/kmp-engine/scripts/**', 'kotlin/src/native/quickjs-ng/**', 'kotlin/quickjs-processor/build.gradle.kts', 'kotlin/quickjs-processor/src/**', 'src-tauri/include/**', 'src-tauri/plugins/source-engine/ios/Package.swift', 'src-tauri/plugins/source-engine/ios/Sources/**/*.swift', '.github/workflows/build.yml') }}
+          key: ios-framework-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-framework-key.outputs.toolchain }}-${{ hashFiles('scripts/build-ios-frameworks.sh', 'kotlin/*.gradle.kts', 'kotlin/gradle.properties', 'kotlin/gradle/**', 'kotlin/gradlew', 'kotlin/gradlew.bat', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/kmp-engine/src/**', 'kotlin/kmp-engine/scripts/**', 'kotlin/kmp-engine/schemas/**', 'kotlin/src/native/quickjs-ng/**', 'kotlin/quickjs-processor/build.gradle.kts', 'kotlin/quickjs-processor/src/**', 'src-tauri/include/**') }}
       - name: Build device and simulator frameworks
         if: steps.ios-framework-cache.outputs.cache-hit != 'true'
-        working-directory: kotlin
-        env:
-          IPHONEOS_DEPLOYMENT_TARGET: '15.0'
-        run: ./gradlew --no-daemon --console=plain :kmp-engine:linkReleaseFrameworkIosArm64 :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
+        run: ./scripts/build-ios-frameworks.sh build-frameworks
       - name: Package Kotlin/Native framework for the iOS Tauri plugin
         if: steps.ios-framework-cache.outputs.cache-hit != 'true'
-        run: |
-          mkdir -p src-tauri/plugins/source-engine/ios/Frameworks
-          xcodebuild -create-xcframework \
-            -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework \
-            -framework kotlin/kmp-engine/build/bin/iosSimulatorArm64/releaseFramework/LegadoSourceEngine.framework \
-            -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+        run: ./scripts/build-ios-frameworks.sh package-xcframework
       - name: Verify iOS framework cache outputs
         shell: bash
         run: |

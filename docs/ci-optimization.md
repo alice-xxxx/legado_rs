@@ -94,3 +94,9 @@ run `37113999486`（commit `38913f5`）的四个非 iOS job 均通过。iOS devi
 
 
 run `37116777187`（`da28565`）四个非iOS平台job均通过；iOS框架构建、校验和Rust链接成功，最终Xcode app仍缺 `_sqlite3_*`。模板加入 SDK `libsqlite3.tbd`，让最终app满足现有KMP静态framework的链接依赖。独立引擎 `IosSourceEngineRuntime` 使用HeadlessAppDb，书架/进度等DAO不可用，cache/cookie通过Rust HostStorage；框架含旧SQLite driver符号不表示新app使用SQL业务存储，新app仍持久化JSON/HTML。新补链还须下轮macOS实际IPA验证。
+
+## 首个成功的 unsigned iOS IPA（run `37127283643`）
+
+commit `7a4ca77` 的全平台 workflow 成功，六个 job 均通过。iOS device/simulator framework、XCFramework 校验及生成项目中的 `libsqlite3.tbd` gate 通过；最终 `Build unsigned test IPA` 和 `Upload iOS IPA` 均成功。Tauri 日志报告生成 `src-tauri/gen/apple/build/arm64/legado.ipa`，GitHub artifact 上传步骤找到 1 个文件。Artifact API 报告 `ios-unsigned-ipa` 上传归档为 **13,073,112 bytes**（artifact ZIP 大小，不是独立测得的 IPA 文件大小），artifact ID `11274574964`，SHA-256 `ce86896e3ef04f85eadbf378a9490ed26bbe6cf350ec8ee1680a5ca8f215770f`；未下载该产物。
+
+该次 iOS job 从 13:46:06 到 14:09:34 UTC，耗时 **1,408 s**。framework cache 未命中并在 final IPA 之前成功保存；本轮 workflow 把完整 `build.yml` 纳入 KMP cache 源码 hash，即使 `da28565..7a4ca77` 没有 Kotlin 或 source-engine Swift 输入变化也触发了 framework 重建。该冷缓存单次耗时不能证明 CI 提速。窄化缓存输入的 helper 和 workflow 已接入当前工作树；实际 cache-hit 效果待下一轮 CI 验证。
