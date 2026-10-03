@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import BookGroupsEditor from "./components/BookGroupsEditor.vue";
+import HomePage from "./components/HomePage.vue";
 import ReadingInsights from "./components/ReadingInsights.vue";
 import ShelfOrganizer from "./components/ShelfOrganizer.vue";
 import TaskCenter from "./components/TaskCenter.vue";
@@ -9,6 +10,7 @@ import BackupControls from "./components/BackupControls.vue";
 import {
   addBook,
   appBootstrap,
+  cancelPendingPdfImport,
   cancelTask,
   checkNewChapters,
   clearReadingHistory,
@@ -19,10 +21,14 @@ import {
   createBackupFromPicker,
   createShelfGroup,
   getBook,
+  getHomeConfig,
+  getRssState,
   importBookFromPicker,
+  importProtectedPdf,
   importSourcesFromPicker,
   listDiscoveryBooks,
   listDiscoveryCategories,
+  listDiscoveryFavorites,
   listRssArticles,
   listRssCategories,
   listSources,
@@ -40,12 +46,17 @@ import {
   restoreBackupFromPicker,
   resumeTask,
   saveProgress,
+  saveHomeConfig,
   saveSettings,
   setBookGroups,
+  setDiscoveryFavorite,
+  setRssArticleState,
+  setRssFilter,
   setShelfSort,
   startChapterDownload,
   startSearch,
   tasksResource,
+  unsubscribeRss,
   listBookmarks,
   listReplacementRules,
   upsertBookmark,
@@ -57,13 +68,20 @@ import {
   type Bookmark,
   type BookmarksResource,
   type BookResource,
+  type HomeConfigDocument,
+  type HomeSection,
   type DiscoveryCategoriesResource,
   type DiscoveryCategory,
+  type DiscoveryFavorite,
+  type DiscoveryFavoritesResource,
   type DisplayReplacementRule,
+  type LocalBookImportResponse,
   type ReadingHistoryResource,
   type ReadingProgress,
   type ReaderSettings,
   type ResourceDescriptor,
+  type RssFilter,
+  type RssStateDocument,
   type SearchBookResult,
   type SearchResource,
   type ShelfResource,
@@ -79,6 +97,9 @@ import {
 type Screen = "home" | "shelf" | "search" | "sources" | "settings";
 type ReaderTheme = ReaderSettings["theme"];
 type DiscoverMode = "discover" | "search" | "rss";
+interface PdfPageResource { src: string; pageIndex: number; defaultZoom: "page-fit" | "page-width" | "actual-size" }
+interface ReaderDisplayOptions { imageOnly?: boolean; comicScaleMode?: "fit-width" | "actual-size" }
+const PdfReaderPage = defineAsyncComponent(() => import("./components/PdfReaderPage.vue"));
 
 const defaultSettings: AppSettingsResource = {
   schemaVersion: 1,
@@ -103,11 +124,22 @@ const toast = ref("");
 const toastKind = ref<"success" | "error">("success");
 const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [] });
 const sources = ref<SourceMetadata[]>([]);
+const homeConfig = ref<HomeConfigDocument>({ schemaVersion: 1, tabs: [{ id: "tab-home", title: "主页", sortOrder: 0, sections: [] }] });
+const homeSectionResults = ref<Record<string, SearchResource>>({});
+const homeSectionLoadingIds = ref<string[]>([]);
+const homeConfigBusy = ref(false);
+const rssState = ref<RssStateDocument>({ schemaVersion: 1, subscriptions: [], articles: [] });
+const rssArticleBusyIds = ref<string[]>([]);
+const rssFilterBusy = ref(false);
+const rssUnsubscribeBusy = ref(false);
+const pendingRssUnsubscribe = ref<SourceMetadata | null>(null);
 const settings = ref<AppSettingsResource>(structuredClone(defaultSettings));
 const tasks = ref<AppTask[]>([]);
 const discoverMode = ref<DiscoverMode>("discover");
 const discoverySourceId = ref("");
 const discoveryCategories = ref<DiscoveryCategory[]>([]);
+const discoveryFavorites = ref<DiscoveryFavorite[]>([]);
+const discoveryFavoriteBusyIds = ref<string[]>([]);
 const discoveryCategoryId = ref("");
 const discoveryResults = ref<SearchBookResult[]>([]);
 const discoveryResourceErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
@@ -127,6 +159,7 @@ const readingHistory = ref<ReadingHistoryResource>({ schemaVersion: 1, sessions:
 const replacementRules = ref<DisplayReplacementRule[]>([]);
 const shelfQuery = ref("");
 const shelfActiveGroup = ref("");
+const catalogQuery = ref("");
 const selectedSourceIds = ref<string[]>([]);
 const searchKeyword = ref("");
 const searchPage = ref(1);
@@ -146,6 +179,12 @@ const sourceQuery = ref("");
 const sourceImportOpen = ref(false);
 const sourceImportBusy = ref(false);
 const localBookImportBusy = ref(false);
+const pdfPasswordPromptOpen = ref(false);
+const pendingPdfImportToken = ref<string | null>(null);
+const pdfPasswordInput = ref("");
+const pdfPasswordBusy = ref(false);
+const pdfPasswordError = ref("");
+const pdfImportPasswords = new Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>();
 const selectedSourceRows = ref<string[]>([]);
 const sourceFilter = ref<"all" | "enabled" | "disabled">("all");
 const sourceGroupFilter = ref("");
@@ -166,7 +205,17 @@ const readingBook = ref<BookResource | null>(null);
 const readingChapterIndex = ref(0);
 const readingChapterHtml = ref("");
 const readingChapterRaw = ref("");
+const readingPdfPage = ref<PdfPageResource | null>(null);
+const readingPdfZoomOverride = ref<PdfPageResource["defaultZoom"] | null>(null);
+const activePdfZoom = computed(() => readingPdfZoomOverride.value ?? readingPdfPage.value?.defaultZoom ?? "page-fit");
+const readingPdfInitialPassword = ref("");
+const readingImagePage = ref(false);
+const comicImageScrollTop = ref(0);
+const comicScaleMode = ref<"fit-width" | "actual-size">("fit-width");
 const readerFrame = ref<HTMLIFrameElement | null>(null);
+let comicBoundScrollElement: HTMLElement | null = null;
+let comicBoundDocument: Document | null = null;
+let comicBoundWindow: Window | null = null;
 const readerPageIndex = ref(0);
 const readerPageCount = ref(1);
 const readerControlsOpen = ref(false);
@@ -199,8 +248,17 @@ const shelfBooks = computed(() => {
 const shelfGroups = computed(() => [...new Set([...(shelf.value.groups ?? []), ...(shelf.value.books ?? []).flatMap((book) => book.groups ?? [])])].sort((a, b) => a.localeCompare(b, "zh-CN")));
 const shelfSortKey = computed(() => shelf.value.sort ?? "updatedAt");
 const shelfSortOrder = computed(() => shelf.value.sortOrder ?? "descending");
+const filteredCatalogChapters = computed(() => {
+  const chapters = openedBook.value?.chapters ?? [];
+  const query = catalogQuery.value.trim().toLocaleLowerCase();
+  if (!query) return chapters;
+  return chapters.filter((chapter) => `${chapter.index + 1} ${chapter.title}`.toLocaleLowerCase().includes(query));
+});
+const catalogRefreshBusy = computed(() => tasks.value.some((task) =>
+  task.bookId === openedBook.value?.id && task.kind === "refreshChapters" && ["queued", "running", "pausing", "paused", "cancelling"].includes(task.status)));
+const catalogCheckBusy = computed(() => tasks.value.some((task) =>
+  task.bookId === openedBook.value?.id && task.kind === "checkNewChapters" && ["queued", "running", "pausing", "paused", "cancelling"].includes(task.status)));
 const bookTitleMap = computed(() => Object.fromEntries((shelf.value.books ?? []).map((book) => [book.id, book.title])));
-const recentBooks = computed(() => [...(shelf.value.books ?? [])].filter((book) => book.progress?.updatedAtMs).sort((a, b) => (b.progress?.updatedAtMs ?? 0) - (a.progress?.updatedAtMs ?? 0)).slice(0, 6));
 const enabledSources = computed(() => sources.value.filter((source) => source.enabled !== false));
 const sourceGroups = computed(() => [...new Set(sources.value.map((source) => source.group).filter((group): group is string => Boolean(group)))].sort());
 const filteredSources = computed(() => {
@@ -215,12 +273,15 @@ const filteredSources = computed(() => {
 const currentChapter = computed(() => readingBook.value?.chapters?.find((chapter) => chapter.index === readingChapterIndex.value) ?? null);
 const currentChapterTitle = computed(() => currentChapter.value?.title ?? `第 ${readingChapterIndex.value + 1} 章`);
 const readerSettings = computed(() => settings.value.reader);
+const readerPageIndicator = computed(() => readingImagePage.value ? "图片" : `${readerPageIndex.value + 1} / ${readerPageCount.value}`);
+const readerPositionDescription = computed(() => readingImagePage.value ? "图片滚动位置" : `第 ${readerPageIndex.value + 1} 页`);
 const currentBookmark = computed(() => bookmarks.value.find((bookmark) => bookmark.bookId === readingBook.value?.id && bookmark.chapterIndex === readingChapterIndex.value && bookmark.offset === readerPageIndex.value) ?? null);
 const readPercent = computed(() => {
   const total = Math.max(1, readingBook.value?.chapterCount ?? readingBook.value?.chapters.length ?? 1);
   return Math.min(100, Math.round(((readingChapterIndex.value + 1) / total) * 100));
 });
 const selectedSearchSources = computed(() => enabledSources.value.length > 0 && selectedSourceIds.value.length === enabledSources.value.length);
+const currentRssFilter = computed<RssFilter>(() => rssState.value.subscriptions.find((entry) => entry.sourceId === discoverySourceId.value)?.filter ?? "all");
 
 function notify(message: string, kind: "success" | "error" = "success"): void {
   toast.value = message;
@@ -245,7 +306,108 @@ async function refreshShelfAndSources(): Promise<void> {
   selectedSourceIds.value = enabledSources.value.map((source) => source.id);
   bootstrapped.value = true;
   void refreshReadingData().catch((error) => notify(`无法读取阅读记录：${errorText(error)}`, "error"));
+  void refreshHomeConfig().catch((error) => notify(`读取主页栏目失败：${errorText(error)}`, "error"));
+  void refreshRssState().catch((error) => notify(`读取订阅状态失败：${errorText(error)}`, "error"));
+  void refreshDiscoveryFavorites().catch((error) => notify(`读取收藏分类失败：${errorText(error)}`, "error"));
   void refreshTasks().catch((error) => notify(`无法读取任务：${errorText(error)}`, "error"));
+}
+
+async function refreshHomeConfig(descriptor?: ResourceDescriptor): Promise<void> {
+  const resource = descriptor ?? await getHomeConfig();
+  const document = await readResource<HomeConfigDocument>(resource);
+  const tabs = Array.isArray(document.tabs) ? document.tabs : [];
+  homeConfig.value = { schemaVersion: document.schemaVersion ?? 1, tabs };
+  const sectionIds = new Set(tabs.flatMap((tab) => tab.sections.map((section) => section.id)));
+  homeSectionResults.value = Object.fromEntries(Object.entries(homeSectionResults.value).filter(([id]) => sectionIds.has(id)));
+  homeSectionLoadingIds.value = homeSectionLoadingIds.value.filter((id) => sectionIds.has(id));
+}
+
+async function refreshRssState(descriptor?: ResourceDescriptor): Promise<void> {
+  const resource = descriptor ?? await getRssState();
+  const document = await readResource<RssStateDocument>(resource);
+  rssState.value = {
+    schemaVersion: document.schemaVersion ?? 1,
+    subscriptions: Array.isArray(document.subscriptions) ? document.subscriptions : [],
+    articles: Array.isArray(document.articles) ? document.articles : [],
+  };
+}
+
+async function loadHomeSection(sectionId: string, sourceId: string, categoryId: string): Promise<void> {
+  if (homeSectionLoadingIds.value.includes(sectionId)) return;
+  homeSectionLoadingIds.value = [...homeSectionLoadingIds.value, sectionId];
+  try {
+    const response = await listDiscoveryBooks(sourceId, categoryId, 1);
+    const resource = await readResource<SearchResource>(response.resource);
+    homeSectionResults.value = { ...homeSectionResults.value, [sectionId]: resource };
+  } catch (error) {
+    homeSectionResults.value = {
+      ...homeSectionResults.value,
+      [sectionId]: { schemaVersion: 1, keyword: "", page: 1, results: [], errors: [{ message: errorText(error) }] },
+    };
+  } finally {
+    homeSectionLoadingIds.value = homeSectionLoadingIds.value.filter((id) => id !== sectionId);
+  }
+}
+
+function openHomeResult(resultId: string): void {
+  const result = Object.values(homeSectionResults.value).flatMap((section) => section.results).find((item) => item.resultId === resultId);
+  if (result) openSearchResult(result);
+}
+
+function isHomeCategory(sourceId: string, categoryId: string): boolean {
+  return homeConfig.value.tabs.some((tab) => tab.sections.some((section) => section.sourceId === sourceId && section.categoryId === categoryId));
+}
+
+async function addHomeCategory(category: DiscoveryCategory): Promise<void> {
+  const sourceId = discoverySourceId.value;
+  const categoryId = category.categoryId;
+  if (homeConfigBusy.value || !sourceId || !categoryId || isHomeCategory(sourceId, categoryId)) return;
+  const tabs = homeConfig.value.tabs.length
+    ? homeConfig.value.tabs
+    : [{ id: "tab-home", title: "主页", sortOrder: 0, sections: [] }];
+  const target = tabs[0];
+  const section: HomeSection = {
+    id: `section-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    title: category.title,
+    sourceId,
+    sourceName: sourceName(sourceId),
+    categoryId,
+    categoryName: category.title,
+    style: 0,
+    sortOrder: target.sections.length,
+    coverVideo: false,
+  };
+  homeConfigBusy.value = true;
+  try {
+    const descriptor = await saveHomeConfig({
+      ...homeConfig.value,
+      tabs: tabs.map((tab, index) => index === 0 ? { ...tab, sections: [...tab.sections, section] } : tab),
+    });
+    await refreshHomeConfig(descriptor);
+    notify(`“${category.title}”已添加到主页。`);
+  } catch (error) {
+    notify(`添加主页栏目失败：${errorText(error)}`, "error");
+  } finally {
+    homeConfigBusy.value = false;
+  }
+}
+
+async function removeHomeCategory(sourceId: string, categoryId: string, title: string): Promise<void> {
+  if (homeConfigBusy.value) return;
+  const tabs = homeConfig.value.tabs.map((tab) => ({
+    ...tab,
+    sections: tab.sections.filter((section) => section.sourceId !== sourceId || section.categoryId !== categoryId),
+  }));
+  homeConfigBusy.value = true;
+  try {
+    const descriptor = await saveHomeConfig({ ...homeConfig.value, tabs });
+    await refreshHomeConfig(descriptor);
+    notify(`“${title}”已从主页移除。`);
+  } catch (error) {
+    notify(`移除主页栏目失败：${errorText(error)}`, "error");
+  } finally {
+    homeConfigBusy.value = false;
+  }
 }
 
 async function refreshReadingData(): Promise<void> {
@@ -307,6 +469,7 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
 }
 
 const completedSearchTasks = new Set<string>();
+const handledCatalogTaskStates = new Set<string>();
 
 async function syncActiveSearchTask(task?: Partial<AppTask>): Promise<void> {
   const taskId = activeSearchTaskId.value;
@@ -342,6 +505,40 @@ async function syncActiveSearchTask(task?: Partial<AppTask>): Promise<void> {
     searchProgress.value = "搜索已取消。";
   }
   activeSearchTaskId.value = null;
+}
+
+async function syncCatalogTask(taskSummary?: Partial<AppTask>): Promise<void> {
+  const id = taskSummary?.id;
+  if (!id) return;
+  const task = tasks.value.find((entry) => entry.id === id) ?? taskSummary as AppTask;
+  if (task.kind !== "refreshChapters" && task.kind !== "checkNewChapters") return;
+  if (task.status !== "completed" && task.status !== "failed") return;
+  const stateKey = `${task.id}:${task.status}`;
+  if (handledCatalogTaskStates.has(stateKey)) return;
+  handledCatalogTaskStates.add(stateKey);
+
+  if (task.status === "failed") {
+    if (task.bookId && (openedBook.value?.id === task.bookId || readingBook.value?.id === task.bookId)) {
+      notify(`目录任务失败：${task.error ?? "请稍后重试。"}`, "error");
+    }
+    return;
+  }
+
+  const addedCount = Math.max(0, task.result?.addedCount ?? 0);
+  if (task.kind === "refreshChapters") {
+    if (task.bookId && (openedBook.value?.id === task.bookId || readingBook.value?.id === task.bookId)) {
+      try {
+        const descriptor = await getBook(task.bookId);
+        await refreshOpenedBook(descriptor);
+      } catch (error) {
+        notify(`目录已更新，但读取新目录失败：${errorText(error)}`, "error");
+        return;
+      }
+    }
+    notify(addedCount ? `目录已更新，发现 ${addedCount} 个新章节。` : "目录已更新，没有新章节。");
+  } else {
+    notify(addedCount ? `检查完成，发现 ${addedCount} 个新章节。` : "检查完成，没有新章节。");
+  }
 }
 
 async function renameGroup(oldName: string, newName: string): Promise<void> {
@@ -468,13 +665,6 @@ function chooseScreen(next: Screen): void {
   if (next === "search") void loadDiscoveryCategoriesAfterNav();
 }
 
-function formatReadingDuration(value: number): string {
-  const minutes = Math.floor(Math.max(0, value) / 60_000);
-  if (minutes < 60) return `${minutes} 分钟`;
-  const hours = Math.floor(minutes / 60);
-  return `${hours} 小时 ${minutes % 60} 分钟`;
-}
-
 async function continueReading(bookId: string): Promise<void> {
   try {
     const descriptor = await getBook(bookId);
@@ -595,6 +785,69 @@ async function loadDiscoveryCategories(): Promise<void> {
   }
 }
 
+async function refreshDiscoveryFavorites(descriptor?: ResourceDescriptor): Promise<void> {
+  const resource = descriptor ?? (await listDiscoveryFavorites()).resource;
+  const document = await readResource<DiscoveryFavoritesResource>(resource);
+  discoveryFavorites.value = Array.isArray(document.favorites) ? document.favorites : [];
+}
+
+function isDiscoveryFavorite(categoryId?: string): boolean {
+  return Boolean(categoryId && discoveryFavorites.value.some((item) =>
+    item.sourceId === discoverySourceId.value && item.categoryId === categoryId));
+}
+
+async function toggleDiscoveryFavorite(category: DiscoveryCategory): Promise<void> {
+  const sourceId = discoverySourceId.value;
+  const categoryId = category.categoryId;
+  if (!sourceId || !categoryId) return;
+  const key = `${sourceId}\u0000${categoryId}`;
+  if (discoveryFavoriteBusyIds.value.includes(key)) return;
+  const favorite = !discoveryFavorites.value.some((item) => item.sourceId === sourceId && item.categoryId === categoryId);
+  discoveryFavoriteBusyIds.value = [...discoveryFavoriteBusyIds.value, key];
+  try {
+    const descriptor = await setDiscoveryFavorite(sourceId, categoryId, favorite);
+    await refreshDiscoveryFavorites(descriptor);
+    notify(favorite ? `已收藏“${category.title}”。` : `已取消收藏“${category.title}”。`);
+  } catch (error) {
+    notify(`更新分类收藏失败：${errorText(error)}`, "error");
+  } finally {
+    discoveryFavoriteBusyIds.value = discoveryFavoriteBusyIds.value.filter((item) => item !== key);
+  }
+}
+
+async function removeDiscoveryFavorite(favorite: DiscoveryFavorite): Promise<void> {
+  try {
+    const descriptor = await setDiscoveryFavorite(favorite.sourceId, favorite.categoryId, false);
+    await refreshDiscoveryFavorites(descriptor);
+    notify(`已取消收藏“${favorite.title}”。`);
+  } catch (error) {
+    notify(`取消收藏失败：${errorText(error)}`, "error");
+  }
+}
+
+async function openDiscoveryFavorite(favorite: DiscoveryFavorite): Promise<void> {
+  discoverMode.value = "discover";
+  discoverySourceId.value = favorite.sourceId;
+  discoveryWasLoaded.value = true;
+  discoveryBusy.value = true;
+  discoveryError.value = "";
+  discoveryResults.value = [];
+  try {
+    const response = await listDiscoveryCategories(favorite.sourceId);
+    const document = await readResource<DiscoveryCategoriesResource>(response.resource);
+    discoveryCategories.value = Array.isArray(document.categories) ? document.categories : [];
+    const match = discoveryCategories.value.find((category) => category.categoryId === favorite.categoryId);
+    if (!match) throw new Error("这个分类已从书源中移除，请取消收藏后再试。");
+    discoveryCategoryId.value = favorite.categoryId;
+    await loadDiscoveryPage(favorite.categoryId, 1);
+  } catch (error) {
+    discoveryError.value = errorText(error);
+    discoveryResults.value = [];
+  } finally {
+    discoveryBusy.value = false;
+  }
+}
+
 async function loadDiscoveryPage(categoryId = discoveryCategoryId.value, page = 1): Promise<void> {
   if (!discoverySourceId.value || !categoryId) return;
   discoveryBusy.value = true;
@@ -632,7 +885,7 @@ function setDiscoverMode(mode: DiscoverMode): void {
 async function openDiscoveryArticle(result: SearchBookResult): Promise<void> {
   const sourceId = result.sourceId;
   if (!sourceId) return;
-  const resultId = result.resultId;
+  const resultId = result.articleId ?? result.resultId;
   articleTitle.value = result.title;
   articleBusy.value = true;
   articleOpen.value = true;
@@ -640,11 +893,76 @@ async function openDiscoveryArticle(result: SearchBookResult): Promise<void> {
     const response = await openRssArticle(sourceId, resultId);
     const rawHtml = await readTextResource(response.resource);
     articleHtml.value = makeDisplayHtml(rawHtml, settings.value.reader, response.resource.src);
+    discoveryResults.value = discoveryResults.value.map((item) =>
+      (item.articleId ?? item.resultId) === resultId ? { ...item, isRead: true } : item);
+    await refreshRssState();
   } catch (error) {
     articleOpen.value = false;
     notify(`打开文章失败：${errorText(error)}`, "error");
   } finally {
     articleBusy.value = false;
+  }
+}
+
+async function closeRssArticle(): Promise<void> {
+  articleOpen.value = false;
+  articleHtml.value = "";
+  if (discoverMode.value === "rss" && discoverySourceId.value && discoveryCategoryId.value) {
+    await loadDiscoveryPage(discoveryCategoryId.value, discoveryPage.value);
+  }
+}
+
+async function changeRssFilter(filter: RssFilter): Promise<void> {
+  const sourceId = discoverySourceId.value;
+  if (!sourceId || rssFilterBusy.value || currentRssFilter.value === filter) return;
+  rssFilterBusy.value = true;
+  try {
+    await refreshRssState(await setRssFilter(sourceId, filter));
+    if (discoveryCategoryId.value) await loadDiscoveryPage(discoveryCategoryId.value, 1);
+  } catch (error) {
+    notify(`更新订阅筛选失败：${errorText(error)}`, "error");
+  } finally {
+    rssFilterBusy.value = false;
+  }
+}
+
+async function updateRssArticle(result: SearchBookResult, patch: { isRead?: boolean; isFavorite?: boolean }): Promise<void> {
+  const sourceId = result.sourceId;
+  const articleId = result.articleId ?? result.resultId;
+  if (!sourceId || !articleId) return;
+  const busyId = `${sourceId}:${articleId}`;
+  if (rssArticleBusyIds.value.includes(busyId)) return;
+  rssArticleBusyIds.value = [...rssArticleBusyIds.value, busyId];
+  try {
+    await refreshRssState(await setRssArticleState(sourceId, articleId, patch));
+    if (discoveryCategoryId.value) await loadDiscoveryPage(discoveryCategoryId.value, discoveryPage.value);
+  } catch (error) {
+    notify(`更新文章状态失败：${errorText(error)}`, "error");
+  } finally {
+    rssArticleBusyIds.value = rssArticleBusyIds.value.filter((id) => id !== busyId);
+  }
+}
+
+async function unsubscribeSelectedRss(): Promise<void> {
+  const source = pendingRssUnsubscribe.value;
+  if (!source || rssUnsubscribeBusy.value) return;
+  rssUnsubscribeBusy.value = true;
+  try {
+    const response = await unsubscribeRss(source.id);
+    sources.value = response.sources;
+    await refreshRssState(response.resource);
+    pendingRssUnsubscribe.value = null;
+    discoverySourceId.value = enabledSources.value[0]?.id ?? "";
+    discoveryCategories.value = [];
+    discoveryCategoryId.value = "";
+    discoveryResults.value = [];
+    discoveryWasLoaded.value = false;
+    if (discoverySourceId.value) await loadDiscoveryCategories();
+    notify(`“${source.name}”已取消订阅。`);
+  } catch (error) {
+    notify(`取消订阅失败：${errorText(error)}`, "error");
+  } finally {
+    rssUnsubscribeBusy.value = false;
   }
 }
 
@@ -668,9 +986,7 @@ function setReaderTheme(theme: ReaderTheme): void {
     ...settings.value,
     reader: { ...settings.value.reader, theme, ...colors[theme] },
   };
-  if (readerVisible.value && readingChapterRaw.value) {
-    readingChapterHtml.value = makeDisplayHtml(readingChapterRaw.value, settings.value.reader, currentChapter.value?.src, readingBook.value?.id);
-  }
+  rebuildReaderDisplay();
   scheduleSettingsSave();
 }
 
@@ -705,18 +1021,82 @@ async function importLocalBook(): Promise<void> {
   try {
     const response = await importBookFromPicker();
     if (response.cancelled) return;
-    if (!response.book || !response.shelf) throw new Error("导入完成后没有返回书籍资源。");
-    const [book, nextShelf] = await Promise.all([
-      readResource<BookResource>(response.book),
-      readResource<ShelfResource>(response.shelf),
-    ]);
-    openedBook.value = book;
-    shelf.value = { ...nextShelf, books: nextShelf.books ?? [] };
-    notify(`《${book.title}》已加入书架。`);
+    if (response.passwordRequired) {
+      if (!response.importToken) throw new Error("无法继续打开加密文件，请重新选择文件。");
+      pendingPdfImportToken.value = response.importToken;
+      pdfPasswordInput.value = "";
+      pdfPasswordError.value = "";
+      pdfPasswordPromptOpen.value = true;
+      return;
+    }
+    await acceptLocalBookImport(response);
   } catch (error) {
     notify(`导入本地书失败：${errorText(error)}`, "error");
   } finally {
     localBookImportBusy.value = false;
+  }
+}
+
+async function acceptLocalBookImport(response: LocalBookImportResponse, initialPdfPassword = ""): Promise<void> {
+  if (!response.book || !response.shelf) throw new Error("导入完成后没有返回书籍资源。");
+  try {
+    const [book, nextShelf] = await Promise.all([
+      readResource<BookResource>(response.book),
+      readResource<ShelfResource>(response.shelf),
+    ]);
+    if (initialPdfPassword) {
+      const previous = pdfImportPasswords.get(book.id);
+      if (previous) clearTimeout(previous.timer);
+      const entry = { password: initialPdfPassword, timer: setTimeout(() => {
+        if (pdfImportPasswords.get(book.id) === entry) pdfImportPasswords.delete(book.id);
+      }, 5 * 60 * 1000) };
+      pdfImportPasswords.set(book.id, entry);
+    }
+    openedBook.value = book;
+    shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
+    notify(`《${book.title}》已加入书架。`);
+  } catch (error) {
+    notify(`文件已导入，但书架刷新失败：${errorText(error)}`, "error");
+  }
+}
+
+async function submitPdfPassword(): Promise<void> {
+  const importToken = pendingPdfImportToken.value;
+  let password = pdfPasswordInput.value;
+  if (!importToken || !password || pdfPasswordBusy.value) return;
+  pdfPasswordBusy.value = true;
+  pdfPasswordError.value = "";
+  pdfPasswordInput.value = "";
+  try {
+    const response = await importProtectedPdf(importToken, password);
+    pendingPdfImportToken.value = null;
+    pdfPasswordPromptOpen.value = false;
+    await acceptLocalBookImport(response, password);
+    password = "";
+  } catch (error) {
+    const message = errorText(error);
+    pdfPasswordError.value = /(?:incorrect.*password|invalid password|password.*incorrect)/i.test(message)
+      ? "密码不正确，请再试一次。"
+      : /expired/i.test(message)
+        ? "文件选择已过期，请重新选择文件。"
+        : "无法打开文件，请检查密码后重试。";
+  } finally {
+    password = "";
+    pdfPasswordBusy.value = false;
+  }
+}
+
+async function cancelPdfPasswordPrompt(): Promise<void> {
+  const importToken = pendingPdfImportToken.value;
+  pendingPdfImportToken.value = null;
+  pdfPasswordInput.value = "";
+  pdfPasswordError.value = "";
+  pdfPasswordPromptOpen.value = false;
+  if (!importToken) return;
+  try {
+    await cancelPendingPdfImport(importToken);
+  } catch (error) {
+    notify(`取消导入失败：${errorText(error)}`, "error");
   }
 }
 
@@ -755,7 +1135,7 @@ async function restoreBackup(): Promise<void> {
     openedBook.value = null;
     searchResults.value = [];
     discoveryResults.value = [];
-    await Promise.all([refreshReadingData(), refreshTasks()]);
+    await Promise.all([refreshReadingData(), refreshTasks(), refreshHomeConfig(), refreshRssState()]);
     notify("备份已恢复，书架和阅读数据已重新载入。");
   } catch (error) {
     notify(`恢复备份失败：${errorText(error)}`, "error");
@@ -767,6 +1147,7 @@ async function restoreBackup(): Promise<void> {
 async function openShelfBook(bookId: string): Promise<void> {
   bookPanelBusy.value = true;
   globalError.value = "";
+  catalogQuery.value = "";
   try {
     const descriptor = await getBook(bookId);
     openedBook.value = await readResource<BookResource>(descriptor);
@@ -803,6 +1184,7 @@ async function removeBookFromShelf(): Promise<void> {
 }
 
 async function startReading(book: BookResource, requestedIndex?: number, requestedOffset?: number): Promise<void> {
+  readingPdfZoomOverride.value = null;
   const savedIndex = book.progress?.chapterIndex ?? 0;
   const firstIndex = Math.max(0, Math.min(book.chapterCount - 1, requestedIndex ?? savedIndex));
   readingBook.value = book;
@@ -819,10 +1201,16 @@ async function startReading(book: BookResource, requestedIndex?: number, request
   progressSaveState.value = "idle";
   await loadReaderChapter(firstIndex);
   if (requestedOffset != null && readingChapterRaw.value) {
-    readerPageIndex.value = Math.min(Math.max(0, requestedOffset), readerPageCount.value - 1);
+    if (readingImagePage.value) {
+      comicImageScrollTop.value = Math.max(0, requestedOffset);
+      readerPageIndex.value = comicImageScrollTop.value;
+    } else {
+      readerPageIndex.value = Math.min(Math.max(0, requestedOffset), readerPageCount.value - 1);
+    }
     readerProgressDirty.value = true;
     progressRevision += 1;
-    scrollReaderFrameToPage();
+    if (readingImagePage.value) applyComicScrollPosition();
+    else scrollReaderFrameToPage();
   }
   if (readingChapterRaw.value) beginReadingSession();
 }
@@ -934,8 +1322,7 @@ async function ensureChapterResource(bookId: string, index: number): Promise<Boo
 
   prefetchBusy.value = true;
   preparePromise = (async () => {
-    const count = Math.max(1, Math.min(20, settings.value.reader.preloadCount || 1));
-    const response = await prepareChapters(bookId, index, count);
+    const response = await prepareChapters(bookId, index, 1);
     const updatedBook = await readResource<BookResource>(response.book);
     readingBook.value = updatedBook;
     if (openedBook.value?.id === bookId) openedBook.value = updatedBook;
@@ -979,7 +1366,7 @@ async function readChapterWithRecovery(book: BookResource, index: number): Promi
   } catch (error) {
     if (!(error instanceof ResourceHttpError) || error.status !== 404) throw error;
     notify("章节暂时无法打开，正在重新获取。", "error");
-    const response = await prepareChapters(book.id, index, Math.max(1, settings.value.reader.preloadCount));
+    const response = await prepareChapters(book.id, index, 1);
     const refreshedBook = await readResource<BookResource>(response.book);
     readingBook.value = refreshedBook;
     if (openedBook.value?.id === refreshedBook.id) openedBook.value = refreshedBook;
@@ -991,6 +1378,7 @@ async function readChapterWithRecovery(book: BookResource, index: number): Promi
 
 async function loadReaderChapter(index: number): Promise<void> {
   if (!readingBook.value) return;
+  clearComicScrollListeners();
   readerBusy.value = true;
   try {
     const preparedBook = await ensureChapterResource(readingBook.value.id, index);
@@ -998,16 +1386,27 @@ async function loadReaderChapter(index: number): Promise<void> {
     const book = loaded.book;
     const chapter = loaded.chapter;
     const rawHtml = loaded.html;
+    const pdfPage = parsePdfPageResource(rawHtml, chapter.src ?? "", book.id);
+    const imageOnly = !pdfPage && isImageOnlyChapter(rawHtml);
     readingChapterIndex.value = index;
     readingChapterRaw.value = rawHtml;
-    readerPageIndex.value = book.progress?.chapterIndex === index ? Math.max(0, book.progress.offset ?? 0) : 0;
-    readingChapterHtml.value = makeDisplayHtml(rawHtml, settings.value.reader, chapter.src, book.id);
+    readingPdfPage.value = pdfPage;
+    const importedPassword = pdfImportPasswords.get(book.id);
+    readingPdfInitialPassword.value = pdfPage && importedPassword && importedPassword.timer ? importedPassword.password : "";
+    readingImagePage.value = imageOnly;
+    const savedOffset = book.progress?.chapterIndex === index ? Math.max(0, book.progress.offset ?? 0) : 0;
+    readerPageIndex.value = savedOffset;
+    comicImageScrollTop.value = imageOnly ? savedOffset : 0;
+    readingChapterHtml.value = pdfPage
+      ? ""
+      : makeDisplayHtml(rawHtml, settings.value.reader, chapter.src, book.id, { imageOnly, comicScaleMode: comicScaleMode.value });
     readerPageCount.value = 1;
     readerProgressDirty.value = true;
     progressRevision += 1;
     progressSaveState.value = "idle";
     await nextTick();
-    measureReaderPages();
+    if (imageOnly) applyComicScrollPosition();
+    else if (!pdfPage) measureReaderPages();
     if (index + 1 < Math.max(book.chapterCount, book.chapters.length)) void requestUpcomingChapters(book, index + 1);
   } catch (error) {
     globalError.value = `无法打开章节：${errorText(error)}`;
@@ -1017,7 +1416,44 @@ async function loadReaderChapter(index: number): Promise<void> {
   }
 }
 
-function makeDisplayHtml(raw: string, reader: ReaderSettings, chapterSrc?: string, bookId?: string): string {
+function parsePdfPageResource(raw: string, chapterSrc: string, bookId: string): PdfPageResource | null {
+  let chapterUrl: URL;
+  try {
+    chapterUrl = new URL(chapterSrc);
+  } catch {
+    return null;
+  }
+  const document = new DOMParser().parseFromString(raw, "text/html");
+  const marker = document.querySelector<HTMLElement>('section[data-legado-document="pdf-page"]');
+  const link = marker?.querySelector<HTMLAnchorElement>("a[data-legado-pdf-src][href]");
+  const href = link?.getAttribute("href") ?? "";
+  if (!marker || !link || !/^\.\.\/assets\/[^/?#]+\.pdf$/i.test(href)) return null;
+  const chapterPath = `/books/${encodeURIComponent(bookId)}/chapters/`;
+  if (!chapterUrl.pathname.includes(chapterPath)) return null;
+  let assetUrl: URL;
+  try {
+    assetUrl = new URL(href, chapterUrl);
+  } catch {
+    return null;
+  }
+  const expectedAssetPrefix = chapterUrl.pathname.replace(/\/chapters\/[^/]+\.html$/, "/assets/");
+  if (assetUrl.origin !== chapterUrl.origin || !assetUrl.pathname.startsWith(expectedAssetPrefix)) return null;
+  const pageIndex = Number(marker.dataset.pageIndex);
+  if (!Number.isInteger(pageIndex) || pageIndex < 0) return null;
+  const zoom = marker.dataset.defaultZoom;
+  const defaultZoom = zoom === "page-width" || zoom === "actual-size" ? zoom : "page-fit";
+  return { src: assetUrl.href, pageIndex, defaultZoom };
+}
+
+function isImageOnlyChapter(raw: string): boolean {
+  const document = new DOMParser().parseFromString(raw, "text/html");
+  if (!document.body.querySelector("img")) return false;
+  const textOnly = document.body.cloneNode(true) as HTMLElement;
+  textOnly.querySelectorAll("img, picture, svg, video, audio, style, script, br, hr").forEach((node) => node.remove());
+  return !textOnly.textContent?.trim();
+}
+
+function makeDisplayHtml(raw: string, reader: ReaderSettings, chapterSrc?: string, bookId?: string, options: ReaderDisplayOptions = {}): string {
   const document = new DOMParser().parseFromString(raw, "text/html");
   document.querySelectorAll("script, iframe, object, embed, form, base, meta[http-equiv='refresh']").forEach((node) => node.remove());
   document.querySelectorAll("meta[http-equiv], link").forEach((node) => {
@@ -1041,7 +1477,16 @@ function makeDisplayHtml(raw: string, reader: ReaderSettings, chapterSrc?: strin
   document.head.prepend(makeReaderCsp(document, chapterSrc));
   const style = document.createElement("style");
   style.dataset.legadoReaderOverride = "true";
-  style.textContent = `
+  style.textContent = options.imageOnly ? `
+    html,body{width:100%;height:auto;min-height:100%;margin:0!important;overflow-x:${options.comicScaleMode === "actual-size" ? "auto" : "hidden"}!important;overflow-y:auto!important;}
+    body{box-sizing:border-box!important;min-height:100vh!important;padding:0!important;background:${safeCssColor(reader.backgroundColor, "#f7f3e9")}!important;
+      color:${safeCssColor(reader.textColor, "#3f3b34")}!important;column-width:auto!important;column-gap:0!important;column-fill:auto!important;
+      font-family:${cssFont(reader.fontFamily)}!important;font-size:${clamp(reader.fontSizePx,12,36)}px!important;
+      line-height:${clamp(reader.lineHeight,1.1,3)}!important;text-align:center!important;scrollbar-width:thin!important;}
+    body *{box-sizing:border-box!important;max-width:none!important;line-height:normal!important;font-family:inherit!important;}
+    body img{display:block!important;width:${options.comicScaleMode === "actual-size" ? "auto" : "100%"}!important;
+      max-width:${options.comicScaleMode === "actual-size" ? "none" : "100%"}!important;height:auto!important;margin:0 auto!important;object-fit:contain!important;}
+  ` : `
     html,body{width:100%;height:100%;min-height:100%;margin:0!important;overflow:hidden!important;}
     body{--reader-gutter:min(8vw,96px);box-sizing:border-box!important;height:100vh!important;padding:28px var(--reader-gutter)!important;
       background:${safeCssColor(reader.backgroundColor, "#f7f3e9")}!important;color:${safeCssColor(reader.textColor, "#3f3b34")}!important;
@@ -1058,6 +1503,17 @@ function makeDisplayHtml(raw: string, reader: ReaderSettings, chapterSrc?: strin
   `;
   (document.head ?? document.documentElement).append(style);
   return `<!doctype html>${document.documentElement.outerHTML}`;
+}
+
+function rebuildReaderDisplay(): void {
+  if (!readerVisible.value || !readingChapterRaw.value || readingPdfPage.value) return;
+  readingChapterHtml.value = makeDisplayHtml(
+    readingChapterRaw.value,
+    settings.value.reader,
+    currentChapter.value?.src,
+    readingBook.value?.id,
+    { imageOnly: readingImagePage.value, comicScaleMode: comicScaleMode.value },
+  );
 }
 
 function makeReaderCsp(document: Document, chapterSrc?: string): HTMLMetaElement {
@@ -1183,6 +1639,7 @@ function applyReaderReplacements(root: HTMLElement, replacements: DisplayReplace
 }
 
 function measureReaderPages(preserveRatio = false): void {
+  if (readingImagePage.value || readingPdfPage.value) return;
   const doc = readerFrame.value?.contentDocument;
   if (!doc) return;
   const body = doc.body;
@@ -1198,6 +1655,7 @@ function measureReaderPages(preserveRatio = false): void {
 }
 
 function scrollReaderFrameToPage(): void {
+  if (readingImagePage.value || readingPdfPage.value) return;
   const doc = readerFrame.value?.contentDocument;
   if (!doc) return;
   const width = Math.max(1, doc.documentElement.clientWidth || readerFrame.value?.clientWidth || 1);
@@ -1205,8 +1663,80 @@ function scrollReaderFrameToPage(): void {
   doc.documentElement.scrollLeft = readerPageIndex.value * width;
 }
 
+function onComicFrameScroll(): void {
+  const scroller = comicBoundScrollElement;
+  if (!scroller || !readingImagePage.value) return;
+  const offset = Math.max(0, Math.round(scroller.scrollTop || scroller.ownerDocument.documentElement.scrollTop));
+  if (offset === comicImageScrollTop.value) return;
+  comicImageScrollTop.value = offset;
+  readerPageIndex.value = offset;
+  readerProgressDirty.value = true;
+  progressRevision += 1;
+  progressSaveState.value = "idle";
+}
+
+function clearComicScrollListeners(): void {
+  comicBoundDocument?.removeEventListener("scroll", onComicFrameScroll, true);
+  comicBoundWindow?.removeEventListener("scroll", onComicFrameScroll);
+  comicBoundScrollElement?.removeEventListener("scroll", onComicFrameScroll);
+  comicBoundDocument = null;
+  comicBoundWindow = null;
+  comicBoundScrollElement = null;
+}
+
+function applyComicScrollPosition(): void {
+  const document = readerFrame.value?.contentDocument;
+  if (!document || !readingImagePage.value) return;
+  if (document.body) document.body.scrollTop = comicImageScrollTop.value;
+  document.documentElement.scrollTop = comicImageScrollTop.value;
+  if (document.scrollingElement) document.scrollingElement.scrollTop = comicImageScrollTop.value;
+}
+
+function onReaderFrameLoad(): void {
+  clearComicScrollListeners();
+  if (readingImagePage.value) {
+    const document = readerFrame.value?.contentDocument;
+    const scroller = document?.scrollingElement as HTMLElement | null;
+    if (document && scroller) {
+      comicBoundScrollElement = scroller;
+      comicBoundDocument = document;
+      comicBoundWindow = document.defaultView;
+      scroller.addEventListener("scroll", onComicFrameScroll, { passive: true });
+      document.addEventListener("scroll", onComicFrameScroll, { capture: true, passive: true });
+      document.defaultView?.addEventListener("scroll", onComicFrameScroll, { passive: true });
+      applyComicScrollPosition();
+    }
+    return;
+  }
+  measureReaderPages();
+}
+
+function setComicScaleMode(mode: "fit-width" | "actual-size"): void {
+  if (comicScaleMode.value === mode) return;
+  comicScaleMode.value = mode;
+  rebuildReaderDisplay();
+}
+
+function setPdfZoom(mode: PdfPageResource["defaultZoom"]): void {
+  readingPdfZoomOverride.value = mode;
+}
+
+function consumeImportedPdfPassword(): void {
+  const bookId = readingBook.value?.id;
+  if (bookId) {
+    const entry = pdfImportPasswords.get(bookId);
+    if (entry) clearTimeout(entry.timer);
+    pdfImportPasswords.delete(bookId);
+  }
+  readingPdfInitialPassword.value = "";
+}
+
 function turnPage(direction: -1 | 1): void {
   if (!readerVisible.value || readerBusy.value) return;
+  if (readingImagePage.value || readingPdfPage.value) {
+    void changeChapter(direction);
+    return;
+  }
   const next = readerPageIndex.value + direction;
   if (next >= 0 && next < readerPageCount.value) {
     readerPageIndex.value = next;
@@ -1247,7 +1777,7 @@ async function saveCurrentProgress(): Promise<void> {
   const progress: ReadingProgress = {
     chapterId: currentChapter.value?.id ?? null,
     chapterIndex: readingChapterIndex.value,
-    offset: readerPageIndex.value,
+    offset: readingImagePage.value ? comicImageScrollTop.value : readerPageIndex.value,
     updatedAtMs: Date.now(),
   };
   progressSaveState.value = "saving";
@@ -1274,8 +1804,14 @@ async function saveCurrentProgress(): Promise<void> {
 async function closeReader(): Promise<void> {
   await saveCurrentProgress();
   await finishReadingSession();
+  clearComicScrollListeners();
   readerVisible.value = false;
   readingChapterHtml.value = "";
+  readingChapterRaw.value = "";
+  readingPdfPage.value = null;
+  readingPdfZoomOverride.value = null;
+  readingPdfInitialPassword.value = "";
+  readingImagePage.value = false;
   readerFrame.value = null;
   if (readingBook.value && openedBook.value?.id === readingBook.value.id) {
     try {
@@ -1288,11 +1824,7 @@ async function closeReader(): Promise<void> {
 
 function updateReaderSetting<K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]): void {
   settings.value = { ...settings.value, reader: { ...settings.value.reader, [key]: value } };
-  if (readerVisible.value && readingChapterHtml.value) {
-    if (readingChapterRaw.value) {
-      readingChapterHtml.value = makeDisplayHtml(readingChapterRaw.value, settings.value.reader, currentChapter.value?.src, readingBook.value?.id);
-    }
-  }
+  rebuildReaderDisplay();
   scheduleSettingsSave();
 }
 
@@ -1315,11 +1847,6 @@ async function persistSettings(): Promise<void> {
   } finally {
     saveSettingsBusy.value = false;
   }
-}
-
-function rebuildReaderDisplay(): void {
-  if (!readerVisible.value || !readingChapterRaw.value) return;
-  readingChapterHtml.value = makeDisplayHtml(readingChapterRaw.value, settings.value.reader, currentChapter.value?.src, readingBook.value?.id);
 }
 
 async function refreshReplacementRules(descriptor?: ResourceDescriptor): Promise<void> {
@@ -1524,6 +2051,12 @@ async function setupEvents(): Promise<void> {
           readingHistory.value = await readResource<ReadingHistoryResource>(event.payload.resource);
         } else if (event.payload.kind === "replacementRules") {
           await refreshReplacementRules(event.payload.resource);
+        } else if (event.payload.kind === "discoveryFavorites") {
+          await refreshDiscoveryFavorites(event.payload.resource);
+        } else if (event.payload.kind === "homeConfig") {
+          await refreshHomeConfig(event.payload.resource);
+        } else if (event.payload.kind === "rssState") {
+          await refreshRssState(event.payload.resource);
         }
       } catch (error) {
         notify(`阅读数据更新失败：${errorText(error)}`, "error");
@@ -1533,6 +2066,7 @@ async function setupEvents(): Promise<void> {
       try {
         await refreshTasks(event.payload.resource);
         await syncActiveSearchTask(event.payload.task);
+        await syncCatalogTask(event.payload.task);
       } catch (error) {
         notify(`任务状态更新失败：${errorText(error)}`, "error");
       }
@@ -1548,7 +2082,7 @@ async function setupEvents(): Promise<void> {
         settings.value = normalizeSettings(nextSettings);
         sources.value = restored.sources ?? [];
         selectedSourceIds.value = enabledSources.value.map((source) => source.id);
-        await Promise.all([refreshReadingData(), refreshTasks()]);
+        await Promise.all([refreshReadingData(), refreshTasks(), refreshDiscoveryFavorites(), refreshHomeConfig(), refreshRssState()]);
       } catch (error) {
         notify(`恢复后的数据重新载入失败：${errorText(error)}`, "error");
       }
@@ -1592,6 +2126,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("pagehide", onPageHide);
   document.removeEventListener("visibilitychange", onVisibilityChange);
   window.removeEventListener("resize", handleReaderResize);
+  clearComicScrollListeners();
   for (const unlisten of unlisteners) unlisten();
   if (toastTimer) clearTimeout(toastTimer);
   if (pendingSettingsSave.value) clearTimeout(pendingSettingsSave.value);
@@ -1601,6 +2136,10 @@ onBeforeUnmount(() => {
   }
   void saveCurrentProgress();
   void finishReadingSession();
+  if (pendingPdfImportToken.value) void cancelPendingPdfImport(pendingPdfImportToken.value).catch(() => {});
+  for (const entry of pdfImportPasswords.values()) clearTimeout(entry.timer);
+  pdfImportPasswords.clear();
+  readingPdfInitialPassword.value = "";
 });
 
 watch(readerSettings, () => {
@@ -1652,26 +2191,30 @@ watch(readerSettings, () => {
         </section>
 
         <template v-else>
-          <section v-if="screen === 'home'" class="home-view">
-            <div class="home-summary-row">
-              <div><h2>继续上次阅读</h2><p>{{ recentBooks.length ? '最近读过的书和阅读位置在这里。' : '书架、书签和阅读记录会集中显示在主页。' }}</p></div>
-              <div class="home-quick-actions"><button class="button secondary" @click="chooseScreen('shelf')">打开书架</button><button class="button primary" @click="chooseScreen('search')">发现书籍</button></div>
-            </div>
-            <div v-if="recentBooks.length" class="home-recent-list">
-              <article v-for="book in recentBooks" :key="book.id" class="home-recent-book">
-                <button class="home-book-cover" @click="continueReading(book.id)"><img v-if="book.coverSrc" :src="book.coverSrc" alt="" /><span v-else>{{ book.title.slice(0, 1) }}</span></button>
-                <div class="home-book-copy"><strong>{{ book.title }}</strong><span>{{ book.author || '作者未知' }}</span><small>读到第 {{ (book.progress?.chapterIndex ?? 0) + 1 }} 章 · {{ book.latestChapter || '目录已更新' }}</small><div class="book-progress-track"><span :style="{ width: `${book.chapterCount ? Math.min(100, ((book.progress?.chapterIndex ?? 0) + 1) / book.chapterCount * 100) : 0}%` }"></span></div></div>
-                <button class="button primary home-continue" @click="continueReading(book.id)">继续阅读</button>
-              </article>
-            </div>
-            <div v-else class="home-empty"><p>还没有阅读进度</p><span>从书架打开一本书，阅读位置会自动记在这里。</span><button class="button secondary" @click="chooseScreen('shelf')">前往书架</button></div>
-            <div class="home-lower-grid"><section class="home-summary-card"><strong>最近 90 天</strong><span>累计阅读 {{ formatReadingDuration(readingHistory.totalDurationMs) }}</span><small>{{ readingHistory.totalSessions }} 次阅读 · {{ readingHistory.books.length }} 本书</small><button class="text-button" @click="chooseScreen('settings')">查看阅读记录</button></section><section class="home-summary-card"><strong>书架藏书</strong><span>{{ shelf.books.length }} 本</span><small>{{ enabledSources.length }} 个已启用书源</small><button class="text-button" @click="chooseScreen('sources')">管理书源</button></section></div>
-          </section>
+          <HomePage
+            v-if="screen === 'home'"
+            :shelf="shelf"
+            :reading-history="readingHistory"
+            :sources="sources"
+            :home-config="homeConfig"
+            :section-results="homeSectionResults"
+            :loading-section-ids="homeSectionLoadingIds"
+            :tasks="tasks"
+            :busy="isLoading || homeConfigBusy"
+            @continue-reading="continueReading"
+            @open-home-section="loadHomeSection"
+            @open-result="openHomeResult"
+            @open-shelf="chooseScreen('shelf')"
+            @open-discovery="chooseScreen('search')"
+            @open-history="chooseScreen('settings')"
+            @open-tasks="chooseScreen('settings')"
+            @open-sources="chooseScreen('sources')"
+          />
 
           <section v-if="screen === 'shelf'" class="shelf-view">
             <div class="shelf-page-heading">
               <div><h2>我的书架</h2><p>{{ shelf.books.length }} 本书 · {{ shelfBooks.length }} 本显示</p></div>
-              <div class="shelf-page-actions"><button data-testid="local-book-import" class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">{{ localBookImportBusy ? '正在导入…' : '导入 TXT / EPUB' }}</button><button class="button primary" @click="chooseScreen('search')">添加书籍</button></div>
+              <div class="shelf-page-actions"><button data-testid="local-book-import" class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">{{ localBookImportBusy ? '正在导入…' : '导入 TXT / EPUB / CBZ / PDF' }}</button><button class="button primary" @click="chooseScreen('search')">添加书籍</button></div>
             </div>
 
             <ShelfOrganizer :groups="shelfGroups" :active-group="shelfActiveGroup" :sort-key="shelfSortKey" :sort-order="shelfSortOrder" @filter-group="shelfActiveGroup = $event" @sort-change="changeShelfSort($event)" @order-change="changeShelfSort(shelfSortKey, $event)" @create-group="createGroup" @rename-group="renameGroup" @delete-group="removeShelfGroup" />
@@ -1692,7 +2235,7 @@ watch(readerSettings, () => {
               </article>
             </div>
             <div v-else-if="shelf.books.length" class="empty-card compact-empty"><div class="empty-icon">⌕</div><h3>没有找到这本书</h3><p>换个书名或作者试试。</p><button class="button secondary" @click="shelfQuery = ''">清除筛选</button></div>
-            <div v-else class="shelf-empty-compact"><p>书架还是空的。</p><span>可以导入本地 TXT / EPUB，或从书源搜索并添加书籍。</span><div><button data-testid="local-book-import-empty" class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">导入本地书</button><button class="button primary" @click="chooseScreen('search')">搜索书籍</button></div></div>
+            <div v-else class="shelf-empty-compact"><p>书架还是空的。</p><span>可以导入 TXT、EPUB、CBZ 或 PDF，也可以从书源搜索并添加书籍。</span><div><button data-testid="local-book-import-empty" class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">导入本地书</button><button class="button primary" @click="chooseScreen('search')">搜索书籍</button></div></div>
           </section>
 
           <section v-else-if="screen === 'search'" class="search-view">
@@ -1709,18 +2252,51 @@ watch(readerSettings, () => {
                 <select id="discovery-source" data-testid="discovery-source" v-model="discoverySourceId" :disabled="!enabledSources.length" @change="loadDiscoveryCategories">
                   <option value="" disabled>选择一个已启用的书源</option><option v-for="source in enabledSources" :key="source.id" :value="source.id">{{ source.name }}</option>
                 </select>
+                <select v-if="discoverMode === 'rss'" data-testid="rss-filter" aria-label="筛选订阅文章" :value="currentRssFilter" :disabled="rssFilterBusy || !discoverySourceId" @change="changeRssFilter(($event.target as HTMLSelectElement).value as RssFilter)">
+                  <option value="all">全部文章</option><option value="unread">未读</option><option value="read">已读</option><option value="favorites">已收藏</option>
+                </select>
+                <button v-if="discoverMode === 'rss' && discoverySourceId" data-testid="rss-unsubscribe" class="button danger-outline" :disabled="rssFilterBusy || rssUnsubscribeBusy" @click="pendingRssUnsubscribe = sources.find((source) => source.id === discoverySourceId) ?? null">取消订阅</button>
                 <button data-testid="discovery-refresh" class="button secondary" :disabled="discoveryBusy || !discoverySourceId" @click="loadDiscoveryCategories">{{ discoveryBusy ? '正在加载…' : discoverMode === 'rss' ? '刷新订阅' : '加载分类' }}</button>
               </div>
               <div v-if="!enabledSources.length" class="empty-card"><h3>还没有已启用书源</h3><p>启用书源后，可以浏览书籍分类和订阅文章。</p><button class="button secondary" @click="chooseScreen('sources')">管理书源</button></div>
-              <div v-else-if="discoveryCategories.length" class="discovery-categories" role="group" aria-label="发现分类">
-                <button v-for="category in discoveryCategories" :key="category.categoryId ?? category.title" :data-testid="category.categoryId ? `discovery-category-${category.categoryId}` : undefined" :disabled="!category.categoryId" :class="{ active: discoveryCategoryId === category.categoryId }" @click="category.categoryId && (discoveryCategoryId = category.categoryId, loadDiscoveryPage(category.categoryId, 1))">{{ category.title }}</button>
+              <div v-if="discoverMode === 'discover' && discoveryFavorites.length" class="discovery-favorites" data-testid="discovery-favorites">
+                <strong>收藏分类</strong>
+                <div class="discovery-favorite-list">
+                  <div v-for="favorite in discoveryFavorites" :key="`${favorite.sourceId}:${favorite.categoryId}`" class="discovery-favorite-item">
+                    <button class="discovery-favorite-open" :data-testid="`discovery-favorite-${favorite.categoryId}`" @click="openDiscoveryFavorite(favorite)"><span>{{ favorite.sourceName }}</span><strong>{{ favorite.title }}</strong></button>
+                    <button class="discovery-favorite-remove" :aria-label="`取消收藏${favorite.title}`" :data-testid="`discovery-favorite-remove-${favorite.categoryId}`" @click="removeDiscoveryFavorite(favorite)">×</button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="discoveryCategories.length" class="discovery-categories" role="group" aria-label="发现分类">
+                <div v-for="category in discoveryCategories" :key="category.categoryId ?? category.title" class="discovery-category-item">
+                  <button class="discovery-category-select" :data-testid="category.categoryId ? `discovery-category-${category.categoryId}` : undefined" :disabled="!category.categoryId" :class="{ active: discoveryCategoryId === category.categoryId }" @click="category.categoryId && (discoveryCategoryId = category.categoryId, loadDiscoveryPage(category.categoryId, 1))">{{ category.title }}</button>
+                  <button v-if="discoverMode === 'discover'" class="discovery-category-favorite" :data-testid="category.categoryId ? `discovery-category-favorite-${category.categoryId}` : undefined" :aria-label="`${isDiscoveryFavorite(category.categoryId) ? '取消收藏' : '收藏'}${category.title}`" :aria-pressed="isDiscoveryFavorite(category.categoryId)" :disabled="!category.categoryId || discoveryFavoriteBusyIds.includes(`${discoverySourceId}\u0000${category.categoryId}`)" @click="toggleDiscoveryFavorite(category)">{{ isDiscoveryFavorite(category.categoryId) ? '★' : '☆' }}</button>
+                  <button v-if="discoverMode === 'discover'" class="discovery-category-home" :data-testid="category.categoryId ? `discovery-category-home-${category.categoryId}` : undefined" :aria-label="`${isHomeCategory(discoverySourceId, category.categoryId ?? '') ? '从主页移除' : '添加到主页'}${category.title}`" :aria-pressed="isHomeCategory(discoverySourceId, category.categoryId ?? '')" :disabled="!category.categoryId || homeConfigBusy" @click="category.categoryId && (isHomeCategory(discoverySourceId, category.categoryId) ? removeHomeCategory(discoverySourceId, category.categoryId, category.title) : addHomeCategory(category))">{{ isHomeCategory(discoverySourceId, category.categoryId ?? '') ? '⌂' : '+' }}</button>
+                </div>
               </div>
               <div v-if="discoveryBusy && !discoveryResults.length" class="search-loading"><span class="loader-ring"></span><strong>{{ discoverMode === 'rss' ? '正在读取订阅' : '正在加载分类' }}</strong></div>
               <div v-else-if="discoveryError" class="discover-empty" role="status"><p>{{ discoveryError }}</p><button v-if="discoverySourceId" class="button secondary" :disabled="discoveryBusy" @click="loadDiscoveryCategories">重试</button></div>
               <div v-else-if="discoveryResults.length" class="search-results-grid" data-testid="discovery-results">
                 <article v-for="result in discoveryResults" :key="result.resultId" :data-testid="`discovery-result-${result.resultId}`" class="result-card">
                   <button class="result-cover" @click="(discoverMode === 'rss' && result.contentSrc) ? openDiscoveryArticle(result) : openSearchResult(result)"><img v-if="result.coverSrc" :src="result.coverSrc" alt="" loading="lazy" /><span v-else class="cover-fallback small-cover"><span>{{ result.sourceName }}</span><strong>{{ result.title }}</strong><small>{{ result.author || '作者未知' }}</small></span></button>
-                  <div class="result-details"><span class="source-label">{{ result.sourceName }}</span><button class="result-title" @click="(discoverMode === 'rss' && result.contentSrc) ? openDiscoveryArticle(result) : openSearchResult(result)">{{ result.title }}</button><p class="result-author">{{ result.author || (discoverMode === 'rss' ? '订阅文章' : '作者未知') }}</p><p v-if="result.latestChapter" class="result-latest">{{ result.latestChapter }}</p><div class="result-actions"><button v-if="discoverMode === 'rss' && result.contentSrc" class="button secondary small" :data-testid="`rss-open-${result.resultId}`" @click="openDiscoveryArticle(result)">阅读文章</button><button v-else class="button secondary small" @click="openSearchResult(result)">查看详情</button><button :data-testid="`discovery-add-${result.resultId}`" class="button primary small" :disabled="addBusyResult === result.resultId || discoverMode === 'rss'" @click="addSearchResult(result)">{{ addBusyResult === result.resultId ? '正在添加…' : discoverMode === 'rss' ? '订阅文章' : '＋ 加入书架' }}</button></div></div>
+                  <div class="result-details">
+                    <div class="rss-result-meta" v-if="discoverMode === 'rss' && result.contentSrc"><span class="source-label">{{ result.sourceName }}</span><span class="rss-read-status" :class="{ read: result.isRead }">{{ result.isRead ? '已读' : '未读' }}</span></div>
+                    <span v-else class="source-label">{{ result.sourceName }}</span>
+                    <button class="result-title" @click="(discoverMode === 'rss' && result.contentSrc) ? openDiscoveryArticle(result) : openSearchResult(result)">{{ result.title }}</button>
+                    <p class="result-author">{{ result.author || (discoverMode === 'rss' ? '订阅文章' : '作者未知') }}</p>
+                    <p v-if="result.latestChapter" class="result-latest">{{ result.latestChapter }}</p>
+                    <div class="result-actions">
+                      <template v-if="discoverMode === 'rss' && result.contentSrc">
+                        <button class="button primary small" :data-testid="`rss-open-${result.resultId}`" @click="openDiscoveryArticle(result)">阅读文章</button>
+                        <button class="button secondary small rss-favorite-toggle" :data-testid="`rss-favorite-${result.resultId}`" :disabled="rssArticleBusyIds.includes(`${result.sourceId}:${result.articleId ?? result.resultId}`)" :aria-pressed="Boolean(result.isFavorite)" @click="updateRssArticle(result, { isFavorite: !result.isFavorite })">{{ result.isFavorite ? '★ 已收藏' : '☆ 收藏' }}</button>
+                      </template>
+                      <template v-else>
+                        <button class="button secondary small" @click="openSearchResult(result)">查看详情</button>
+                        <button :data-testid="`discovery-add-${result.resultId}`" class="button primary small" :disabled="addBusyResult === result.resultId" @click="addSearchResult(result)">{{ addBusyResult === result.resultId ? '正在添加…' : '＋ 加入书架' }}</button>
+                      </template>
+                    </div>
+                  </div>
                 </article>
               </div>
               <div v-if="discoveryResults.length" class="search-pagination"><button class="button secondary small" :disabled="discoveryPage <= 1 || discoveryBusy" @click="loadDiscoveryPage(discoveryCategoryId, discoveryPage - 1)">← 上一页</button><span>第 {{ discoveryPage }} 页</span><button class="button secondary small" :disabled="!discoveryHasNextPage || discoveryBusy" @click="loadDiscoveryPage(discoveryCategoryId, discoveryPage + 1)">下一页 →</button></div>
@@ -1787,7 +2363,7 @@ watch(readerSettings, () => {
                 <div class="settings-save-row"><span>{{ saveSettingsBusy ? '保存中…' : '更改会自动保存。' }}</span><button class="button secondary small" :disabled="saveSettingsBusy" @click="persistSettings">{{ saveSettingsBusy ? '保存中' : '立即保存' }}</button></div>
               </div>
               <div class="settings-card replacement-card"><div class="settings-card-heading"><div class="settings-icon replace-icon">⇄</div><div><h3>显示替换</h3><p>只改变阅读时看到的文字</p></div></div><div v-if="replacementRules.length" class="replacement-list"><div v-for="(rule, index) in replacementRules" :key="rule.id" class="replacement-row replacement-rule-row"><input :aria-label="`第 ${index + 1} 条规则名称`" :value="rule.name" placeholder="规则名称" @input="updateReplacementRule(rule.id, { name: ($event.target as HTMLInputElement).value })" /><input :aria-label="`第 ${index + 1} 条匹配内容`" :value="rule.pattern" placeholder="查找内容" @input="updateReplacementRule(rule.id, { pattern: ($event.target as HTMLInputElement).value })" /><span>→</span><input :aria-label="`第 ${index + 1} 条替换内容`" :value="rule.replacement" placeholder="替换为" @input="updateReplacementRule(rule.id, { replacement: ($event.target as HTMLInputElement).value })" /><label class="rule-check"><input type="checkbox" :checked="rule.enabled" @change="updateReplacementRule(rule.id, { enabled: ($event.target as HTMLInputElement).checked })" />启用</label><label class="rule-check"><input type="checkbox" :checked="rule.isRegex" @change="updateReplacementRule(rule.id, { isRegex: ($event.target as HTMLInputElement).checked })" />正则</label><select :value="rule.scope" :aria-label="`第 ${index + 1} 条规则应用范围`" @change="updateReplacementRule(rule.id, { scope: ($event.target as HTMLSelectElement).value })"><option value="all">全部书籍</option><option v-for="book in shelf.books" :key="book.id" :value="`book:${book.id}`">{{ book.title }}</option></select><button class="icon-action" :aria-label="`删除第 ${index + 1} 条显示替换`" @click="removeReplacement(rule.id)">×</button></div></div><div v-else class="replacement-empty">还没有显示替换规则。</div><button class="button secondary" @click="addReplacement">添加替换规则</button></div>
-              <div class="settings-card local-import-card"><div class="settings-card-heading"><div class="settings-icon">↥</div><div><h3>导入本地书</h3><p>支持 TXT 和 EPUB，文件由应用导入并整理到书架。</p></div></div><button class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">{{ localBookImportBusy ? '正在导入…' : '选择 TXT / EPUB 文件' }}</button></div>
+              <div class="settings-card local-import-card"><div class="settings-card-heading"><div class="settings-icon">↥</div><div><h3>导入本地书</h3><p>支持 TXT、EPUB、CBZ 和 PDF，文件由应用导入并整理到书架。</p></div></div><button class="button secondary" :disabled="localBookImportBusy" @click="importLocalBook">{{ localBookImportBusy ? '正在导入…' : '选择本地书文件' }}</button></div>
             </div>
           </section>
         </template>
@@ -1796,20 +2372,96 @@ watch(readerSettings, () => {
 
     <nav v-if="!readerVisible" class="mobile-nav" aria-label="主导航"><button data-testid="nav-home-mobile" :class="{ active: screen === 'home' }" @click="chooseScreen('home')"><span>⌂</span>主页</button><button data-testid="nav-shelf-mobile" :class="{ active: screen === 'shelf' }" @click="chooseScreen('shelf')"><span>▤</span>书架</button><button data-testid="nav-search-mobile" :class="{ active: screen === 'search' }" @click="chooseScreen('search')"><span>⌕</span>发现</button><button data-testid="nav-settings-mobile" :class="{ active: screen === 'settings' || screen === 'sources' }" @click="chooseScreen('settings')"><span>☻</span>我的</button></nav>
 
-    <section v-if="openedBook && !readerVisible" class="overlay-backdrop" @click.self="openedBook = null"><article class="book-detail-panel"><button class="detail-close" aria-label="关闭详情" @click="openedBook = null">×</button><div class="detail-hero"><img v-if="openedBook.coverSrc" :src="openedBook.coverSrc" alt="" /><div v-else class="detail-cover-fallback">{{ openedBook.title.slice(0, 1) }}</div><div><p class="eyebrow">书籍详情</p><h2>{{ openedBook.title }}</h2><p>{{ openedBook.author || '作者未知' }}</p><span class="detail-stat">{{ openedBook.chapterCount || openedBook.chapters.length }} 章 <i></i> {{ openedBook.latestChapter || '目录已同步' }}</span></div></div><div class="detail-actions"><button class="button primary" :disabled="bookPanelBusy || !openedBook.chapterCount" @click="startReading(openedBook)">{{ openedBook.progress?.chapterIndex != null ? '继续阅读' : '开始阅读' }} <span>→</span></button><button class="button secondary" @click="pendingRemoval = { id: openedBook.id, title: openedBook.title }">从书架移除</button></div><BookGroupsEditor :key="openedBook.id" :groups="shelfGroups" :assigned="shelf.books.find((book) => book.id === openedBook?.id)?.groups ?? []" @save="saveBookGroups(openedBook.id, $event)" /><div class="book-task-actions"><button data-testid="book-refresh-catalog" class="button secondary" @click="enqueueBookTask('refresh')">更新目录</button><button data-testid="book-check-new" class="button secondary" @click="enqueueBookTask('check')">检查新章节</button><button data-testid="book-download-chapters" class="button secondary" @click="enqueueBookTask('download')">准备后续章节</button></div><div class="catalog-heading"><div><p class="eyebrow">章节目录</p><h3>章节目录</h3></div><span>{{ openedBook.chapters.length }} / {{ openedBook.chapterCount }} 章</span></div><div class="catalog-list"><button v-for="chapter in openedBook.chapters" :key="chapter.id" class="catalog-row" :class="{ current: chapter.index === openedBook.progress?.chapterIndex }" @click="startReading(openedBook, chapter.index)"><span>{{ String(chapter.index + 1).padStart(2, '0') }}</span><strong>{{ chapter.title }}</strong><small>{{ chapter.src ? '已缓存' : '点击后准备' }}</small><b>›</b></button><div v-if="!openedBook.chapters.length" class="catalog-empty">暂时没有章节目录。</div></div></article></section>
+    <section v-if="openedBook && !readerVisible" class="overlay-backdrop" @click.self="openedBook = null">
+      <article class="book-detail-panel">
+        <button class="detail-close" aria-label="关闭详情" @click="openedBook = null">×</button>
+        <div class="detail-hero">
+          <img v-if="openedBook.coverSrc" :src="openedBook.coverSrc" alt="" />
+          <div v-else class="detail-cover-fallback">{{ openedBook.title.slice(0, 1) }}</div>
+          <div>
+            <p class="eyebrow">书籍详情</p><h2>{{ openedBook.title }}</h2><p>{{ openedBook.author || '作者未知' }}</p>
+            <span class="detail-stat">{{ openedBook.chapterCount || openedBook.chapters.length }} 章 <i></i> {{ openedBook.latestChapter || '目录已同步' }}</span>
+          </div>
+        </div>
+        <div class="detail-actions">
+          <button class="button primary" :disabled="bookPanelBusy || !openedBook.chapterCount" @click="startReading(openedBook)">{{ openedBook.progress?.chapterIndex != null ? '继续阅读' : '开始阅读' }} <span>→</span></button>
+          <button class="button secondary" @click="pendingRemoval = { id: openedBook.id, title: openedBook.title }">从书架移除</button>
+        </div>
+        <BookGroupsEditor :key="openedBook.id" :groups="shelfGroups" :assigned="shelf.books.find((book) => book.id === openedBook?.id)?.groups ?? []" @save="saveBookGroups(openedBook.id, $event)" />
+        <div class="book-task-actions">
+          <button data-testid="book-refresh-catalog" class="button secondary" :disabled="catalogRefreshBusy" @click="enqueueBookTask('refresh')">{{ catalogRefreshBusy ? '正在更新目录…' : '更新目录' }}</button>
+          <button data-testid="book-check-new" class="button secondary" :disabled="catalogCheckBusy" @click="enqueueBookTask('check')">{{ catalogCheckBusy ? '正在检查…' : '检查新章节' }}</button>
+          <button data-testid="book-download-chapters" class="button secondary" @click="enqueueBookTask('download')">准备后续章节</button>
+        </div>
+        <div class="catalog-heading">
+          <div><p class="eyebrow">章节目录</p><h3>章节目录</h3></div>
+          <span>{{ catalogQuery ? `${filteredCatalogChapters.length} 项匹配` : `${openedBook.chapters.length} / ${openedBook.chapterCount} 章` }}</span>
+        </div>
+        <label class="catalog-search">
+          <span aria-hidden="true">⌕</span>
+          <input v-model="catalogQuery" data-testid="catalog-search" aria-label="搜索章节目录" placeholder="搜索章节名或序号" />
+          <button v-if="catalogQuery" type="button" aria-label="清除目录搜索" @click="catalogQuery = ''">×</button>
+        </label>
+        <div class="catalog-list">
+          <button v-for="chapter in filteredCatalogChapters" :key="chapter.id" :data-testid="`catalog-chapter-${chapter.index}`" class="catalog-row" :class="{ current: chapter.index === openedBook.progress?.chapterIndex }" @click="startReading(openedBook, chapter.index)">
+            <span>{{ String(chapter.index + 1).padStart(2, '0') }}</span><strong>{{ chapter.title }}</strong><small>{{ chapter.src ? '已缓存' : '点击后准备' }}</small><b>›</b>
+          </button>
+          <div v-if="!openedBook.chapters.length" class="catalog-empty">暂时没有章节目录。</div>
+          <div v-else-if="!filteredCatalogChapters.length" class="catalog-empty">没有匹配的章节。<button class="text-button" @click="catalogQuery = ''">清除搜索</button></div>
+        </div>
+      </article>
+    </section>
 
     <section v-if="selectedResult && !readerVisible" class="overlay-backdrop" @click.self="selectedResult = null"><article class="result-detail-panel"><button class="detail-close" aria-label="关闭详情" @click="selectedResult = null">×</button><div class="result-detail-cover"><img v-if="selectedResult.coverSrc" :src="selectedResult.coverSrc" alt="" /><div v-else class="cover-fallback"><span>{{ selectedResult.sourceName }}</span><strong>{{ selectedResult.title }}</strong></div></div><span class="source-label">{{ selectedResult.sourceName }}</span><h2>{{ selectedResult.title }}</h2><p class="result-author">{{ selectedResult.author || '作者未知' }}</p><p class="result-intro">{{ selectedResult.intro || '加入后，可以同步章节目录并开始阅读。' }}</p><div class="detail-actions"><button :data-testid="`search-add-${selectedResult.resultId}`" class="button primary" :disabled="addBusyResult === selectedResult.resultId" @click="addSearchResult(selectedResult)">{{ addBusyResult === selectedResult.resultId ? '正在加入…' : '加入书架' }} <span>→</span></button><button class="button secondary" @click="selectedResult = null">返回结果</button></div></article></section>
 
-    <section v-if="articleOpen" class="overlay-backdrop" @click.self="articleOpen = false"><article class="rss-article-panel"><header><div><span>订阅文章</span><h2>{{ articleTitle }}</h2></div><button class="detail-close" aria-label="关闭文章" @click="articleOpen = false">×</button></header><div v-if="articleBusy" class="reader-loading"><span class="loader-ring"></span><p>正在打开文章…</p></div><iframe v-else data-testid="rss-article-frame" title="订阅文章内容" sandbox="allow-same-origin" :srcdoc="articleHtml"></iframe></article></section>
+    <section v-if="articleOpen" class="overlay-backdrop" @click.self="closeRssArticle"><article class="rss-article-panel"><header><div><span>订阅文章</span><h2>{{ articleTitle }}</h2></div><button class="detail-close" aria-label="关闭文章" @click="closeRssArticle">×</button></header><div v-if="articleBusy" class="reader-loading"><span class="loader-ring"></span><p>正在打开文章…</p></div><iframe v-else data-testid="rss-article-frame" title="订阅文章内容" sandbox="allow-same-origin" :srcdoc="articleHtml"></iframe></article></section>
 
     <section v-if="readerVisible" class="reader-shell" :class="`reader-theme-${settings.reader.theme}`">
       <header class="reader-topbar"><button data-testid="reader-back" class="reader-back" aria-label="返回目录" @click="closeReader"><span>‹</span><span class="back-label">书籍详情</span></button><div class="reader-book-heading"><strong>{{ readingBook?.title }}</strong><span>{{ currentChapterTitle }}</span></div><div class="reader-header-actions"><span class="read-save-state" :class="progressSaveState">{{ progressSaveState === 'saving' ? '保存中' : progressSaveState === 'saved' ? '已保存' : progressSaveState === 'error' ? '保存失败' : '' }}</span><button data-testid="reader-add-bookmark" class="reader-tool-button bookmark-tool" :aria-label="currentBookmark ? '移除当前书签' : '添加当前页书签'" :title="currentBookmark ? '移除当前书签' : '添加书签'" @click="toggleCurrentBookmark">{{ currentBookmark ? '★' : '☆' }}</button><button class="reader-tool-button" aria-label="阅读显示设置" @click="readerControlsOpen = !readerControlsOpen">Aa</button><button class="reader-tool-button" aria-label="打开目录" @click="closeReader">☷</button></div></header>
-      <div class="reader-main"><div class="reader-chapter-heading"><span class="reader-book-label">{{ readingBook?.title }}</span><h1 data-testid="reader-chapter-title">{{ currentChapterTitle }}</h1><span class="chapter-rule"></span></div><div class="reader-content-frame"><div v-if="readerBusy" class="reader-loading"><span class="loader-ring"></span><p>{{ prefetchBusy ? '正在准备后续章节…' : '正在打开章节…' }}</p></div><iframe v-else ref="readerFrame" data-testid="reader-frame" class="chapter-frame" title="章节内容" sandbox="allow-same-origin" :srcdoc="readingChapterHtml" @load="measureReaderPages()"></iframe></div><div class="reader-edge reader-edge-left" @click="turnPage(-1)" aria-hidden="true"></div><div class="reader-edge reader-edge-right" @click="turnPage(1)" aria-hidden="true"></div></div>
-      <footer class="reader-footer"><button data-testid="reader-prev-chapter" class="chapter-turn" :disabled="readingChapterIndex <= 0 || readerBusy" @click="changeChapter(-1)">上一章</button><button data-testid="reader-prev" class="turn-button" :disabled="readerBusy" aria-label="上一页" @click="turnPage(-1)"><span>‹</span><small>上一页</small></button><div class="reader-page-status"><div class="reader-progress-track"><span :style="{ width: `${readPercent}%` }"></span></div><span data-testid="reader-page-indicator">{{ readerPageIndex + 1 }} / {{ readerPageCount }}</span><span class="reader-footer-divider"></span><span>第 {{ readingChapterIndex + 1 }} / {{ readingBook?.chapterCount || readingBook?.chapters.length || '—' }} 章</span><span v-if="prefetchBusy" class="preload-indicator">正在准备</span></div><button data-testid="reader-next" class="turn-button next" :disabled="readerBusy" aria-label="下一页" @click="turnPage(1)"><small>下一页</small><span>›</span></button><button data-testid="reader-next-chapter" class="chapter-turn" :disabled="readingChapterIndex + 1 >= (readingBook?.chapterCount || 0) || readerBusy" @click="changeChapter(1)">下一章</button></footer>
-      <aside v-if="readerControlsOpen" data-testid="reader-settings-popover" class="reader-settings-popover"><div class="popover-title"><span>阅读显示</span><button aria-label="关闭阅读设置" @click="readerControlsOpen = false">×</button></div><div class="setting-control compact-setting"><div><label>字号</label><small data-testid="reader-font-size-value">{{ settings.reader.fontSizePx }} px</small></div><div class="range-control"><button data-testid="reader-font-decrease" aria-label="减小字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx - 1, 12, 36))">−</button><input type="range" min="12" max="36" :value="settings.reader.fontSizePx" @input="updateReaderSetting('fontSizePx', Number(($event.target as HTMLInputElement).value))" /><button data-testid="reader-font-increase" aria-label="增大字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx + 1, 12, 36))">＋</button></div></div><div class="setting-control compact-setting"><div><label>行间距</label><small>{{ settings.reader.lineHeight.toFixed(1) }}</small></div><input type="range" min="1.2" max="2.8" step="0.1" :value="settings.reader.lineHeight" @input="updateReaderSetting('lineHeight', Number(($event.target as HTMLInputElement).value))" /></div><div class="setting-control compact-setting"><div><label>阅读主题</label></div><div class="theme-options"><button v-for="theme in ([['paper','纸'],['sepia','暖'],['dark','夜'],['system','白']] as const)" :key="theme[0]" class="theme-option compact-theme" :class="[`theme-${theme[0]}`, { selected: settings.reader.theme === theme[0] }]" @click="setReaderTheme(theme[0])">{{ theme[1] }}</button></div></div><button class="text-button popover-save" :disabled="saveSettingsBusy" @click="persistSettings">{{ saveSettingsBusy ? '保存中…' : '保存阅读设置' }}</button></aside>
+      <div class="reader-main"><div class="reader-chapter-heading"><span class="reader-book-label">{{ readingBook?.title }}</span><h1 data-testid="reader-chapter-title">{{ currentChapterTitle }}</h1><span class="chapter-rule"></span></div><div class="reader-content-frame"><PdfReaderPage v-if="readingPdfPage" :key="readingPdfPage.src" :src="readingPdfPage.src" :page-index="readingPdfPage.pageIndex" :default-zoom="activePdfZoom" :initial-password="readingPdfInitialPassword" @initial-password-used="consumeImportedPdfPassword" @loaded="readerPageCount = 1" @close-reader="closeReader" /><template v-else><div v-if="readerBusy" class="reader-loading"><span class="loader-ring"></span><p>{{ prefetchBusy ? '正在准备后续章节…' : '正在打开章节…' }}</p></div><iframe v-else ref="readerFrame" data-testid="reader-frame" class="chapter-frame" :data-reader-format="readingImagePage ? 'image' : 'html'" title="章节内容" sandbox="allow-same-origin" :srcdoc="readingChapterHtml" @load="onReaderFrameLoad"></iframe></template></div><div class="reader-edge reader-edge-left" @click="turnPage(-1)" aria-hidden="true"></div><div class="reader-edge reader-edge-right" @click="turnPage(1)" aria-hidden="true"></div></div>
+      <footer class="reader-footer"><button data-testid="reader-prev-chapter" class="chapter-turn" :disabled="readingChapterIndex <= 0 || readerBusy" @click="changeChapter(-1)">上一章</button><button data-testid="reader-prev" class="turn-button" :disabled="readerBusy" aria-label="上一页" @click="turnPage(-1)"><span>‹</span><small>上一页</small></button><div class="reader-page-status"><div class="reader-progress-track"><span :style="{ width: `${readPercent}%` }"></span></div><span data-testid="reader-page-indicator">{{ readerPageIndicator }}</span><span class="reader-footer-divider"></span><span>第 {{ readingChapterIndex + 1 }} / {{ readingBook?.chapterCount || readingBook?.chapters.length || '—' }} 章</span><span v-if="prefetchBusy" class="preload-indicator">正在准备</span></div><button data-testid="reader-next" class="turn-button next" :disabled="readerBusy" aria-label="下一页" @click="turnPage(1)"><small>下一页</small><span>›</span></button><button data-testid="reader-next-chapter" class="chapter-turn" :disabled="readingChapterIndex + 1 >= (readingBook?.chapterCount || 0) || readerBusy" @click="changeChapter(1)">下一章</button></footer>
+      <aside v-if="readerControlsOpen" data-testid="reader-settings-popover" class="reader-settings-popover">
+        <div class="popover-title"><span>阅读显示</span><button aria-label="关闭阅读设置" @click="readerControlsOpen = false">×</button></div>
+        <div v-if="readingPdfPage" class="pdf-scale-control" data-testid="pdf-scale-control">
+          <span>PDF 缩放</span>
+          <div>
+            <button data-testid="pdf-zoom-page-fit" :class="{ selected: activePdfZoom === 'page-fit' }" :aria-pressed="activePdfZoom === 'page-fit'" @click="setPdfZoom('page-fit')">整页</button>
+            <button data-testid="pdf-zoom-page-width" :class="{ selected: activePdfZoom === 'page-width' }" :aria-pressed="activePdfZoom === 'page-width'" @click="setPdfZoom('page-width')">适合宽度</button>
+            <button data-testid="pdf-zoom-actual-size" :class="{ selected: activePdfZoom === 'actual-size' }" :aria-pressed="activePdfZoom === 'actual-size'" @click="setPdfZoom('actual-size')">原始大小</button>
+          </div>
+        </div>
+        <div v-if="readingImagePage" class="comic-scale-control" data-testid="comic-scale-control">
+          <span>图片缩放</span>
+          <div>
+            <button data-testid="comic-fit-width" :class="{ selected: comicScaleMode === 'fit-width' }" :aria-pressed="comicScaleMode === 'fit-width'" @click="setComicScaleMode('fit-width')">适合宽度</button>
+            <button data-testid="comic-actual-size" :class="{ selected: comicScaleMode === 'actual-size' }" :aria-pressed="comicScaleMode === 'actual-size'" @click="setComicScaleMode('actual-size')">原始大小</button>
+          </div>
+        </div>
+        <template v-if="!readingPdfPage && !readingImagePage">
+          <div class="setting-control compact-setting">
+            <div><label>字号</label><small data-testid="reader-font-size-value">{{ settings.reader.fontSizePx }} px</small></div>
+            <div class="range-control">
+              <button data-testid="reader-font-decrease" aria-label="减小字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx - 1, 12, 36))">−</button>
+              <input type="range" min="12" max="36" :value="settings.reader.fontSizePx" @input="updateReaderSetting('fontSizePx', Number(($event.target as HTMLInputElement).value))" />
+              <button data-testid="reader-font-increase" aria-label="增大字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx + 1, 12, 36))">＋</button>
+            </div>
+          </div>
+          <div class="setting-control compact-setting">
+            <div><label>行间距</label><small>{{ settings.reader.lineHeight.toFixed(1) }}</small></div>
+            <input type="range" min="1.2" max="2.8" step="0.1" :value="settings.reader.lineHeight" @input="updateReaderSetting('lineHeight', Number(($event.target as HTMLInputElement).value))" />
+          </div>
+        </template>
+        <div class="setting-control compact-setting">
+          <div><label>阅读主题</label></div>
+          <div class="theme-options"><button v-for="theme in ([['paper','纸'],['sepia','暖'],['dark','夜'],['system','白']] as const)" :key="theme[0]" class="theme-option compact-theme" :class="[`theme-${theme[0]}`, { selected: settings.reader.theme === theme[0] }]" @click="setReaderTheme(theme[0])">{{ theme[1] }}</button></div>
+        </div>
+        <button class="text-button popover-save" :disabled="saveSettingsBusy" @click="persistSettings">{{ saveSettingsBusy ? '保存中…' : '保存阅读设置' }}</button>
+      </aside>
     </section>
 
-    <section v-if="bookmarkEditorOpen" class="modal-backdrop" @click.self="bookmarkEditorOpen = false"><article class="app-modal bookmark-modal"><button class="detail-close" aria-label="关闭书签窗口" @click="bookmarkEditorOpen = false">×</button><p class="eyebrow">书签</p><h2>为这一页添加备注</h2><p class="modal-description">{{ readingBook?.title }} · {{ currentChapterTitle }} · 第 {{ readerPageIndex + 1 }} 页</p><textarea v-model="bookmarkNote" aria-label="书签备注" maxlength="300" placeholder="写下想记住的内容（可选）"></textarea><div class="modal-actions"><button class="button secondary" @click="bookmarkEditorOpen = false">取消</button><button class="button primary" :disabled="bookmarkBusy" @click="addBookmark">{{ bookmarkBusy ? '保存中…' : '保存书签' }}</button></div></article></section>
+    <section v-if="bookmarkEditorOpen" class="modal-backdrop" @click.self="bookmarkEditorOpen = false"><article class="app-modal bookmark-modal"><button class="detail-close" aria-label="关闭书签窗口" @click="bookmarkEditorOpen = false">×</button><p class="eyebrow">书签</p><h2>为这一页添加备注</h2><p class="modal-description">{{ readingBook?.title }} · {{ currentChapterTitle }} · {{ readerPositionDescription }}</p><textarea v-model="bookmarkNote" aria-label="书签备注" maxlength="300" placeholder="写下想记住的内容（可选）"></textarea><div class="modal-actions"><button class="button secondary" @click="bookmarkEditorOpen = false">取消</button><button class="button primary" :disabled="bookmarkBusy" @click="addBookmark">{{ bookmarkBusy ? '保存中…' : '保存书签' }}</button></div></article></section>
+
+    <section v-if="pdfPasswordPromptOpen" class="modal-backdrop" @click.self="!pdfPasswordBusy && cancelPdfPasswordPrompt()"><article class="app-modal pdf-password-modal"><p class="eyebrow">打开 PDF</p><h2>输入文件密码</h2><p class="modal-description">此文件受密码保护。密码仅用于当前导入过程，不会保存。</p><form @submit.prevent="submitPdfPassword"><label class="form-field"><span>PDF 密码</span><input v-model="pdfPasswordInput" data-testid="pdf-password-input" type="password" autocomplete="off" autofocus :disabled="pdfPasswordBusy" /></label><p v-if="pdfPasswordError" class="pdf-password-error" role="alert">{{ pdfPasswordError }}</p><div class="modal-actions"><button type="button" class="button secondary" :disabled="pdfPasswordBusy" data-testid="pdf-password-cancel" @click="cancelPdfPasswordPrompt">取消</button><button type="submit" class="button primary" :disabled="pdfPasswordBusy || !pdfPasswordInput" data-testid="pdf-password-submit">{{ pdfPasswordBusy ? '正在打开…' : '打开文件' }}</button></div></form></article></section>
 
     <section v-if="sourceImportOpen" class="modal-backdrop" @click.self="sourceImportOpen = false"><article class="app-modal source-import-modal"><button class="detail-close" aria-label="关闭导入窗口" @click="sourceImportOpen = false">×</button><p class="eyebrow">导入书源</p><h2>添加书源</h2><p class="modal-description">选择书源文件即可导入；书源规则会由应用安全处理，不会显示在页面上。</p><div class="file-drop"><span class="file-icon">↥</span><strong>从设备选择书源文件</strong><small>支持 JSON 格式，文件由应用直接读取。</small><button data-testid="source-import-picker" class="button secondary" :disabled="sourceImportBusy" @click="importSourceFileFromPicker">{{ sourceImportBusy ? '正在导入…' : '选择 JSON 文件' }}</button></div><div class="modal-actions"><button class="button secondary" @click="sourceImportOpen = false">取消</button></div></article></section>
 
@@ -1818,6 +2470,8 @@ watch(readerSettings, () => {
     <section v-if="pendingRemoval" class="modal-backdrop" @click.self="pendingRemoval = null"><article class="app-modal confirm-modal"><div class="confirm-symbol">⌫</div><h2>从书架移除这本书？</h2><p>《{{ pendingRemoval.title }}》会从你的书架中移除。</p><div class="modal-actions"><button class="button secondary" @click="pendingRemoval = null">保留</button><button class="button danger" @click="removeBookFromShelf">确认移除</button></div></article></section>
 
     <section v-if="pendingSourceRemoval.length" class="modal-backdrop" @click.self="pendingSourceRemoval = []"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm">◈</div><h2>移除这些书源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" @click="pendingSourceRemoval = []">取消</button><button class="button danger" @click="deleteSelectedSources">确认移除</button></div></article></section>
+
+    <section v-if="pendingRssUnsubscribe" class="modal-backdrop" @click.self="!rssUnsubscribeBusy && (pendingRssUnsubscribe = null)"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm">◈</div><h2>取消订阅并移除书源？</h2><p>“{{ pendingRssUnsubscribe.name }}”及其文章缓存、已读和收藏状态会被移除；书架中的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" :disabled="rssUnsubscribeBusy" @click="pendingRssUnsubscribe = null">保留</button><button data-testid="rss-unsubscribe-confirm" class="button danger" :disabled="rssUnsubscribeBusy" @click="unsubscribeSelectedRss">{{ rssUnsubscribeBusy ? '正在取消…' : '取消订阅并移除' }}</button></div></article></section>
 
     <transition name="toast"><div v-if="toast" class="toast-message" :class="toastKind" role="status"><span>{{ toastKind === 'success' ? '✓' : '!' }}</span>{{ toast }}</div></transition>
   </div>

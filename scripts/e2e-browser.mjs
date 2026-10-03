@@ -18,6 +18,7 @@ const playwrightPath = process.env.PLAYWRIGHT_CORE_ENTRY ||
 const runId = new Date().toISOString().replace(/[:.]/g, "-");
 const outputDir = resolve(process.env.PLAYWRIGHT_OUTPUT_DIR || join("/tmp/legado-browser-e2e-results", runId));
 const origin = "http://127.0.0.1:1420";
+const builtFrontendDist = process.env.BROWSER_E2E_DIST ? resolve(process.env.BROWSER_E2E_DIST) : null;
 const errors = [];
 const browserConsoleErrors = [];
 const sourceRequests = [];
@@ -25,6 +26,7 @@ const resourceRequests = [];
 const browserRequestFailures = [];
 const runMessages = [];
 const layoutChecks = [];
+const verificationEvidence = {};
 const runStartedAt = new Date().toISOString();
 let runStatus = "NOT_RUN";
 let runFailure;
@@ -37,6 +39,7 @@ let browserHarnessUrl;
 let resourceServerUrl;
 let dataDir;
 let page;
+let releasePendingFixtureResponse;
 
 function report(message) {
   runMessages.push(message);
@@ -72,6 +75,19 @@ async function waitForHttp(url, timeoutMs = 45_000) {
 }
 
 async function startFixtureServer() {
+  let chapterTwoAttempts = 0;
+  let reverseCatalog = false;
+  const catalogResponseOrders = [];
+  let releaseFirstChapterTwo;
+  let firstChapterTwoReleased = false;
+  const firstChapterTwoResponse = new Promise((resolvePromise) => {
+    releaseFirstChapterTwo = resolvePromise;
+  });
+  releasePendingFixtureResponse = (status = 503) => {
+    if (firstChapterTwoReleased) return;
+    firstChapterTwoReleased = true;
+    releaseFirstChapterTwo(status);
+  };
   const paragraphs = Array.from({ length: 36 }, (_, index) => {
     const number = String(index + 1).padStart(2, "0");
     return `段落 ${number}：这是来自本地书源服务器的真实正文，用于逐页核对阅读器没有跳过内容。` +
@@ -83,21 +99,41 @@ async function startFixtureServer() {
     const chunks = [];
     for await (const chunk of request) chunks.push(chunk);
     const body = Buffer.concat(chunks).toString("utf8");
-    sourceRequests.push({ method: request.method, url: request.url, body });
     const pathname = new URL(request.url || "/", fixtureOrigin || "http://127.0.0.1").pathname;
+    const chapterTwoAttempt = pathname === "/chapter/2" ? ++chapterTwoAttempts : null;
+    sourceRequests.push({ method: request.method, url: request.url, body, chapterTwoAttempt });
     const html = (value) => {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(value);
+    };
+    const failChapter = (status, attempt) => {
+      response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+      response.end(`<div>Fixture chapter ${attempt} intentionally unavailable</div>`);
     };
     if (pathname === "/search") {
       html("<div class='item'><h3><a href='/book'>Browser E2E Novel</a></h3><span class='author'>Fixture Author</span></div>");
     } else if (pathname === "/book") {
       html("<h1>Browser E2E Novel</h1><span class='author'>Fixture Author</span><a class='toc' href='/toc'>目录</a>");
     } else if (pathname === "/toc") {
-      html("<ul id='list'><li><a href='/chapter/1'>Fixture Chapter One</a></li><li><a href='/chapter/2'>Fixture Chapter Two</a></li></ul>");
+      const order = reverseCatalog ? [2, 1] : [1, 2];
+      catalogResponseOrders.push(order);
+      html(`<ul id='list'>${order.map((number) =>
+        `<li><a href='/chapter/${number}'>Fixture Chapter ${number === 1 ? "One" : "Two"}</a></li>`,
+      ).join("")}</ul>`);
     } else if (pathname === "/chapter/1") {
       html(`<div class='content'>${fullText}</div>`);
     } else if (pathname === "/chapter/2") {
+      if (chapterTwoAttempt === 1) {
+        const status = await firstChapterTwoResponse;
+        if (status !== 200) {
+          failChapter(status, chapterTwoAttempt);
+          return;
+        }
+      } else if (chapterTwoAttempt === 2) {
+        await delay(180);
+        failChapter(503, chapterTwoAttempt);
+        return;
+      }
       html(`<div class='content'>第二章标记：${fullText}</div>`);
     } else {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -111,7 +147,21 @@ async function startFixtureServer() {
   });
   const address = fixtureServer.address();
   fixtureOrigin = `http://127.0.0.1:${address.port}`;
-  return { paragraphs, fullText };
+  return {
+    paragraphs,
+    fullText,
+    catalogResponseOrders,
+    reverseCatalog() { reverseCatalog = true; },
+    async waitForChapterTwoAttempt(attempt, timeoutMs = 45_000) {
+      const deadline = Date.now() + timeoutMs;
+      while (chapterTwoAttempts < attempt && Date.now() < deadline) await delay(20);
+      assert(chapterTwoAttempts >= attempt,
+        `The fixture did not receive chapter two request ${attempt}; got ${chapterTwoAttempts}.`);
+      return chapterTwoAttempts;
+    },
+    releaseFirstChapterTwo(status = 503) { releasePendingFixtureResponse(status); },
+    chapterTwoAttemptCount() { return chapterTwoAttempts; },
+  };
 }
 
 async function fetchJson(url, body) {
@@ -194,7 +244,10 @@ async function startRustHarness() {
 }
 
 async function startVite() {
-  viteProcess = startProcess("npm", ["run", "dev", "--", "--host", "127.0.0.1"]);
+  const args = builtFrontendDist
+    ? ["run", "preview", "--", "--outDir", builtFrontendDist, "--host", "127.0.0.1", "--port", "1420", "--strictPort"]
+    : ["run", "dev", "--", "--host", "127.0.0.1", "--port", "1420", "--strictPort"];
+  viteProcess = startProcess("npm", args);
   await waitForHttp(`${origin}/`, 60_000);
 }
 
@@ -232,7 +285,43 @@ async function importFixtureSource() {
 }
 
 async function installInvokeBridge(context) {
-  await context.addInitScript((harnessUrl) => {
+  await context.route(`${origin}/__legado_browser_harness__/**`, async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const suffix = url.pathname.replace(/^\/__legado_browser_harness__/, "") + url.search;
+    const headers = {};
+    const requestHeaders = await request.allHeaders();
+    for (const name of ["content-type", "accept"]) {
+      if (requestHeaders[name]) headers[name] = requestHeaders[name];
+    }
+    headers.origin = origin;
+    try {
+      const upstream = await fetch(`${browserHarnessUrl}${suffix}`, {
+        method: request.method(),
+        headers,
+        body: ["GET", "HEAD"].includes(request.method()) ? undefined : request.postDataBuffer() ?? undefined,
+      });
+      const responseHeaders = Object.fromEntries(upstream.headers);
+      for (const header of ["content-length", "content-encoding", "transfer-encoding", "connection"]) {
+        delete responseHeaders[header];
+      }
+      let responseBody = Buffer.from(await upstream.arrayBuffer());
+      let browserStatus = upstream.status;
+      let normalizedCommandError = null;
+      if (suffix.startsWith("/invoke") && upstream.status >= 400) {
+        const text = responseBody.toString("utf8");
+        try { normalizedCommandError = JSON.parse(text).error || text; } catch { normalizedCommandError = text; }
+        responseBody = Buffer.from(JSON.stringify({ ok: false, error: normalizedCommandError }), "utf8");
+        browserStatus = 200;
+      }
+      responseHeaders["content-length"] = String(responseBody.byteLength);
+      responseHeaders["content-type"] ||= "application/json; charset=utf-8";
+      await route.fulfill({ status: browserStatus, headers: responseHeaders, body: responseBody });
+    } catch (error) {
+      await route.fulfill({ status: 502, contentType: "application/json", body: JSON.stringify({ error: String(error) }) });
+    }
+  });
+  await context.addInitScript(() => {
     if (window.top !== window) return;
     const callbacks = new Map();
     const listeners = new Map();
@@ -253,10 +342,18 @@ async function installInvokeBridge(context) {
       calls,
       stop() { stop = true; },
       async invoke(command, args = {}) {
-        const call = { command, args, startedAt: performance.now() };
+        const loggedArgs = { ...args };
+        for (const key of ["password", "pdfPassword"]) {
+          if (Object.hasOwn(loggedArgs, key)) loggedArgs[key] = "[redacted]";
+        }
+        if (loggedArgs.options && typeof loggedArgs.options === "object") {
+          loggedArgs.options = { ...loggedArgs.options };
+          if (Object.hasOwn(loggedArgs.options, "pdfPassword")) loggedArgs.options.pdfPassword = "[redacted]";
+        }
+        const call = { command, args: loggedArgs, startedAt: performance.now() };
         calls.push(call);
         try {
-          const response = await fetch(`${harnessUrl}/invoke`, {
+          const response = await fetch("/__legado_browser_harness__/invoke", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ command, args }),
@@ -304,7 +401,7 @@ async function installInvokeBridge(context) {
           continue;
         }
         try {
-          const response = await fetch(`${harnessUrl}/events?after=${eventCursor}`);
+          const response = await fetch(`/__legado_browser_harness__/events?after=${eventCursor}`);
           const result = await response.json();
           for (const event of result.events || []) {
             eventCursor = Math.max(eventCursor, event.id);
@@ -352,9 +449,30 @@ async function waitForCompletedCommand(command, previousCount = 0, timeoutMs = 1
       call.command === expectedCommand && call.finishedAt !== undefined).length > count,
   { expectedCommand: command, count: previousCount }, { timeout: timeoutMs });
   const completed = (await commandLog()).filter((call) => call.command === command && call.finishedAt !== undefined);
-  const result = completed[completed.length - 1];
+  const result = completed[previousCount];
+  assert(result, `Rust command '${command}' completion record disappeared after its wait predicate.`);
   if (result.error) throw new Error(`Rust command '${command}' failed: ${result.error}`);
   return result;
+}
+
+async function waitForCommandCall(command, index, timeoutMs = 15_000) {
+  await page.waitForFunction(({ expectedCommand, callIndex }) =>
+    window.__LEGADO_BROWSER_HARNESS__.calls.filter((call) => call.command === expectedCommand).length > callIndex,
+  { expectedCommand: command, callIndex: index }, { timeout: timeoutMs });
+  const call = (await commandLog()).filter((entry) => entry.command === command)[index];
+  assert(call, `Rust command '${command}' call ${index} disappeared after its wait predicate.`);
+  return call;
+}
+
+async function waitForFinishedCommand(command, index, timeoutMs = 15_000) {
+  await page.waitForFunction(({ expectedCommand, callIndex }) => {
+    const call = window.__LEGADO_BROWSER_HARNESS__.calls
+      .filter((entry) => entry.command === expectedCommand)[callIndex];
+    return call && call.finishedAt !== undefined;
+  }, { expectedCommand: command, callIndex: index }, { timeout: timeoutMs });
+  const call = (await commandLog()).filter((entry) => entry.command === command)[index];
+  assert(call?.finishedAt !== undefined, `Rust command '${command}' call ${index} did not finish.`);
+  return call;
 }
 
 function readPageIndicator(value) {
@@ -442,6 +560,21 @@ async function getBookDocument(bookId) {
   return { descriptor, document };
 }
 
+async function waitForTaskTerminal(taskId, timeoutMs = 45_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastTask;
+  while (Date.now() < deadline) {
+    const taskList = await fetchJson(`${browserHarnessUrl}/invoke`, { command: "tasks_resource", args: {} });
+    const response = await fetch(taskList.resource.src);
+    assert(response.ok, `Tasks resource failed with HTTP ${response.status}.`);
+    const document = await response.json();
+    lastTask = document.tasks?.find((task) => task.id === taskId);
+    if (lastTask && ["completed", "failed", "cancelled"].includes(lastTask.status)) return lastTask;
+    await delay(100);
+  }
+  throw new Error(`Catalog task ${taskId} did not reach a terminal state: ${JSON.stringify(lastTask)}.`);
+}
+
 async function assertPrivateSourceIsNotPublic() {
   const privateData = await readFile(join(dataDir, "private-data", "sources.json"), "utf8");
   assert(privateData.includes("searchUrl") && privateData.includes("ruleSearch"), "Rust did not keep the original source rules in private application storage.");
@@ -527,21 +660,26 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   await page.getByTestId("reader-frame").waitFor({ timeout: 60_000 });
   await waitForReaderChapter("Fixture Chapter One");
   const initialPrepare = await waitForCompletedCommand("prepare_chapters", prepareCallsBeforeOpen, 45_000);
-  assert(initialPrepare.args.fromIndex === 0 && Number(initialPrepare.result?.prepared) >= 2,
-    `Rust did not prepare both initial chapters: ${JSON.stringify(initialPrepare)}.`);
-  await page.waitForFunction(() => !document.querySelector(".preload-indicator"), null, { timeout: 45_000 }).catch(() => {});
+  assert(initialPrepare.args.fromIndex === 0 && initialPrepare.args.count === 1 && Number(initialPrepare.result?.prepared) === 1,
+    `Opening a missing first chapter should ask Rust to prepare exactly that chapter: ${JSON.stringify(initialPrepare)}.`);
+  const firstPrefetchIndex = prepareCallsBeforeOpen + 1;
+  await contentFixture.waitForChapterTwoAttempt(1);
+  const blockedPrefetch = await waitForCommandCall("prepare_chapters", firstPrefetchIndex);
+  assert(blockedPrefetch.args.fromIndex === 1 && blockedPrefetch.args.count === 1 && blockedPrefetch.finishedAt === undefined,
+    `The next chapter should be a separate one-chapter background request while chapter one stays visible: ${JSON.stringify(blockedPrefetch)}.`);
+  assert((await readerFrameText()).includes("段落 01"), "The current chapter did not remain readable while next-chapter fetching was blocked.");
 
   const { document: firstBookDoc } = await getBookDocument(bookId);
   const firstChapter = firstBookDoc.chapters[0];
-  const prefetchedChapter = firstBookDoc.chapters[1];
-  assert(prefetchedChapter?.src, "Rust did not include the next prepared chapter URL in the book resource.");
+  const secondChapterBeforePrefetch = firstBookDoc.chapters[1];
+  assert(firstChapter?.src, "Rust did not include a resource URL for the chapter being displayed.");
+  assert(secondChapterBeforePrefetch && !secondChapterBeforePrefetch.src,
+    "The book JSON must not claim the blocked next chapter is cached before Rust finishes preparing it.");
   const firstCacheResponse = await fetch(firstChapter.src);
   assert(firstCacheResponse.ok, `Prepared chapter resource failed with HTTP ${firstCacheResponse.status}.`);
   const firstCacheHtml = await firstCacheResponse.text();
   const firstHash = createHash("sha256").update(firstCacheHtml).digest("hex");
   assert(firstCacheHtml.includes("font-size:"), "Chapter HTML does not include default reading styles.");
-  const prefetchedResponse = await fetch(prefetchedChapter.src);
-  assert(prefetchedResponse.ok, `Prefetched next chapter resource failed with HTTP ${prefetchedResponse.status}.`);
 
   const startFontSize = Number.parseFloat(await visibleReaderFontSize());
   const settingsWritesBefore = await completedCommandCount("save_settings");
@@ -605,17 +743,91 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
     assert(allVisible.includes(marker), `Paged reader skipped fixture paragraph ${marker}.`);
   }
   await page.screenshot({ path: join(outputDir, "reader-360.png"), fullPage: true });
-  const callsBeforeChapterTurn = await commandLog();
+  const firstSavedPage = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
+  const expectedFirstOffset = firstSavedPage.current - 1;
+  const progressWritesBeforeSlowPrefetch = await completedCommandCount("save_progress");
+  await page.getByTestId("reader-back").click();
+  const firstProgressSave = await waitForCompletedCommand("save_progress", progressWritesBeforeSlowPrefetch, 10_000);
+  assert(firstProgressSave?.result?.src, "Leaving the current chapter could not save progress while next-chapter prefetch was blocked.");
+  await page.waitForFunction(() => !document.querySelector(".reader-shell"));
+  const prefetchWhileProgressSaved = await waitForCommandCall("prepare_chapters", firstPrefetchIndex);
+  assert(prefetchWhileProgressSaved.finishedAt === undefined,
+    "Background next-chapter preparation finished before the current chapter progress save was observed.");
+  const progressWhilePrefetchPending = await getBookDocument(bookId);
+  assert(progressWhilePrefetchPending.document.progress.chapterId === firstChapter.id &&
+    progressWhilePrefetchPending.document.progress.chapterIndex === 0 &&
+    progressWhilePrefetchPending.document.progress.offset === expectedFirstOffset,
+  `Current chapter progress was not committed while next-chapter preparation remained pending: ${JSON.stringify(progressWhilePrefetchPending.document.progress)}.`);
+  verificationEvidence.progressDuringBlockedPrefetch = {
+    chapterId: progressWhilePrefetchPending.document.progress.chapterId,
+    chapterIndex: progressWhilePrefetchPending.document.progress.chapterIndex,
+    offset: progressWhilePrefetchPending.document.progress.offset,
+    prefetchStillPending: true,
+  };
+
+  contentFixture.releaseFirstChapterTwo(503);
+  const firstPrefetchFailure = await waitForFinishedCommand("prepare_chapters", firstPrefetchIndex, 45_000);
+  assert(firstPrefetchFailure.error && firstPrefetchFailure.args.fromIndex === 1 && firstPrefetchFailure.args.count === 1,
+    `The gated next-chapter prefetch should surface its real HTTP failure: ${JSON.stringify(firstPrefetchFailure)}.`);
+  const afterFirstPrefetchFailure = await getBookDocument(bookId);
+  assert(!afterFirstPrefetchFailure.document.chapters[1].src,
+    "Failed background preparation must not publish a stale chapter resource URL.");
+  verificationEvidence.chapterPreparation = [
+    { fromIndex: initialPrepare.args.fromIndex, count: initialPrepare.args.count, prepared: initialPrepare.result?.prepared },
+    { fromIndex: firstPrefetchFailure.args.fromIndex, count: firstPrefetchFailure.args.count, error: firstPrefetchFailure.error },
+  ];
+
+  const continueReading = page.locator(".book-detail-panel").getByRole("button", { name: "继续阅读" });
+  await continueReading.click();
+  await page.getByTestId("reader-frame").waitFor({ timeout: 60_000 });
+  await waitForReaderChapter("Fixture Chapter One");
+  const firstChapterRestoredPage = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
+  assert(firstChapterRestoredPage.current === expectedFirstOffset + 1,
+    `Current chapter page did not restore after the prefetch error: expected ${expectedFirstOffset + 1}, got ${firstChapterRestoredPage.current}.`);
+  const secondPrefetchIndex = firstPrefetchIndex + 1;
+  await contentFixture.waitForChapterTwoAttempt(2);
+  const secondPrefetch = await waitForCommandCall("prepare_chapters", secondPrefetchIndex);
+  assert(secondPrefetch.args.fromIndex === 1 && secondPrefetch.args.count === 1,
+    `Reopening the current chapter should retry the one-chapter background prefetch: ${JSON.stringify(secondPrefetch)}.`);
+  const secondPrefetchFailure = await waitForFinishedCommand("prepare_chapters", secondPrefetchIndex, 45_000);
+  assert(secondPrefetchFailure.error,
+    `The second controlled background request should fail before the explicit chapter turn retry: ${JSON.stringify(secondPrefetchFailure)}.`);
+  await page.waitForFunction(() => !document.querySelector(".preload-indicator"), null, { timeout: 10_000 });
+  assert((await readerFrameText()).includes("段落 01"), "A failed next-chapter retry replaced the readable current chapter.");
+  assert(!((await getBookDocument(bookId)).document.chapters[1].src),
+    "A failed background retry published a chapter URL that is not cached.");
+
+  const prepareCallsBeforeChapterRetry = await completedCommandCount("prepare_chapters");
+  await page.getByTestId("reader-next-chapter").click();
+  const chapterTurnPrepare = await waitForCompletedCommand("prepare_chapters", prepareCallsBeforeChapterRetry, 45_000);
+  assert(chapterTurnPrepare.args.fromIndex === 1 && chapterTurnPrepare.args.count === 1 &&
+    Number(chapterTurnPrepare.result?.prepared) === 1,
+  `Choosing the next chapter should retry and cache exactly that chapter after background failure: ${JSON.stringify(chapterTurnPrepare)}.`);
+  await contentFixture.waitForChapterTwoAttempt(3);
+  await waitForReaderChapter("Fixture Chapter Two");
+  const recoveredBook = await getBookDocument(bookId);
+  const recoveredSecondChapter = recoveredBook.document.chapters[1];
+  assert(recoveredSecondChapter?.src, "The explicit next-chapter retry did not publish a browser resource URL.");
+  const recoveredChapterResponse = await fetch(recoveredSecondChapter.src);
+  assert(recoveredChapterResponse.ok, `The retried next chapter resource failed with HTTP ${recoveredChapterResponse.status}.`);
+  verificationEvidence.chapterPreparation.push(
+    { fromIndex: secondPrefetchFailure.args.fromIndex, count: secondPrefetchFailure.args.count, error: secondPrefetchFailure.error },
+    { fromIndex: chapterTurnPrepare.args.fromIndex, count: chapterTurnPrepare.args.count, prepared: chapterTurnPrepare.result?.prepared, recoveredAfterBackgroundErrors: true },
+  );
+
+  const callsBeforeCachedNavigation = await commandLog();
   const chapterFetchCommands = (calls) => calls.filter((call) =>
     call.command === "get_book" || /chapter|content|prepare/i.test(call.command));
-  const chapterFetchCountBeforeTurn = chapterFetchCommands(callsBeforeChapterTurn).length;
-  await page.getByTestId("reader-next").click();
+  const chapterFetchCountBeforeCachedNavigation = chapterFetchCommands(callsBeforeCachedNavigation).length;
+  await page.getByTestId("reader-prev-chapter").click();
+  await waitForReaderChapter("Fixture Chapter One");
+  await page.getByTestId("reader-next-chapter").click();
   await waitForReaderChapter("Fixture Chapter Two");
   await page.waitForTimeout(200);
-  const callsAfterChapterTurn = await commandLog();
-  const chapterFetchCallsAfterTurn = chapterFetchCommands(callsAfterChapterTurn);
-  assert(chapterFetchCallsAfterTurn.length === chapterFetchCountBeforeTurn,
-    `Turning to an already cached chapter invoked Rust chapter retrieval: ${chapterFetchCallsAfterTurn.slice(chapterFetchCountBeforeTurn).map((call) => call.command).join(", ")}`);
+  const callsAfterCachedNavigation = await commandLog();
+  const chapterFetchCallsAfterCachedNavigation = chapterFetchCommands(callsAfterCachedNavigation);
+  assert(chapterFetchCallsAfterCachedNavigation.length === chapterFetchCountBeforeCachedNavigation,
+    `Switching between chapters whose resources are already cached invoked Rust retrieval: ${chapterFetchCallsAfterCachedNavigation.slice(chapterFetchCountBeforeCachedNavigation).map((call) => call.command).join(", ")}`);
 
   await setViewport(1440);
   await page.screenshot({ path: join(outputDir, "reader-1440.png"), fullPage: true });
@@ -669,6 +881,12 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   const recoveryPrepare = await waitForCompletedCommand("prepare_chapters", prepareCountBefore404, 45_000);
   assert(recoveryPrepare.args.fromIndex === 1 && Number(recoveryPrepare.result?.prepared) >= 1,
     `404 recovery did not re-prepare the missing chapter from index 1: ${JSON.stringify(recoveryPrepare)}.`);
+  verificationEvidence.chapterPreparation.push({
+    fromIndex: recoveryPrepare.args.fromIndex,
+    count: recoveryPrepare.args.count,
+    prepared: recoveryPrepare.result?.prepared,
+    recoveredMissingSrc: true,
+  });
   const restored = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   assert(restored.current === expectedOffset + 1,
     `Saved reader page was not restored after reopening and repairing the missing chapter: expected ${expectedOffset + 1}, got ${restored.current}.`);
@@ -678,13 +896,86 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   assert(createHash("sha256").update(await readFile(join(dataDir, "books", bookId, "chapters", `${firstChapter.id}.html`))).digest("hex") === firstHash,
     "Repairing a second chapter modified the first chapter cache.");
 
+  const progressWritesBeforeRefresh = await completedCommandCount("save_progress");
+  await page.getByTestId("reader-back").click();
+  await waitForCompletedCommand("save_progress", progressWritesBeforeRefresh, 15_000);
+  await page.locator(".book-detail-panel").waitFor();
+  const beforeCatalogRefresh = await getBookDocument(bookId);
+  const chapterTwoBeforeRefresh = beforeCatalogRefresh.document.chapters.find((chapter) => chapter.title === "Fixture Chapter Two");
+  const chapterOneBeforeRefresh = beforeCatalogRefresh.document.chapters.find((chapter) => chapter.title === "Fixture Chapter One");
+  assert(chapterTwoBeforeRefresh?.id === secondChapter.id && chapterOneBeforeRefresh,
+    "The active chapter IDs were not available before refreshing the catalog.");
+  assert(beforeCatalogRefresh.document.progress.chapterId === chapterTwoBeforeRefresh.id &&
+    beforeCatalogRefresh.document.progress.chapterIndex === 1 &&
+    beforeCatalogRefresh.document.progress.offset === expectedOffset,
+  `The pre-refresh progress is not anchored to the chapter being read: ${JSON.stringify(beforeCatalogRefresh.document.progress)}.`);
+
+  contentFixture.reverseCatalog();
+  const refreshCallsBefore = await completedCommandCount("refresh_chapters");
+  await page.getByTestId("book-refresh-catalog").click();
+  const refreshInvocation = await waitForCompletedCommand("refresh_chapters", refreshCallsBefore, 15_000);
+  const refreshTaskId = refreshInvocation.result?.taskId;
+  assert(typeof refreshTaskId === "string", `Refreshing the catalog did not return its Rust task ID: ${JSON.stringify(refreshInvocation)}.`);
+  const refreshTask = await waitForTaskTerminal(refreshTaskId);
+  assert(refreshTask.status === "completed" && refreshTask.result?.committed === true,
+    `The fixture catalog refresh task did not commit successfully: ${JSON.stringify(refreshTask)}.`);
+  assert(contentFixture.catalogResponseOrders.at(-1)?.join(",") === "2,1",
+    `The real KMP catalog refresh did not receive the reordered fixture chapters: ${JSON.stringify(contentFixture.catalogResponseOrders)}.`);
+  await page.waitForFunction(() => [...document.querySelectorAll(".catalog-row strong")]
+    .map((element) => element.textContent?.trim()).join("|") === "Fixture Chapter Two|Fixture Chapter One", null, { timeout: 15_000 });
+
+  const afterCatalogRefresh = await getBookDocument(bookId);
+  const chapterTwoAfterRefresh = afterCatalogRefresh.document.chapters[0];
+  const chapterOneAfterRefresh = afterCatalogRefresh.document.chapters[1];
+  assert(chapterTwoAfterRefresh.title === "Fixture Chapter Two" && chapterOneAfterRefresh.title === "Fixture Chapter One",
+    `The refreshed book resource did not follow the fixture chapter order: ${JSON.stringify(afterCatalogRefresh.document.chapters)}.`);
+  assert(chapterTwoAfterRefresh.id === chapterTwoBeforeRefresh.id && chapterOneAfterRefresh.id === chapterOneBeforeRefresh.id,
+    "Catalog reordering changed stable chapter IDs instead of matching chapters by their source identity.");
+  assert(afterCatalogRefresh.document.progress.chapterId === chapterTwoBeforeRefresh.id &&
+    afterCatalogRefresh.document.progress.chapterIndex === 0 &&
+    afterCatalogRefresh.document.progress.offset === expectedOffset,
+  `Catalog refresh moved progress to the wrong chapter or page: ${JSON.stringify(afterCatalogRefresh.document.progress)}.`);
+  assert(await page.locator(".catalog-row.current strong").innerText() === "Fixture Chapter Two",
+    "The refreshed catalog highlight does not follow the chapter identified by saved progress.");
+  verificationEvidence.catalogRefresh = {
+    status: refreshTask.status,
+    committed: refreshTask.result?.committed,
+    sourceResponseOrder: contentFixture.catalogResponseOrders.at(-1),
+    chapterIdsStable: true,
+    beforeProgress: beforeCatalogRefresh.document.progress,
+    afterProgress: afterCatalogRefresh.document.progress,
+  };
+
+  const preparesBeforeReopenAfterRefresh = await completedCommandCount("prepare_chapters");
+  await page.locator(".book-detail-panel").getByRole("button", { name: "继续阅读" }).click();
+  await page.getByTestId("reader-frame").waitFor({ timeout: 60_000 });
+  await waitForReaderChapter("Fixture Chapter Two");
+  const pageAfterCatalogRefresh = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
+  assert(pageAfterCatalogRefresh.current === expectedOffset + 1,
+    `Reopening after reordering did not restore the same chapter page: expected ${expectedOffset + 1}, got ${pageAfterCatalogRefresh.current}.`);
+  assert((await readerFrameText()).includes("第二章标记"), "Reordering the catalog opened chapter one content at chapter two progress.");
+  assert(await completedCommandCount("prepare_chapters") === preparesBeforeReopenAfterRefresh,
+    "Opening an already cached chapter after catalog reordering unnecessarily called Rust to fetch chapter content.");
+  const resumedAfterRefresh = await getBookDocument(bookId);
+  assert(resumedAfterRefresh.document.progress.chapterId === chapterTwoBeforeRefresh.id &&
+    resumedAfterRefresh.document.progress.chapterIndex === 0 &&
+    resumedAfterRefresh.document.progress.offset === expectedOffset,
+  `Progress changed after reopening the reordered book: ${JSON.stringify(resumedAfterRefresh.document.progress)}.`);
+
   await assertPrivateSourceIsNotPublic();
   const allCalls = await commandLog();
-  const requiredCommands = ["app_bootstrap", "list_sources", "start_search", "add_book", "get_book", "prepare_chapters", "save_settings", "save_progress"];
+  verificationEvidence.rustCommands = allCalls.map((call) => call.command);
+  verificationEvidence.sourceHttpPaths = [...new Set(sourceRequests.map((request) => new URL(request.url, fixtureOrigin).pathname))].sort();
+  verificationEvidence.resourceHttp = resourceRequests
+    .filter((request) => request.status !== undefined)
+    .map((request) => ({ path: new URL(request.url).pathname.split("/").slice(-2).join("/"), status: request.status }));
+  const requiredCommands = ["app_bootstrap", "list_sources", "start_search", "add_book", "get_book", "prepare_chapters", "save_settings", "save_progress", "refresh_chapters", "tasks_resource"];
   for (const command of requiredCommands) assert(allCalls.some((call) => call.command === command), `Browser flow did not exercise real Rust command '${command}'.`);
   assert(sourceRequests.some((request) => request.url.startsWith("/search") && request.method === "POST"), "The local book-source engine did not execute a real fixture HTTP search.");
   assert(sourceRequests.some((request) => request.url.startsWith("/book")) && sourceRequests.some((request) => request.url.startsWith("/toc")), "The source engine did not fetch book details and chapter listing from the fixture server.");
   assert(sourceRequests.some((request) => request.url.startsWith("/chapter/1")) && sourceRequests.some((request) => request.url.startsWith("/chapter/2")), "The source engine did not fetch both chapter bodies from the fixture server.");
+  assert(contentFixture.chapterTwoAttemptCount() >= 4,
+    `The source engine did not exercise the blocked/failing/retried chapter path: received ${contentFixture.chapterTwoAttemptCount()} chapter-two requests.`);
   assert(resourceRequests.some((request) => request.url.includes("/r/") && request.url.endsWith("/shelf.json") && request.status === 200), "Browser did not fetch the shelf JSON resource.");
   assert(resourceRequests.some((request) => request.url.includes("/chapters/") && request.status === 200), "Browser did not fetch a processed chapter HTML resource.");
   const failedChapterRequestIndex = resourceRequests.findIndex((request) =>
@@ -711,7 +1002,9 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
 
   report(`PASS: real Rust service + KMP source search/read on Chromium (${allCalls.length} IPC calls).`);
   report(`PASS: ${contentFixture.paragraphs.length} mobile-page paragraphs were all visible; font ${startFontSize}px -> ${increasedFontSize}px.`);
-  report("PASS: cached chapter flips invoked no Rust commands; saved chapter/page restored after reopen.");
+  report("PASS: current chapter remained readable and its progress saved while the separate one-chapter background prefetch was blocked; the next chapter recovered after background HTTP failures.");
+  report("PASS: cached chapter flips invoked no Rust commands; missing-resource recovery and chapter/page progress restoration worked.");
+  report("PASS: real KMP catalog refresh reordered chapters without changing chapter identity or moving saved progress to the wrong chapter/page.");
   report("PASS: cached HTML hash stayed stable after display-only font adjustment; missing chapter URL recovered through Rust.");
   report(`PASS: exact chapter URL returned 404 then 200 after repair${expected404ConsoleErrors.length ? " (one expected browser 404 notice)" : ""}.`);
   report("PASS: private source rules stayed off the browser resource server; real JSON and HTML resources were fetched.");
@@ -724,20 +1017,21 @@ async function main() {
   await requireFile(chromiumPath, "Chromium", constants.X_OK);
   await requireFile(playwrightPath, "playwright-core");
   await mkdir(outputDir, { recursive: true });
-  const { paragraphs, fullText } = await startFixtureServer();
+  const contentFixture = await startFixtureServer();
   const { chromium } = await import(pathToFileURL(playwrightPath).href);
   browser = await chromium.launch({
     headless: true,
     executablePath: chromiumPath,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
+    args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-features=LocalNetworkAccessChecks"],
   });
   await startRustHarness();
   await importFixtureSource();
   await startVite();
-  await testReaderFlow({ name: "Local Browser E2E" }, { paragraphs, fullText });
+  await testReaderFlow({ name: "Local Browser E2E" }, contentFixture);
 }
 
 async function cleanup() {
+  releasePendingFixtureResponse?.(503);
   if (page) {
     await Promise.race([
       page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__?.stop()).catch(() => {}),
@@ -847,8 +1141,12 @@ async function saveRunArtifacts() {
     command: process.env.BROWSER_HARNESS_BINARY
       ? `source /workspace/.setup/activate.sh && BROWSER_HARNESS_BINARY=${process.env.BROWSER_HARNESS_BINARY} node scripts/e2e-browser.mjs`
       : "source /workspace/.setup/activate.sh && node scripts/e2e-browser.mjs",
+    frontend: builtFrontendDist
+      ? { mode: "vite-preview", dist: builtFrontendDist }
+      : { mode: "vite-dev" },
     screenshots: screenshots.map((file) => join(outputDir, file)),
     layoutChecks: [...layoutChecks],
+    verificationEvidence: { ...verificationEvidence },
     failure: runFailure,
   };
   await writeFile(join(outputDir, "run.log"), `${runMessages.join("\n")}\n`, "utf8");

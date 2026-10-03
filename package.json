@@ -12,6 +12,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "core-js": "3.45.1",
+    "pdfjs-dist": "6.3.289",
     "vue": "^3.5.13"
   },
   "devDependencies": {

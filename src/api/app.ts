@@ -92,6 +92,10 @@ export interface SearchBookResult {
   resultId: string;
   sourceId: string;
   sourceName: string;
+  articleId?: string;
+  contentSrc?: string;
+  isRead?: boolean;
+  isFavorite?: boolean;
   title: string;
   author?: string;
   coverSrc?: string;
@@ -163,8 +167,15 @@ export interface SourceImportResponse {
 
 export interface LocalBookImportResponse {
   cancelled?: boolean;
+  passwordRequired?: boolean;
+  importToken?: string;
   book?: ResourceDescriptor;
   shelf?: ResourceDescriptor;
+}
+
+export interface LocalBookImportOptions {
+  charset?: string | null;
+  tocRegex?: string | null;
 }
 
 export interface AppTask {
@@ -181,6 +192,12 @@ export interface AppTask {
   createdAtMs: number;
   updatedAtMs: number;
   error?: string;
+  result?: {
+    bookResourceId?: string;
+    addedCount?: number;
+    movedProgress?: boolean;
+    committed?: boolean;
+  };
 }
 
 export interface TasksResource {
@@ -207,6 +224,22 @@ export interface DiscoveryCategoriesResource {
   categories: DiscoveryCategory[];
 }
 
+export interface DiscoveryFavorite {
+  sourceId: string;
+  categoryId: string;
+  title: string;
+  sourceName: string;
+  kind?: string;
+  style?: DiscoveryCategory["style"];
+  position: number;
+  createdAtMs: number;
+}
+
+export interface DiscoveryFavoritesResource {
+  schemaVersion: number;
+  favorites: DiscoveryFavorite[];
+}
+
 export interface DiscoveryResponse {
   sourceId: string;
   categoryId?: string;
@@ -223,6 +256,51 @@ export interface BackupResponse {
   backup?: boolean;
   restored?: boolean;
   bootstrap?: AppBootstrap;
+}
+
+export interface HomeSection {
+  id: string;
+  title: string;
+  sourceId: string;
+  sourceName: string;
+  categoryId: string;
+  categoryName: string;
+  style: 0 | 1 | 2 | 3;
+  sortOrder: number;
+  coverVideo?: boolean;
+}
+
+export interface HomeTab {
+  id: string;
+  title: string;
+  sortOrder: number;
+  sections: HomeSection[];
+}
+
+export interface HomeConfigDocument {
+  schemaVersion: number;
+  tabs: HomeTab[];
+}
+
+export type RssFilter = "all" | "unread" | "read" | "favorites";
+
+export interface RssSubscriptionState {
+  sourceId: string;
+  filter: RssFilter;
+}
+
+export interface RssArticleState {
+  sourceId: string;
+  articleId: string;
+  isRead: boolean;
+  isFavorite: boolean;
+  updatedAtMs: number;
+}
+
+export interface RssStateDocument {
+  schemaVersion: number;
+  subscriptions: RssSubscriptionState[];
+  articles: RssArticleState[];
 }
 
 function requireTauri(): void {
@@ -277,8 +355,12 @@ export const importSources = (sourceJson: string) =>
   command<{ sources: SourceMetadata[] }>("import_sources", { sourceJson });
 export const importSourcesFromPicker = () =>
   command<SourceImportResponse>("import_sources_from_picker");
-export const importBookFromPicker = (options: Record<string, unknown> = {}) =>
+export const importBookFromPicker = (options: LocalBookImportOptions = {}) =>
   command<LocalBookImportResponse>("import_book_from_picker", { options });
+export const importProtectedPdf = (importToken: string, password: string) =>
+  command<LocalBookImportResponse>("import_protected_pdf", { importToken, password });
+export const cancelPendingPdfImport = (importToken: string) =>
+  command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
 export const removeSources = (sourceIds: string[]) =>
   command<{ sources: SourceMetadata[] }>("remove_sources", { sourceIds });
 export const updateSource = (sourceId: string, patch: SourcePatch) =>
@@ -340,6 +422,10 @@ export const createShelfGroup = (groupName: string) =>
   command<ResourceDescriptor>("create_shelf_group", { groupName });
 export const listDiscoveryCategories = (sourceId: string) =>
   command<DiscoveryResponse>("list_discovery_categories", { sourceId });
+export const listDiscoveryFavorites = () =>
+  command<{ resource: ResourceDescriptor }>("list_discovery_favorites");
+export const setDiscoveryFavorite = (sourceId: string, categoryId: string, favorite: boolean) =>
+  command<ResourceDescriptor>("set_discovery_favorite", { sourceId, categoryId, favorite });
 export const listDiscoveryBooks = (sourceId: string, categoryId: string, page = 1) =>
   command<DiscoveryResponse>("list_discovery_books", { sourceId, categoryId, page });
 export const listRssCategories = (sourceId: string) =>
@@ -350,3 +436,16 @@ export const openRssArticle = (sourceId: string, articleId: string) =>
   command<{ sourceId: string; articleId: string; resource: ResourceDescriptor }>("open_rss_article", { sourceId, articleId });
 export const createBackupFromPicker = () => command<BackupResponse>("create_backup_from_picker");
 export const restoreBackupFromPicker = () => command<BackupResponse>("restore_backup_from_picker");
+export const getHomeConfig = () => command<ResourceDescriptor>("get_home_config");
+export const saveHomeConfig = (config: HomeConfigDocument) =>
+  command<ResourceDescriptor>("save_home_config", { config });
+export const getRssState = () => command<ResourceDescriptor>("get_rss_state");
+export const setRssFilter = (sourceId: string, filter: RssFilter) =>
+  command<ResourceDescriptor>("set_rss_filter", { sourceId, filter });
+export const setRssArticleState = (
+  sourceId: string,
+  articleId: string,
+  patch: { isRead?: boolean; isFavorite?: boolean },
+) => command<ResourceDescriptor>("set_rss_article_state", { sourceId, articleId, ...patch });
+export const unsubscribeRss = (sourceId: string) =>
+  command<{ sources: SourceMetadata[]; resource: ResourceDescriptor }>("unsubscribe_rss", { sourceId });

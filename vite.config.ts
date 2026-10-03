@@ -12,6 +12,10 @@ export default defineConfig(() => ({
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  // The iOS deployment target is 15.0; keep emitted syntax compatible with its WKWebView.
+  build: {
+    target: "safari15",
+  },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,

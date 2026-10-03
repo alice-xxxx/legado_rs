@@ -22,7 +22,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use legado_lib::application::ApplicationService;
+use legado_lib::application::{ApplicationService, PickerFile};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -297,12 +297,39 @@ async fn invoke(
             };
             let result = state
                 .app
-                .import_local_book(&path, options)
+                .import_local_book_with_challenge(PickerFile::from_existing_path(path), options)
+                .await
+                .map_err(internal_error)?;
+            if result.get("passwordRequired").and_then(Value::as_bool) == Some(true) {
+                return Ok(Json(json!({ "ok": true, "value": result })));
+            }
+            state.emit("book-added", result["book"].clone());
+            state.emit("shelf-updated", result["shelf"].clone());
+            Ok(result)
+        }
+        "import_protected_pdf" => {
+            let result = state
+                .app
+                .retry_pending_pdf_import(
+                    string_arg(&args, "importToken")?,
+                    string_arg(&args, "password")?.to_owned(),
+                )
                 .await
                 .map_err(internal_error)?;
             state.emit("book-added", result["book"].clone());
             state.emit("shelf-updated", result["shelf"].clone());
             Ok(result)
+        }
+        "cancel_pending_pdf_import" => {
+            let had_pending_import = state
+                .app
+                .cancel_pending_pdf_import(string_arg(&args, "importToken")?)
+                .await
+                .map_err(internal_error)?;
+            Ok(json!({
+                "cancelled": true,
+                "hadPendingImport": had_pending_import,
+            }))
         }
         "get_book" => state
             .app
@@ -577,6 +604,34 @@ async fn invoke(
                 json!({ "kind": "rssArticle", "resource": result["resource"] }),
             );
             Ok(result)
+        }
+        "list_discovery_favorites" => {
+            let _operation = state.app.operation_read().await;
+            let resource = legado_lib::discovery::favorites_resource(state.app.resource_store())
+                .await
+                .map_err(internal_error)?;
+            Ok(json!({
+                "resource": state.app.resource_descriptor(&resource),
+            }))
+        }
+        "set_discovery_favorite" => {
+            let _operation = state.app.operation_read().await;
+            let resource = legado_lib::discovery::set_favorite(
+                &state.app,
+                string_arg(&args, "sourceId")?,
+                string_arg(&args, "categoryId")?,
+                args.get("favorite")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await
+            .map_err(internal_error)?;
+            let descriptor = state.app.resource_descriptor(&resource);
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "discoveryFavorites", "resource": descriptor }),
+            );
+            Ok(descriptor)
         }
         "create_backup_from_picker" => {
             let Some(path) = selected_path("LEGADO_BROWSER_HARNESS_BACKUP_OUTPUT") else {

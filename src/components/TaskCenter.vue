@@ -13,6 +13,12 @@ export interface AppTask {
   createdAtMs: number;
   updatedAtMs: number;
   error?: string;
+  result?: {
+    bookResourceId?: string;
+    addedCount?: number;
+    movedProgress?: boolean;
+    committed?: boolean;
+  };
 }
 
 const props = defineProps<{ tasks: AppTask[]; bookTitles: Record<string, string> }>();
@@ -22,7 +28,7 @@ function label(task: AppTask): string {
   if (task.kind === "search") return task.keyword ? `搜索“${task.keyword}”` : "书籍搜索";
   const book = task.bookId ? props.bookTitles[task.bookId] ?? "书籍" : "书籍";
   if (task.kind === "chapterDownload") return `准备《${book}》的章节`;
-  if (task.kind === "catalogRefresh") return `更新《${book}》的目录`;
+  if (task.kind === "refreshChapters") return `更新《${book}》的目录`;
   if (task.kind === "checkNewChapters") return `检查《${book}》的新章节`;
   return "阅读任务";
 }
