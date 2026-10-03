@@ -1,48 +1,48 @@
 # 功能盘点与验收矩阵
 
-本清单于 **2026-10-02 首轮源码快照** 根据旧仓库的产品入口、路由、界面和服务/模型代码盘点。它描述需要在 `legado_rs` 中实现并实际验收的能力，不表示旧项目每个旧行为都正确，也不要求保留旧版 bug 或未完成 UI。源码路径相对于对应仓库根目录。`旧版源码依据` 表明需求和原有实现线索，**不单凭 route/页面存在推定旧版各平台功能成熟**；源码可确认的旧版缺失/未完备项另列在“旧版成熟度边界”。矩阵状态描述初始 `legado_rs` 快照，代码演进后需按后续实现记录及时更新；没有功能可因代码“看起来已连上”就标记为端到端完成。
+本清单的旧版功能与源码依据最初于 **2026-10-02** 盘点；旧版源码参照及验收标准仍保留在下方矩阵。它描述需要在 `legado_rs` 中实现并实际验收的能力，不表示旧项目每个旧行为都正确，也不要求保留旧版 bug 或未完成 UI。源码路径相对于对应仓库根目录。`旧版源码依据` 表明需求和原有实现线索，**不单凭 route/页面存在推定旧版各平台功能成熟**；源码可确认的旧版缺失/未完备项另列在“旧版成熟度边界”。下方矩阵中的 `legado_rs` 状态记录了首轮盘点和部分后续历史快照（有日期处以日期为准），不再作为当前状态；当前状态以其前的 2026-10-03 覆盖表为准。
 
-状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有可复用引擎/宿主底座或测试/演示入口，但用户功能、资源架构或验收链未完整；**已验收** = 需要真实可用流程及证据后才能使用。当前没有任何整项达到“已验收”。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵里尚未更新的状态单元格；首次源码快照及其结论保留作历史，不代表今天全部仍未实现。当前锁定 no-default Rust library 全套测试已通过 81/81，但这不是 app 或跨平台功能验收。
+状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有产品代码或经过验证的纵向切片，但功能范围或目标平台验收未完整；**已验收** = 真实用户流程已经可用并有证据。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵的状态单元格。最近一次完整 locked headless suite 是 Stage 2 快照的 154/154（0 failed/ignored/filtered，4.53 秒；日志 `/tmp/legado-stage2-full-tests.log`），包含尚属 draft 的 source-browser-host 测试，不代表该功能已实现。此前 119/119、144/144 属于较早快照。`refresh_book_info` 已在 Stage 2 之后加入 Rust service，但当前没有针对该方法的新测试，也没有 Tauri/UI 接入或用户流程验收。Chromium 41 IPC 阅读/缓存/目录刷新记录见 `validation.md` 中 `2026-10-03-cache-catalog-e2e-38913f5`，整书换源 Chromium 用户流程见“整书换源浏览器端到端”，Linux 原生 AppImage TXT 流程则属于 a9168dd 快照。没有一次编译或单元测试结果代表完整 app 或跨平台功能验收。
 
 ## 当前实现与缺口（2026-10-03）
 
 | ID | 当前状态与证据 | 本次提交快照仍缺少的工作 |
 |---|---|---|
-| CORE-TEST | 当前共享快照 `CARGO_INCREMENTAL=0 cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --lib -j2`：81/81 通过；headless 测试不依赖 GTK/WebKitGTK，normal/build 依赖树均无 GTK/WebKitGTK 匹配。当前 browser_harness E2E 的核心阅读链也通过 | 测试与 browser_harness 不代替 Android/桌面/iOS 完整产品验收 |
-| APP-01 | 部分实现：Vue 有主导航；`discovery::home_config` 的 `reading/home-tabs.json` helper 定向测试通过 2/2，回查 opaque source/category ID、拒绝 URL/rules 字段并验证 JSON 重启持久 | Tauri 读写命令、Vue tabs/sections 编辑/展示、重启和 Android/桌面/iOS 窗口验收 |
-| LIB-01 | 部分实现：Rust shelf JSON、排序、每书分组与空分组注册表；Vue 书架页面；分组/排序及重启测试通过 | 批量管理、全部书架交互、跨平台 UI 验收 |
-| DISC-01 | 部分实现：Rust/KMP 分类和分页 adapter、私有分类 URL→opaque ID、公开处理后结果资源、收藏 JSON service；5/5 定向 Rust tests 通过，包含真实 DesktopSourceExecutor/JNI/KMP 分类与第 1–3 页 fixture；收藏 Tauri commands 与 Vue 收藏列表/开关已在工作树接入 | 收藏用户流程 browser E2E 与排序、错误/刷新恢复、Android/桌面/iOS 产品验收 |
-| SEARCH-01 | 部分实现：当前源码快照 browser_harness E2E 已通过搜索→加入书架→阅读流程和已列明的分页、缓存、进度及失败恢复场景（27 次真实 IPC；见验证记录） | 多源搜索、筛选/历史完整体验及取消/部分失败等高级搜索场景；Android/桌面/iOS 产品流程仍待分别验收 |
-| BOOK-01 | 部分实现：搜索结果可创建书架资源；Rust 集成测试跑通详情/目录流程 | 编辑、刷新和完整产品详情 UI 流程 |
-| READ-01 | 部分实现：目录 JSON/章节 `src` 与源引擎调用存在 | 目录搜索、换源/章节源、刷新、离线和 UI 完整验收 |
-| READ-02 | 部分实现：Rust 集成用例验证源引擎结果写入 HTML、章节资源 URL、重启持久 | cache window/预取体验、认证图片在各平台读取及离线边界验收 |
-| READ-03 | 部分实现：Vue 阅读器和展示样式逻辑存在 | 分页/滚动/手势/旋转/大文本等完整体验和各平台验收 |
-| READ-04 | 部分实现：Rust 进度 JSON 命令和前端生命周期保存调用存在 | 后台/离开应用/强杀边界、恢复位置和设备级端到端验收 |
-| READ-05 | 部分实现：Rust canonical 替换规则 JSON、Vue 编辑和 JS 展示替换逻辑存在 | 只读 HTML/text node-only 实际验收、替换 scope 与旧 settings 字段清理验证 |
-| READ-06 | 部分实现：书签/阅读历史 JSON CRUD、幂等 session、本地日统计及重启测试；Vue 有入口 | 端到端书签跳转、离书计时、统计展示、完整读写生命周期验收 |
-| SOURCE-01 | 部分实现：Rust 私有来源管理、导入/启停 metadata 与现有 KMP 执行桥存在 | 完整书源编辑/导出/排序/分组/多选与产品 UI 验收 |
-| SOURCE-02 | 部分实现：KMP 现有操作可经 Rust 调用 | 产品化调试/帮助/逐规则诊断与用户可理解错误 |
-| SOURCE-03 | 部分实现：Rust 引擎 HTTP/storage/Cookie 宿主已有底座 | 用户级登录、UA/代理/请求头配置与移动/桌面实测 |
-| SOURCE-04 | 部分实现：保留现有引擎及 QuickJS；Rust ImageOps、C ABI 与真实 JVM/JNI 脚本 fixture 已通过（7/7、1/1、1/1）；iOS NativeJS ImageOps 桥仍未实现/验收 | 完成 iOS NativeJS 图像操作桥接；对现有支持规则格式跑兼容矩阵并逐平台验证宿主能力 |
-| IMPORT-01 | 部分实现：Rust TXT/EPUB/CBZ/PDF 本地解析与资源后端；`local_books::tests` 8/8 headless tests 通过 | PDF/CBZ 文件选择/导入 UI、权限/错误提示和实际浏览器渲染尚待平台验证；Android/桌面/iOS 文件流程待验收 |
-| IMPORT-02 | 未实现：WebDAV/远程书籍导入服务不在当前代码 | 远程浏览/上传下载、凭据、重试/取消和平台测试 |
-| RSS-01 | 部分实现：旧 RSS 走既有 KMP adapter；普通 Atom/RSS 由 `feed-rs` 解析。RSS helper 定向测试通过 4/4，覆盖稳定 article/category ID、read/favorite/filter JSON、HTML 正文资源、正文不重复写入结果 JSON及严格 schema。标准 feed 按完整 feed filter 后分页；KMP RSS 当前只过滤引擎返回页 | Tauri commands 与 Vue 订阅/状态界面、backup restore 集成、刷新/退订端到端；KMP 跨页全局过滤；Android/桌面/iOS 网络和重启验收 |
+| CORE-TEST | 部分实现：Stage 2 快照的最新完整 locked headless suite 为 154/154（0 failed/ignored/filtered，4.53 秒）；suite 含 source-browser-host draft tests，不能据此标记其产品功能完成。另有 38913f5 阅读、缓存、目录刷新 Chromium 流程的 41 次 Rust IPC | Stage 2 之后新增的 `refresh_book_info` 尚无 focused test；Rust 测试结果不代替 Android、桌面安装包或 iOS 用户流程 |
+| APP-01 | 部分实现：主页配置器支持 tab 新建/改名/删除/排序，以及 section 新建/改名/删除/排序、来源/分类和展示样式配置；当前 Chromium E2E 验证配置保存及 Rust service 重启后的恢复 | 配置器的异常来源/保存失败恢复和各平台窗口流程仍待验收；发现页快捷添加仍放在第一个 tab |
+| LIB-01 | 部分实现：书架 JSON、排序、每书分组和空分组注册表；Vue 可筛选、搜索、改分组与排序；focused Rust 测试覆盖持久化 | 批量选择/批量管理全流程和多平台书架验收 |
+| DISC-01 | 部分实现：KMP 分类/分页通过 Rust adapter；分类地址保存在 private map，公开资源只含处理后 metadata/card；收藏 JSON、Tauri 命令和 Vue 收藏列表/开关已接入；KMP 第 1–3 页 fixture 通过；当前工作树 Chromium E2E 验证收藏分类并加入主页 | 已验证的浏览器 fixture 不代替错误/刷新恢复及各平台验证；真实来源、收藏列表更新与完整发现产品边界仍需逐项验收 |
+| SEARCH-01 | 部分实现：多源选择、异步搜索任务、分页、部分错误呈现和任务取消接口/UI 已有；SearchHistory 的最近/常用列表、复用、删除/清空和重启持久化已由当前 Chromium E2E 验证；Rust search-history helper tests 5/5 通过 | 重复搜索后按钮忙碌状态有已记录的 UI 竞态；结果筛选/排序、部分失败/取消边界和各平台搜索流程仍待验收 |
+| BOOK-01 | 部分实现：新书加入、书籍资源读取和整书换源已将处理后的 `bookInfo` 投影到 `BookDocument` 的 intro/kind/word count/source labels；Rust 保留 canonical 来源与原始引擎书籍数据在 private data。Projection tests 5/5、metadata backup/restore roundtrip 在 `backup::tests` 4/4 通过；Stage 2 后已新增调用 `bookInfo`/`rssBookInfo` 的 Rust `refresh_book_info` service，尚未有该方法的 focused test 或 Tauri/UI 接入 | 搜索结果卡片仍走独立字段投影，尚未共用 intro/cover 的清理 helper；完整详情 UI 展示、刷新并发/部分响应边界和各平台流程待验收 |
+| READ-01 | 部分实现：目录以 JSON 资源消费；Vue 有本地目录搜索/定位；目录刷新/新章节检查及身份/进度重排由 Rust 处理，41 IPC 浏览器流程验证了目录重排后进度恢复。当前工作树的整书换源 Chromium E2E 已通过：搜索候选绑定书籍与目录快照，提交前复核来源/目录，按新 generation 隔离章节缓存，并按唯一章节标题迁移进度与书签 | 设备/平台流程和其他来源变更、删除及提交失败边界仍需验证。单章换源尚未实现；离线目录及各平台流程待验收 |
+| READ-02 | 部分实现：正文由引擎处理后存为 HTML，书籍 JSON 用稳定章节 `src`；JS 读取资源并负责翻页/展示；41 IPC Chromium 流程覆盖单章缓存、后台预取失败后重试及目录变更 | 图片认证资源、多平台 WebView 与离线完整边界尚未验收；后台预取/缓存细节需结合设备验证 |
+| READ-03 | 部分实现：Vue 阅读器支持章节导航、列分页、样式覆盖和键盘/按钮交互；浏览器覆盖 36 段分页及样式变化不写回 HTML；旧 Linux AppImage 曾验证 TXT 阅读和重启恢复 | 手势、旋转/窗口变化、大文本与 Android/iOS 阅读器流程未全量验收；旧 AppImage 结果不能代表当前提交 |
+| READ-04 | 部分实现：Rust 保存 progress JSON；Vue 离开/隐藏阅读页时低频保存；41 IPC 覆盖目录重排后的进度映射与重开恢复 | 后台挂起/强杀边界及 Android、iOS 真机生命周期未验证；不依赖无法保证的强杀退出钩子 |
+| READ-05 | 部分实现：canonical display replacement JSON、设置 UI 与 JS 展示层规则已存在 | 替换 scope、无副作用 HTML/text-node-only 及重启流程未做完整 UI E2E；书源替换仍由 KMP 执行 |
+| READ-06 | 部分实现：书签 JSON CRUD、阅读 session/day 聚合和 Vue 阅读洞察已接线；整书换源 Chromium E2E 验证了匹配书签迁移及孤立书签保留 | 从书签跳转、旧章保留策略和长时间统计的端到端/UI 验收待补 |
+| SOURCE-01 | 部分实现：Rust 私有源存储；JSON 文件导入、启停、名称/分组 metadata 编辑和删除；WebView 只收 metadata | 没有用户级规则编辑/导出/排序/批量校验/调试完整流程；逐平台源导入、管理和错误恢复待验收 |
+| SOURCE-02 | 部分实现：现有引擎操作可经 Rust 调用，task/result 错误可展示 | 产品化书源调试、逐步规则诊断、帮助和敏感日志遮蔽流程未完成 |
+| SOURCE-03 | 部分实现：Rust HTTP/storage/Cookie 宿主与真实 POST 重定向 fixture 存在 | 用户级登录、UA/代理/请求头配置、Cookie 交互和 Android/iOS 运行时兼容仍待验证 |
+| SOURCE-04 | 部分实现：保留现有 KMP/QuickJS；Rust ImageOps、C ABI、JVM/JNI 脚本 fixture 已通过；iOS NativeJS bridge 代码/目标平台验证仍需 CI/运行证据 | 逐规则格式兼容矩阵及各平台宿主能力实测；不把 JVM/JNI 通过推断成 iOS 通过 |
+| IMPORT-01 | 部分实现：Rust TXT/EPUB/CBZ/PDF 解析和 picker UI 已接入；headless 本地导入测试覆盖 8/8；当前 Chromium E2E 验证 TXT 规则 UI 持久化、实际 TXT 导入与章节资源重启恢复；Linux AppImage 曾实测 TXT 选择、阅读、进度重开 | PDF/CBZ 选择/渲染的浏览器与设备流程、权限/错误恢复及 Android/iOS 导入待验收 |
+| IMPORT-02 | 未实现：WebDAV/远程书籍导入服务当前不存在 | 远程浏览、凭据、上传/下载/重试/取消和平台测试 |
+| RSS-01 | 部分实现：`88d6ba6` 已接入 RSS 订阅模式 UI、已启用 RSS 来源筛选、文章/分类分页、已读/收藏筛选、HTML 展示及取消订阅；浏览有效分类时 Rust 建立默认订阅状态。Rust state helper 定向测试 4/4 通过；当前工作树 Chromium E2E 实际验证标准 Atom 文章展示、已读/收藏、read/favorites/unread 筛选、退订清理和重启后的状态 | 此 browser E2E 使用标准 Atom；旧 KMP RSS 仅过滤引擎当前返回页，普通 feed 则先对 feed 过滤再分页。旧 KMP RSS UI 和目标平台流程仍待验收 |
 | MEDIA-01 | 未实现：资源层有 media proxy，不等同漫画产品流程 | 漫画源、图像目录、缩放/翻页和内存压力验证 |
 | MEDIA-02 | 未实现 | TTS/音频引擎接入、后台和平台媒体控制 |
 | MEDIA-03 | 未实现 | 视频源/选集/画质/播放器集成 |
 | SPEECH-01 | 未实现 | 系统/HTTP TTS 配置、断句及暂停恢复流程 |
 | TOOLS-01 | 未实现 | 选词词典/查询配置和阅读交互 |
 | TOOLS-02 | 部分实现：用户展示替换资源已存在 | TXT 目录规则、规则订阅/深链等其余工具导入能力 |
-| BACKUP-01 | 部分实现：新 JSON/资源格式 ZIP 备份恢复和安全单元测试通过 | WebDAV 同步、平台文件选择器完整流程和真实设备恢复验证 |
-| SETTINGS-01 | 部分实现：设置 JSON 与阅读样式控件存在 | 所有全局/阅读设置持久、重启和跨尺寸验收 |
+| BACKUP-01 | 部分实现：JSON/HTML/媒体/source private map/任务等 ZIP 备份恢复后端及安全测试通过；当前 `backup::tests` 4/4 覆盖 source-revisions 单调值和删除来源 tombstone 的归档/恢复、严格 schema 与非法 ID 拒绝；Vue picker create/restore controls 已接入 | 当前没有 WebDAV/自动同步；平台 picker→备份→修改数据→恢复→资源重读完整用户流程尚未验收。`lastBackupAt` 仅 UI 会话状态 |
+| SETTINGS-01 | 部分实现：设置 JSON、阅读字号/行距/字体/主题/预读、展示替换、本地书导入、任务/统计/备份入口已有 | 各设置重启持久、跨窗口尺寸和平台生命周期验收 |
 | SETTINGS-02 | 未实现：当前页面未覆盖网络/缓存/Web 服务等全设置域 | 逐项实现并验证其实际生效与可回读性 |
-| SYSTEM-01 | 部分实现：Rust 任务 JSON、下载/刷新任务服务命令存在 | 后台调度、完整任务 UI、取消/重试/断网恢复和平台验收 |
+| SYSTEM-01 | 部分实现：Rust 持久任务、搜索/下载/目录刷新、暂停/恢复/取消命令和 Vue TaskCenter 已接入 | 任务恢复、后台调度、断网重试和平台流程仍需端到端验收 |
 | SYSTEM-02 | 未实现：没有完整封面管理产品流程 | 封面来源/替换、资源更新及显示验收 |
 | SYSTEM-03 | 部分实现：基础关于/帮助页面入口 | 日志导出、崩溃记录、隐私处理和升级能力 |
-| PLATFORM-01 | 部分实现：desktop `browser_harness` example 检查/构建通过；Android 四 ABI AAR 已构建；KMP JVM 编译成功 | Android APK 构建受 Gradle plugin resolution 阻塞且尚无 APK；Windows/macOS/Linux 用户流程、iOS 构建和各目标平台关键流程仍待验收 |
+| PLATFORM-01 | 部分实现：Linux Chromium + Rust/KMP browser harness 有 41 IPC 阅读/目录刷新验证、Home/RSS 和换源 E2E；a9168dd Linux AppImage 已实测 TXT 导入、阅读与进度重开；CI run `37127283643` 五个平台 jobs 全部成功，unsigned iOS IPA artifact（13,073,112 B）已上传 | CI 构建与 artifact 上传不等同平台运行验收；Android、Windows、macOS、Linux 与 iOS 安装启动、资源和关键用户流程仍需逐平台实测 |
 | PLATFORM-02 | 部分实现：应用内部 loopback JSON/HTML 资源服务器存在 | 对外 Web 服务、深链、文件关联及完整授权/路由 |
 
-| ID | 功能域 | 旧版源码依据（功能/UI 参考） | `legado_rs` 首轮源码快照状态（2026-10-02；历史基线，当前状态见上表） | 完成验收要点 |
+| ID | 功能域 | 旧版源码依据（功能/UI 参考） | `legado_rs` 首轮/后续历史状态（非当前状态，当前状态见上表） | 完成验收要点 |
 |---|---|---|---|---|
 | APP-01 | 首次启动、主导航、可配置首页分组/标签/展示项 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/MainRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/home/HomeScreen.kt`; `HomeTabManageDialog.kt`, `HomeSectionManageDialog.kt` | 未实现；只有书源测试页 | Android、桌面、iOS 可启动进入完整主界面；首页配置保存并重启恢复；各窗口尺寸下无空白/溢出 |
 | LIB-01 | 书架列表/网格、分组、排序、筛选、搜索、多选和批量管理 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/home/HomeScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/manage/BookshelfManageScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/group/` | **部分实现（2026-10-03）**：Rust shelf JSON、书籍/空分组注册表、排序与分组操作已有实现及定向测试；Vue 有书架页面。批量管理、空组端到端消费和跨平台流程仍待验收 | 添加、排序、分组、批量操作/删除后 JSON 正确更新；通知后 UI 重读资源；重启保持一致 |
@@ -77,15 +77,15 @@
 | PLATFORM-01 | Android、Windows/macOS/Linux、iOS 一致产品流程、文件/剪贴板/窗口/外链等平台适配 | `legado/README.md` 平台声明; `app/src/main/java/io/legado/app/ui/main/AndroidPlatformServices.kt`; `desktop-core/`; `ui/src/iosMain/` | 部分实现：Tauri 配置含桌面、Android、iOS；平台只有书源引擎桥接，没有完整产品 UI/服务 | 在 Android 真机、桌面系统和 iOS 模拟器/设备完成各自打包启动；主流程和资源 URL 实测；平台不支持的系统行为明确降级且不显示虚假控件 |
 | PLATFORM-02 | 本地 HTTP/Web API、外部链接/文件关联及导入入口 | `legado/README.md` API; `app/src/main/java/io/legado/app/api/`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/WebViewRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/association/` | 未实现 | 接口从 Rust 提供并校验权限；Web/深链/API 操作最终更新 JSON 并通知 UI；非法输入和路径权限测试 |
 
-## `legado_rs` 基线
+## `legado_rs` 首轮基线（2026-10-02 历史快照）
 
-当前实现集中在根级 Tauri+Vue 起始页和书源引擎宿主：
+以下描述仅用于保留第一次源码盘点时的历史状态，**不是当前实现说明**；当前能力与缺口见上方 2026-10-03 覆盖表：
 
-- `src/App.vue` 是单页“书源测试”工作台，允许输入书源 JSON，并按搜索、详情、目录、正文调用 Rust；它不是完整书架、发现或阅读产品 UI。
+- 当时的 `src/App.vue` 是单页“书源测试”工作台，允许输入书源 JSON，并按搜索、详情、目录、正文调用 Rust；它不是当时完整的书架、发现或阅读产品 UI。
 - `src/api/sourceEngine.ts` 和 `src-tauri/src/lib.rs` 连接 `execute_source_engine` 命令；`src-tauri/src/source_engine.rs` 将操作交给 KMP/JNI；Tauri 插件提供 Android 与 iOS 的引擎入口。
 - 现有引擎操作类型为 `search`、`bookInfo`、`chapters`、`content`。Rust 同时承载引擎 HTTP/存储宿主适配；`source_storage.rs` 保存引擎命名空间键值数据。
 - `src-tauri/src/source_storage.rs`、`source_engine.rs` 存在少量异步 Rust 测试代码；这不是整 app 的端到端验证，当前也没有产品流程/跨平台验收记录。
-- 目前未发现书架/进度/设置/任务 JSON 模型、章节 HTML 资源缓存、资源 URL 契约、产品路由、阅读器或完整功能服务。
+- 当时未发现书架/进度/设置/任务 JSON 模型、章节 HTML 资源缓存、资源 URL 契约、产品路由、阅读器或完整功能服务。
 
 ## 旧版成熟度边界
 
