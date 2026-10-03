@@ -17,7 +17,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::models::{
-    BookDocument, ProgressDocument, SettingsDocument, ShelfDocument, CURRENT_SCHEMA_VERSION,
+    BookDocument, CURRENT_SCHEMA_VERSION, ProgressDocument, SettingsDocument, ShelfDocument,
 };
 use crate::resources::ResourceStore;
 
@@ -102,8 +102,14 @@ pub fn recover_interrupted_restore(root: impl AsRef<Path>) -> Result<(), String>
     let requested_parent = requested_root
         .parent()
         .ok_or_else(|| "App data root has no parent folder".to_owned())?;
-    let parent = fs::canonicalize(requested_parent)
-        .map_err(|error| format!("Cannot resolve app data parent: {error}"))?;
+    let parent = match fs::canonicalize(requested_parent) {
+        Ok(parent) => parent,
+        // A fresh installation may not have created even Library/Application
+        // Support yet. A restore journal cannot exist in a nonexistent parent,
+        // so recovery is a no-op and normal startup will create the app root.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("Cannot resolve app data parent: {error}")),
+    };
     let root_name = requested_root
         .file_name()
         .and_then(|name| name.to_str())
@@ -321,7 +327,7 @@ fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
         Err(error) => {
             return Err(format!(
                 "Cannot inspect private source revisions file: {error}"
-            ))
+            ));
         }
     }
     for directory in [
@@ -1225,16 +1231,16 @@ fn hex_digest(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        create_backup, extract_and_validate, recover_interrupted_restore, restore_backup,
-        BackupManifest, RestoreJournal, MANIFEST_PATH,
+        BackupManifest, MANIFEST_PATH, RestoreJournal, create_backup, extract_and_validate,
+        recover_interrupted_restore, restore_backup,
     };
     use crate::models::{
-        BookDocument, ChapterDescriptor, ProgressDocument, ProgressSummary, ReaderDefaults,
-        CURRENT_SCHEMA_VERSION,
+        BookDocument, CURRENT_SCHEMA_VERSION, ChapterDescriptor, ProgressDocument, ProgressSummary,
+        ReaderDefaults,
     };
     use crate::resources::ResourceStore;
     use base64::Engine;
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::net::SocketAddr;
@@ -1684,9 +1690,11 @@ mod tests {
         assert_eq!(source_revisions["revisions"]["source-fedcba9876543210"], 9);
         assert!(private_root.join("books/snapshot-book.json").is_file());
         assert!(private_root.join("search-results/search-1.json").is_file());
-        assert!(private_root
-            .join("discovery-categories/source-private.json")
-            .is_file());
+        assert!(
+            private_root
+                .join("discovery-categories/source-private.json")
+                .is_file()
+        );
         assert!(private_root.join("media-maps/media-1.json").is_file());
         assert!(root.join("search/search-1.json").is_file());
         assert!(root.join("discovery/source-private.json").is_file());
@@ -1951,12 +1959,51 @@ mod tests {
                 std::fs::rename(&stage, &root).unwrap();
             }
 
-            recover_interrupted_restore(&root).unwrap();
+            drop(store);
+            let service = crate::application::ApplicationService::open(&root, None)
+                .await
+                .expect("application startup finishes interrupted backup restore");
             assert!(root.join("books/snapshot-book/book.json").is_file());
             assert!(!root.join("books/later-book/book.json").exists());
             assert!(!displaced.exists());
             assert!(!stage.exists());
             assert!(!journal_path.exists());
+            drop(service);
         }
+    }
+
+    #[test]
+    fn interrupted_restore_recovery_is_noop_when_fresh_install_parent_is_missing() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary
+            .path()
+            .join("Library/Application Support/com.alice.legado");
+        let parent = root.parent().unwrap();
+        assert!(!parent.exists());
+
+        recover_interrupted_restore(&root)
+            .expect("a missing parent cannot contain a restore journal");
+
+        assert!(!parent.exists(), "recovery must not create app directories");
+        assert!(
+            !root.exists(),
+            "recovery must not initialize a fresh app root"
+        );
+    }
+
+    #[tokio::test]
+    async fn application_startup_creates_a_new_nested_app_data_root() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary
+            .path()
+            .join("Library/Application Support/com.alice.legado");
+        assert!(!root.parent().unwrap().exists());
+
+        let service = crate::application::ApplicationService::open(&root, None)
+            .await
+            .expect("fresh nested app-data path should open");
+
+        assert!(root.join("shelf.json").is_file());
+        drop(service);
     }
 }
