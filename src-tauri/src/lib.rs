@@ -1,5 +1,6 @@
 pub mod application;
 pub mod backup;
+pub(crate) mod book_commit;
 pub(crate) mod catalog;
 pub(crate) mod book_metadata;
 pub mod discovery;
@@ -76,6 +77,7 @@ pub fn run() {
             application::import_protected_pdf,
             application::cancel_pending_pdf_import,
             application::get_book,
+            application::refresh_book_info,
             application::prepare_chapters,
             application::remove_book,
             application::save_progress,

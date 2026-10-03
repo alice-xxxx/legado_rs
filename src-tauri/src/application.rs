@@ -17,13 +17,13 @@ use std::{
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
-        BookDocument, ChapterDescriptor, ProgressDocument, ProgressSummary, ReaderDefaults,
-        ReaderTheme, CURRENT_SCHEMA_VERSION,
+        BookDocument, CURRENT_SCHEMA_VERSION, ChapterDescriptor, ProgressDocument, ProgressSummary,
+        ReaderDefaults, ReaderTheme,
     },
     resources::{ResourceRef, ResourceServer, ResourceStore},
     source_engine::SourceEngineRequest,
@@ -321,6 +321,7 @@ impl SourceExecutor for TauriSourceExecutor {
 pub struct ApplicationService {
     root: PathBuf,
     private_root: PathBuf,
+    _process_lock: Arc<crate::resource_transactions::AppDataProcessLock>,
     store: Arc<ResourceStore>,
     server: Arc<ResourceServer>,
     executor: Arc<dyn SourceExecutor>,
@@ -410,11 +411,14 @@ impl ApplicationService {
         root: impl Into<PathBuf>,
         executor: Arc<dyn SourceExecutor>,
     ) -> Result<Self, String> {
-        let root = root.into();
+        let requested_root = root.into();
+        let process_lock = Arc::new(
+            crate::resource_transactions::AppDataProcessLock::acquire(&requested_root)
+                .map_err(|error| error.to_string())?,
+        );
+        let root = process_lock.data_root().to_path_buf();
         crate::backup::recover_interrupted_restore(&root)?;
-        tokio::fs::create_dir_all(&root)
-            .await
-            .map_err(|error| format!("Cannot create application data directory: {error}"))?;
+        crate::resource_transactions::recover_all(&root).map_err(|error| error.to_string())?;
         let store = Arc::new(ResourceStore::open(root.clone()).map_err(|error| error.to_string())?);
         let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
         let server = Arc::new(
@@ -487,6 +491,7 @@ impl ApplicationService {
         Ok(Self {
             root,
             private_root,
+            _process_lock: process_lock,
             store,
             server,
             executor,
@@ -1571,8 +1576,12 @@ impl ApplicationService {
             let private_rollback = self.write_private_json(&private_path, &old_private).await;
             return Err(format!(
                 "Cannot commit replacement progress: {error}; book rollback: {}; private rollback: {}",
-                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
-                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+                book_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                private_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
             ));
         }
         if let Err(error) = self.upsert_shelf(book_id).await {
@@ -1596,10 +1605,18 @@ impl ApplicationService {
             let shelf_rollback = self.upsert_shelf(book_id).await;
             return Err(format!(
                 "Cannot update shelf after source replacement: {error}; progress rollback: {}; book rollback: {}; private rollback: {}; shelf rollback: {}",
-                progress_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
-                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
-                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
-                shelf_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+                progress_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                book_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                private_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
+                shelf_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
             ));
         }
         let bookmark_result = self
@@ -1668,10 +1685,18 @@ impl ApplicationService {
             let shelf_rollback = self.upsert_shelf(book_id).await;
             return Err(format!(
                 "Cannot migrate replacement bookmarks: {error}; progress rollback: {}; book rollback: {}; private rollback: {}; shelf rollback: {}",
-                progress_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
-                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
-                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
-                shelf_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+                progress_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                book_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                private_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
+                shelf_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
             ));
         }
 
@@ -3315,6 +3340,277 @@ impl ApplicationService {
         Ok(self.resource_descriptor(&reference))
     }
 
+    /// Refresh a book's processed details through the configured source
+    /// engine. Source and book locks are held only while capturing and
+    /// validating snapshots; the KMP/network call runs without either lock.
+    pub async fn refresh_book_info(&self, book_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        validate_id(book_id, "bookId")?;
+        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let book_ref = self
+            .store
+            .book_ref(book_id)
+            .map_err(|error| error.to_string())?;
+
+        let (
+            source,
+            source_revision,
+            book_instance_id,
+            catalog_generation,
+            engine_book,
+            raw_chapters,
+            public_latest_chapter,
+        ) = {
+            let _sources = self.sources_lock.lock().await;
+            let sources = self.read_sources().await?;
+            let first_private = self.read_private_json(&private_path).await?;
+            let source_id = first_private
+                .get("sourceId")
+                .and_then(Value::as_str)
+                .filter(|source_id| !source_id.trim().is_empty())
+                .ok_or_else(|| "This book is not linked to an online source".to_owned())?;
+            let source = sources
+                .iter()
+                .find(|source| source.id == source_id)
+                .cloned()
+                .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
+            if !source.enabled {
+                return Err("Book source is disabled; enable it before refreshing details".into());
+            }
+            let source_revision = self.source_revision(&source.id).await?;
+
+            let _book = self.book_lock(book_id).await;
+            let private = self
+                .read_private_json(&private_path)
+                .await
+                .map_err(|_| format!("Book '{book_id}' was removed"))?;
+            if private.get("sourceId").and_then(Value::as_str) != Some(source.id.as_str()) {
+                return Err("Book source changed before metadata refresh; retry".into());
+            }
+            if !can_change_source_from_private(&private) {
+                return Err("This book has no refreshable online source metadata".into());
+            }
+            let book_instance_id = private
+                .get("bookInstanceId")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| "Private book is missing its instance identity".to_owned())?
+                .to_owned();
+            let engine_book = private
+                .get("book")
+                .filter(|value| value.is_object())
+                .cloned()
+                .ok_or_else(|| "Private book is missing processed engine metadata".to_owned())?;
+            let raw_chapters = private
+                .get("chapters")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "Private book is missing its source chapter catalog".to_owned())?;
+            let catalog_generation = private
+                .get("catalogGeneration")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let public_book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| format!("Book '{book_id}' was removed"))?;
+            if public_book.get("id").and_then(Value::as_str) != Some(book_id) {
+                return Err("Book resource ID does not match its catalog path".into());
+            }
+            (
+                source,
+                source_revision,
+                book_instance_id,
+                catalog_generation,
+                engine_book,
+                raw_chapters,
+                public_book.get("latestChapter").cloned(),
+            )
+        };
+
+        let operation = if crate::rss::is_legacy_rss_source(&source.source) {
+            "rssBookInfo"
+        } else {
+            "bookInfo"
+        };
+        let response = self
+            .executor
+            .execute(engine_request(
+                operation,
+                &source.source,
+                None,
+                None,
+                Some(engine_book.clone()),
+                None,
+                None,
+            ))
+            .await?;
+        let refreshed_detail_keys = [
+            "name",
+            "title",
+            "author",
+            "coverUrl",
+            "cover",
+            "coverSrc",
+            "intro",
+            "introduction",
+            "kind",
+            "category",
+            "wordCount",
+            "word_count",
+            "lastChapter",
+            "latestChapter",
+            "latestChapterTitle",
+        ];
+        let response_fields = response
+            .as_object()
+            .ok_or_else(|| "Source engine returned invalid book details".to_owned())?;
+        let response_metadata = crate::book_metadata::project_book_metadata(&response, &source);
+        let has_usable_detail = response_metadata.title != "Untitled"
+            || response_metadata.author.is_some()
+            || response_metadata.cover_src.is_some()
+            || response_metadata.intro.is_some()
+            || response_metadata.kind.is_some()
+            || response_metadata.word_count.is_some()
+            || response_metadata.latest_chapter.is_some();
+        if !has_usable_detail {
+            return Err("Source engine returned no refreshable book details".into());
+        }
+        let mut refreshed_fields = engine_book
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "Private book engine metadata is invalid".to_owned())?;
+        // Keep the full prior engine object as the base so partial info
+        // responses do not discard source-specific navigation/context data.
+        // Catalog identity is owned by the existing book and cannot be changed
+        // by a metadata refresh; a new URL requires an explicit catalog flow.
+        const CATALOG_IDENTITY_KEYS: [&str; 5] = ["bookUrl", "url", "origin", "articleId", "id"];
+        for (key, value) in response_fields {
+            if CATALOG_IDENTITY_KEYS.contains(&key.as_str()) || value.is_null() {
+                continue;
+            }
+            if refreshed_detail_keys.contains(&key.as_str()) {
+                let valid = match key.as_str() {
+                    "name" | "title" | "author" | "coverUrl" | "cover" | "coverSrc" | "intro"
+                    | "introduction" | "lastChapter" | "latestChapter" | "latestChapterTitle" => {
+                        value.as_str().is_some_and(|text| !text.trim().is_empty())
+                    }
+                    "kind" | "category" => {
+                        value.as_str().is_some_and(|text| !text.trim().is_empty())
+                            || value.as_array().is_some_and(|values| {
+                                values.iter().any(|value| {
+                                    value.as_str().is_some_and(|text| !text.trim().is_empty())
+                                })
+                            })
+                    }
+                    "wordCount" | "word_count" => {
+                        value.as_number().is_some()
+                            || value.as_str().is_some_and(|text| !text.trim().is_empty())
+                    }
+                    _ => true,
+                };
+                if !valid {
+                    continue;
+                }
+            }
+            refreshed_fields.insert(key.clone(), value.clone());
+        }
+        let mut refreshed_engine_book = Value::Object(refreshed_fields);
+
+        let _sources = self.sources_lock.lock().await;
+        let current_source = self
+            .read_sources()
+            .await?
+            .into_iter()
+            .find(|candidate| candidate.id == source.id)
+            .ok_or_else(|| "Book source was removed during metadata refresh".to_owned())?;
+        if !current_source.enabled {
+            return Err("Book source was disabled during metadata refresh".into());
+        }
+        if self.source_revision(&source.id).await? != source_revision
+            || current_source.source != source.source
+        {
+            return Err("Book source changed during metadata refresh; refresh again".into());
+        }
+
+        let _book = self.book_lock(book_id).await;
+        let old_private = self
+            .read_private_json(&private_path)
+            .await
+            .map_err(|_| format!("Book '{book_id}' was removed during metadata refresh"))?;
+        if old_private.get("sourceId").and_then(Value::as_str) != Some(source.id.as_str())
+            || old_private.get("bookInstanceId").and_then(Value::as_str)
+                != Some(book_instance_id.as_str())
+            || old_private
+                .get("catalogGeneration")
+                .cloned()
+                .unwrap_or(Value::Null)
+                != catalog_generation
+            || old_private.get("book") != Some(&engine_book)
+        {
+            return Err("Book changed during metadata refresh; refresh again".into());
+        }
+        let old_book = self
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .map_err(|_| format!("Book '{book_id}' was removed during metadata refresh"))?;
+        if old_book.get("id").and_then(Value::as_str) != Some(book_id) {
+            return Err("Book resource ID does not match its catalog path".into());
+        }
+        let catalog_changed_while_refreshing = old_private
+            .get("chapters")
+            .and_then(Value::as_array)
+            .is_none_or(|chapters| chapters != &raw_chapters)
+            || old_book.get("latestChapter").cloned() != public_latest_chapter;
+        if catalog_changed_while_refreshing {
+            if let Some(refreshed_fields) = refreshed_engine_book.as_object_mut() {
+                for key in ["lastChapter", "latestChapter", "latestChapterTitle"] {
+                    refreshed_fields.remove(key);
+                }
+            }
+        }
+        let display_metadata =
+            crate::book_metadata::project_book_metadata(&refreshed_engine_book, &current_source);
+
+        let mut next_private = old_private.clone();
+        next_private["book"] = refreshed_engine_book;
+        let mut next_book = old_book.clone();
+        apply_refreshed_book_metadata(&mut next_book, &display_metadata);
+        let shelf_ref = self.store.shelf_ref();
+
+        self.write_private_json(&private_path, &next_private)
+            .await?;
+        if let Err(error) = self.store.write_json_ref(&book_ref, &next_book).await {
+            let rollback = self.write_private_json(&private_path, &old_private).await;
+            return Err(format!(
+                "Cannot save refreshed book details: {error}; private rollback: {}",
+                rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error)
+            ));
+        }
+        if let Err(error) = self.upsert_shelf(book_id).await {
+            let book_rollback = self.store.write_json_ref(&book_ref, &old_book).await;
+            let private_rollback = self.write_private_json(&private_path, &old_private).await;
+            return Err(format!(
+                "Cannot update shelf after metadata refresh: {error}; book rollback: {}; private rollback: {}",
+                book_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error.to_string()),
+                private_rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error),
+            ));
+        }
+
+        Ok(json!({
+            "book": self.resource_descriptor(&book_ref),
+            "shelf": self.resource_descriptor(&shelf_ref),
+        }))
+    }
+
     pub async fn prepare_chapters(
         &self,
         book_id: &str,
@@ -4233,6 +4529,11 @@ fn task_summary(task: &AppTask) -> Value {
     if let Some(book_id) = &task.book_id {
         summary["bookId"] = json!(book_id);
     }
+    if task.kind == "search" {
+        if let Some(search_id) = &task.search_id {
+            summary["searchId"] = json!(search_id);
+        }
+    }
     if let Some(error) = &task.error {
         summary["error"] = json!(error);
     }
@@ -4337,6 +4638,44 @@ fn apply_cached_book_metadata(
     } else if let Some(group) = metadata.source_group.as_deref() {
         book["sourceGroup"] = json!(group);
     }
+}
+
+fn apply_refreshed_book_metadata(
+    book: &mut Value,
+    metadata: &crate::book_metadata::ProcessedBookMetadata,
+) {
+    if metadata.title != "Untitled" {
+        book["title"] = json!(metadata.title.as_str());
+    }
+    if let Some(author) = metadata.author.as_deref() {
+        book["author"] = json!(author);
+    }
+    if let Some(cover) = metadata.cover_src.as_ref() {
+        book["coverSrc"] = json!(cover.as_str());
+    }
+    if let Some(intro) = metadata.intro.as_deref() {
+        book["intro"] = json!(intro);
+    }
+    if let Some(kind) = metadata.kind.as_deref() {
+        book["kind"] = json!(kind);
+    }
+    if let Some(word_count) = metadata.word_count.as_deref() {
+        book["wordCount"] = json!(word_count);
+    }
+    if let Some(latest_chapter) = metadata.latest_chapter.as_deref() {
+        book["latestChapter"] = json!(latest_chapter);
+    }
+    if !metadata.source_id.is_empty() {
+        book["sourceId"] = json!(metadata.source_id.as_str());
+    }
+    if !metadata.source_name.is_empty() {
+        book["sourceName"] = json!(metadata.source_name.as_str());
+    }
+    set_optional_public_field(
+        book,
+        "sourceGroup",
+        metadata.source_group.as_deref().map(|group| json!(group)),
+    );
 }
 
 pub(crate) fn project_search_result(result_id: &str, source: &SourceRecord, book: &Value) -> Value {
@@ -4865,13 +5204,15 @@ mod picker_helper_tests {
         );
 
         let unknown_zip = write_zip(&directory, &[("readme.txt", b"zip archive")]);
-        assert!(infer_picker_extension(
-            "content://provider/document/opaque-zip",
-            None,
-            &unknown_zip,
-            BOOK_EXTENSIONS,
-        )
-        .is_err());
+        assert!(
+            infer_picker_extension(
+                "content://provider/document/opaque-zip",
+                None,
+                &unknown_zip,
+                BOOK_EXTENSIONS,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -4928,14 +5269,18 @@ mod pending_pdf_registry_tests {
         let (file, path, stage) = temporary_picker_file(&root, "cancel-import");
         let token = registry.insert_at(file, now).expect("insert pending PDF");
 
-        assert!(registry
-            .cancel_at(&token, now + Duration::from_secs(1))
-            .expect("cancel pending PDF"));
+        assert!(
+            registry
+                .cancel_at(&token, now + Duration::from_secs(1))
+                .expect("cancel pending PDF")
+        );
         assert!(!path.exists());
         assert!(!stage.exists());
-        assert!(!registry
-            .cancel_at(&token, now + Duration::from_secs(1))
-            .expect("repeat cancellation is harmless"));
+        assert!(
+            !registry
+                .cancel_at(&token, now + Duration::from_secs(1))
+                .expect("repeat cancellation is harmless")
+        );
     }
 
     #[test]
@@ -4981,9 +5326,11 @@ mod pending_pdf_registry_tests {
                 == false
         );
         assert!(path.exists());
-        assert!(registry
-            .expire_at(&token, now + Duration::from_secs(300))
-            .expect("expire pending PDF"));
+        assert!(
+            registry
+                .expire_at(&token, now + Duration::from_secs(300))
+                .expect("expire pending PDF")
+        );
         assert!(!path.exists());
         assert!(!stage.exists());
     }
@@ -5007,10 +5354,12 @@ mod pending_pdf_registry_tests {
         assert!(!first_stage.exists());
         assert!(second_path.exists());
         assert!(second_stage.exists());
-        assert!(registry
-            .take_at(&first_token, now + Duration::from_secs(2))
-            .expect("check stale challenge")
-            .is_none());
+        assert!(
+            registry
+                .take_at(&first_token, now + Duration::from_secs(2))
+                .expect("check stale challenge")
+                .is_none()
+        );
         drop(
             registry
                 .take_at(&second_token, now + Duration::from_secs(2))
@@ -5032,10 +5381,12 @@ mod pending_pdf_registry_tests {
         registry.clear().expect("clear after restore");
         assert!(!path.exists());
         assert!(!stage.exists());
-        assert!(registry
-            .take_at(&token, Instant::now())
-            .expect("read cleared registry")
-            .is_none());
+        assert!(
+            registry
+                .take_at(&token, Instant::now())
+                .expect("read cleared registry")
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -5071,11 +5422,13 @@ mod pending_pdf_registry_tests {
             .expect("replacement challenge token")
             .to_owned();
         assert_ne!(token, replacement_token);
-        assert!(service
-            .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
-            .await
-            .unwrap_err()
-            .contains("expired"));
+        assert!(
+            service
+                .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
+                .await
+                .unwrap_err()
+                .contains("expired")
+        );
 
         let wrong_password = service
             .retry_pending_pdf_import(&replacement_token, "wrong-pass".to_owned())
@@ -5088,11 +5441,13 @@ mod pending_pdf_registry_tests {
             .await
             .expect("retry with the correct password");
         assert!(imported["book"]["src"].is_string());
-        assert!(service
-            .retry_pending_pdf_import(&replacement_token, "fixture-pass".to_owned())
-            .await
-            .unwrap_err()
-            .contains("expired"));
+        assert!(
+            service
+                .retry_pending_pdf_import(&replacement_token, "fixture-pass".to_owned())
+                .await
+                .unwrap_err()
+                .contains("expired")
+        );
     }
 
     #[tokio::test]
@@ -5130,11 +5485,13 @@ mod pending_pdf_registry_tests {
             .expect("restore snapshot");
         assert!(!staged_file.exists());
         assert!(!staging.exists());
-        assert!(service
-            .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
-            .await
-            .unwrap_err()
-            .contains("expired"));
+        assert!(
+            service
+                .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
+                .await
+                .unwrap_err()
+                .contains("expired")
+        );
     }
 }
 
@@ -5686,6 +6043,21 @@ mod tauri_commands {
         service: State<'_, ApplicationService>,
     ) -> Result<Value, String> {
         service.get_book(&book_id).await
+    }
+
+    #[tauri::command]
+    pub async fn refresh_book_info(
+        app: tauri::AppHandle,
+        book_id: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let result = service.refresh_book_info(&book_id).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "book", "resource": result["book"] }),
+        );
+        let _ = app.emit("shelf-updated", result["shelf"].clone());
+        Ok(result)
     }
 
     #[tauri::command]
@@ -6280,16 +6652,16 @@ mod tests {
         net::{TcpListener, TcpStream},
         path::{Path, PathBuf},
         sync::{
-            atomic::{AtomicBool, Ordering},
             Arc,
+            atomic::{AtomicBool, Ordering},
         },
         thread::{self, JoinHandle},
         time::Duration,
     };
 
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
 
-    use super::{text_at, AppTask, ApplicationService, EngineFuture, SourceExecutor};
+    use super::{AppTask, ApplicationService, EngineFuture, SourceExecutor, task_summary, text_at};
     use crate::source_engine::SourceEngineRequest;
 
     #[derive(Clone)]
@@ -6304,6 +6676,7 @@ mod tests {
         search_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
         operation_gates: Arc<std::sync::Mutex<HashMap<(String, String), Arc<ExecutionGate>>>>,
         operation_failures: Arc<std::sync::Mutex<HashSet<(String, String)>>>,
+        operation_responses: Arc<std::sync::Mutex<HashMap<(String, String), VecDeque<Value>>>>,
         content_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     }
 
@@ -6344,6 +6717,7 @@ mod tests {
                 search_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 operation_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 operation_failures: Arc::new(std::sync::Mutex::new(HashSet::new())),
+                operation_responses: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 content_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
@@ -6412,6 +6786,20 @@ mod tests {
                 .insert((operation.to_owned(), source_url.to_owned()));
         }
 
+        fn queue_operation_response_for_source(
+            &self,
+            operation: &str,
+            source_url: &str,
+            response: Value,
+        ) {
+            self.operation_responses
+                .lock()
+                .expect("operation response mutex")
+                .entry((operation.to_owned(), source_url.to_owned()))
+                .or_default()
+                .push_back(response);
+        }
+
         fn gate_operation_for_source(
             &self,
             operation: &str,
@@ -6462,6 +6850,15 @@ mod tests {
                         "controlled {} failure for source {source_url}",
                         request.operation
                     ));
+                }
+                if let Some(response) = self
+                    .operation_responses
+                    .lock()
+                    .expect("operation response mutex")
+                    .get_mut(&(request.operation.clone(), source_url.clone()))
+                    .and_then(VecDeque::pop_front)
+                {
+                    return Ok(response);
                 }
                 match request.operation.as_str() {
                     "exploreKinds" => Ok(json!([{
@@ -6836,12 +7233,14 @@ mod tests {
         assert_ne!(after["chapters"][0]["id"], old_chapter_id);
         assert!(after["chapters"][0]["src"].is_null());
         assert_eq!(after["progress"]["offset"], 91);
-        assert!(!root
-            .join("books")
-            .join(&book_id)
-            .join("chapters")
-            .join(format!("{old_chapter_id}.html"))
-            .exists());
+        assert!(
+            !root
+                .join("books")
+                .join(&book_id)
+                .join("chapters")
+                .join(format!("{old_chapter_id}.html"))
+                .exists()
+        );
         let bookmarks_ref = crate::reading_tools::bookmarks_resource(&service.store)
             .await
             .unwrap();
@@ -6884,6 +7283,427 @@ mod tests {
             .unwrap();
         assert!(html.contains("mock://book/Cross-source Story/chapter/0"));
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn search_task_summary_includes_only_its_opaque_search_id() {
+        let task = AppTask {
+            id: "task-1".into(),
+            kind: "search".into(),
+            status: "running".into(),
+            book_id: None,
+            source_ids: Some(vec!["source-1".into()]),
+            keyword: Some("story".into()),
+            page: 1,
+            from_index: 0,
+            total: 1,
+            completed: 0,
+            check_only: false,
+            search_id: Some("search-opaque-123".into()),
+            result: None,
+            error: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+        assert_eq!(task_summary(&task)["searchId"], "search-opaque-123");
+
+        let mut other_task = task;
+        other_task.kind = "chapterDownload".into();
+        assert!(task_summary(&other_task).get("searchId").is_none());
+    }
+
+    #[tokio::test]
+    async fn refresh_book_info_updates_display_and_private_details_without_touching_catalog_state()
+    {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        service
+            .update_source(
+                &source_id,
+                json!({ "name": "Controlled metadata", "group": "Fiction" }),
+            )
+            .await
+            .expect("set source display labels");
+        let book_id = add_controlled_book(&service, &source_id, "Refreshable story").await;
+        service
+            .prepare_chapters(&book_id, 0, 1)
+            .await
+            .expect("cache first chapter");
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let before_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        let chapter_id = before_book["chapters"][0]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let chapter_src = before_book["chapters"][0]["src"].clone();
+        service
+            .save_progress(
+                &book_id,
+                json!({
+                    "chapterId": chapter_id,
+                    "chapterIndex": 0,
+                    "offset": 42,
+                    "updatedAtMs": 1000,
+                }),
+            )
+            .await
+            .expect("save progress before metadata refresh");
+        crate::reading_tools::set_book_groups(
+            service.resource_store(),
+            &book_id,
+            vec!["Favorites".into()],
+        )
+        .await
+        .expect("assign shelf group");
+
+        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let mut before_private = service
+            .read_private_json(&private_path)
+            .await
+            .expect("read private book");
+        let canonical_book_url = before_private["book"]["bookUrl"].clone();
+        before_private["book"]["engineContext"] = json!({ "session": "retained" });
+        before_private["book"]["intro"] = json!("Cached introduction");
+        service
+            .write_private_json(&private_path, &before_private)
+            .await
+            .expect("seed engine context");
+        executor.queue_operation_response_for_source(
+            "bookInfo",
+            "mock://source/controlled",
+            json!({
+                "name": "Refreshed story",
+                "author": "Updated author",
+                "bookUrl": "mock://different-catalog/story",
+                "intro": "Updated introduction",
+                "kind": ["Mystery", "Fantasy"],
+                "wordCount": 12_345,
+                "coverUrl": "https://example.test/refreshed-cover.jpg",
+                "lastChapter": "New chapter from info",
+                "newEngineContext": "merged",
+                "discardedNull": null
+            }),
+        );
+
+        let refreshed = service
+            .refresh_book_info(&book_id)
+            .await
+            .expect("refresh processed book metadata");
+        assert_eq!(refreshed["book"]["resourceId"], book_ref.as_str());
+        let after_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(after_book["title"], "Refreshed story");
+        assert_eq!(after_book["author"], "Updated author");
+        assert_eq!(after_book["intro"], "Updated introduction");
+        assert_eq!(after_book["kind"], "Mystery, Fantasy");
+        assert_eq!(after_book["wordCount"], "12345");
+        assert_eq!(after_book["sourceId"], source_id);
+        assert_eq!(after_book["sourceName"], "Controlled metadata");
+        assert_eq!(after_book["sourceGroup"], "Fiction");
+        assert_eq!(after_book["progress"]["offset"], 42);
+        assert_eq!(after_book["chapters"][0]["id"], chapter_id);
+        assert_eq!(after_book["chapters"][0]["src"], chapter_src);
+        let after_private = service
+            .read_private_json(&private_path)
+            .await
+            .expect("read refreshed private book");
+        assert_eq!(after_private["sourceId"], before_private["sourceId"]);
+        assert_eq!(
+            after_private["bookInstanceId"],
+            before_private["bookInstanceId"]
+        );
+        assert_eq!(
+            after_private["catalogGeneration"],
+            before_private["catalogGeneration"]
+        );
+        assert_eq!(after_private["chapters"], before_private["chapters"]);
+        assert_eq!(after_private["book"]["bookUrl"], canonical_book_url);
+        assert_eq!(
+            after_private["book"]["engineContext"],
+            json!({ "session": "retained" })
+        );
+        assert_eq!(after_private["book"]["newEngineContext"], "merged");
+        assert_eq!(after_private["book"]["intro"], "Updated introduction");
+        assert!(after_private["book"].get("discardedNull").is_none());
+
+        let shelf_ref = service.store.shelf_ref();
+        let shelf = service.store.read_json_ref(&shelf_ref).await.unwrap();
+        let shelf_book = shelf["books"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == book_id)
+            .unwrap();
+        assert_eq!(shelf_book["title"], "Refreshed story");
+        assert_eq!(shelf_book["author"], "Updated author");
+        assert_eq!(
+            shelf_book["coverSrc"],
+            "https://example.test/refreshed-cover.jpg"
+        );
+        assert_eq!(shelf_book["groups"], json!(["Favorites"]));
+        let chapter_file = root
+            .join("books")
+            .join(&book_id)
+            .join("chapters")
+            .join(format!("{chapter_id}.html"));
+        assert!(
+            chapter_file.is_file(),
+            "metadata refresh must retain cached HTML"
+        );
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn refresh_book_info_does_not_overwrite_catalog_latest_chapter() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "Catalog race story").await;
+        let initial_private = service
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .unwrap();
+        let book_url = initial_private["book"]["bookUrl"].as_str().unwrap();
+        executor.queue_catalog_responses(
+            book_url,
+            vec![json!([
+                { "title": "Chapter 0", "url": format!("{book_url}/chapter/0") },
+                { "title": "Chapter 1", "url": format!("{book_url}/chapter/1") },
+                { "title": "Chapter 2", "url": format!("{book_url}/chapter/2") }
+            ])],
+        );
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/controlled");
+        executor.queue_operation_response_for_source(
+            "bookInfo",
+            "mock://source/controlled",
+            json!({ "name": "Catalog race story", "lastChapter": "Stale info chapter" }),
+        );
+        let refresh_service = service.clone();
+        let refresh_book_id = book_id.clone();
+        let refreshing =
+            tokio::spawn(async move { refresh_service.refresh_book_info(&refresh_book_id).await });
+        gate.wait_until_entered().await;
+
+        let catalog_task = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start catalog refresh during info refresh");
+        let catalog_task_id = catalog_task["taskId"].as_str().unwrap();
+        wait_for_task_status(&service, catalog_task_id, "completed").await;
+        let latest_catalog_chapter = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap()["latestChapter"]
+            .clone();
+        assert_eq!(latest_catalog_chapter, "Chapter 2");
+
+        gate.release();
+        refreshing
+            .await
+            .unwrap()
+            .expect("metadata details can commit after a catalog refresh");
+        let after = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(after["latestChapter"], latest_catalog_chapter);
+        assert_ne!(after["latestChapter"], "Stale info chapter");
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn refresh_book_info_rejects_source_reimported_during_network_request() {
+        let (service, executor, root, source_id) = controlled_service(1).await;
+        let book_id = add_controlled_book(&service, &source_id, "Stale refresh story").await;
+        let before_book = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/controlled");
+        let refresh_service = service.clone();
+        let refresh_book_id = book_id.clone();
+        let refreshing =
+            tokio::spawn(async move { refresh_service.refresh_book_info(&refresh_book_id).await });
+        gate.wait_until_entered().await;
+
+        service
+            .remove_sources(std::slice::from_ref(&source_id))
+            .await
+            .expect("remove source while KMP request is in flight");
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Controlled fixture",
+                    "bookSourceUrl": "mock://source/controlled",
+                    "bookSourceType": 0,
+                    "ruleSearch": { "privateRule": "never expose" }
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("reimport same source ID");
+        assert_eq!(imported["sources"][0]["id"], source_id);
+
+        gate.release();
+        let error = refreshing
+            .await
+            .unwrap()
+            .expect_err("reject stale source revision");
+        assert!(
+            error.contains("source changed"),
+            "unexpected error: {error}"
+        );
+        let after_book = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(after_book, before_book);
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn refresh_book_info_rejects_disable_instance_replacement_and_source_change() {
+        let (service, executor, root, source_id) = controlled_service(1).await;
+        let replacement_import = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Replacement fixture",
+                    "bookSourceUrl": "mock://source/replacement",
+                    "bookSourceType": 0
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import replacement source");
+        let replacement_id = replacement_import["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Replacement fixture")
+            .expect("replacement source record")["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let book_id = add_controlled_book(&service, &source_id, "Identity race story").await;
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let before_book = service.store.read_json_ref(&book_ref).await.unwrap();
+
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/controlled");
+        let refresh_service = service.clone();
+        let refresh_book_id = book_id.clone();
+        let refreshing =
+            tokio::spawn(async move { refresh_service.refresh_book_info(&refresh_book_id).await });
+        gate.wait_until_entered().await;
+        service
+            .update_source(&source_id, json!({ "enabled": false }))
+            .await
+            .expect("disable source while engine request is in flight");
+        gate.release();
+        let error = refreshing
+            .await
+            .unwrap()
+            .expect_err("reject disabled source");
+        assert!(error.contains("disabled"), "unexpected error: {error}");
+
+        service
+            .update_source(&source_id, json!({ "enabled": true }))
+            .await
+            .expect("re-enable source");
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/controlled");
+        let refresh_service = service.clone();
+        let refresh_book_id = book_id.clone();
+        let refreshing =
+            tokio::spawn(async move { refresh_service.refresh_book_info(&refresh_book_id).await });
+        gate.wait_until_entered().await;
+        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let mut private = service.read_private_json(&private_path).await.unwrap();
+        private["bookInstanceId"] = json!("replacement-instance");
+        service
+            .write_private_json(&private_path, &private)
+            .await
+            .expect("replace online book instance during request");
+        gate.release();
+        let error = refreshing
+            .await
+            .unwrap()
+            .expect_err("reject changed book instance");
+        assert!(error.contains("Book changed"), "unexpected error: {error}");
+
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/controlled");
+        let refresh_service = service.clone();
+        let refresh_book_id = book_id.clone();
+        let refreshing =
+            tokio::spawn(async move { refresh_service.refresh_book_info(&refresh_book_id).await });
+        gate.wait_until_entered().await;
+        let mut private = service.read_private_json(&private_path).await.unwrap();
+        private["sourceId"] = json!(replacement_id);
+        service
+            .write_private_json(&private_path, &private)
+            .await
+            .expect("switch private source during request");
+        gate.release();
+        let error = refreshing
+            .await
+            .unwrap()
+            .expect_err("reject changed source identity");
+        assert!(error.contains("Book changed"), "unexpected error: {error}");
+        assert_eq!(
+            service.store.read_json_ref(&book_ref).await.unwrap(),
+            before_book
+        );
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn refresh_book_info_failure_and_disabled_source_keep_existing_details() {
+        let (service, executor, root, source_id) = controlled_service(1).await;
+        let book_id = add_controlled_book(&service, &source_id, "Refresh failure story").await;
+        let before_book = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let before_private = service.read_private_json(&private_path).await.unwrap();
+        executor.fail_operation_for_source("bookInfo", "mock://source/controlled");
+        assert!(service.refresh_book_info(&book_id).await.is_err());
+        assert_eq!(
+            service
+                .store
+                .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+                .await
+                .unwrap(),
+            before_book
+        );
+        assert_eq!(
+            service.read_private_json(&private_path).await.unwrap(),
+            before_private
+        );
+
+        service
+            .update_source(&source_id, json!({ "enabled": false }))
+            .await
+            .expect("disable source");
+        let error = service.refresh_book_info(&book_id).await.unwrap_err();
+        assert!(error.contains("disabled"), "unexpected error: {error}");
+        assert_eq!(
+            service
+                .store
+                .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+                .await
+                .unwrap(),
+            before_book
+        );
+        assert_eq!(
+            service.read_private_json(&private_path).await.unwrap(),
+            before_private
+        );
+        drop(service);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -6930,7 +7750,10 @@ mod tests {
             .await
             .expect("update fixture's processed detail");
 
-        let added = service.add_book(&result_id).await.expect("add metadata book");
+        let added = service
+            .add_book(&result_id)
+            .await
+            .expect("add metadata book");
         let book_ref = crate::resources::ResourceRef::new(
             added["book"]["resourceId"]
                 .as_str()
@@ -6958,7 +7781,10 @@ mod tests {
             )
             .await
             .expect("rename current source");
-        service.get_book(&book_id).await.expect("refresh book projection");
+        service
+            .get_book(&book_id)
+            .await
+            .expect("refresh book projection");
         let renamed_book = service.store.read_json_ref(&book_ref).await.unwrap();
         assert_eq!(renamed_book["sourceName"], "Renamed metadata source");
         assert_eq!(renamed_book["sourceGroup"], "Drama");
@@ -7137,11 +7963,13 @@ mod tests {
             .import_sources(&json!([original_definition]).to_string())
             .await
             .unwrap();
-        assert!(reimported["sources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|source| source["id"] == original_source_id));
+        assert!(
+            reimported["sources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|source| source["id"] == original_source_id)
+        );
         let error = service
             .change_book_source(&book_id, &result_id, false)
             .await
@@ -7214,21 +8042,25 @@ mod tests {
         )
         .await;
         let normal_result_id = normal_document["results"][0]["resultId"].as_str().unwrap();
-        assert!(service
-            .change_book_source(&book_id, normal_result_id, false)
-            .await
-            .unwrap_err()
-            .contains("not a replacement candidate"));
+        assert!(
+            service
+                .change_book_source(&book_id, normal_result_id, false)
+                .await
+                .unwrap_err()
+                .contains("not a replacement candidate")
+        );
 
         service
             .import_sources(&json!([source_definition("updated private rule")]).to_string())
             .await
             .unwrap();
-        assert!(service
-            .change_book_source(&book_id, &candidate_id, false)
-            .await
-            .unwrap_err()
-            .contains("Replacement source changed"));
+        assert!(
+            service
+                .change_book_source(&book_id, &candidate_id, false)
+                .await
+                .unwrap_err()
+                .contains("Replacement source changed")
+        );
 
         let search = service
             .search_book_source_candidates(&book_id, &[replacement_source_id.clone()], None, 1)
@@ -7244,11 +8076,13 @@ mod tests {
             .as_str()
             .unwrap();
         executor.fail_operation_for_source("bookInfo", "mock://source/replacement-fails");
-        assert!(service
-            .change_book_source(&book_id, candidate_id, false)
-            .await
-            .unwrap_err()
-            .contains("controlled bookInfo failure"));
+        assert!(
+            service
+                .change_book_source(&book_id, candidate_id, false)
+                .await
+                .unwrap_err()
+                .contains("controlled bookInfo failure")
+        );
         let after_failure = service.store.read_json_ref(&book_ref).await.unwrap();
         assert_eq!(after_failure, before);
         let private = service
@@ -7256,22 +8090,25 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(private["sourceId"], original_source_id);
-        assert!(root
-            .join("books")
-            .join(&book_id)
-            .join("chapters")
-            .join(format!("{old_chapter_id}.html"))
-            .exists());
+        assert!(
+            root.join("books")
+                .join(&book_id)
+                .join("chapters")
+                .join(format!("{old_chapter_id}.html"))
+                .exists()
+        );
 
         service.remove_book(&book_id).await.unwrap();
         let readded_id =
             add_controlled_book(&service, &original_source_id, "Failure preserves book").await;
         assert_eq!(readded_id, book_id);
-        assert!(service
-            .change_book_source(&book_id, candidate_id, false)
-            .await
-            .unwrap_err()
-            .contains("Book catalog changed after the search"));
+        assert!(
+            service
+                .change_book_source(&book_id, candidate_id, false)
+                .await
+                .unwrap_err()
+                .contains("Book catalog changed after the search")
+        );
         drop(service);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -7307,21 +8144,27 @@ mod tests {
             .and_then(|source| source["id"].as_str())
             .expect("RSS source ID")
             .to_owned();
-        assert!(service
-            .start_search(&[rss_source_id.clone()], "RSS must not search", 1)
-            .await
-            .unwrap_err()
-            .contains("No enabled book sources"));
-        assert!(service
-            .search_books(&[rss_source_id], "RSS must not search", 1, |_| {})
-            .await
-            .unwrap_err()
-            .contains("No enabled book sources"));
-        assert!(crate::search_history::load(&service.store)
-            .await
-            .expect("history stays empty after rejected RSS searches")
-            .entries
-            .is_empty());
+        assert!(
+            service
+                .start_search(&[rss_source_id.clone()], "RSS must not search", 1)
+                .await
+                .unwrap_err()
+                .contains("No enabled book sources")
+        );
+        assert!(
+            service
+                .search_books(&[rss_source_id], "RSS must not search", 1, |_| {})
+                .await
+                .unwrap_err()
+                .contains("No enabled book sources")
+        );
+        assert!(
+            crate::search_history::load(&service.store)
+                .await
+                .expect("history stays empty after rejected RSS searches")
+                .entries
+                .is_empty()
+        );
 
         let started = service
             .start_search(&[], "  Alpha   Beta  ", 1)
@@ -7336,11 +8179,13 @@ mod tests {
             .read_json_ref(&search_ref)
             .await
             .expect("completed user search resource");
-        assert!(search_document["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|result| { result["sourceId"].as_str() == Some(source_id.as_str()) }));
+        assert!(
+            search_document["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|result| { result["sourceId"].as_str() == Some(source_id.as_str()) })
+        );
         let after_async = crate::search_history::load(&service.store)
             .await
             .expect("history after task search");
@@ -7577,14 +8422,18 @@ mod tests {
         assert_eq!(changed_state["articles"][0]["isRead"], true);
         assert_eq!(changed_state["articles"][0]["isFavorite"], true);
         assert!(!changed_state.to_string().contains("feed.example.test"));
-        assert!(service
-            .set_rss_filter(&rss_source_id, "unknown-filter")
-            .await
-            .is_err());
-        assert!(service
-            .set_rss_article_state(&rss_source_id, "invalid", Some(false), None)
-            .await
-            .is_err());
+        assert!(
+            service
+                .set_rss_filter(&rss_source_id, "unknown-filter")
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .set_rss_article_state(&rss_source_id, "invalid", Some(false), None)
+                .await
+                .is_err()
+        );
 
         let unsubscribe = service
             .unsubscribe_rss(&rss_source_id)
@@ -7597,10 +8446,12 @@ mod tests {
             .read_json_ref(&rss_ref)
             .await
             .expect("cleared RSS state");
-        assert!(cleared_rss_state["subscriptions"]
-            .as_array()
-            .unwrap()
-            .is_empty());
+        assert!(
+            cleared_rss_state["subscriptions"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         assert!(cleared_rss_state["articles"].as_array().unwrap().is_empty());
         assert!(service.source_record(&rss_source_id).await.is_err());
 
@@ -7706,22 +8557,30 @@ mod tests {
         assert_eq!(saved["reader"]["theme"], "system");
         assert_eq!(saved["reader"]["replacements"], json!([]));
 
-        assert!(service
-            .save_settings(json!({ "reader": { "fontSizePx": 37 } }))
-            .await
-            .is_err());
-        assert!(service
-            .save_settings(json!({ "reader": { "fontSizePx": "20" } }))
-            .await
-            .is_err());
-        assert!(service
-            .save_settings(json!({ "reader": { "lineHeight": 2.9 } }))
-            .await
-            .is_err());
-        assert!(service
-            .save_settings(json!({ "reader": { "preloadCount": 5.5 } }))
-            .await
-            .is_err());
+        assert!(
+            service
+                .save_settings(json!({ "reader": { "fontSizePx": 37 } }))
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .save_settings(json!({ "reader": { "fontSizePx": "20" } }))
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .save_settings(json!({ "reader": { "lineHeight": 2.9 } }))
+                .await
+                .is_err()
+        );
+        assert!(
+            service
+                .save_settings(json!({ "reader": { "preloadCount": 5.5 } }))
+                .await
+                .is_err()
+        );
         assert_eq!(
             service
                 .store
@@ -7915,11 +8774,13 @@ mod tests {
             .await
             .expect("downloaded book document");
         assert_eq!(book["chapters"].as_array().unwrap().len(), 61);
-        assert!(book["chapters"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|chapter| chapter["src"].is_string()));
+        assert!(
+            book["chapters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|chapter| chapter["src"].is_string())
+        );
 
         drop(service);
         let _ = std::fs::remove_dir_all(root);
@@ -8242,11 +9103,13 @@ mod tests {
             .store
             .book_ref(&active_book)
             .expect("removed book ref is syntactically valid");
-        assert!(service
-            .store
-            .read_json_ref(&removed_book_ref)
-            .await
-            .is_err());
+        assert!(
+            service
+                .store
+                .read_json_ref(&removed_book_ref)
+                .await
+                .is_err()
+        );
 
         let history_ref = crate::reading_tools::reading_history_resource(&service.store)
             .await
@@ -8257,12 +9120,16 @@ mod tests {
             .await
             .expect("restored and updated history");
         let sessions = history["sessions"].as_array().unwrap();
-        assert!(sessions
-            .iter()
-            .any(|session| session["sessionId"] == "before-restore"));
-        assert!(sessions
-            .iter()
-            .any(|session| session["sessionId"] == "after-restore"));
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session["sessionId"] == "before-restore")
+        );
+        assert!(
+            sessions
+                .iter()
+                .any(|session| session["sessionId"] == "after-restore")
+        );
 
         let tasks_ref = service.store.reading_ref("tasks").expect("tasks ref");
         let tasks = service
@@ -8277,11 +9144,13 @@ mod tests {
             .find(|task| task["id"] == archived_task)
             .expect("completed task from snapshot");
         assert_eq!(archived["status"], "completed");
-        assert!(!tasks["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|task| task["id"] == active_task));
+        assert!(
+            !tasks["tasks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|task| task["id"] == active_task)
+        );
 
         drop(service);
         let _ = std::fs::remove_dir_all(root);
@@ -8472,9 +9341,11 @@ mod tests {
             .await
             .expect("chapter preparation should finish after releasing its gate")
             .expect("prepare task join");
-        assert!(prepare_result
-            .expect_err("the controlled second chapter fails")
-            .contains("controlled failure"));
+        assert!(
+            prepare_result
+                .expect_err("the controlled second chapter fails")
+                .contains("controlled failure")
+        );
         tokio::time::timeout(Duration::from_secs(5), restore)
             .await
             .expect("restore should proceed after chapter operation exits")
@@ -8584,19 +9455,25 @@ mod tests {
             .read_json_ref(&service.store.shelf_ref())
             .await
             .expect("shelf JSON");
-        assert!(!shelf["books"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|book| book["id"] == book_id));
-        assert!(service
-            .store
-            .read_json_ref(&service.store.book_ref(&book_id).expect("book ref"))
-            .await
-            .is_err());
-        assert!(tokio::fs::metadata(root.join("books").join(&book_id))
-            .await
-            .is_err());
+        assert!(
+            !shelf["books"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|book| book["id"] == book_id)
+        );
+        assert!(
+            service
+                .store
+                .read_json_ref(&service.store.book_ref(&book_id).expect("book ref"))
+                .await
+                .is_err()
+        );
+        assert!(
+            tokio::fs::metadata(root.join("books").join(&book_id))
+                .await
+                .is_err()
+        );
 
         drop(service);
         let _ = std::fs::remove_dir_all(root);
@@ -8642,10 +9519,12 @@ mod tests {
             "book-{:016x}",
             super::stable_hash(&format!("{source_id}\0{book_url}"))
         );
-        assert!(service
-            .read_private_json(std::path::Path::new("books").join(format!("{book_id}.json")))
-            .await
-            .is_err());
+        assert!(
+            service
+                .read_private_json(std::path::Path::new("books").join(format!("{book_id}.json")))
+                .await
+                .is_err()
+        );
 
         drop(service);
         let _ = std::fs::remove_dir_all(root);
@@ -8773,11 +9652,13 @@ mod tests {
             .expect("start empty refresh");
         let task_id = task_id_from_start(&started);
         let failed = wait_for_task_status(&service, &task_id, "failed").await;
-        assert!(failed
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("empty"));
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("empty")
+        );
         assert_eq!(
             service.store.read_json_ref(&book_ref).await.unwrap(),
             before_book
@@ -8809,26 +9690,32 @@ mod tests {
             .expect("remove book");
         gate.release();
         let failed = wait_for_task_status(&service, &task_id, "failed").await;
-        assert!(failed
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("removed"));
-        assert!(service
-            .store
-            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
-            .await
-            .is_err());
+        assert!(
+            failed
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("removed")
+        );
+        assert!(
+            service
+                .store
+                .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+                .await
+                .is_err()
+        );
         let shelf = service
             .store
             .read_json_ref(&service.store.shelf_ref())
             .await
             .expect("shelf JSON");
-        assert!(!shelf["books"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|book| book["id"] == book_id));
+        assert!(
+            !shelf["books"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|book| book["id"] == book_id)
+        );
 
         drop(service);
         let _ = std::fs::remove_dir_all(root);
@@ -8863,11 +9750,13 @@ mod tests {
         assert_eq!(committed.result.as_ref().unwrap()["committed"], true);
         gate.release();
         let stale = wait_for_task_status(&service, &first_id, "failed").await;
-        assert!(stale
-            .error
-            .as_deref()
-            .unwrap_or_default()
-            .contains("stale refresh"));
+        assert!(
+            stale
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("stale refresh")
+        );
 
         let book = service
             .store
@@ -9065,16 +9954,18 @@ mod tests {
             .expect("second chapter HTML");
         assert!(second_html.contains("Second cached chapter"));
 
-        assert!(service
-            .save_progress(
-                &book_id,
-                json!({
-                    "chapterId": book_after_prepare["chapters"][0]["id"],
-                    "chapterIndex": 0, "offset": -1, "updatedAtMs": 1_800_000_000_000u64,
-                })
-            )
-            .await
-            .is_err());
+        assert!(
+            service
+                .save_progress(
+                    &book_id,
+                    json!({
+                        "chapterId": book_after_prepare["chapters"][0]["id"],
+                        "chapterIndex": 0, "offset": -1, "updatedAtMs": 1_800_000_000_000u64,
+                    })
+                )
+                .await
+                .is_err()
+        );
         let unchanged = json_get(&client, prepared["book"]["src"].as_str().unwrap()).await;
         assert_eq!(unchanged["progress"]["offset"], 0);
 

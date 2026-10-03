@@ -2054,4 +2054,104 @@ mod tests {
         };
         assert!(error.to_string().contains("already in use"));
     }
+
+    #[tokio::test]
+    async fn application_startup_rolls_back_prepared_transaction_before_store_open() {
+        let (_dir, root, guard) = setup();
+        write_old_state(&root);
+        let transaction = transaction(
+            &root,
+            &guard,
+            vec![
+                public_json("progress/fixture-book.json", json!({"generation":"new"})),
+                book_target("fixture-book", json!({"generation":"new"})),
+            ],
+            vec![],
+        );
+        transaction.apply_target(0).unwrap();
+        drop(transaction); // Simulate process death with a prepared journal.
+
+        let service = crate::application::ApplicationService::open(&root, None)
+            .await
+            .expect("startup recovers before opening ResourceStore");
+        assert_eq!(
+            read_generation(&root.join("progress/fixture-book.json")),
+            "old"
+        );
+        assert_eq!(
+            read_generation(&root.join("private-data/books/fixture-book.json")),
+            "old"
+        );
+        assert!(fs::read_dir(root.join(TRANSACTIONS_RELATIVE_DIR))
+            .unwrap()
+            .next()
+            .is_none());
+        drop(service);
+    }
+
+    #[tokio::test]
+    async fn application_startup_redoes_committed_transaction_before_store_open() {
+        let (_dir, root, guard) = setup();
+        write_old_state(&root);
+        let transaction = transaction(
+            &root,
+            &guard,
+            vec![
+                public_json("progress/fixture-book.json", json!({"generation":"new"})),
+                book_target("fixture-book", json!({"generation":"new"})),
+            ],
+            vec![],
+        );
+        transaction.apply_target(0).unwrap();
+        let mut committed = transaction.journal.clone();
+        committed.phase = TransactionPhase::Committed;
+        write_journal(&transaction.stage_dir, &committed).unwrap();
+        drop(transaction); // Simulate death after commit, before all targets land.
+
+        let service = crate::application::ApplicationService::open(&root, None)
+            .await
+            .expect("startup replays the committed generation");
+        assert_eq!(
+            read_generation(&root.join("progress/fixture-book.json")),
+            "new"
+        );
+        assert_eq!(
+            read_generation(&root.join("private-data/books/fixture-book.json")),
+            "new"
+        );
+        assert!(fs::read_dir(root.join(TRANSACTIONS_RELATIVE_DIR))
+            .unwrap()
+            .next()
+            .is_none());
+        drop(service);
+    }
+
+    #[tokio::test]
+    async fn application_services_share_the_root_process_lock_for_their_lifetime() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("app-data");
+        let service = crate::application::ApplicationService::open(&root, None)
+            .await
+            .expect("first service opens the root");
+        let clone = service.clone();
+        let duplicate = match crate::application::ApplicationService::open(&root, None).await {
+            Ok(_) => panic!("a second service for the same root is rejected"),
+            Err(error) => error,
+        };
+        assert!(duplicate.contains("already in use"));
+
+        drop(service);
+        let duplicate_while_clone_lives =
+            match crate::application::ApplicationService::open(&root, None).await {
+                Ok(_) => panic!("service clone retains the process lock"),
+                Err(error) => error,
+            };
+        assert!(duplicate_while_clone_lives.contains("already in use"));
+        drop(clone);
+
+        let reopened = crate::application::ApplicationService::open(&root, None)
+            .await
+            .expect("the lock releases after the last service clone drops");
+        drop(reopened);
+    }
 }

@@ -350,6 +350,7 @@ mod tests {
         assert!(!saved.to_string().contains("https://source.example/explore"));
         assert!(!saved.to_string().contains("must not project"));
 
+        drop(service);
         let restarted = ApplicationService::open_with_executor(directory.path(), executor)
             .await
             .unwrap();

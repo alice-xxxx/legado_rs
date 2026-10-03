@@ -6,14 +6,16 @@ The resource model stores each public document as JSON, while raw engine-owned
 book/catalog data lives under `private-data`. A source replacement or catalog
 refresh changes several files that must describe the same generation after a
 process crash. The `resource_transactions` helper implements a private JSON
-journal and staged snapshots for those commits. `ResourceStore` now exposes an
+journal and staged snapshots for those commits. `ResourceStore` exposes an
 owned writer guard backed by the same mutex as ordinary JSON, asset, chapter,
 and resource-removal writes; ordinary writes and `ResourceStore::open` fail
-closed when a transaction journal needs recovery. The helper does not use
-SQLite, involve the WebView, or claim that multiple file renames are one
-filesystem-atomic operation. `ApplicationService` startup recovery and its
-source/catalog transaction calls are not wired yet, so those operations still
-use their existing runtime rollback behavior.
+closed when a transaction journal needs recovery. `ApplicationService` startup
+now acquires a root-wide process lock, recovers interrupted backup restores,
+recovers file transactions, then opens `ResourceStore`. Source/catalog
+business operations do not yet call the transaction helper and still use their
+existing runtime rollback behavior. The helper does not use SQLite, involve the
+WebView, or claim that multiple file renames are one filesystem-atomic
+operation.
 
 Initial integration scope:
 
@@ -67,11 +69,11 @@ existing exclusive operation guard, so a valid in-flight journal should never
 be included in an archive.
 
 The existing Tokio mutexes only coordinate one `ApplicationService` process.
-This protocol therefore assumes one writer process per data root. If the
-desktop/mobile launch model can open the same root twice, acquire an
-OS-level app-data lock before recovery and hold it for the service lifetime;
-otherwise a second process could overwrite the journal or public targets
-without sharing the in-memory writer guard.
+Startup acquires an OS advisory app-data lock before recovery and stores it in
+an `Arc` held for the service lifetime, so service clones keep the same lock.
+This rejects another service opening the same canonical root without sharing
+the in-memory writer guard. The lock does not coordinate code that bypasses
+`ApplicationService` and writes files directly.
 
 Each journal contains:
 
@@ -146,19 +148,28 @@ attempt an old-state rollback.
 
 ## Startup recovery
 
-Call recovery after `backup::recover_interrupted_restore` and before
-`ResourceStore::open`, source loading, HTTP serving, or Tauri bootstrap. This
-order first resolves any whole-root restore, then resolves file transactions
+`ApplicationService::open_with_executor` follows this order:
+
+1. Acquire `AppDataProcessLock` and use its canonical root path. The lock is a
+   stable sibling file and does not create a missing data root.
+2. Run `backup::recover_interrupted_restore` to resolve whole-root renames.
+3. Run `resource_transactions::recover_all` against the active root.
+4. Open `ResourceStore`, then start HTTP serving and load application state.
+
+This first resolves a whole-root restore, then resolves file transactions
 inside whichever app-data tree became active. `ResourceStore::open` writes
 default documents when files are absent, so it must not run before either
-recovery step.
+recovery step. The lock remains held by the returned service and its clones;
+failed startup drops it when the open future returns an error.
 
-Current integration state: `ResourceStore::open` detects a pending transaction
-journal and returns an error directing the caller to recovery; it does not run
-recovery itself. Ordinary write methods check for the same condition while
-holding the store writer mutex and return an error instead of writing past the
-journal. The application startup path must call `recover_all` before opening
-the store in the next integration stage.
+`ResourceStore::open` detects a pending transaction journal and returns an
+error directing the caller to recovery; it does not run recovery itself.
+Ordinary write methods check for the same condition while holding the store
+writer mutex and return an error instead of writing past the journal. The
+application startup path now calls `recover_all` before opening the store.
+Source replacement and catalog refresh still do not prepare file transactions,
+so this startup recovery currently handles journals produced by the helper or
+future transaction callers, not those existing multi-file operations.
 
 Recovery is idempotent:
 
@@ -214,14 +225,13 @@ implementation checks that its canonical app-data root matches the transaction
 root.
 
 `AppDataProcessLock` uses stable `File::try_lock` advisory locking on a sibling
-lock file. Acquire it before backup restore recovery and hold it through the
-service lifetime; it does not create a missing root, so it cannot hide an
-interrupted root rename from recovery. The lock file stays outside app data so
-backup root renames do not replace its inode. This lock is provided for later
-app-lifecycle integration and is not currently acquired by startup.
-`recover_all(root)` must then run after backup root-restore recovery and before
-`ResourceStore::open`, source loading, HTTP serving, or bootstrap. A pending
-journal blocks later writes until recovery succeeds.
+lock file. Startup acquires it before backup restore recovery and holds it
+through the service lifetime; it does not create a missing root, so it cannot
+hide an interrupted root rename from recovery. The lock file stays outside app
+data so backup root renames do not replace its inode. `recover_all(root)` runs
+after backup root-restore recovery and before `ResourceStore::open`, source
+loading, HTTP serving, or bootstrap. A pending journal blocks later writes
+until recovery succeeds.
 
 Integration must preserve these constraints:
 
@@ -297,10 +307,14 @@ and the intact before-images are restored before the prepared journal is
 removed. The process-lock test opens the same root from a child process and
 after replacing the root directory at the same path. These exercise actual
 file operations and OS locking, but do not kill a process at arbitrary machine
-instructions or simulate power loss. Real `ApplicationService` reopen tests,
-multi-document domain invariants, concurrent shelf-update exclusion, and
-mobile/Windows directory-sync behavior still require app and platform
-integration; this helper alone does not establish those guarantees.
+instructions or simulate power loss. Startup tests also open a real
+`ApplicationService` over prepared and committed journals, exercise
+duplicate-service rejection while clones retain the lock, and drive
+interrupted backup recovery through service startup. They do not verify that
+source replacement or catalog refresh uses the helper; those business
+transaction integrations, multi-document domain invariants, concurrent
+shelf-update exclusion, and mobile/Windows directory-sync behavior remain
+unverified.
 
 The existing `backup::tests::interrupted_restore_recovers_after_either_directory_rename`
 remains the model for restore crash windows. Transaction tests need their own
