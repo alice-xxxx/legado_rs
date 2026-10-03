@@ -413,6 +413,7 @@ actual class KmpResponse : Closeable {
         private set
     internal var priorResponseVal: KmpResponse? = null
         private set
+    internal var redirectsVal: List<HostHttpRedirect> = emptyList()
 
     constructor()
 
@@ -443,8 +444,38 @@ actual class KmpResponse : Closeable {
             request
         }
         requestVal = finalRequest
-        priorResponseVal = redirects.fold(null as KmpResponse?) { previous, redirect ->
-            KmpResponse(
+        redirectsVal = redirects.toList()
+        priorResponseVal = buildPriorResponseChain(request, redirectsVal)
+    }
+
+    // 给 StrResponse 等手动构造场景 (用 KmpResponseBuilder)
+    internal constructor(
+        code: Int,
+        message: String,
+        headers: Map<String, List<String>>,
+        body: ByteArray?,
+        contentType: String?,
+        request: KmpRequest,
+        redirects: List<HostHttpRedirect> = emptyList(),
+    ) {
+        this.codeVal = code
+        this.messageVal = message
+        this.headersVal = headers
+        this.bodyBytes = body
+        this.contentTypeStr = contentType
+        this.requestVal = request
+        this.redirectsVal = redirects.toList()
+        this.priorResponseVal = buildPriorResponseChain(request, redirectsVal)
+    }
+
+    /** Build OkHttp-style immediate-prior-first redirect history from real Rust hops. */
+    private fun buildPriorResponseChain(
+        request: KmpRequest,
+        redirects: List<HostHttpRedirect>,
+    ): KmpResponse? {
+        var previous: KmpResponse? = null
+        redirects.forEachIndexed { index, redirect ->
+            val prior = KmpResponse(
                 code = redirect.status,
                 message = "",
                 headers = mapOf("Location" to listOf(redirect.toUrl)),
@@ -457,25 +488,12 @@ actual class KmpResponse : Closeable {
                     request.body,
                     request.tags,
                 ),
-            ).also { it.priorResponseVal = previous }
+            )
+            prior.redirectsVal = redirects.take(index)
+            prior.priorResponseVal = previous
+            previous = prior
         }
-    }
-
-    // 给 StrResponse 等手动构造场景 (用 KmpResponseBuilder)
-    internal constructor(
-        code: Int,
-        message: String,
-        headers: Map<String, List<String>>,
-        body: ByteArray?,
-        contentType: String?,
-        request: KmpRequest
-    ) {
-        this.codeVal = code
-        this.messageVal = message
-        this.headersVal = headers
-        this.bodyBytes = body
-        this.contentTypeStr = contentType
-        this.requestVal = request
+        return previous
     }
 
     actual val code: Int get() = codeVal
@@ -502,6 +520,7 @@ actual class KmpResponse : Closeable {
             b.bodyBytes = bodyBytes
             b.contentTypeStr = contentTypeStr
             b.requestVal = requestVal
+            b.redirectsVal = redirectsVal.toList()
         }
     }
 
@@ -524,6 +543,7 @@ actual class KmpResponseBuilder actual constructor() {
     internal var bodyBytes: ByteArray? = null
     internal var contentTypeStr: String? = null
     internal var requestVal: KmpRequest = KmpRequest()
+    internal var redirectsVal: List<HostHttpRedirect> = emptyList()
 
     actual fun code(code: Int): KmpResponseBuilder {
         codeVal = code
@@ -559,7 +579,15 @@ actual class KmpResponseBuilder actual constructor() {
     }
 
     actual fun build(): KmpResponse {
-        return KmpResponse(codeVal, messageVal, headersVal, bodyBytes, contentTypeStr, requestVal)
+        return KmpResponse(
+            codeVal,
+            messageVal,
+            headersVal,
+            bodyBytes,
+            contentTypeStr,
+            requestVal,
+            redirectsVal,
+        )
     }
 }
 
