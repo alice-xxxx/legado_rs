@@ -253,22 +253,110 @@ jobs:
           key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('kotlin/build.gradle.kts', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: |
             konan-${{ runner.os }}-${{ runner.arch }}-
+      - name: Resolve iOS framework cache key
+        id: ios-framework-key
+        shell: bash
+        run: |
+          toolchain_hash="$({
+          xcodebuild -version
+          printf 'IPHONEOS_DEPLOYMENT_TARGET=%s\n' '15.0'
+          xcrun --sdk iphoneos --show-sdk-version
+          xcrun --sdk iphonesimulator --show-sdk-version
+          printf 'targets=iosArm64,iosSimulatorArm64\n'
+          } | shasum -a 256 | cut -c1-16)"
+          echo "toolchain=$toolchain_hash" >> "$GITHUB_OUTPUT"
+      - name: Restore exact iOS frameworks and native archive cache
+        id: ios-framework-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64
+            src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+          key: ios-framework-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-framework-key.outputs.toolchain }}-${{ hashFiles('kotlin/*.gradle.kts', 'kotlin/gradle.properties', 'kotlin/gradle/**', 'kotlin/gradlew', 'kotlin/gradlew.bat', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/kmp-engine/src/**', 'kotlin/kmp-engine/scripts/**', 'kotlin/src/native/quickjs-ng/**', 'kotlin/quickjs-processor/build.gradle.kts', 'kotlin/quickjs-processor/src/**', 'src-tauri/include/**', 'src-tauri/plugins/source-engine/ios/Package.swift', 'src-tauri/plugins/source-engine/ios/Sources/**/*.swift', '.github/workflows/build.yml') }}
       - name: Build device and simulator frameworks
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true'
         working-directory: kotlin
         env:
           IPHONEOS_DEPLOYMENT_TARGET: '15.0'
         run: ./gradlew --no-daemon --console=plain :kmp-engine:linkReleaseFrameworkIosArm64 :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
       - name: Package Kotlin/Native framework for the iOS Tauri plugin
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p src-tauri/plugins/source-engine/ios/Frameworks
           xcodebuild -create-xcframework \
             -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework \
             -framework kotlin/kmp-engine/build/bin/iosSimulatorArm64/releaseFramework/LegadoSourceEngine.framework \
             -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+      - name: Verify iOS framework cache outputs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          root = Path.cwd()
+          outputs = [
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libquickjs.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libquickjs.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libmbedtls.a",
+          ]
+          missing = [str(path.relative_to(root)) for path in outputs if not path.is_file()]
+          if missing:
+              raise SystemExit("Missing cached iOS build outputs: " + ", ".join(missing))
+
+          xcframework = root / "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework"
+          info = xcframework / "Info.plist"
+          if not info.is_file():
+              raise SystemExit(f"Missing XCFramework metadata: {info}")
+          with info.open("rb") as handle:
+              libraries = plistlib.load(handle)["AvailableLibraries"]
+          identifiers = {item["LibraryIdentifier"] for item in libraries}
+          required = {"ios-arm64", "ios-arm64-simulator"}
+          if not required.issubset(identifiers):
+              raise SystemExit(f"XCFramework slices {sorted(identifiers)} do not include {sorted(required)}")
+          for library in libraries:
+              identifier = library["LibraryIdentifier"]
+              library_path = library["LibraryPath"]
+              binary = xcframework / identifier / library_path / "LegadoSourceEngine"
+              if identifier in required and not binary.is_file():
+                  raise SystemExit(f"Missing XCFramework slice binary: {binary}")
+              if identifier == "ios-arm64" and library.get("SupportedPlatform") != "ios":
+                  raise SystemExit(f"Unexpected platform for device slice: {library}")
+              if identifier == "ios-arm64-simulator" and library.get("SupportedPlatformVariant") != "simulator":
+                  raise SystemExit(f"Unexpected platform for simulator slice: {library}")
+          print("Verified iOS device/simulator framework binaries, QuickJS/mbedTLS archives, and XCFramework slices.")
+          PY
+          for archive in \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libquickjs.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libquickjs.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libmbedtls.a; do
+            xcrun lipo -verify_arch arm64 "$archive"
+          done
+          for slice in ios-arm64 ios-arm64-simulator; do
+            xcrun lipo -verify_arch arm64 "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework/$slice/LegadoSourceEngine.framework/LegadoSourceEngine"
+          done
+      - name: Save iOS framework and native archive cache
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64
+            src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+          key: ${{ steps.ios-framework-cache.outputs.cache-primary-key }}
       - name: Install frontend dependencies
         run: npm ci
       - name: Generate iOS project
         run: npm run tauri -- ios init --ci
+      - name: Verify generated iOS framework search paths
+        run: |
+          project=src-tauri/gen/apple/project.yml
+          grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]' "$project"
+          grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]' "$project"
+          grep -Fq 'LegadoSourceEngine.framework' "$project"
       # Deliberately omit Apple signing credentials; the IPA must be re-signed before device installation.
       - name: Build unsigned test IPA
         run: npm run tauri -- ios build --no-sign --ci

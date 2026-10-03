@@ -26,6 +26,10 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "iOS": {
+      "template": "ios-project.yml",
+      "frameworks": ["LegadoSourceEngine"]
+    },
     "resources": {
       "../kotlin/build/source-engine/runtime/": "source-engine/"
     },

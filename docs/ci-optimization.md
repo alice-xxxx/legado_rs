@@ -79,3 +79,12 @@ commit `a9168dd` 的 Linux job 已通过，总耗时 **662 s**（基线748 s）�
 macOS job 1,068 s、Windows job 1,145 s，均比旧基线长；本轮不能宣称整体 CI 已提速。完整日志显示新 Gradle key 未命中、`work` 分支 cache 为 read-only，缓存摘要0 restored/0 saved；这会导致后续相同分支也不能保存新 Gradle 缓存。Cargo manifest 修改也使 Rust cache 部分恢复、重新编译。后续修复 trusted push 的 Gradle 缓存写入，并让 Android debug profile 对 Rust cache action 可见。Basic Caching 升级提示本身只提供服务选择，不要求切换商业增强缓存。
 
 新 macOS artifact ZIP为71,929,169 B（旧189,752,074 B，减少62.09%）；Windows为139,444,787 B（旧183,969,164 B，减少24.20%）。Linux新AppImage实际原生流程通过：GTK picker导入TXT、第二章翻到第2/2页、退出重启后恢复相同章节和页；无FUSE环境使用内置extract启动。
+
+
+## iOS 最终 Xcode 链接与 framework 精确缓存
+
+run `37113999486`（commit `38913f5`）的四个非 iOS job 均通过。iOS device/simulator framework 编译通过（751 s），XCFramework 打包通过，Rust QuickJS 链接也通过；最终 Xcode app 链接仍失败：找不到 `LegadoSourceEngine` framework，缺少 `_OBJC_CLASS_$_LSEIosSourceEngine`。修复为 Tauri 官方 iOS 模板加入 SDK 条件的 framework 搜索路径，并声明最终 app framework 依赖，仍须下一次 macOS CI 确认最终 archive/IPA。
+
+新增 exact-only iOS framework/native archive 缓存：键包含源码、原生工具链输入、Xcode/SDK 版本及目标；不接受部分恢复。命中后检查 device/simulator slice 和 arm64 archives，未命中构建后在 IPA 步骤前保存，避免最终 app 失败丢掉成功的 KMP 编译结果。生成 build 输出不参与键，保存使用 restore 时的固定 key。
+
+该次 macOS job 为357 s，比上一轮1,068 s缩短；Rust exact cache 命中，Gradle首次保存新缓存。缓存条件不同，该单次结果不能作为统一冷构建加速比例。Basic Caching 信息提示无需升级付费缓存。
