@@ -12,6 +12,7 @@ pub mod source_engine;
 mod source_host_ffi;
 mod source_http;
 mod source_jni;
+pub(crate) mod source_metadata;
 mod source_storage;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -55,6 +56,7 @@ pub fn run() {
             application::update_source,
             application::search_books,
             application::start_search,
+            application::search_book_source_candidates,
             application::tasks_resource,
             application::start_chapter_download,
             application::refresh_chapters,
@@ -63,6 +65,7 @@ pub fn run() {
             application::resume_task,
             application::cancel_task,
             application::add_book,
+            application::change_book_source,
             application::import_book_from_picker,
             application::import_protected_pdf,
             application::cancel_pending_pdf_import,

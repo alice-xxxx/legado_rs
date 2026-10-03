@@ -111,12 +111,10 @@ pub async fn list_rss_categories(
     if !source.enabled {
         return Err("Selected source is disabled".to_owned());
     }
-    if is_standard_feed_source(&source.source) {
+    let (public_categories, private_categories) = if is_standard_feed_source(&source.source) {
         let feed_url = standard_feed_url(&source.source)?;
         let id = discovery::stable_category_id(source_id, &feed_url);
-        return discovery::publish_categories(
-            service,
-            source_id,
+        (
             vec![DiscoveryCategory {
                 category_id: Some(id.clone()),
                 title: "最新文章".to_owned(),
@@ -130,9 +128,23 @@ pub async fn list_rss_categories(
                 kind: "feed".to_owned(),
             }],
         )
-        .await;
-    }
-    discovery::list_categories(service, source_id, Some(true)).await
+    } else {
+        discovery::prepare_categories(service, source_id, Some(true)).await?
+    };
+
+    // Browsing a valid RSS category starts the subscription with the default
+    // `all` filter. Preserve a previously selected filter. This is committed
+    // only after category loading succeeds and after the source snapshot is
+    // revalidated under the short source-mutation guard, so a delayed network
+    // response cannot recreate an unsubscribed or deleted source's category
+    // map, public categories, or subscription state.
+    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
+    let mut result =
+        discovery::publish_categories(service, source_id, public_categories, private_categories)
+            .await?;
+    let state_ref = ensure_subscription_locked(service, &source).await?;
+    result["rssState"] = service.resource_descriptor(&state_ref);
+    Ok(result)
 }
 
 /// Load one page of processed subscription entries from an opaque category ID.
@@ -150,6 +162,7 @@ pub async fn list_rss_articles(
     if is_standard_feed_source(&source.source) {
         return Ok(result);
     }
+    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
 
     let resource_id = result
         .get("resource")
@@ -232,6 +245,7 @@ pub(crate) async fn list_standard_feed_articles(
     }
     let feed_url = standard_feed_url(&source.source)?;
     let feed = fetch_feed(&feed_url).await?;
+    let _source_guard = service.lock_rss_source_snapshot(source).await?;
     let page = page.max(1);
     let existing_state = read_state(service).await?;
     let filter = existing_state
@@ -398,6 +412,47 @@ pub async fn rss_state_resource(
     Ok(reference)
 }
 
+async fn ensure_subscription(
+    service: &ApplicationService,
+    expected_source: &SourceRecord,
+) -> Result<ResourceRef, String> {
+    discovery::validate_source_id(&expected_source.id)?;
+    if !is_rss_source(&expected_source.source) || !expected_source.enabled {
+        return Err("Selected source is not an enabled RSS subscription".to_owned());
+    }
+
+    let _source_guard = service.lock_rss_source_snapshot(expected_source).await?;
+    ensure_subscription_locked(service, expected_source).await
+}
+
+async fn ensure_subscription_locked(
+    service: &ApplicationService,
+    expected_source: &SourceRecord,
+) -> Result<ResourceRef, String> {
+    let store = service.resource_store();
+    let reference = rss_state_resource(store).await?;
+    let source_id = expected_source.id.clone();
+    store
+        .update_json_ref(&reference, move |current| {
+            let mut document = decode_state(current)?;
+            if !document
+                .subscriptions
+                .iter()
+                .any(|subscription| subscription.source_id == source_id)
+            {
+                document.subscriptions.push(RssSubscriptionState {
+                    source_id,
+                    filter: "all".to_owned(),
+                });
+            }
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(reference)
+}
+
 /// Set the persistent server-side filter for an RSS source.
 pub async fn set_subscription_filter(
     service: &ApplicationService,
@@ -410,6 +465,7 @@ pub async fn set_subscription_filter(
     if !is_rss_source(&source.source) {
         return Err("Selected source is not an RSS subscription".to_owned());
     }
+    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
     let store = service.resource_store();
     let reference = rss_state_resource(store).await?;
     let source_id = source_id.to_owned();
@@ -454,6 +510,7 @@ pub async fn set_article_state(
     if !is_rss_source(&source.source) {
         return Err("Selected source is not an RSS subscription".to_owned());
     }
+    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
     let store = service.resource_store();
     let reference = rss_state_resource(store).await?;
     let source_id = source_id.to_owned();
@@ -849,7 +906,7 @@ mod tests {
         resources::ResourceRef,
         source_engine::SourceEngineRequest,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     use super::{
         is_legacy_rss_source, is_rss_source, list_rss_articles, list_rss_categories,
@@ -864,14 +921,87 @@ mod tests {
         }
     }
 
+    struct DelayedCategoriesExecutor {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl SourceExecutor for DelayedCategoriesExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                if !matches!(
+                    request.operation.as_str(),
+                    "exploreKinds" | "rssExploreKinds"
+                ) {
+                    return Err("unexpected operation in delayed category fixture".to_owned());
+                }
+                started.notify_one();
+                release.notified().await;
+                Ok(json!([{
+                    "title": "延迟栏目",
+                    "type": "text",
+                    "url": "https://fixture.example.test/rss/category?kind=one"
+                }]))
+            })
+        }
+    }
+
+    struct DelayedBooksExecutor {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl SourceExecutor for DelayedBooksExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            let started = self.started.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                match request.operation.as_str() {
+                    "exploreKinds" | "rssExploreKinds" => Ok(json!([{
+                        "title": "延迟文章栏目",
+                        "type": "text",
+                        "url": "https://fixture.example.test/rss/category?kind=one"
+                    }])),
+                    "explore" | "rssExplore" => {
+                        started.notify_one();
+                        release.notified().await;
+                        Ok(json!({
+                            "books": [{
+                                "name": "迟到文章",
+                                "author": "fixture",
+                                "bookUrl": "https://fixture.example.test/rss/article/one"
+                            }],
+                            "hasNextPage": false
+                        }))
+                    }
+                    other => Err(format!(
+                        "unexpected operation in delayed book fixture: {other}"
+                    )),
+                }
+            })
+        }
+    }
+
     struct FeedFixture {
         address: std::net::SocketAddr,
         stop: Arc<AtomicBool>,
+        request_started: Arc<tokio::sync::Notify>,
+        release_response: Arc<AtomicBool>,
         thread: Option<JoinHandle<()>>,
     }
 
     impl FeedFixture {
         fn start() -> Self {
+            Self::start_with_response_gate(false)
+        }
+
+        fn start_blocked() -> Self {
+            Self::start_with_response_gate(true)
+        }
+
+        fn start_with_response_gate(block_response: bool) -> Self {
             let listener =
                 TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).expect("bind feed fixture");
             let address = listener.local_addr().expect("feed fixture address");
@@ -880,6 +1010,10 @@ mod tests {
                 .expect("set fixture listener nonblocking");
             let stop = Arc::new(AtomicBool::new(false));
             let thread_stop = stop.clone();
+            let request_started = Arc::new(tokio::sync::Notify::new());
+            let thread_request_started = request_started.clone();
+            let release_response = Arc::new(AtomicBool::new(!block_response));
+            let thread_release_response = release_response.clone();
             let thread = thread::spawn(move || {
                 while !thread_stop.load(Ordering::SeqCst) {
                     match listener.accept() {
@@ -887,7 +1021,12 @@ mod tests {
                             if thread_stop.load(Ordering::SeqCst) {
                                 break;
                             }
-                            serve_feed(stream);
+                            serve_feed(
+                                stream,
+                                &thread_request_started,
+                                block_response,
+                                &thread_release_response,
+                            );
                         }
                         Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                             thread::sleep(Duration::from_millis(10));
@@ -899,6 +1038,8 @@ mod tests {
             Self {
                 address,
                 stop,
+                request_started,
+                release_response,
                 thread: Some(thread),
             }
         }
@@ -906,11 +1047,20 @@ mod tests {
         fn url(&self) -> String {
             format!("http://{}/feed.xml", self.address)
         }
+
+        async fn wait_for_request(&self) {
+            self.request_started.notified().await;
+        }
+
+        fn release(&self) {
+            self.release_response.store(true, Ordering::SeqCst);
+        }
     }
 
     impl Drop for FeedFixture {
         fn drop(&mut self) {
             self.stop.store(true, Ordering::SeqCst);
+            self.release_response.store(true, Ordering::SeqCst);
             let _ = TcpStream::connect_timeout(&self.address, Duration::from_millis(100));
             if let Some(thread) = self.thread.take() {
                 let _ = thread.join();
@@ -918,7 +1068,12 @@ mod tests {
         }
     }
 
-    fn serve_feed(stream: TcpStream) {
+    fn serve_feed(
+        stream: TcpStream,
+        request_started: &tokio::sync::Notify,
+        block_response: bool,
+        release_response: &AtomicBool,
+    ) {
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() || line.is_empty() {
@@ -932,6 +1087,10 @@ mod tests {
             if line == "\r\n" || line == "\n" {
                 break;
             }
+        }
+        request_started.notify_one();
+        while block_response && !release_response.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(5));
         }
         let body = r#"<?xml version="1.0" encoding="utf-8"?>
             <feed xmlns="http://www.w3.org/2005/Atom">
@@ -1008,8 +1167,24 @@ mod tests {
         let categories = list_rss_categories(&service, &source_id)
             .await
             .expect("list feed category");
+        assert_eq!(
+            categories["rssState"]["resourceId"],
+            "resource://reading/rss-state.json"
+        );
         let category_doc = json_get(categories["resource"]["src"].as_str().unwrap()).await;
         assert_eq!(category_doc["categories"][0]["title"], "最新文章");
+        let state_ref = super::rss_state_resource(service.resource_store())
+            .await
+            .expect("RSS state reference");
+        let initial_state = service
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .expect("default RSS subscription state");
+        assert_eq!(
+            initial_state["subscriptions"],
+            json!([{ "sourceId": source_id, "filter": "all" }])
+        );
         let category_id = category_doc["categories"][0]["categoryId"]
             .as_str()
             .expect("opaque category ID")
@@ -1067,6 +1242,15 @@ mod tests {
         set_subscription_filter(&service, &source_id, "favorites")
             .await
             .expect("set favorites filter");
+        list_rss_categories(&service, &source_id)
+            .await
+            .expect("refresh categories without resetting filter");
+        let favorites_state = service
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .expect("preserved subscription filter");
+        assert_eq!(favorites_state["subscriptions"][0]["filter"], "favorites");
         let favorite_page = list_rss_articles(&service, &source_id, &category_id, 1)
             .await
             .expect("list favorite articles");
@@ -1170,9 +1354,14 @@ mod tests {
             .join("chapters")
             .join(format!("{article_id}.html"));
         assert!(public_cache_path.exists());
-        super::remove_subscription_data(&reopened, &source_id)
+        let source_snapshot = reopened
+            .source_record(&source_id)
             .await
-            .expect("unsubscribe cache and state cleanup");
+            .expect("RSS source before unsubscribe");
+        reopened
+            .unsubscribe_rss(&source_id)
+            .await
+            .expect("unsubscribe source, cache, and state");
         assert!(!public_cache_path.exists());
         let cleared = reopened
             .resource_store()
@@ -1186,6 +1375,254 @@ mod tests {
                 .await
                 .is_err()
         );
+        assert!(super::ensure_subscription(&reopened, &source_snapshot)
+            .await
+            .is_err());
+        let still_cleared = reopened
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .unwrap();
+        assert!(still_cleared["subscriptions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn delayed_feed_response_cannot_recreate_unsubscribed_state_or_html() {
+        let fixture = FeedFixture::start_blocked();
+        let root = temp_root();
+        let service = ApplicationService::open_with_executor(&root, Arc::new(UnusedExecutor))
+            .await
+            .expect("open app service");
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "sourceName": "Blocked fixture feed",
+                    "sourceUrl": fixture.url()
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import feed");
+        let source_id = imported["sources"][0]["id"]
+            .as_str()
+            .expect("source ID")
+            .to_owned();
+        let categories = list_rss_categories(&service, &source_id)
+            .await
+            .expect("list feed category");
+        let category_doc = json_get(categories["resource"]["src"].as_str().unwrap()).await;
+        let category_id = category_doc["categories"][0]["categoryId"]
+            .as_str()
+            .expect("category ID")
+            .to_owned();
+
+        let service_for_request = service.clone();
+        let source_for_request = source_id.clone();
+        let articles_request = tokio::spawn(async move {
+            list_rss_articles(&service_for_request, &source_for_request, &category_id, 1).await
+        });
+        fixture.wait_for_request().await;
+
+        service
+            .unsubscribe_rss(&source_id)
+            .await
+            .expect("unsubscribe while feed response is blocked");
+        fixture.release();
+        assert!(articles_request
+            .await
+            .expect("article request task")
+            .is_err());
+
+        let state_ref = super::rss_state_resource(service.resource_store())
+            .await
+            .expect("RSS state reference");
+        let state = service
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .expect("state remains readable after unsubscribe");
+        assert!(state["subscriptions"].as_array().unwrap().is_empty());
+        assert!(state["articles"].as_array().unwrap().is_empty());
+        assert!(service.source_record(&source_id).await.is_err());
+        assert!(!root
+            .join("books")
+            .join(format!("rss-{source_id}"))
+            .join("chapters")
+            .exists());
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn delayed_engine_categories_cannot_recreate_unsubscribed_category_map() {
+        let root = temp_root();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let executor = Arc::new(DelayedCategoriesExecutor {
+            started: started.clone(),
+            release: release.clone(),
+        });
+        let service = ApplicationService::open_with_executor(&root, executor)
+            .await
+            .expect("open app service");
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Delayed RSS",
+                    "bookSourceUrl": "https://fixture.example.test/source",
+                    "bookSourceType": 5,
+                    "ruleExplore": { "bookList": "@css:.item" }
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import RSS source");
+        let source_id = imported["sources"][0]["id"]
+            .as_str()
+            .expect("source ID")
+            .to_owned();
+
+        let service_for_request = service.clone();
+        let source_for_request = source_id.clone();
+        let categories_request = tokio::spawn(async move {
+            list_rss_categories(&service_for_request, &source_for_request).await
+        });
+        started.notified().await;
+
+        service
+            .unsubscribe_rss(&source_id)
+            .await
+            .expect("unsubscribe while category evaluation is blocked");
+        release.notify_one();
+        assert!(categories_request
+            .await
+            .expect("categories request task")
+            .is_err());
+
+        let category_map_path = root
+            .join("private-data/discovery-categories")
+            .join(format!("{source_id}.json"));
+        let category_map: Value = serde_json::from_slice(
+            &tokio::fs::read(&category_map_path)
+                .await
+                .expect("unsubscribe leaves an empty category map"),
+        )
+        .expect("private category map JSON");
+        assert!(category_map["categories"].as_array().unwrap().is_empty());
+        let categories_ref = service
+            .resource_store()
+            .discovery_ref(&source_id)
+            .expect("category resource reference");
+        let public_categories = service
+            .resource_store()
+            .read_json_ref(&categories_ref)
+            .await
+            .expect("unsubscribe leaves a public empty category document");
+        assert!(public_categories["categories"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        let state_ref = super::rss_state_resource(service.resource_store())
+            .await
+            .expect("RSS state reference");
+        let state = service
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .expect("state remains readable after unsubscribe");
+        assert!(state["subscriptions"].as_array().unwrap().is_empty());
+        assert!(service.source_record(&source_id).await.is_err());
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn delayed_engine_articles_cannot_publish_after_unsubscribe() {
+        let root = temp_root();
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let executor = Arc::new(DelayedBooksExecutor {
+            started: started.clone(),
+            release: release.clone(),
+        });
+        let service = ApplicationService::open_with_executor(&root, executor)
+            .await
+            .expect("open app service");
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Delayed RSS books",
+                    "bookSourceUrl": "https://fixture.example.test/source-books",
+                    "bookSourceType": 5,
+                    "ruleExplore": { "bookList": "@css:.item" }
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import RSS source");
+        let source_id = imported["sources"][0]["id"]
+            .as_str()
+            .expect("source ID")
+            .to_owned();
+        let categories = list_rss_categories(&service, &source_id)
+            .await
+            .expect("load RSS categories");
+        let category_doc = json_get(categories["resource"]["src"].as_str().unwrap()).await;
+        let category_id = category_doc["categories"][0]["categoryId"]
+            .as_str()
+            .expect("category ID")
+            .to_owned();
+
+        let service_for_request = service.clone();
+        let source_for_request = source_id.clone();
+        let articles_request = tokio::spawn(async move {
+            list_rss_articles(&service_for_request, &source_for_request, &category_id, 1).await
+        });
+        started.notified().await;
+
+        service
+            .unsubscribe_rss(&source_id)
+            .await
+            .expect("unsubscribe while book evaluation is blocked");
+        release.notify_one();
+        assert!(articles_request
+            .await
+            .expect("articles request task")
+            .is_err());
+
+        let state_ref = super::rss_state_resource(service.resource_store())
+            .await
+            .expect("RSS state reference");
+        let state = service
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .expect("state remains readable after unsubscribe");
+        assert!(state["subscriptions"].as_array().unwrap().is_empty());
+        assert!(state["articles"].as_array().unwrap().is_empty());
+        assert!(service.source_record(&source_id).await.is_err());
+        let private_results = root.join("private-data/search-results");
+        if private_results.exists() {
+            assert!(tokio::fs::read_dir(private_results)
+                .await
+                .expect("search result directory")
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none());
+        }
+        let public_results = root.join("search");
+        if public_results.exists() {
+            assert!(tokio::fs::read_dir(public_results)
+                .await
+                .expect("public search directory")
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none());
+        }
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

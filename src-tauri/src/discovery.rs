@@ -214,6 +214,19 @@ pub async fn list_categories(
     source_id: &str,
     require_rss: Option<bool>,
 ) -> Result<Value, String> {
+    let (public_categories, private_categories) =
+        prepare_categories(service, source_id, require_rss).await?;
+    publish_categories(service, source_id, public_categories, private_categories).await
+}
+
+/// Evaluate category rules and produce the display/private projections without
+/// writing either resource. RSS uses this split so it can revalidate the
+/// source and publish the result while holding the source mutation guard.
+pub(crate) async fn prepare_categories(
+    service: &ApplicationService,
+    source_id: &str,
+    require_rss: Option<bool>,
+) -> Result<(Vec<DiscoveryCategory>, Vec<PrivateCategory>), String> {
     let source = enabled_source(service, source_id).await?;
     if let Some(require_rss) = require_rss {
         if is_rss_source(&source.source) != require_rss {
@@ -297,7 +310,7 @@ pub async fn list_categories(
         }
     }
 
-    publish_categories(service, source_id, public_categories, private_categories).await
+    Ok((public_categories, private_categories))
 }
 
 /// Stable opaque identity for a source category. The URL and source identity
@@ -433,6 +446,15 @@ pub async fn list_books(
     if raw_books.len() > 2_000 {
         return Err("Source engine returned too many discovery results".to_owned());
     }
+    // Engine execution may take arbitrarily long. Only an RSS caller requests
+    // this guard: revalidate the source after the network/engine work, then
+    // keep the mutation lock across the public result write so an unsubscribe
+    // cannot race a delayed RSS response into publishing a new result resource.
+    let _source_guard = if require_rss == Some(true) {
+        Some(service.lock_rss_source_snapshot(&source).await?)
+    } else {
+        None
+    };
     let mut result = service
         .store_processed_results(
             &category.title,

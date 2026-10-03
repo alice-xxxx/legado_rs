@@ -18,6 +18,7 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     models::{
@@ -37,6 +38,7 @@ pub trait SourceExecutor: Send + Sync {
 }
 
 const PENDING_PDF_IMPORT_TTL: Duration = Duration::from_secs(5 * 60);
+const BOOK_SOURCE_CANDIDATE_TTL_MS: u64 = 30 * 60 * 1000;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 const MAX_PICKER_FILE_BYTES: u64 = 512 * 1024 * 1024;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -890,6 +892,718 @@ impl ApplicationService {
         )
     }
 
+    /// Search other enabled novel sources for a replacement for an existing
+    /// book. The private context binds every result to this book's current
+    /// source and catalog snapshot; ordinary search results cannot be used by
+    /// `change_book_source`.
+    pub async fn search_book_source_candidates(
+        &self,
+        book_id: &str,
+        source_ids: &[String],
+        keyword: Option<&str>,
+        page: u32,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        validate_id(book_id, "bookId")?;
+
+        let (selected, context, effective_keyword) = {
+            // Keep the same lock order used by catalog commits. No source or
+            // book lock is held while the executor searches the network.
+            let _sources = self.sources_lock.lock().await;
+            let records = self.read_sources().await?;
+            let _book = self.book_lock(book_id).await;
+            let private_path = Path::new("books").join(format!("{book_id}.json"));
+            let mut private = self
+                .read_private_json(&private_path)
+                .await
+                .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
+            let book_ref = self
+                .store
+                .book_ref(book_id)
+                .map_err(|error| error.to_string())?;
+            let book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
+            if private
+                .get("bookInstanceId")
+                .and_then(Value::as_str)
+                .is_none_or(str::is_empty)
+            {
+                private["bookInstanceId"] = json!(uuid::Uuid::new_v4().simple().to_string());
+                self.write_private_json(&private_path, &private).await?;
+            }
+            let original_source_id = private["sourceId"]
+                .as_str()
+                .ok_or_else(|| "Private book is missing its source ID".to_owned())?
+                .to_owned();
+            let original_source = records
+                .iter()
+                .find(|source| source.id == original_source_id)
+                .ok_or_else(|| "The current book source is no longer imported".to_owned())?;
+            let effective_keyword = keyword
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| {
+                    text_at(&book, &["title"])
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned()
+                });
+            if normalize_identity(&effective_keyword).is_empty() {
+                return Err("A title or search keyword is required to find another source".into());
+            }
+            let fingerprint = book_source_fingerprint(
+                &original_source_id,
+                &original_source.source,
+                &private,
+                &book,
+            )?;
+            let selected = records
+                .iter()
+                .filter(|source| {
+                    source.enabled
+                        && source.id != original_source_id
+                        && !crate::source_metadata::is_rss_source_metadata(&source.source)
+                        && (source_ids.is_empty() || source_ids.contains(&source.id))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if selected.is_empty() {
+                return Err("No other enabled novel sources are selected".into());
+            }
+            let now = now_ms();
+            let context = json!({
+                "schemaVersion": CURRENT_SCHEMA_VERSION,
+                "targetBookId": book_id,
+                "originalSourceId": original_source_id,
+                "originalSourceFingerprint": source_definition_fingerprint(&original_source.source)?,
+                "catalogFingerprint": fingerprint,
+                "catalogGeneration": private.get("catalogGeneration").cloned().unwrap_or(Value::Null),
+                "bookInstanceId": private["bookInstanceId"],
+                "targetTitle": text_at(&book, &["title"]).unwrap_or_default(),
+                "targetAuthor": text_at(&book, &["author"]).unwrap_or_default(),
+                "createdAtMs": now,
+                "expiresAtMs": now.saturating_add(BOOK_SOURCE_CANDIDATE_TTL_MS),
+            });
+            (selected, context, effective_keyword)
+        };
+
+        let search_id = format!("replace-{}", uuid::Uuid::new_v4().simple());
+        let resource = self
+            .store
+            .search_ref(&search_id)
+            .map_err(|error| error.to_string())?;
+        self.store
+            .write_json_ref(
+                &resource,
+                &json!({
+                    "schemaVersion": CURRENT_SCHEMA_VERSION,
+                    "keyword": effective_keyword,
+                    "page": page.max(1),
+                    "results": [],
+                    "errors": [],
+                    "complete": false,
+                }),
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let context_path =
+            Path::new("search-results").join(format!("{search_id}.replacement.json"));
+        self.write_private_json(&context_path, &context).await?;
+
+        let now = now_ms();
+        let task = AppTask {
+            id: format!("task-{}", uuid::Uuid::new_v4().simple()),
+            kind: "bookSourceCandidates".into(),
+            status: "queued".into(),
+            book_id: Some(book_id.to_owned()),
+            source_ids: Some(selected.iter().map(|source| source.id.clone()).collect()),
+            keyword: Some(effective_keyword),
+            page: page.max(1),
+            from_index: 0,
+            total: selected.len(),
+            completed: 0,
+            check_only: false,
+            search_id: Some(search_id),
+            result: None,
+            error: None,
+            created_at_ms: now,
+            updated_at_ms: now,
+        };
+        let task_id = task.id.clone();
+        let receiver = self.create_task(task).await?;
+        let service = self.clone();
+        let worker_id = task_id.clone();
+        tokio::spawn(async move {
+            service.run_task(worker_id, receiver).await;
+        });
+        Ok(json!({
+            "bookId": book_id,
+            "taskId": task_id,
+            "task": self.task_summary_by_id(&task_id).await?,
+            "resource": self.resource_descriptor(&resource),
+        }))
+    }
+
+    /// Confirm a source replacement. Both source engine calls happen without
+    /// source/book locks; the method then reacquires locks in the established
+    /// order and validates the candidate's book/source/catalog snapshot again
+    /// before publishing any new resources.
+    pub async fn change_book_source(
+        &self,
+        book_id: &str,
+        result_id: &str,
+        confirm_missing_author: bool,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        validate_id(book_id, "bookId")?;
+        validate_id(result_id, "resultId")?;
+        let candidate_cache = self
+            .read_private_json(Path::new("search-results").join(format!("{result_id}.json")))
+            .await
+            .map_err(|_| "Replacement candidate is unavailable; search again".to_owned())?;
+        let context = candidate_cache
+            .get("replacementContext")
+            .cloned()
+            .ok_or_else(|| "This search result is not a replacement candidate".to_owned())?;
+        if context.get("targetBookId").and_then(Value::as_str) != Some(book_id) {
+            return Err("Replacement candidate belongs to a different book".into());
+        }
+        let expires_at_ms = context["expiresAtMs"]
+            .as_u64()
+            .ok_or_else(|| "Replacement candidate has invalid expiry metadata".to_owned())?;
+        if now_ms() > expires_at_ms {
+            return Err("Replacement candidate expired; search again".into());
+        }
+        if context["requiresIdentityConfirmation"].as_bool() == Some(true)
+            && !confirm_missing_author
+        {
+            return Err(
+                "Confirm that this title is the intended book because its author could not be verified".into(),
+            );
+        }
+        let target_source_id = candidate_cache["sourceId"]
+            .as_str()
+            .ok_or_else(|| "Replacement candidate has no source ID".to_owned())?
+            .to_owned();
+        let candidate_book = candidate_cache
+            .get("book")
+            .cloned()
+            .ok_or_else(|| "Replacement candidate has no engine result".to_owned())?;
+        let search_id = context["searchId"]
+            .as_str()
+            .ok_or_else(|| "Replacement candidate has no search binding".to_owned())?;
+        validate_id(search_id, "searchId")?;
+        let search_ref = self
+            .store
+            .search_ref(search_id)
+            .map_err(|error| error.to_string())?;
+        let search_document =
+            self.store.read_json_ref(&search_ref).await.map_err(|_| {
+                "Replacement candidate search is unavailable; search again".to_owned()
+            })?;
+        let belongs_to_completed_search = search_document["complete"].as_bool() == Some(true)
+            && search_document["cancelled"].as_bool() != Some(true)
+            && search_document["results"]
+                .as_array()
+                .is_some_and(|results| {
+                    results.iter().any(|result| {
+                        result["resultId"].as_str() == Some(result_id)
+                            && result["sourceId"].as_str() == Some(target_source_id.as_str())
+                    })
+                });
+        if !belongs_to_completed_search {
+            return Err("Replacement candidate is not part of a completed search".into());
+        }
+
+        let book_ref = self
+            .store
+            .book_ref(book_id)
+            .map_err(|error| error.to_string())?;
+        let (old_source, new_source, old_book) = {
+            let _sources = self.sources_lock.lock().await;
+            let sources = self.read_sources().await?;
+            let old_source_id = context["originalSourceId"]
+                .as_str()
+                .ok_or_else(|| "Replacement candidate has no original source binding".to_owned())?;
+            let old_source = sources
+                .iter()
+                .find(|source| source.id == old_source_id)
+                .cloned()
+                .ok_or_else(|| "The current book source is no longer imported".to_owned())?;
+            let new_source = sources
+                .iter()
+                .find(|source| source.id == target_source_id)
+                .cloned()
+                .ok_or_else(|| "The replacement source was removed; search again".to_owned())?;
+            if !new_source.enabled
+                || crate::source_metadata::is_rss_source_metadata(&new_source.source)
+            {
+                return Err("Replacement source is disabled or is not a novel source".into());
+            }
+            if old_source.id == new_source.id {
+                return Err("Choose a different source for this book".into());
+            }
+            if source_definition_fingerprint(&new_source.source)?
+                != context["candidateSourceFingerprint"]
+                    .as_str()
+                    .unwrap_or_default()
+            {
+                return Err("Replacement source changed after the search; search again".into());
+            }
+            if source_definition_fingerprint(&old_source.source)?
+                != context["originalSourceFingerprint"]
+                    .as_str()
+                    .unwrap_or_default()
+            {
+                return Err("Current book source changed after the search; search again".into());
+            }
+
+            let _book = self.book_lock(book_id).await;
+            let old_private = self
+                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .await
+                .map_err(|_| format!("Book '{book_id}' was removed"))?;
+            let old_book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| format!("Book '{book_id}' was removed"))?;
+            let actual_fingerprint = book_source_fingerprint(
+                &old_source.id,
+                &old_source.source,
+                &old_private,
+                &old_book,
+            )?;
+            if actual_fingerprint != context["catalogFingerprint"].as_str().unwrap_or_default()
+                || old_private
+                    .get("catalogGeneration")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+                    != context["catalogGeneration"]
+            {
+                return Err("Book catalog changed after the search; search again".into());
+            }
+            (old_source, new_source, old_book)
+        };
+
+        let raw_new_book = if candidate_book.is_object() {
+            candidate_book
+        } else {
+            return Err("Replacement source returned invalid book metadata".into());
+        };
+        let rss = crate::rss::is_legacy_rss_source(&new_source.source);
+        let engine_book = self
+            .executor
+            .execute(engine_request(
+                if rss { "rssBookInfo" } else { "bookInfo" },
+                &new_source.source,
+                None,
+                None,
+                Some(raw_new_book.clone()),
+                None,
+                None,
+            ))
+            .await?;
+        if !engine_book.is_object() {
+            return Err("Replacement source returned invalid book details".into());
+        }
+        let old_title = text_at(&old_book, &["title"]).unwrap_or_default();
+        let target_title = text_at(&engine_book, &["name", "title"])
+            .ok_or_else(|| "Replacement source did not confirm the book title".to_owned())?;
+        if normalize_identity(&target_title) != normalize_identity(&old_title) {
+            return Err("Replacement source book title does not match the current book".into());
+        }
+        let old_author = text_at(&old_book, &["author"]).unwrap_or_default();
+        let engine_author = text_at(&engine_book, &["author"]);
+        if !old_author.trim().is_empty()
+            && engine_author
+                .as_deref()
+                .is_some_and(|author| !author.trim().is_empty())
+            && normalize_identity(engine_author.as_deref().unwrap_or_default())
+                != normalize_identity(&old_author)
+        {
+            return Err("Replacement source author does not match the current book".into());
+        }
+        let author_unverified = old_author.trim().is_empty()
+            || engine_author
+                .as_deref()
+                .is_none_or(|author| author.trim().is_empty());
+        if author_unverified && !confirm_missing_author {
+            return Err(
+                "Confirm that this title is the intended book because its author could not be verified".into(),
+            );
+        }
+        // Keep known metadata when the new source omits it; the source rule
+        // engine remains the authority when it supplies a new value.
+        let target_author = engine_author.unwrap_or(old_author.clone());
+        let raw_chapters = self
+            .executor
+            .execute(engine_request(
+                if rss { "rssChapters" } else { "chapters" },
+                &new_source.source,
+                None,
+                None,
+                Some(engine_book.clone()),
+                None,
+                None,
+            ))
+            .await?
+            .as_array()
+            .cloned()
+            .ok_or_else(|| "Replacement source returned an invalid chapter catalog".to_owned())?;
+        if raw_chapters.is_empty() {
+            return Err(
+                "Replacement source returned no chapters; the current book was kept".into(),
+            );
+        }
+        crate::catalog::reconcile_catalog(
+            book_id,
+            &[],
+            &[],
+            &raw_chapters,
+            &ProgressSummary::default(),
+            &HashSet::new(),
+            now_ms(),
+        )
+        .map_err(|error| format!("Replacement chapter catalog is invalid: {error}"))?;
+
+        let generation = uuid::Uuid::new_v4().simple().to_string();
+        let new_chapters = raw_chapters
+            .iter()
+            .enumerate()
+            .map(|(index, raw)| {
+                let raw_url =
+                    text_at(raw, &["url", "chapterUrl"]).unwrap_or_else(|| format!("@{index}"));
+                ChapterDescriptor {
+                    id: chapter_id_for_generation(book_id, &generation, &raw_url),
+                    title: text_at(raw, &["title", "chapterName", "name"])
+                        .unwrap_or_else(|| format!("Chapter {}", index + 1)),
+                    index,
+                    // A new source always begins uncached, even if it returns
+                    // URLs that happen to match the previous source.
+                    src: None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut new_ids = HashSet::with_capacity(new_chapters.len());
+        if new_chapters
+            .iter()
+            .any(|chapter| !new_ids.insert(chapter.id.clone()))
+        {
+            return Err("Replacement catalog produces duplicate chapter IDs".into());
+        }
+
+        let old_chapters = serde_json::from_value::<Vec<ChapterDescriptor>>(
+            old_book
+                .get("chapters")
+                .cloned()
+                .ok_or_else(|| "Current book chapter directory is missing".to_owned())?,
+        )
+        .map_err(|error| format!("Cannot read current chapter directory: {error}"))?;
+        let old_titles = old_chapters
+            .iter()
+            .map(|chapter| chapter.title.clone())
+            .collect::<Vec<_>>();
+        let new_titles = new_chapters
+            .iter()
+            .map(|chapter| chapter.title.clone())
+            .collect::<Vec<_>>();
+        let bookmarks_ref = crate::reading_tools::bookmarks_resource(&self.store).await?;
+        let progress_ref = self
+            .store
+            .progress_ref(book_id)
+            .map_err(|error| error.to_string())?;
+        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let mut migrated_bookmarks = 0usize;
+        let mut orphaned_bookmarks = 0usize;
+        let old_chapter_ids = old_chapters
+            .iter()
+            .map(|chapter| chapter.id.clone())
+            .collect::<Vec<_>>();
+
+        let _sources = self.sources_lock.lock().await;
+        let latest_sources = self.read_sources().await?;
+        let latest_old_source = latest_sources
+            .iter()
+            .find(|source| source.id == old_source.id)
+            .ok_or_else(|| "Current source was removed during replacement".to_owned())?;
+        let latest_new_source = latest_sources
+            .iter()
+            .find(|source| source.id == new_source.id)
+            .ok_or_else(|| "Replacement source was removed during replacement".to_owned())?;
+        if latest_old_source.source != old_source.source
+            || latest_new_source.source != new_source.source
+            || !latest_new_source.enabled
+        {
+            return Err("A source changed during replacement; search again".into());
+        }
+        let _book = self.book_lock(book_id).await;
+        let latest_private = self
+            .read_private_json(&private_path)
+            .await
+            .map_err(|_| format!("Book '{book_id}' was removed during replacement"))?;
+        let latest_book = self
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .map_err(|_| format!("Book '{book_id}' was removed during replacement"))?;
+        if latest_private.get("sourceId").and_then(Value::as_str) != Some(old_source.id.as_str())
+            || book_source_fingerprint(
+                &old_source.id,
+                &old_source.source,
+                &latest_private,
+                &latest_book,
+            )? != context["catalogFingerprint"].as_str().unwrap_or_default()
+        {
+            return Err("Book source or catalog changed during replacement; search again".into());
+        }
+
+        // Progress may have advanced while the source engine was resolving
+        // the new metadata. Re-read it under the commit lock and remap the
+        // latest value so a slow network request never rolls the reader back.
+        let old_private = latest_private;
+        let old_book = latest_book;
+        let summary_progress = serde_json::from_value::<ProgressSummary>(
+            old_book
+                .get("progress")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        )
+        .unwrap_or_default();
+        let current_progress_ref = self
+            .store
+            .progress_ref(book_id)
+            .map_err(|error| error.to_string())?;
+        let progress_document = self
+            .store
+            .read_json_ref(&current_progress_ref)
+            .await
+            .ok()
+            .and_then(|value| serde_json::from_value::<ProgressDocument>(value).ok())
+            .filter(|progress| progress.book_id == book_id);
+        let old_progress = progress_document
+            .filter(|document| document.updated_at_ms > summary_progress.updated_at_ms)
+            .map(|document| ProgressSummary {
+                chapter_id: document.chapter_id,
+                chapter_index: document.chapter_index,
+                offset: document.offset,
+                updated_at_ms: document.updated_at_ms,
+            })
+            .unwrap_or(summary_progress);
+        let progress_old_index = old_progress
+            .chapter_id
+            .as_deref()
+            .and_then(|id| old_chapters.iter().position(|chapter| chapter.id == id))
+            .unwrap_or_else(|| {
+                old_progress
+                    .chapter_index
+                    .min(old_chapters.len().saturating_sub(1))
+            });
+        let progress_title = old_chapters
+            .get(progress_old_index)
+            .map(|chapter| chapter.title.as_str())
+            .unwrap_or_default();
+        let mapped_index = unique_chapter_title_index(progress_title, &old_titles, &new_titles);
+        let (progress_index, progress_offset) = match mapped_index {
+            Some(index) => (index, old_progress.offset),
+            None => (progress_old_index.min(new_chapters.len() - 1), 0),
+        };
+        let progress = ProgressSummary {
+            chapter_id: Some(new_chapters[progress_index].id.clone()),
+            chapter_index: progress_index,
+            offset: progress_offset,
+            updated_at_ms: now_ms().max(old_progress.updated_at_ms.saturating_add(1)),
+        };
+        let moved_progress = progress_index != old_progress.chapter_index
+            || old_progress.chapter_id.as_deref() != progress.chapter_id.as_deref()
+            || progress_offset != old_progress.offset;
+        let mut next_private = old_private.clone();
+        next_private["sourceId"] = json!(new_source.id);
+        next_private["book"] = engine_book.clone();
+        next_private["chapters"] = json!(raw_chapters);
+        next_private["catalogGeneration"] = json!(generation);
+        let mut next_book = old_book.clone();
+        next_book["title"] = json!(target_title);
+        next_book["author"] = json!(target_author);
+        if let Some(cover) = text_at(&engine_book, &["coverUrl", "cover", "coverSrc"])
+            .and_then(|value| ResourceRef::new(value).ok())
+        {
+            next_book["coverSrc"] = json!(cover.as_str());
+        }
+        next_book["chapterCount"] = json!(new_chapters.len());
+        next_book["latestChapter"] = new_chapters
+            .last()
+            .map(|chapter| json!(chapter.title))
+            .unwrap_or(Value::Null);
+        next_book["chapters"] =
+            serde_json::to_value(&new_chapters).map_err(|error| error.to_string())?;
+        next_book["progress"] =
+            serde_json::to_value(&progress).map_err(|error| error.to_string())?;
+        let next_progress = serde_json::to_value(ProgressDocument {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            book_id: book_id.to_owned(),
+            chapter_id: progress.chapter_id.clone(),
+            chapter_index: progress.chapter_index,
+            offset: progress.offset,
+            updated_at_ms: progress.updated_at_ms,
+        })
+        .map_err(|error| error.to_string())?;
+
+        self.write_private_json(&private_path, &next_private)
+            .await?;
+        if let Err(error) = self.store.write_json_ref(&book_ref, &next_book).await {
+            let rollback = self.write_private_json(&private_path, &old_private).await;
+            return Err(format!(
+                "Cannot commit replacement book resource: {error}; private rollback: {}",
+                rollback
+                    .map(|_| "ok".to_owned())
+                    .unwrap_or_else(|error| error)
+            ));
+        }
+        if let Err(error) = self
+            .store
+            .write_json_ref(&progress_ref, &next_progress)
+            .await
+        {
+            let book_rollback = self.store.write_json_ref(&book_ref, &old_book).await;
+            let private_rollback = self.write_private_json(&private_path, &old_private).await;
+            return Err(format!(
+                "Cannot commit replacement progress: {error}; book rollback: {}; private rollback: {}",
+                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
+                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+            ));
+        }
+        if let Err(error) = self.upsert_shelf(book_id).await {
+            let progress_rollback = self
+                .store
+                .write_json_ref(
+                    &progress_ref,
+                    &serde_json::to_value(ProgressDocument {
+                        schema_version: CURRENT_SCHEMA_VERSION,
+                        book_id: book_id.to_owned(),
+                        chapter_id: old_progress.chapter_id.clone(),
+                        chapter_index: old_progress.chapter_index,
+                        offset: old_progress.offset,
+                        updated_at_ms: old_progress.updated_at_ms,
+                    })
+                    .map_err(|encode_error| encode_error.to_string())?,
+                )
+                .await;
+            let book_rollback = self.store.write_json_ref(&book_ref, &old_book).await;
+            let private_rollback = self.write_private_json(&private_path, &old_private).await;
+            let shelf_rollback = self.upsert_shelf(book_id).await;
+            return Err(format!(
+                "Cannot update shelf after source replacement: {error}; progress rollback: {}; book rollback: {}; private rollback: {}; shelf rollback: {}",
+                progress_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
+                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
+                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+                shelf_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+            ));
+        }
+        let bookmark_result = self
+            .store
+            .update_json_ref(&bookmarks_ref, |mut document| {
+                let bookmarks = document
+                    .get_mut("bookmarks")
+                    .and_then(Value::as_array_mut)
+                    .ok_or_else(|| "Bookmark resource has no bookmarks array".to_owned())?;
+                for bookmark in bookmarks.iter_mut().filter(|bookmark| {
+                    bookmark.get("bookId").and_then(Value::as_str) == Some(book_id)
+                }) {
+                    let old_title =
+                        if bookmark.get("orphaned").and_then(Value::as_bool) == Some(true) {
+                            bookmark
+                                .get("chapterTitle")
+                                .and_then(Value::as_str)
+                                .map(str::to_owned)
+                        } else {
+                            bookmark
+                                .get("chapterIndex")
+                                .and_then(Value::as_u64)
+                                .and_then(|index| old_titles.get(index as usize))
+                                .cloned()
+                        };
+                    let target_index = old_title.as_deref().and_then(|title| {
+                        if bookmark.get("orphaned").and_then(Value::as_bool) == Some(true) {
+                            unique_target_title_index(title, &new_titles)
+                        } else {
+                            unique_chapter_title_index(title, &old_titles, &new_titles)
+                        }
+                    });
+                    if let Some(index) = target_index {
+                        bookmark["chapterIndex"] = json!(index);
+                        bookmark.as_object_mut().map(|fields| {
+                            fields.remove("orphaned");
+                            fields.remove("chapterTitle");
+                        });
+                        migrated_bookmarks = migrated_bookmarks.saturating_add(1);
+                    } else {
+                        bookmark["orphaned"] = json!(true);
+                        bookmark["chapterTitle"] =
+                            json!(old_title.unwrap_or_else(|| "Unknown chapter".into()));
+                        orphaned_bookmarks = orphaned_bookmarks.saturating_add(1);
+                    }
+                }
+                Ok(document)
+            })
+            .await;
+        if let Err(error) = bookmark_result {
+            let old_progress_json = serde_json::to_value(ProgressDocument {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                book_id: book_id.to_owned(),
+                chapter_id: old_progress.chapter_id.clone(),
+                chapter_index: old_progress.chapter_index,
+                offset: old_progress.offset,
+                updated_at_ms: old_progress.updated_at_ms,
+            })
+            .map_err(|encode_error| encode_error.to_string())?;
+            let progress_rollback = self
+                .store
+                .write_json_ref(&progress_ref, &old_progress_json)
+                .await;
+            let book_rollback = self.store.write_json_ref(&book_ref, &old_book).await;
+            let private_rollback = self.write_private_json(&private_path, &old_private).await;
+            let shelf_rollback = self.upsert_shelf(book_id).await;
+            return Err(format!(
+                "Cannot migrate replacement bookmarks: {error}; progress rollback: {}; book rollback: {}; private rollback: {}; shelf rollback: {}",
+                progress_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
+                book_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error.to_string()),
+                private_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+                shelf_rollback.map(|_| "ok".to_owned()).unwrap_or_else(|error| error),
+            ));
+        }
+
+        for chapter_id in old_chapter_ids {
+            let path = self
+                .root
+                .join("books")
+                .join(book_id)
+                .join("chapters")
+                .join(format!("{chapter_id}.html"));
+            if let Err(error) = tokio::fs::remove_file(path).await {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!("Cannot remove old-source chapter cache {chapter_id}: {error}");
+                }
+            }
+        }
+        let shelf_ref = self.store.shelf_ref();
+        Ok(json!({
+            "book": self.resource_descriptor(&book_ref),
+            "shelf": self.resource_descriptor(&shelf_ref),
+            "progress": serde_json::to_value(&progress).map_err(|error| error.to_string())?,
+            "movedProgress": moved_progress,
+            "bookmarks": {
+                "resource": self.resource_descriptor(&bookmarks_ref),
+                "migratedCount": migrated_bookmarks,
+                "orphanedCount": orphaned_bookmarks,
+            },
+        }))
+    }
+
     pub async fn start_chapter_download(
         &self,
         book_id: &str,
@@ -1225,7 +1939,9 @@ impl ApplicationService {
             drop(operation);
             let result = match task.kind.as_str() {
                 "chapterDownload" => self.run_download_task(&task_id, &mut signal).await,
-                "search" => self.run_search_task(&task_id, &mut signal).await,
+                "search" | "bookSourceCandidates" => {
+                    self.run_search_task(&task_id, &mut signal).await
+                }
                 "refreshChapters" | "checkNewChapters" => {
                     self.run_refresh_task(&task_id, &mut signal).await
                 }
@@ -1284,7 +2000,7 @@ impl ApplicationService {
             let current = *signal.borrow_and_update();
             if current.cancelled {
                 if let Ok(task) = self.task_summary_record(task_id).await {
-                    if task.kind == "search" {
+                    if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") {
                         let _operation = self.operation_gate.clone().read_owned().await;
                         self.finish_search_document(&task, true).await?;
                     }
@@ -1475,6 +2191,13 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
         let mut results = Vec::new();
         let mut errors = Vec::new();
+        let replacement_context = if task.kind == "bookSourceCandidates" {
+            let context_path =
+                Path::new("search-results").join(format!("{search_id}.replacement.json"));
+            Some(self.read_private_json(context_path).await?)
+        } else {
+            None
+        };
         match response {
             Ok(value) => {
                 let books = value
@@ -1483,13 +2206,49 @@ impl ApplicationService {
                     .cloned()
                     .unwrap_or_default();
                 for book in books {
+                    let replacement = if let Some(context) = &replacement_context {
+                        let Some(requires_identity_confirmation) =
+                            candidate_identity_match(context, &book)
+                        else {
+                            continue;
+                        };
+                        Some((context, requires_identity_confirmation))
+                    } else {
+                        None
+                    };
                     let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
+                    let source_fingerprint = source_definition_fingerprint(&source.source)?;
+                    let private_result = if let Some((context, requires_confirmation)) = replacement
+                    {
+                        json!({
+                            "sourceId": source.id,
+                            "book": book,
+                            "replacementContext": {
+                                "targetBookId": context["targetBookId"],
+                                "originalSourceId": context["originalSourceId"],
+                                "originalSourceFingerprint": context["originalSourceFingerprint"],
+                                "catalogFingerprint": context["catalogFingerprint"],
+                                "catalogGeneration": context["catalogGeneration"],
+                                "createdAtMs": context["createdAtMs"],
+                                "expiresAtMs": context["expiresAtMs"],
+                                "searchId": search_id,
+                                "candidateSourceFingerprint": source_fingerprint,
+                                "requiresIdentityConfirmation": requires_confirmation,
+                            }
+                        })
+                    } else {
+                        json!({ "sourceId": source.id, "book": book })
+                    };
                     self.write_private_json(
                         Path::new("search-results").join(format!("{result_id}.json")),
-                        &json!({ "sourceId": source.id, "book": book }),
+                        &private_result,
                     )
                     .await?;
-                    results.push(project_search_result(&result_id, source, &book));
+                    let mut projected = project_search_result(&result_id, source, &book);
+                    if let Some((_, requires_confirmation)) = replacement {
+                        projected["requiresIdentityConfirmation"] = json!(requires_confirmation);
+                    }
+                    results.push(projected);
                 }
             }
             Err(error) => errors.push(
@@ -1602,7 +2361,7 @@ impl ApplicationService {
         // Capture a coherent source/catalog snapshot while following the
         // global lock order (source metadata, then book). The source engine
         // call deliberately happens after both locks are released.
-        let (source, engine_book, old_raw, old_chapters) = {
+        let (source, engine_book, old_raw, old_chapters, catalog_generation) = {
             let _sources_lock = self.sources_lock.lock().await;
             let source_id = {
                 let private = self.read_private_json(&private_path).await?;
@@ -1648,7 +2407,11 @@ impl ApplicationService {
             if raw.len() != chapters.len() {
                 return Err("Book chapter directory is out of sync; keeping existing data".into());
             }
-            (source, engine_book, raw, chapters)
+            let generation = private
+                .get("catalogGeneration")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            (source, engine_book, raw, chapters, generation)
         };
 
         let operation = if crate::rss::is_legacy_rss_source(&source.source) {
@@ -1787,7 +2550,7 @@ impl ApplicationService {
                 .map(|chapter| chapter.id.clone())
                 .collect::<HashSet<_>>();
             let refreshed_at_ms = now_ms().max(progress.updated_at_ms.saturating_add(1));
-            let plan = crate::catalog::reconcile_catalog(
+            let mut plan = crate::catalog::reconcile_catalog(
                 book_id,
                 &old_raw,
                 &current_chapters,
@@ -1796,6 +2559,23 @@ impl ApplicationService {
                 &cached_ids,
                 refreshed_at_ms,
             )?;
+            if let Some(generation) = catalog_generation.as_deref() {
+                let old_ids = current_chapters
+                    .iter()
+                    .map(|chapter| chapter.id.as_str())
+                    .collect::<HashSet<_>>();
+                for (index, chapter) in plan.chapters.iter_mut().enumerate() {
+                    if !old_ids.contains(chapter.id.as_str()) {
+                        let stable_url = text_at(&new_raw[index], &["url", "chapterUrl"])
+                            .unwrap_or_else(|| format!("@{index}"));
+                        chapter.id = chapter_id_for_generation(book_id, generation, &stable_url);
+                        chapter.src = None;
+                    }
+                }
+                if let Some(chapter) = plan.chapters.get(plan.progress.chapter_index) {
+                    plan.progress.chapter_id = Some(chapter.id.clone());
+                }
+            }
             if !commit {
                 return Ok(json!({
                     "bookResourceId": book_ref.as_str(),
@@ -1983,7 +2763,7 @@ impl ApplicationService {
                 task.status = "interrupted".into();
                 task.updated_at_ms = now_ms();
             }
-            if task.kind == "search"
+            if matches!(task.kind.as_str(), "search" | "bookSourceCandidates")
                 && task.search_id.as_deref().is_none_or(|id| {
                     !self
                         .root
@@ -1995,6 +2775,21 @@ impl ApplicationService {
             {
                 task.status = "failed".into();
                 task.error = Some("Search result resources were not included in the backup".into());
+                task.updated_at_ms = now_ms();
+            }
+            if task.kind == "bookSourceCandidates"
+                && task.search_id.as_deref().is_none_or(|id| {
+                    !self
+                        .private_root
+                        .join("search-results")
+                        .join(format!("{id}.replacement.json"))
+                        .is_file()
+                })
+                && !matches!(task.status.as_str(), "failed" | "cancelled")
+            {
+                task.status = "failed".into();
+                task.error =
+                    Some("Replacement candidate context is unavailable after restore".into());
                 task.updated_at_ms = now_ms();
             }
         }
@@ -2097,6 +2892,29 @@ impl ApplicationService {
 
     pub(crate) async fn source_record(&self, source_id: &str) -> Result<SourceRecord, String> {
         self.find_source(source_id).await
+    }
+
+    /// Hold source metadata stable while an RSS request publishes its
+    /// category/article/state resources. Removing or changing a subscription
+    /// uses the same mutex, so a delayed response cannot recreate its state.
+    pub(crate) async fn lock_rss_source_snapshot(
+        &self,
+        expected: &SourceRecord,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        let guard = self.sources_lock.clone().lock_owned().await;
+        let current = self
+            .read_sources()
+            .await?
+            .into_iter()
+            .find(|source| source.id == expected.id)
+            .ok_or_else(|| "RSS source was removed while the request was running".to_owned())?;
+        if !current.enabled
+            || current.source != expected.source
+            || !crate::source_metadata::is_rss_source_metadata(&current.source)
+        {
+            return Err("RSS source changed while the request was running".to_owned());
+        }
+        Ok(guard)
     }
 
     pub(crate) async fn execute_source_operation(
@@ -2273,6 +3091,13 @@ impl ApplicationService {
             .as_ref()
             .and_then(|book| serde_json::from_value(book.get("progress")?.clone()).ok())
             .unwrap_or_default();
+        let book_instance_id = prior_private
+            .as_ref()
+            .and_then(|book| book.get("bookInstanceId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
         let book = BookDocument {
             schema_version: CURRENT_SCHEMA_VERSION,
             id: book_id.clone(),
@@ -2295,7 +3120,12 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
         self.write_private_json(
             Path::new("books").join(format!("{book_id}.json")),
-            &json!({ "sourceId": source_id, "book": engine_book, "chapters": raw_chapters }),
+            &json!({
+                "sourceId": source_id,
+                "bookInstanceId": book_instance_id,
+                "book": engine_book,
+                "chapters": raw_chapters
+            }),
         )
         .await?;
         self.upsert_shelf(&book_id).await?;
@@ -2854,7 +3684,7 @@ impl ApplicationService {
             .cancel_at(import_token, Instant::now())
     }
 
-    async fn source_metadata(&self) -> Result<Vec<Value>, String> {
+    async fn source_metadata(&self) -> Result<Vec<SourceMetadata>, String> {
         Ok(metadata(&self.read_sources().await?))
     }
 
@@ -3037,6 +3867,116 @@ fn chapter_id(book_id: &str, stable_url: &str) -> String {
     )
 }
 
+fn chapter_id_for_generation(book_id: &str, generation: &str, stable_url: &str) -> String {
+    format!(
+        "chapter-{:016x}",
+        stable_hash(&format!("{book_id}\0{generation}\0{stable_url}"))
+    )
+}
+
+fn normalize_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn candidate_identity_match(context: &Value, candidate: &Value) -> Option<bool> {
+    let expected_title = context.get("targetTitle")?.as_str()?;
+    let candidate_title = text_at(candidate, &["name", "title"])?;
+    let expected_title = normalize_identity(expected_title);
+    if expected_title.is_empty() || normalize_identity(&candidate_title) != expected_title {
+        return None;
+    }
+    let expected_author = context
+        .get("targetAuthor")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let candidate_author = text_at(candidate, &["author"]).unwrap_or_default();
+    if !expected_author.trim().is_empty()
+        && !candidate_author.trim().is_empty()
+        && normalize_identity(expected_author) != normalize_identity(&candidate_author)
+    {
+        return None;
+    }
+    Some(expected_author.trim().is_empty() || candidate_author.trim().is_empty())
+}
+
+fn unique_target_title_index(title: &str, targets: &[String]) -> Option<usize> {
+    let normalized = normalize_identity(title);
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut matches = targets
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| normalize_identity(candidate) == normalized)
+        .map(|(index, _)| index);
+    let index = matches.next()?;
+    matches.next().is_none().then_some(index)
+}
+
+fn unique_chapter_title_index(title: &str, old: &[String], new: &[String]) -> Option<usize> {
+    let normalized = normalize_identity(title);
+    if normalized.is_empty() {
+        return None;
+    }
+    let old_matches = old
+        .iter()
+        .filter(|candidate| normalize_identity(candidate) == normalized)
+        .count();
+    (old_matches == 1)
+        .then(|| unique_target_title_index(title, new))
+        .flatten()
+}
+
+fn source_definition_fingerprint(source: &Value) -> Result<String, String> {
+    let bytes = serde_json::to_vec(source)
+        .map_err(|error| format!("Cannot fingerprint source definition: {error}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn book_source_fingerprint(
+    source_id: &str,
+    source_definition: &Value,
+    private: &Value,
+    book: &Value,
+) -> Result<String, String> {
+    let chapters = book
+        .get("chapters")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "Book chapter directory is missing".to_owned())?
+        .iter()
+        .map(|chapter| {
+            json!({
+                "id": chapter.get("id"),
+                "title": chapter.get("title"),
+                "index": chapter.get("index"),
+            })
+        })
+        .collect::<Vec<_>>();
+    let identity = json!({
+        "sourceId": source_id,
+        "sourceDefinition": source_definition,
+        "bookInstanceId": private.get("bookInstanceId"),
+        "catalogGeneration": private.get("catalogGeneration"),
+        "engineBook": private.get("book"),
+        "rawChapters": private.get("chapters"),
+        "title": book.get("title"),
+        "author": book.get("author"),
+        "chapters": chapters,
+    });
+    let bytes = serde_json::to_vec(&identity)
+        .map_err(|error| format!("Cannot fingerprint book catalog: {error}"))?;
+    Ok(sha256_hex(&bytes))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn task_summary(task: &AppTask) -> Value {
     let mut summary = json!({
         "id": task.id,
@@ -3074,10 +4014,27 @@ fn extract_sources(value: Value) -> Result<Vec<Value>, String> {
     Ok(vec![value])
 }
 
-fn metadata(records: &[SourceRecord]) -> Vec<Value> {
-    records.iter().map(|record| json!({
-        "id": record.id, "name": record.name, "group": record.group, "enabled": record.enabled,
-    })).collect()
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceMetadata {
+    pub id: String,
+    pub name: String,
+    pub group: Option<String>,
+    pub enabled: bool,
+    pub is_rss: bool,
+}
+
+fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
+    records
+        .iter()
+        .map(|record| SourceMetadata {
+            id: record.id.clone(),
+            name: record.name.clone(),
+            group: record.group.clone(),
+            enabled: record.enabled,
+            is_rss: crate::source_metadata::is_rss_source_metadata(&record.source),
+        })
+        .collect()
 }
 
 pub(crate) fn project_search_result(result_id: &str, source: &SourceRecord, book: &Value) -> Value {
@@ -4201,6 +5158,27 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub async fn search_book_source_candidates(
+        app: tauri::AppHandle,
+        book_id: String,
+        source_ids: Vec<String>,
+        keyword: Option<String>,
+        page: Option<u32>,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let result = service
+            .search_book_source_candidates(
+                &book_id,
+                &source_ids,
+                keyword.as_deref(),
+                page.unwrap_or(1),
+            )
+            .await?;
+        let _ = app.emit("search-started", result.clone());
+        Ok(result)
+    }
+
+    #[tauri::command]
     pub async fn tasks_resource(service: State<'_, ApplicationService>) -> Result<Value, String> {
         service.tasks_resource().await
     }
@@ -4284,6 +5262,30 @@ mod tauri_commands {
         let result = service.add_book(&result_id).await?;
         let _ = app.emit("book-added", result["book"].clone());
         let _ = app.emit("shelf-updated", result["shelf"].clone());
+        Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn change_book_source(
+        app: tauri::AppHandle,
+        book_id: String,
+        result_id: String,
+        confirm_missing_author: bool,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let result = service
+            .change_book_source(&book_id, &result_id, confirm_missing_author)
+            .await?;
+        let _ = app.emit("book-source-changed", result.clone());
+        let _ = app.emit("shelf-updated", result["shelf"].clone());
+        let _ = app.emit(
+            "progress-saved",
+            json!({ "bookId": book_id, "book": result["book"] }),
+        );
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "bookmarks", "resource": result["bookmarks"]["resource"] }),
+        );
         Ok(result)
     }
 
@@ -4829,6 +5831,12 @@ mod tauri_commands {
             "resource-updated",
             json!({ "kind": "rssCategories", "resource": result["resource"] }),
         );
+        if let Some(resource) = result.get("rssState") {
+            let _ = app.emit(
+                "resource-updated",
+                json!({ "kind": "rssState", "resource": resource }),
+            );
+        }
         Ok(result)
     }
 
@@ -4923,7 +5931,7 @@ mod tests {
         collections::{HashMap, HashSet, VecDeque},
         io::{BufRead, BufReader, Read, Write},
         net::{TcpListener, TcpStream},
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{
             atomic::{AtomicBool, Ordering},
             Arc,
@@ -4934,7 +5942,7 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::{AppTask, ApplicationService, EngineFuture, SourceExecutor};
+    use super::{text_at, AppTask, ApplicationService, EngineFuture, SourceExecutor};
     use crate::source_engine::SourceEngineRequest;
 
     #[derive(Clone)]
@@ -4947,6 +5955,8 @@ mod tests {
         chapter_content_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
         content_failures: Arc<std::sync::Mutex<HashSet<String>>>,
         search_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        operation_gates: Arc<std::sync::Mutex<HashMap<(String, String), Arc<ExecutionGate>>>>,
+        operation_failures: Arc<std::sync::Mutex<HashSet<(String, String)>>>,
         content_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     }
 
@@ -4985,6 +5995,8 @@ mod tests {
                 chapter_content_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 content_failures: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 search_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                operation_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                operation_failures: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 content_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
         }
@@ -5046,6 +6058,26 @@ mod tests {
             gate
         }
 
+        fn fail_operation_for_source(&self, operation: &str, source_url: &str) {
+            self.operation_failures
+                .lock()
+                .expect("operation failure mutex")
+                .insert((operation.to_owned(), source_url.to_owned()));
+        }
+
+        fn gate_operation_for_source(
+            &self,
+            operation: &str,
+            source_url: &str,
+        ) -> Arc<ExecutionGate> {
+            let gate = Arc::new(ExecutionGate::new());
+            self.operation_gates
+                .lock()
+                .expect("operation gate mutex")
+                .insert((operation.to_owned(), source_url.to_owned()), gate.clone());
+            gate
+        }
+
         fn content_calls(&self) -> Vec<(String, String)> {
             self.content_calls
                 .lock()
@@ -5057,6 +6089,33 @@ mod tests {
     impl SourceExecutor for ControlledExecutor {
         fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
             Box::pin(async move {
+                let source_url = text_at(&request.source, &["bookSourceUrl", "sourceUrl", "url"])
+                    .unwrap_or_default();
+                let gate = self
+                    .operation_gates
+                    .lock()
+                    .expect("operation gate mutex")
+                    .remove(&(request.operation.clone(), source_url.clone()));
+                if let Some(gate) = gate {
+                    gate.entered.notify_one();
+                    let permit = gate
+                        .permits
+                        .acquire()
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    permit.forget();
+                }
+                if self
+                    .operation_failures
+                    .lock()
+                    .expect("operation failure mutex")
+                    .remove(&(request.operation.clone(), source_url.clone()))
+                {
+                    return Err(format!(
+                        "controlled {} failure for source {source_url}",
+                        request.operation
+                    ));
+                }
                 match request.operation.as_str() {
                     "exploreKinds" => Ok(json!([{
                         "title": "Fantasy",
@@ -5308,6 +6367,289 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn source_change_remaps_latest_progress_bookmarks_and_survives_restart() {
+        let (service, executor, root, original_source_id) = controlled_service(2).await;
+        let replacement_source = json!({
+            "bookSourceName": "Replacement fixture",
+            "bookSourceUrl": "mock://source/replacement",
+            "bookSourceType": 0,
+            "ruleSearch": { "privateRule": "never expose replacement rule" }
+        });
+        let imported = service
+            .import_sources(&json!([replacement_source]).to_string())
+            .await
+            .expect("import replacement source");
+        let replacement_source_id = imported["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Replacement fixture")
+            .and_then(|source| source["id"].as_str())
+            .expect("replacement source ID")
+            .to_owned();
+        assert_eq!(imported["sources"][1]["isRss"], false);
+
+        let book_id =
+            add_controlled_book(&service, &original_source_id, "Cross-source Story").await;
+        service
+            .prepare_chapters(&book_id, 0, 1)
+            .await
+            .expect("cache current-source chapter");
+        let book_ref = service.store.book_ref(&book_id).expect("book ref");
+        let before = service.store.read_json_ref(&book_ref).await.unwrap();
+        let old_chapter_id = before["chapters"][0]["id"].as_str().unwrap().to_owned();
+        assert!(before["chapters"][0]["src"].is_string());
+        service
+            .save_progress(
+                &book_id,
+                json!({
+                    "chapterId": old_chapter_id,
+                    "chapterIndex": 0,
+                    "offset": 73,
+                    "updatedAtMs": 1000,
+                }),
+            )
+            .await
+            .expect("save before replacement");
+        crate::reading_tools::upsert_bookmark(
+            &service.store,
+            crate::reading_tools::BookmarkInput {
+                id: Some("bookmark-before-source-change".into()),
+                book_id: book_id.clone(),
+                chapter_index: 0,
+                offset: 17,
+                note: "keep this note".into(),
+            },
+        )
+        .await
+        .expect("bookmark current chapter");
+
+        let search = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id.clone()], None, 1)
+            .await
+            .expect("start bound replacement search");
+        let task_id = search["taskId"].as_str().unwrap();
+        wait_for_task_status(&service, task_id, "completed").await;
+        let candidates = json_get(
+            &reqwest::Client::new(),
+            search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        assert_eq!(candidates["complete"], true);
+        assert_eq!(candidates["results"].as_array().unwrap().len(), 1);
+        assert_eq!(candidates["results"][0]["sourceId"], replacement_source_id);
+        assert_eq!(
+            candidates["results"][0]["requiresIdentityConfirmation"],
+            false
+        );
+        assert!(!candidates.to_string().contains("privateRule"));
+        let result_id = candidates["results"][0]["resultId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        // A delayed engine response must not overwrite progress saved while
+        // the new source is resolving bookInfo.
+        let gate = executor.gate_operation_for_source("bookInfo", "mock://source/replacement");
+        let service_for_change = service.clone();
+        let book_for_change = book_id.clone();
+        let result_for_change = result_id.clone();
+        let changing = tokio::spawn(async move {
+            service_for_change
+                .change_book_source(&book_for_change, &result_for_change, false)
+                .await
+        });
+        gate.wait_until_entered().await;
+        service
+            .save_progress(
+                &book_id,
+                json!({
+                    "chapterId": old_chapter_id,
+                    "chapterIndex": 0,
+                    "offset": 91,
+                    "updatedAtMs": 2000,
+                }),
+            )
+            .await
+            .expect("progress remains writable during source engine request");
+        gate.release();
+        let changed = changing.await.unwrap().expect("confirm source replacement");
+        assert_eq!(changed["progress"]["chapterIndex"], 0);
+        assert_eq!(changed["progress"]["offset"], 91);
+        assert_eq!(changed["bookmarks"]["migratedCount"], 1);
+        assert_eq!(changed["bookmarks"]["orphanedCount"], 0);
+        let after = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(after["id"], book_id);
+        assert_ne!(after["chapters"][0]["id"], old_chapter_id);
+        assert!(after["chapters"][0]["src"].is_null());
+        assert_eq!(after["progress"]["offset"], 91);
+        assert!(!root
+            .join("books")
+            .join(&book_id)
+            .join("chapters")
+            .join(format!("{old_chapter_id}.html"))
+            .exists());
+        let bookmarks_ref = crate::reading_tools::bookmarks_resource(&service.store)
+            .await
+            .unwrap();
+        let bookmarks = service.store.read_json_ref(&bookmarks_ref).await.unwrap();
+        assert_eq!(bookmarks["bookmarks"][0]["chapterIndex"], 0);
+        assert!(bookmarks["bookmarks"][0].get("orphaned").is_none());
+
+        drop(service);
+        let reopened = ApplicationService::open_with_executor(&root, executor)
+            .await
+            .expect("restart after source replacement");
+        let private = reopened
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .expect("replacement private metadata after restart");
+        assert_eq!(private["sourceId"], replacement_source_id);
+        let reopened_book = reopened
+            .store
+            .read_json_ref(&reopened.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened_book["chapters"][0]["id"],
+            after["chapters"][0]["id"]
+        );
+        assert_eq!(reopened_book["progress"]["offset"], 91);
+        reopened
+            .prepare_chapters(&book_id, 0, 1)
+            .await
+            .expect("prepare replacement-source chapter after restart");
+        let new_id = reopened_book["chapters"][0]["id"].as_str().unwrap();
+        let chapter_ref = reopened.store.chapter_ref(&book_id, new_id).unwrap();
+        let html = reqwest::get(reopened.resource_server().url_for(&chapter_ref))
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(html.contains("mock://book/Cross-source Story/chapter/0"));
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn failed_stale_or_unbound_source_change_keeps_original_book_and_cache() {
+        let (service, executor, root, original_source_id) = controlled_service(1).await;
+        let source_definition = |rule_value: &str| {
+            json!({
+                "bookSourceName": "Replacement fixture",
+                "bookSourceUrl": "mock://source/replacement-fails",
+                "bookSourceType": 0,
+                "ruleSearch": { "privateRule": rule_value }
+            })
+        };
+        let imported = service
+            .import_sources(&json!([source_definition("original private rule")]).to_string())
+            .await
+            .unwrap();
+        let replacement_source_id = imported["sources"][1]["id"].as_str().unwrap().to_owned();
+        let book_id =
+            add_controlled_book(&service, &original_source_id, "Failure preserves book").await;
+        service.prepare_chapters(&book_id, 0, 1).await.unwrap();
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let before = service.store.read_json_ref(&book_ref).await.unwrap();
+        let old_chapter_id = before["chapters"][0]["id"].as_str().unwrap().to_owned();
+
+        let search = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id.clone()], None, 1)
+            .await
+            .unwrap();
+        wait_for_task_status(&service, search["taskId"].as_str().unwrap(), "completed").await;
+        let candidate_document = json_get(
+            &reqwest::Client::new(),
+            search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        let candidate_id = candidate_document["results"][0]["resultId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        let normal_search = service
+            .search_books(
+                &[replacement_source_id.clone()],
+                "Failure preserves book",
+                1,
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let normal_document = json_get(
+            &reqwest::Client::new(),
+            normal_search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        let normal_result_id = normal_document["results"][0]["resultId"].as_str().unwrap();
+        assert!(service
+            .change_book_source(&book_id, normal_result_id, false)
+            .await
+            .unwrap_err()
+            .contains("not a replacement candidate"));
+
+        service
+            .import_sources(&json!([source_definition("updated private rule")]).to_string())
+            .await
+            .unwrap();
+        assert!(service
+            .change_book_source(&book_id, &candidate_id, false)
+            .await
+            .unwrap_err()
+            .contains("Replacement source changed"));
+
+        let search = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id.clone()], None, 1)
+            .await
+            .unwrap();
+        wait_for_task_status(&service, search["taskId"].as_str().unwrap(), "completed").await;
+        let candidate_document = json_get(
+            &reqwest::Client::new(),
+            search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        let candidate_id = candidate_document["results"][0]["resultId"]
+            .as_str()
+            .unwrap();
+        executor.fail_operation_for_source("bookInfo", "mock://source/replacement-fails");
+        assert!(service
+            .change_book_source(&book_id, candidate_id, false)
+            .await
+            .unwrap_err()
+            .contains("controlled bookInfo failure"));
+        let after_failure = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(after_failure, before);
+        let private = service
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .unwrap();
+        assert_eq!(private["sourceId"], original_source_id);
+        assert!(root
+            .join("books")
+            .join(&book_id)
+            .join("chapters")
+            .join(format!("{old_chapter_id}.html"))
+            .exists());
+
+        service.remove_book(&book_id).await.unwrap();
+        let readded_id =
+            add_controlled_book(&service, &original_source_id, "Failure preserves book").await;
+        assert_eq!(readded_id, book_id);
+        assert!(service
+            .change_book_source(&book_id, candidate_id, false)
+            .await
+            .unwrap_err()
+            .contains("Book catalog changed after the search"));
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn home_rss_and_txt_toc_service_apis_persist_public_resources() {
         let (service, _executor, root, source_id) = controlled_service(2).await;
         let client = reqwest::Client::new();
@@ -5408,6 +6750,17 @@ mod tests {
             .and_then(Value::as_str)
             .expect("RSS source ID")
             .to_owned();
+        let source_list = service
+            .list_sources()
+            .await
+            .expect("public source metadata");
+        let rss_metadata = source_list["sources"]
+            .as_array()
+            .and_then(|sources| sources.iter().find(|source| source["id"] == rss_source_id))
+            .expect("public RSS metadata");
+        assert_eq!(rss_metadata["isRss"], true);
+        assert!(rss_metadata.get("sourceUrl").is_none());
+        assert!(!rss_metadata.to_string().contains("feed.example.test"));
         let stored_rss_source = service
             .source_record(&rss_source_id)
             .await
