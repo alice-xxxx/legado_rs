@@ -33,6 +33,7 @@ const emit = defineEmits<{
   openHistory: [];
   openTasks: [];
   openSources: [];
+  manageHome: [];
 }>();
 
 const activeTabId = ref(props.homeConfig.tabs[0]?.id ?? "");
@@ -79,8 +80,12 @@ function progressPercent(book: ShelfResource["books"][number]): number {
 
 function taskLabel(task: AppTask): string {
   if (task.kind === "search") return task.keyword ? `搜索“${task.keyword}”` : "书籍搜索";
+  if (task.kind === "bookSourceCandidates") {
+    const bookTitle = props.shelf.books.find((book) => book.id === task.bookId)?.title;
+    return bookTitle ? `为《${bookTitle}》寻找其他书源` : "寻找其他书源";
+  }
   if (task.kind === "chapterDownload") return "准备章节";
-  if (task.kind === "catalogRefresh") return "更新目录";
+  if (task.kind === "refreshChapters") return "更新目录";
   if (task.kind === "checkNewChapters") return "检查新章节";
   return "后台任务";
 }
@@ -181,7 +186,10 @@ function sectionHasPartialError(sectionId: string): boolean {
     <section class="home-discovery" aria-labelledby="home-discovery-title">
       <div class="section-heading discovery-heading">
         <div><p class="home-eyebrow">为你发现</p><h3 id="home-discovery-title">书籍分类</h3></div>
-        <button class="home-text-button" @click="emit('openDiscovery')">进入发现 <span aria-hidden="true">→</span></button>
+        <div class="home-discovery-actions">
+          <button class="home-text-button" @click="emit('openDiscovery')">进入发现 <span aria-hidden="true">→</span></button>
+          <button class="home-button home-button-secondary" data-testid="home-config-open" :disabled="busy" @click="emit('manageHome')">管理栏目</button>
+        </div>
       </div>
       <div v-if="orderedTabs.length" class="home-tabs" role="tablist" aria-label="首页分类页签">
         <button v-for="tab in orderedTabs" :key="tab.id" :data-testid="`home-tab-${tab.id}`" role="tab" :aria-selected="activeTab?.id === tab.id" :class="{ active: activeTab?.id === tab.id }" @click="activeTabId = tab.id">{{ tab.title }}</button>
@@ -283,6 +291,7 @@ function sectionHasPartialError(sectionId: string): boolean {
 .stat-card button { min-height:26px; padding:0; }
 .home-discovery { min-width:0; padding:19px 21px; border:1px solid #e6ebe6; border-radius:13px; background:#fff; }
 .discovery-heading { margin-bottom:9px; }
+.home-discovery-actions { display:flex; align-items:center; gap:8px; }
 .home-tabs { display:flex; gap:5px; overflow-x:auto; margin:0 -2px 13px; padding:0 2px 4px; border-bottom:1px solid #edf0ed; scrollbar-width:thin; }
 .home-tabs button { min-height:42px; flex:none; padding:0 13px; border:0; border-bottom:2px solid transparent; color:#77847a; background:transparent; font:inherit; font-size:14px; cursor:pointer; }
 .home-tabs button:hover { color:#446950; background:#f7faf6; }
@@ -342,6 +351,8 @@ function sectionHasPartialError(sectionId: string): boolean {
 @keyframes home-spin { to { transform:rotate(360deg); } }
 @media(max-width:900px) { .home-stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:620px) {
+  .home-discovery-actions { align-items:stretch; flex-direction:column; }
+  .home-discovery-actions > * { width:100%; }
   .home-page { gap:15px; }
   .home-intro { align-items:flex-start; flex-direction:column; gap:13px; }
   .home-intro h2 { font-size:21px; }

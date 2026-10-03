@@ -153,6 +153,27 @@ async fn invoke(
         )),
         "plugin:event|unlisten" | "plugin:event|emit" | "plugin:event|emit_to" => Ok(Value::Null),
         "app_bootstrap" => state.app.bootstrap().await.map_err(internal_error),
+        "get_search_history" => state.app.get_search_history().await.map_err(internal_error),
+        "delete_search_history" => {
+            let resource = state
+                .app
+                .delete_search_history(string_arg(&args, "query")?)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "searchHistory", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "clear_search_history" => {
+            let resource = state.app.clear_search_history().await.map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "searchHistory", "resource": resource }),
+            );
+            Ok(resource)
+        }
         "list_sources" => state.app.list_sources().await.map_err(internal_error),
         "import_sources" => {
             let source_json = string_arg(&args, "sourceJson")?;
@@ -235,6 +256,28 @@ async fn invoke(
                 .await
                 .map_err(internal_error)?;
             state.emit("search-started", result.clone());
+            let history = state.app.get_search_history().await.map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "searchHistory", "resource": history }),
+            );
+            Ok(result)
+        }
+        "search_book_source_candidates" => {
+            let source_ids = string_array_arg(&args, "sourceIds")?;
+            let keyword = args.get("keyword").and_then(Value::as_str);
+            let page = args.get("page").and_then(Value::as_u64).unwrap_or(1) as u32;
+            let result = state
+                .app
+                .search_book_source_candidates(
+                    string_arg(&args, "bookId")?,
+                    &source_ids,
+                    keyword,
+                    page,
+                )
+                .await
+                .map_err(internal_error)?;
+            state.emit("search-started", result.clone());
             Ok(result)
         }
         "tasks_resource" => state.app.tasks_resource().await.map_err(internal_error),
@@ -284,6 +327,29 @@ async fn invoke(
                 .map_err(internal_error)?;
             state.emit("book-added", result["book"].clone());
             state.emit("shelf-updated", result["shelf"].clone());
+            Ok(result)
+        }
+        "change_book_source" => {
+            let book_id = string_arg(&args, "bookId")?;
+            let result = state
+                .app
+                .change_book_source(
+                    book_id,
+                    string_arg(&args, "resultId")?,
+                    typed_arg(&args, "confirmMissingAuthor")?,
+                )
+                .await
+                .map_err(internal_error)?;
+            state.emit("book-source-changed", result.clone());
+            state.emit("shelf-updated", result["shelf"].clone());
+            state.emit(
+                "progress-saved",
+                json!({ "bookId": book_id, "book": result["book"] }),
+            );
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "bookmarks", "resource": result["bookmarks"]["resource"] }),
+            );
             Ok(result)
         }
         "import_book_from_picker" => {
@@ -633,6 +699,87 @@ async fn invoke(
             );
             Ok(descriptor)
         }
+        "get_home_config" => state.app.get_home_config().await.map_err(internal_error),
+        "save_home_config" => {
+            let config = typed_arg(&args, "config")?;
+            let resource = state
+                .app
+                .save_home_config(config)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "homeConfig", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "get_txt_toc_rules" => state.app.get_txt_toc_rules().await.map_err(internal_error),
+        "upsert_txt_toc_rule" => {
+            let rule = typed_arg(&args, "rule")?;
+            let resource = state.app.upsert_txt_toc_rule(rule).await.map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "txtTocRules", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "delete_txt_toc_rule" => {
+            let resource = state
+                .app
+                .delete_txt_toc_rule(string_arg(&args, "ruleId")?)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "txtTocRules", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "get_rss_state" => state.app.get_rss_state().await.map_err(internal_error),
+        "set_rss_filter" => {
+            let source_id = string_arg(&args, "sourceId")?;
+            let filter = string_arg(&args, "filter")?;
+            let resource = state
+                .app
+                .set_rss_filter(source_id, filter)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "rssState", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "set_rss_article_state" => {
+            let source_id = string_arg(&args, "sourceId")?;
+            let article_id = string_arg(&args, "articleId")?;
+            let is_read = optional_bool_arg(&args, "isRead")?;
+            let is_favorite = optional_bool_arg(&args, "isFavorite")?;
+            let resource = state
+                .app
+                .set_rss_article_state(source_id, article_id, is_read, is_favorite)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "rssState", "resource": resource }),
+            );
+            Ok(resource)
+        }
+        "unsubscribe_rss" => {
+            let source_id = string_arg(&args, "sourceId")?;
+            let result = state
+                .app
+                .unsubscribe_rss(source_id)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "rssState", "resource": result["resource"] }),
+            );
+            state.emit("sources-updated", result["sources"].clone());
+            Ok(result)
+        }
         "create_backup_from_picker" => {
             let Some(path) = selected_path("LEGADO_BROWSER_HARNESS_BACKUP_OUTPUT") else {
                 return Ok(Json(json!({ "ok": true, "value": { "cancelled": true } })));
@@ -690,6 +837,17 @@ fn string_arg<'a>(args: &'a Value, key: &str) -> Result<&'a str, (StatusCode, Js
             Json(json!({ "error": format!("Missing string argument '{key}'") })),
         )
     })
+}
+
+fn optional_bool_arg(args: &Value, key: &str) -> Result<Option<bool>, (StatusCode, Json<Value>)> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err((
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": format!("Argument '{key}' must be a boolean") })),
+        )),
+    }
 }
 
 fn string_array_arg(args: &Value, key: &str) -> Result<Vec<String>, (StatusCode, Json<Value>)> {

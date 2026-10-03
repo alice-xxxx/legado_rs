@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createServer } from "node:http";
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { access, mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
@@ -33,11 +33,13 @@ let runFailure;
 let fixtureServer;
 let fixtureOrigin;
 let rustProcess;
+const rustHarnessProcesses = new Set();
 let viteProcess;
 let browser;
 let browserHarnessUrl;
 let resourceServerUrl;
 let dataDir;
+let txtFixturePath;
 let page;
 let releasePendingFixtureResponse;
 
@@ -76,6 +78,8 @@ async function waitForHttp(url, timeoutMs = 45_000) {
 
 async function startFixtureServer() {
   let chapterTwoAttempts = 0;
+  let feedRequests = 0;
+  let discoveryRequests = 0;
   let reverseCatalog = false;
   const catalogResponseOrders = [];
   let releaseFirstChapterTwo;
@@ -112,6 +116,32 @@ async function startFixtureServer() {
     };
     if (pathname === "/search") {
       html("<div class='item'><h3><a href='/book'>Browser E2E Novel</a></h3><span class='author'>Fixture Author</span></div>");
+    } else if (pathname === "/replacement/search") {
+      html("<div class='item'><h3><a href='/replacement/book'>Browser E2E Novel</a></h3></div>");
+    } else if (pathname === "/replacement/book") {
+      html("<h1>Browser E2E Novel</h1><a class='toc' href='/replacement/toc'>目录</a>");
+    } else if (pathname === "/replacement/toc") {
+      html(`<ul id='list'>
+        <li><a href='/replacement/chapter/opening'>Replacement Opening</a></li>
+        <li><a href='/replacement/chapter/two'>Fixture Chapter Two</a></li>
+        <li><a href='/replacement/chapter/ending'>Replacement Ending</a></li>
+      </ul>`);
+    } else if (pathname === "/replacement/chapter/opening") {
+      html("<div class='content'>Replacement source opening chapter.</div>");
+    } else if (pathname === "/replacement/chapter/two") {
+      html(`<div class='content'>Replacement-source chapter marker. ${fullText}</div>`);
+    } else if (pathname === "/replacement/chapter/ending") {
+      html("<div class='content'>Replacement source ending chapter.</div>");
+    } else if (pathname === "/broken/search") {
+      html("<div class='item'><h3><a href='/broken/book'>Browser E2E Novel</a></h3></div>");
+    } else if (pathname === "/broken/book") {
+      html("<h1>Browser E2E Novel</h1><a class='toc' href='/broken/toc'>目录</a>");
+    } else if (pathname === "/broken/toc") {
+      html("<ul id='list'></ul>");
+    } else if (pathname === "/wrong-author/search") {
+      html("<div class='item'><h3><a href='/wrong-author/book'>Browser E2E Novel</a></h3><span class='author'>Unrelated Author</span></div>");
+    } else if (pathname === "/wrong-title/search") {
+      html("<div class='item'><h3><a href='/wrong-title/book'>Browser E2E Novel: Alternate</a></h3><span class='author'>Fixture Author</span></div>");
     } else if (pathname === "/book") {
       html("<h1>Browser E2E Novel</h1><span class='author'>Fixture Author</span><a class='toc' href='/toc'>目录</a>");
     } else if (pathname === "/toc") {
@@ -135,6 +165,26 @@ async function startFixtureServer() {
         return;
       }
       html(`<div class='content'>第二章标记：${fullText}</div>`);
+    } else if (pathname === "/discover") {
+      discoveryRequests += 1;
+      html("<ul><li class='item'><h3><a href='/discovery/book'>首页精选小说</a></h3><span class='author'>首页作者</span></li></ul>");
+    } else if (pathname === "/feed.atom") {
+      feedRequests += 1;
+      const atom = `<?xml version="1.0" encoding="utf-8"?>
+        <feed xmlns="http://www.w3.org/2005/Atom">
+          <id>${fixtureOrigin}/feed.atom</id><title>Browser E2E Atom Feed</title>
+          <updated>2026-10-03T00:00:00Z</updated>
+          <entry><id>browser-e2e-atom-entry-one</id><title>Atom Article One</title>
+            <author><name>Feed Writer</name></author><updated>2026-10-02T00:00:00Z</updated>
+            <summary type="html">&lt;p&gt;Atom fixture article body one.&lt;/p&gt;&lt;script&gt;window.__UNSAFE_FEED_SCRIPT__ = true&lt;/script&gt;</summary>
+          </entry>
+          <entry><id>browser-e2e-atom-entry-two</id><title>Atom Article Two</title>
+            <author><name>Feed Writer</name></author><updated>2026-10-01T00:00:00Z</updated>
+            <summary type="html">&lt;p&gt;Atom fixture article body two.&lt;/p&gt;</summary>
+          </entry>
+        </feed>`;
+      response.writeHead(200, { "content-type": "application/atom+xml; charset=utf-8" });
+      response.end(atom);
     } else {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("not found");
@@ -151,6 +201,8 @@ async function startFixtureServer() {
     paragraphs,
     fullText,
     catalogResponseOrders,
+    feedRequestCount() { return feedRequests; },
+    discoveryRequestCount() { return discoveryRequests; },
     reverseCatalog() { reverseCatalog = true; },
     async waitForChapterTwoAttempt(attempt, timeoutMs = 45_000) {
       const deadline = Date.now() + timeoutMs;
@@ -173,6 +225,14 @@ async function fetchJson(url, body) {
   const value = await response.json();
   if (!response.ok) throw new Error(value.error || `${url} returned HTTP ${response.status}`);
   return value && value.ok === true && Object.hasOwn(value, "value") ? value.value : value;
+}
+
+async function readResourceJson(descriptor) {
+  const src = typeof descriptor === "string" ? descriptor : descriptor?.src;
+  assert(src, `Rust did not return a JSON resource URL: ${JSON.stringify(descriptor)}.`);
+  const response = await fetch(src);
+  assert(response.ok, `Resource ${src} returned HTTP ${response.status}.`);
+  return response.json();
 }
 
 function startProcess(command, args, options = {}) {
@@ -215,10 +275,27 @@ function parseReadyOutput(child, marker, timeoutMs = 180_000) {
 }
 
 async function startRustHarness() {
-  dataDir = await mkdtemp(join(tmpdir(), "legado-browser-harness-"));
+  if (!dataDir) dataDir = await mkdtemp(join(tmpdir(), "legado-browser-harness-"));
+  if (!txtFixturePath) {
+    txtFixturePath = join(dataDir, "browser-e2e-txt-rules.txt");
+    const body = (chapter) => Array.from({ length: 48 }, (_, index) =>
+      `Fixture ${chapter} paragraph ${String(index + 1).padStart(2, "0")}: Rust applies the saved heading rule while importing this real local text file.`,
+    ).join("\n");
+    await writeFile(txtFixturePath, [
+      "Part A: Part rule opening",
+      body("part-a"),
+      "Chapter 01: Chapter rule opening",
+      body("chapter-one"),
+      "Part B: Part rule ending",
+      body("part-b"),
+      "Chapter 02: Chapter rule ending",
+      body("chapter-two"),
+    ].join("\n\n"), "utf8");
+  }
   const rustEnv = {
     ...process.env,
     LEGADO_BROWSER_HARNESS_DATA: dataDir,
+    LEGADO_BROWSER_HARNESS_BOOK_FILE: txtFixturePath,
     ANDROID_USER_HOME: process.env.ANDROID_USER_HOME || "/workspace/.setup/android-user",
   };
   if (process.env.BROWSER_HARNESS_BINARY) {
@@ -232,6 +309,7 @@ async function startRustHarness() {
       { env: rustEnv },
     );
   }
+  rustHarnessProcesses.add(rustProcess);
   const ready = await parseReadyOutput(rustProcess, "BROWSER_HARNESS_READY");
   const resourceLine = rustProcess.tail.join("").match(/BROWSER_HARNESS_RESOURCE_URL=([^\s]+)/);
   browserHarnessUrl = ready;
@@ -241,6 +319,19 @@ async function startRustHarness() {
     resourceServerUrl = health.resourceServerUrl;
   }
   await waitForHttp(`${browserHarnessUrl}/healthz`);
+}
+
+async function stopRustHarness() {
+  const child = rustProcess;
+  if (!child) return;
+  await stopProcessGroup(child);
+  rustHarnessProcesses.delete(child);
+  if (rustProcess === child) rustProcess = null;
+}
+
+async function restartRustHarness() {
+  await stopRustHarness();
+  await startRustHarness();
 }
 
 async function startVite() {
@@ -270,6 +361,17 @@ async function importFixtureSource() {
       author: "@css:.author@text",
       tocUrl: "@css:a.toc@href",
     },
+    exploreUrl: JSON.stringify([{
+      title: "首页精选分类",
+      type: "text",
+      url: `${fixtureOrigin}/discover`,
+    }]),
+    ruleExplore: {
+      bookList: "@css:.item",
+      name: "@css:h3 a@text",
+      author: "@css:.author@text",
+      bookUrl: "@css:h3 a@href",
+    },
     ruleToc: {
       chapterList: "@css:#list li",
       chapterName: "@css:a@text",
@@ -281,7 +383,67 @@ async function importFixtureSource() {
     sourceJson: JSON.stringify(source),
   });
   assert(result.sources?.length === 1, "Rust did not persist the local test source.");
-  return result.sources[0];
+  const rssSource = {
+    sourceName: "Browser E2E Atom Feed",
+    sourceUrl: `${fixtureOrigin}/feed.atom`,
+    enabled: true,
+  };
+  const combined = await fetchJson(`${browserHarnessUrl}/setup/source`, {
+    sourceJson: JSON.stringify(rssSource),
+  });
+  const bookMetadata = combined.sources?.find((entry) => entry.name === source.bookSourceName);
+  const rssMetadata = combined.sources?.find((entry) => entry.name === rssSource.sourceName);
+  assert(bookMetadata && rssMetadata, "Rust did not persist both the book-source and standard-feed fixture sources.");
+  return { book: bookMetadata, rss: rssMetadata };
+}
+
+async function importReplacementFixtureSources() {
+  const sourceDefinition = (name, searchPath) => ({
+    bookSourceName: name,
+    bookSourceGroup: "Source Switch E2E",
+    // The app identifies imported sources by bookSourceUrl. Keep these actual fixture
+    // endpoints on the same local server while giving each source its own stable ID.
+    bookSourceUrl: `${fixtureOrigin}/${searchPath.split("/")[1]}`,
+    bookSourceType: 0,
+    enabled: true,
+    searchUrl: `${fixtureOrigin}${searchPath},${JSON.stringify({ method: "POST", body: "q={{key}}" })}`,
+    ruleSearch: {
+      bookList: "@css:.item",
+      name: "@css:h3 a@text",
+      author: "@css:.author@text",
+      bookUrl: "@css:h3 a@href",
+    },
+    ruleBookInfo: {
+      name: "@css:h1@text",
+      author: "@css:.author@text",
+      tocUrl: "@css:a.toc@href",
+    },
+    ruleToc: {
+      chapterList: "@css:#list li",
+      chapterName: "@css:a@text",
+      chapterUrl: "@css:a@href",
+    },
+    ruleContent: { content: "@css:.content@text" },
+  });
+  const definitions = [
+    sourceDefinition("Replacement without author", "/replacement/search"),
+    sourceDefinition("Empty replacement catalog", "/broken/search"),
+    sourceDefinition("Wrong author candidate", "/wrong-author/search"),
+    sourceDefinition("Wrong title candidate", "/wrong-title/search"),
+  ];
+  const imported = await fetchJson(`${browserHarnessUrl}/setup/source`, {
+    sourceJson: JSON.stringify(definitions),
+  });
+  const byName = new Map((imported.sources ?? []).map((source) => [source.name, source]));
+  const sources = {
+    replacement: byName.get("Replacement without author"),
+    broken: byName.get("Empty replacement catalog"),
+    wrongAuthor: byName.get("Wrong author candidate"),
+    wrongTitle: byName.get("Wrong title candidate"),
+  };
+  assert(Object.values(sources).every(Boolean),
+    `Rust did not import all source-switch fixture sources: ${JSON.stringify(imported.sources)}.`);
+  return sources;
 }
 
 async function installInvokeBridge(context) {
@@ -326,11 +488,13 @@ async function installInvokeBridge(context) {
     const callbacks = new Map();
     const listeners = new Map();
     const calls = [];
+    const events = [];
     let nextCallback = 1;
     let eventCursor = 0;
     let stop = false;
 
     const dispatch = (record) => {
+      events.push({ ...record, receivedAt: performance.now() });
       for (const [listenerId, listener] of listeners) {
         if (listener.event !== record.event) continue;
         const callback = callbacks.get(String(listener.callbackId));
@@ -340,6 +504,7 @@ async function installInvokeBridge(context) {
 
     window.__LEGADO_BROWSER_HARNESS__ = {
       calls,
+      events,
       stop() { stop = true; },
       async invoke(command, args = {}) {
         const loggedArgs = { ...args };
@@ -435,8 +600,24 @@ async function commandLog() {
     args: call.args,
     result: call.result,
     error: call.error,
+    startedAt: call.startedAt,
     finishedAt: call.finishedAt,
   })));
+}
+
+async function harnessEventCount() {
+  return page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__.events.length);
+}
+
+async function waitForHarnessEvent(eventName, payloadKind, previousCount = 0, timeoutMs = 10_000) {
+  await page.waitForFunction(({ expectedEvent, expectedKind, count }) =>
+    window.__LEGADO_BROWSER_HARNESS__.events.slice(count).some((event) =>
+      event.event === expectedEvent && (!expectedKind || event.payload?.kind === expectedKind)),
+  { expectedEvent: eventName, expectedKind: payloadKind, count: previousCount }, { timeout: timeoutMs });
+  return page.evaluate(({ expectedEvent, expectedKind, count }) =>
+    window.__LEGADO_BROWSER_HARNESS__.events.slice(count).find((event) =>
+      event.event === expectedEvent && (!expectedKind || event.payload?.kind === expectedKind)),
+  { expectedEvent: eventName, expectedKind: payloadKind, count: previousCount });
 }
 
 async function completedCommandCount(command) {
@@ -453,6 +634,21 @@ async function waitForCompletedCommand(command, previousCount = 0, timeoutMs = 1
   assert(result, `Rust command '${command}' completion record disappeared after its wait predicate.`);
   if (result.error) throw new Error(`Rust command '${command}' failed: ${result.error}`);
   return result;
+}
+
+async function waitForCompletedCommandMatching(command, previousCount, predicate, timeoutMs = 30_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const completed = (await commandLog()).filter((call) =>
+      call.command === command && call.finishedAt !== undefined);
+    const result = completed.slice(previousCount).find(predicate);
+    if (result) {
+      if (result.error) throw new Error(`Rust command '${command}' failed: ${result.error}`);
+      return result;
+    }
+    await delay(40);
+  }
+  throw new Error(`Timed out waiting for Rust command '${command}' result after call ${previousCount}.`);
 }
 
 async function waitForCommandCall(command, index, timeoutMs = 15_000) {
@@ -1010,6 +1206,1234 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   report("PASS: private source rules stayed off the browser resource server; real JSON and HTML resources were fetched.");
   report(`Screenshots: ${outputDir}`);
   await context.close();
+  return { bookId };
+}
+
+async function testHomeRssFlow(sources, contentFixture) {
+  const context = await browser.newContext({ viewport: { width: 360, height: 900 }, deviceScaleFactor: 1 });
+  await installInvokeBridge(context);
+  page = await context.newPage();
+  const errorStart = errors.length;
+  const consoleErrorStart = browserConsoleErrors.length;
+  const requestFailureStart = browserRequestFailures.length;
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserConsoleErrors.push({ text: message.text(), location: message.location() });
+  });
+  page.on("request", (request) => {
+    if (request.url().includes("/r/")) resourceRequests.push({ url: request.url(), method: request.method() });
+  });
+  page.on("requestfailed", (request) => browserRequestFailures.push({ url: request.url(), error: request.failure()?.errorText }));
+  page.on("response", (response) => {
+    if (response.url().includes("/r/")) resourceRequests.push({ url: response.url(), status: response.status() });
+  });
+
+  const readJson = async (descriptor) => {
+    const src = typeof descriptor === "string" ? descriptor : descriptor?.src;
+    assert(src, `A Rust command did not return a resource URL: ${JSON.stringify(descriptor)}.`);
+    const response = await fetch(src);
+    assert(response.ok, `Resource ${src} returned HTTP ${response.status}.`);
+    return response.json();
+  };
+
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("home-section-empty").waitFor({ timeout: 15_000 });
+  const initialHomeCall = await waitForCompletedCommand("get_home_config", 0);
+  const initialHome = await readJson(initialHomeCall.result);
+  assert(initialHome.tabs?.length === 1 && initialHome.tabs[0].sections.length === 0,
+    `A fresh app should load its empty home configuration from Rust: ${JSON.stringify(initialHome)}.`);
+
+  let discoveryCallsBeforeLoad = await completedCommandCount("list_discovery_categories");
+  await page.getByTestId("nav-search-mobile").click();
+  await page.getByTestId("discover-mode-discover").click();
+  await page.getByTestId("discovery-source").waitFor();
+  let selectedDiscoverySource = await page.getByTestId("discovery-source").inputValue();
+  if (selectedDiscoverySource !== sources.book.id) {
+    discoveryCallsBeforeLoad = await completedCommandCount("list_discovery_categories");
+    await page.getByTestId("discovery-source").selectOption(sources.book.id);
+  }
+  const categoriesCall = await waitForCompletedCommand("list_discovery_categories", discoveryCallsBeforeLoad);
+  const categories = await readJson(categoriesCall.result.resource);
+  assert(categories.categories?.length === 1, `KMP did not produce the fixture discovery category: ${JSON.stringify(categories)}.`);
+  const category = categories.categories[0];
+  assert(category.categoryId && category.title === "首页精选分类",
+    `Discovery returned an unexpected processed category: ${JSON.stringify(category)}.`);
+  assert(!JSON.stringify(categories).includes(fixtureOrigin) && !JSON.stringify(categories).includes("ruleExplore"),
+    "The public discovery category JSON exposed a source URL or source rules.");
+
+  const favoriteEventCount = await harnessEventCount();
+  const favoriteCallsBefore = await completedCommandCount("set_discovery_favorite");
+  await page.getByTestId(`discovery-category-favorite-${category.categoryId}`).click();
+  const favoriteCall = await waitForCompletedCommand("set_discovery_favorite", favoriteCallsBefore);
+  const favorites = await readJson(favoriteCall.result);
+  assert(favorites.favorites?.length === 1 && favorites.favorites[0].categoryId === category.categoryId,
+    `Rust did not persist the selected discovery favorite: ${JSON.stringify(favorites)}.`);
+  await waitForHarnessEvent("resource-updated", "discoveryFavorites", favoriteEventCount);
+
+  const homeSaveCallsBefore = await completedCommandCount("save_home_config");
+  const homeSaveEventCount = await harnessEventCount();
+  await page.getByTestId(`discovery-category-home-${category.categoryId}`).click();
+  const homeSaveCall = await waitForCompletedCommand("save_home_config", homeSaveCallsBefore);
+  const savedHome = await readJson(homeSaveCall.result);
+  const section = savedHome.tabs?.flatMap((tab) => tab.sections ?? [])[0];
+  assert(section?.sourceId === sources.book.id && section.categoryId === category.categoryId && section.title === category.title,
+    `Rust did not save the discovery category to the home resource: ${JSON.stringify(savedHome)}.`);
+  assert(!JSON.stringify(savedHome).includes(fixtureOrigin) && !JSON.stringify(savedHome).includes("ruleExplore"),
+    "The saved public home configuration contains a source URL or source rules.");
+  await waitForHarnessEvent("resource-updated", "homeConfig", homeSaveEventCount);
+  await page.screenshot({ path: join(outputDir, "home-category-configured.png"), fullPage: true });
+
+  await page.getByTestId("nav-home-mobile").click();
+  await page.getByTestId(`home-section-${section.id}`).waitFor();
+  const discoveryBookCallsBefore = await completedCommandCount("list_discovery_books");
+  await page.getByTestId(`home-section-open-${section.id}`).click();
+  const discoveryBooksCall = await waitForCompletedCommand("list_discovery_books", discoveryBookCallsBefore);
+  const homeBookResults = await readJson(discoveryBooksCall.result.resource);
+  assert(homeBookResults.results?.length === 1 && homeBookResults.results[0].title === "首页精选小说",
+    `Home did not consume the Rust-processed discovery card: ${JSON.stringify(homeBookResults)}.`);
+  const processedCard = homeBookResults.results[0];
+  assert(processedCard.resultId && processedCard.sourceId === sources.book.id,
+    `The processed discovery card is missing its opaque ID or display fields: ${JSON.stringify(processedCard)}.`);
+  assert(!JSON.stringify(homeBookResults).includes("ruleExplore") && !JSON.stringify(homeBookResults).includes("ruleContent"),
+    "The public discovery result JSON exposed source rules.");
+  await page.getByTestId(`home-section-result-${processedCard.resultId}`).click();
+  const processedCardPanel = page.locator(".result-detail-panel");
+  await processedCardPanel.waitFor();
+  assert((await processedCardPanel.innerText()).includes("首页精选小说"),
+    "Opening the home card did not display its processed book metadata.");
+  await page.screenshot({ path: join(outputDir, "home-processed-book-card.png"), fullPage: true });
+  await processedCardPanel.locator(".detail-close").click();
+
+  await page.getByTestId("nav-search-mobile").click();
+  const rssCategoryCallsBeforeMode = await completedCommandCount("list_rss_categories");
+  await page.getByTestId("discover-mode-rss").click();
+  await page.getByTestId("discovery-source").waitFor();
+  assert(await page.locator('[data-testid="discovery-source"]').locator(`option[value="${sources.rss.id}"]`).count() === 1,
+    "The standard Atom fixture was not projected as an RSS source in the native source list.");
+  let rssCategoryCallsBeforeLoad = rssCategoryCallsBeforeMode;
+  const selectedRssSource = await page.getByTestId("discovery-source").inputValue();
+  if (selectedRssSource !== sources.rss.id) {
+    rssCategoryCallsBeforeLoad = await completedCommandCount("list_rss_categories");
+    await page.getByTestId("discovery-source").selectOption(sources.rss.id);
+  }
+  const rssCategoriesCall = await waitForCompletedCommand("list_rss_categories", rssCategoryCallsBeforeLoad);
+  const rssCategories = await readJson(rssCategoriesCall.result.resource);
+  assert(rssCategories.categories?.length === 1 && rssCategories.categories[0].title === "最新文章",
+    `The Rust feed parser did not publish its processed Atom category: ${JSON.stringify(rssCategories)}.`);
+  const rssStateAfterCategory = await readJson(rssCategoriesCall.result.rssState);
+  assert(rssStateAfterCategory.subscriptions.some((entry) => entry.sourceId === sources.rss.id && entry.filter === "all"),
+    `Opening an RSS category did not create and persist the default all filter: ${JSON.stringify(rssStateAfterCategory)}.`);
+  const rssArticleCallsBefore = await completedCommandCount("list_rss_articles");
+  const rssArticlesCall = await waitForCompletedCommand("list_rss_articles", rssArticleCallsBefore, 30_000);
+  const rssArticles = await readJson(rssArticlesCall.result.resource);
+  assert(rssArticles.results?.length === 2, `The standard Atom feed should produce two article cards: ${JSON.stringify(rssArticles)}.`);
+  const firstArticle = rssArticles.results.find((article) => article.title === "Atom Article One");
+  const secondArticle = rssArticles.results.find((article) => article.title === "Atom Article Two");
+  assert(firstArticle?.articleId && firstArticle.resultId === firstArticle.articleId && firstArticle.contentSrc,
+    `The RSS article card is missing its Rust-issued article ID or processed content reference: ${JSON.stringify(firstArticle)}.`);
+  assert(secondArticle?.articleId && secondArticle.contentSrc,
+    `The second Atom article card was not processed: ${JSON.stringify(secondArticle)}.`);
+  const rssPublicText = JSON.stringify(rssArticles);
+  assert(!rssPublicText.includes(fixtureOrigin) && !rssPublicText.includes("Atom fixture article body") && !rssPublicText.includes("<script"),
+    "RSS card JSON exposed the original feed URL or article HTML body.");
+  assert(firstArticle.contentSrc.startsWith(resourceServerUrl),
+    `The RSS content reference was not materialized through the Rust resource server: ${firstArticle.contentSrc}.`);
+  const firstArticleResource = await fetch(firstArticle.contentSrc);
+  assert(firstArticleResource.ok, `The Rust-served RSS chapter HTML failed with HTTP ${firstArticleResource.status}.`);
+  const firstArticleHtml = await firstArticleResource.text();
+  assert(firstArticleHtml.includes("Atom fixture article body one") && !firstArticleHtml.includes("<script") &&
+    !firstArticleHtml.includes("__UNSAFE_FEED_SCRIPT__"),
+  "The browser resource for the Atom article did not contain sanitized processed HTML.");
+  await page.getByTestId(`rss-open-${firstArticle.resultId}`).waitFor();
+
+  const rssStateCallsBeforeOpen = await completedCommandCount("get_rss_state");
+  const openArticleCallsBefore = await completedCommandCount("open_rss_article");
+  await page.getByTestId(`rss-open-${firstArticle.resultId}`).click();
+  const openArticleCall = await waitForCompletedCommand("open_rss_article", openArticleCallsBefore);
+  const openedArticleHtml = await (await fetch(openArticleCall.result.resource.src)).text();
+  assert(openedArticleHtml.includes("Atom fixture article body one") && !openedArticleHtml.includes("<script"),
+    "open_rss_article did not return the sanitized HTML resource.");
+  const articleFrame = page.getByTestId("rss-article-frame");
+  await articleFrame.waitFor();
+  const displayedArticleText = await page.frameLocator('[data-testid="rss-article-frame"]').locator("body").innerText();
+  assert(displayedArticleText.includes("Atom fixture article body one"),
+    "The WebView did not display the processed Atom article HTML.");
+  await page.getByRole("button", { name: "关闭文章" }).click();
+  await articleFrame.waitFor({ state: "detached" });
+  const stateAfterReadCall = await waitForCompletedCommand("get_rss_state", rssStateCallsBeforeOpen);
+  const stateAfterRead = await readJson(stateAfterReadCall.result);
+  assert(stateAfterRead.articles.some((entry) => entry.sourceId === sources.rss.id &&
+    entry.articleId === firstArticle.articleId && entry.isRead && !entry.isFavorite),
+  `Opening the article did not persist its read state: ${JSON.stringify(stateAfterRead)}.`);
+
+  const articleStateCallsBefore = await completedCommandCount("set_rss_article_state");
+  const favoriteArticleEventCount = await harnessEventCount();
+  await page.getByTestId(`rss-favorite-${firstArticle.resultId}`).click();
+  const articleStateCall = await waitForCompletedCommand("set_rss_article_state", articleStateCallsBefore);
+  assert(articleStateCall.args.sourceId === sources.rss.id && articleStateCall.args.articleId === firstArticle.articleId &&
+    articleStateCall.args.isFavorite === true,
+  `Browser command arguments did not match the Tauri article-state contract: ${JSON.stringify(articleStateCall)}.`);
+  await waitForHarnessEvent("resource-updated", "rssState", favoriteArticleEventCount);
+
+  const selectRssFilter = async (filter, expectedTitle) => {
+    const filterCallsBefore = await completedCommandCount("set_rss_filter");
+    const articleCallsBefore = await completedCommandCount("list_rss_articles");
+    await page.getByTestId("rss-filter").selectOption(filter);
+    const filterCall = await waitForCompletedCommand("set_rss_filter", filterCallsBefore);
+    assert(filterCall.args.sourceId === sources.rss.id && filterCall.args.filter === filter,
+      `Browser command arguments did not match the Tauri RSS filter contract: ${JSON.stringify(filterCall)}.`);
+    const articleCall = await waitForCompletedCommandMatching(
+      "list_rss_articles",
+      articleCallsBefore,
+      (call) => call.args.sourceId === sources.rss.id && call.result?.filter === filter,
+    );
+    assert(articleCall.result.bookCount === 1,
+      `Rust returned an unexpected count for the '${filter}' filter: ${JSON.stringify(articleCall.result)}.`);
+    const document = await readJson(articleCall.result.resource);
+    assert(document.results?.length === 1 && document.results[0].title === expectedTitle,
+      `The '${filter}' filter should show '${expectedTitle}' only: ${JSON.stringify(document.results)}.`);
+    await page.waitForFunction((title) =>
+      [...document.querySelectorAll(".search-results-grid .result-title")]
+        .map((element) => element.textContent?.trim()).join("|") === title,
+    expectedTitle, { timeout: 10_000 });
+    return { filterCall, articleCall, document };
+  };
+
+  const readFiltered = await selectRssFilter("read", "Atom Article One");
+  assert(readFiltered.document.results[0].isRead && readFiltered.document.results[0].isFavorite,
+    "The read filter did not expose the article's persisted favorite/read flags.");
+  const favoritesFiltered = await selectRssFilter("favorites", "Atom Article One");
+  assert(favoritesFiltered.document.results[0].isFavorite,
+    "The favorites filter did not select the favorited Atom article.");
+  const unreadFiltered = await selectRssFilter("unread", "Atom Article Two");
+  assert(!unreadFiltered.document.results[0].isRead,
+    "The unread filter returned an already read Atom article.");
+  await selectRssFilter("favorites", "Atom Article One");
+  await page.screenshot({ path: join(outputDir, "rss-favorites-filter.png"), fullPage: true });
+
+  const stateBeforeUnsubscribeCall = await page.evaluate(async () =>
+    window.__LEGADO_BROWSER_HARNESS__.invoke("get_rss_state"));
+  const stateBeforeUnsubscribe = await readJson(stateBeforeUnsubscribeCall);
+  assert(stateBeforeUnsubscribe.subscriptions.some((entry) => entry.sourceId === sources.rss.id && entry.filter === "favorites") &&
+    stateBeforeUnsubscribe.articles.some((entry) => entry.sourceId === sources.rss.id && entry.articleId === firstArticle.articleId && entry.isRead && entry.isFavorite),
+  `RSS filter and article state were not persisted before unsubscribe: ${JSON.stringify(stateBeforeUnsubscribe)}.`);
+
+  const unsubscribeCallsBefore = await completedCommandCount("unsubscribe_rss");
+  const unsubscribeEventCount = await harnessEventCount();
+  await page.getByTestId("rss-unsubscribe").click();
+  await page.getByTestId("rss-unsubscribe-confirm").click();
+  const unsubscribeCall = await waitForCompletedCommand("unsubscribe_rss", unsubscribeCallsBefore);
+  assert(!unsubscribeCall.result.sources.some((source) => source.id === sources.rss.id),
+    "unsubscribe_rss left the standard feed in the source list.");
+  const stateAfterUnsubscribe = await readJson(unsubscribeCall.result.resource);
+  assert(!stateAfterUnsubscribe.subscriptions.some((entry) => entry.sourceId === sources.rss.id) &&
+    !stateAfterUnsubscribe.articles.some((entry) => entry.sourceId === sources.rss.id),
+  `unsubscribe_rss left per-feed state behind: ${JSON.stringify(stateAfterUnsubscribe)}.`);
+  await waitForHarnessEvent("resource-updated", "rssState", unsubscribeEventCount);
+  await waitForHarnessEvent("sources-updated", null, unsubscribeEventCount);
+  const oldContentResponse = await fetch(firstArticle.contentSrc);
+  assert(oldContentResponse.status === 404,
+    `Unsubscribe did not remove the cached article HTML (HTTP ${oldContentResponse.status}).`);
+  let cachedArticleHtmlExists = true;
+  try {
+    await access(join(dataDir, "books", `rss-${sources.rss.id}`, "chapters", `${firstArticle.articleId}.html`));
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    cachedArticleHtmlExists = false;
+  }
+  assert(!cachedArticleHtmlExists, "Unsubscribe left the cached article HTML on disk.");
+
+  const savedHomeBeforeRestart = await page.evaluate(async () =>
+    window.__LEGADO_BROWSER_HARNESS__.invoke("get_home_config"));
+  assert((await readJson(savedHomeBeforeRestart)).tabs[0].sections.some((entry) => entry.id === section.id),
+    "The configured home section disappeared before restart.");
+  verificationEvidence.homeRssCommands = (await commandLog()).map((call) => call.command);
+  const requiredHomeRssCommands = [
+    "get_home_config", "save_home_config", "list_discovery_categories", "list_discovery_favorites",
+    "set_discovery_favorite", "list_discovery_books", "get_rss_state", "list_rss_categories",
+    "list_rss_articles", "open_rss_article", "set_rss_article_state", "set_rss_filter", "unsubscribe_rss",
+  ];
+  for (const command of requiredHomeRssCommands) {
+    assert(verificationEvidence.homeRssCommands.includes(command),
+      `Browser flow did not exercise the matching Tauri/Rust command '${command}'.`);
+  }
+  const persistedHomeArgument = (await commandLog()).find((call) => call.command === "save_home_config")?.args.config;
+  assert(persistedHomeArgument && !JSON.stringify(persistedHomeArgument).includes(fixtureOrigin) &&
+    !JSON.stringify(persistedHomeArgument).includes("ruleExplore"),
+  "The save_home_config command contract carried a source URL or unprocessed source rules to JS.");
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByTestId(`home-section-${section.id}`).waitFor({ timeout: 15_000 });
+  const restartedBootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  assert(!restartedBootstrap.result.sources.some((source) => source.id === sources.rss.id),
+    "The unsubscribed feed reappeared in app_bootstrap after restarting the real Rust service.");
+  const restartedHomeCall = await waitForCompletedCommand("get_home_config", 0);
+  const restartedHome = await readJson(restartedHomeCall.result);
+  assert(restartedHome.tabs[0].sections.some((entry) => entry.id === section.id),
+    "The persisted home section did not survive restarting the real Rust service.");
+  const restartedRssCall = await waitForCompletedCommand("get_rss_state", 0);
+  const restartedRss = await readJson(restartedRssCall.result);
+  assert(!restartedRss.subscriptions.some((entry) => entry.sourceId === sources.rss.id) &&
+    !restartedRss.articles.some((entry) => entry.sourceId === sources.rss.id),
+  `The RSS filter/article state returned after restart: ${JSON.stringify(restartedRss)}.`);
+  const removedArticleUrl = `${resourceServerUrl}books/rss-${sources.rss.id}/chapters/${firstArticle.articleId}.html`;
+  const removedArticleAfterRestart = await fetch(removedArticleUrl);
+  assert(removedArticleAfterRestart.status === 404,
+    `The removed RSS chapter resource returned HTTP ${removedArticleAfterRestart.status} after restart.`);
+  const privateSources = JSON.parse(await readFile(join(dataDir, "private-data", "sources.json"), "utf8"));
+  assert(!privateSources.some((source) => source.id === sources.rss.id),
+    "The unsubscribed standard feed remained in private source storage after restart.");
+
+  await page.getByTestId("nav-search-mobile").click();
+  await page.getByTestId("discover-mode-rss").click();
+  const sourceOptions = await page.locator('[data-testid="discovery-source"] option').evaluateAll((options) =>
+    options.map((option) => ({ value: option.value, label: option.textContent?.trim() })));
+  assert(!sourceOptions.some((option) => option.value === sources.rss.id || option.label === "Browser E2E Atom Feed"),
+    `The removed Atom feed appeared in the RSS picker after application restart: ${JSON.stringify(sourceOptions)}.`);
+
+  const directArticleRetry = await fetch(`${browserHarnessUrl}/invoke`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ command: "open_rss_article", args: { sourceId: sources.rss.id, articleId: firstArticle.articleId } }),
+  });
+  assert(directArticleRetry.status >= 400,
+    `open_rss_article unexpectedly succeeded for an unsubscribed source after restart (HTTP ${directArticleRetry.status}).`);
+
+  const newErrors = [
+    ...errors.slice(errorStart),
+    ...browserConsoleErrors.slice(consoleErrorStart).map((entry) => `console: ${entry.text}`),
+    ...browserRequestFailures.slice(requestFailureStart).map((failure) => `request failed: ${failure.url} (${failure.error})`),
+  ];
+  assert(newErrors.length === 0, `Home/RSS browser flow reported unexpected errors:\n${newErrors.join("\n")}`);
+  assert(contentFixture.discoveryRequestCount() >= 1 && contentFixture.feedRequestCount() >= 4,
+    `The real KMP/Atom fixture endpoints were not exercised enough: ${contentFixture.discoveryRequestCount()} discovery requests, ${contentFixture.feedRequestCount()} feed requests.`);
+  verificationEvidence.homeRss = {
+    homeCategoryId: category.categoryId,
+    savedHomeSectionId: section.id,
+    openedProcessedCard: processedCard.title,
+    rssSourceId: sources.rss.id,
+    articleTitles: [firstArticle.title, secondArticle.title],
+    articleSanitized: true,
+    filters: [
+      { filter: "read", titles: readFiltered.document.results.map((item) => item.title) },
+      { filter: "favorites", titles: favoritesFiltered.document.results.map((item) => item.title) },
+      { filter: "unread", titles: unreadFiltered.document.results.map((item) => item.title) },
+    ],
+    unsubscribedAndAbsentAfterRustRestart: true,
+    discoveryRequests: contentFixture.discoveryRequestCount(),
+    atomFeedRequests: contentFixture.feedRequestCount(),
+  };
+  report("PASS: real KMP discovery category was favorited, saved to Home, and opened from a Rust-processed card.");
+  report("PASS: real feed-rs Atom resources displayed sanitized article HTML; read/favorite state and read/unread/favorite filters matched.");
+  report("PASS: unsubscribe removed source, article state, and cached HTML, and stayed removed after restarting the Rust service.");
+  await context.close();
+}
+
+function observeFeaturePage(flowPage) {
+  const starts = {
+    errors: errors.length,
+    console: browserConsoleErrors.length,
+    requests: browserRequestFailures.length,
+  };
+  flowPage.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  flowPage.on("console", (message) => {
+    if (message.type() === "error") browserConsoleErrors.push({ text: message.text(), location: message.location() });
+  });
+  flowPage.on("requestfailed", (request) => browserRequestFailures.push({
+    url: request.url(),
+    error: request.failure()?.errorText,
+  }));
+  flowPage.on("request", (request) => {
+    if (request.url().includes("/r/")) resourceRequests.push({ url: request.url(), method: request.method() });
+  });
+  flowPage.on("response", (response) => {
+    if (response.url().includes("/r/")) resourceRequests.push({ url: response.url(), status: response.status() });
+  });
+  return {
+    assertClean(label) {
+      const newErrors = [
+        ...errors.slice(starts.errors),
+        ...browserConsoleErrors.slice(starts.console).map((entry) => `console: ${entry.text}`),
+        ...browserRequestFailures.slice(starts.requests).map((failure) =>
+          `request failed: ${failure.url} (${failure.error})`),
+      ];
+      assert(newErrors.length === 0, `${label} reported unexpected browser errors:\n${newErrors.join("\n")}`);
+    },
+  };
+}
+
+async function openFeatureFlowPage(viewport = { width: 390, height: 900 }) {
+  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  await installInvokeBridge(context);
+  page = await context.newPage();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const diagnostics = observeFeaturePage(page);
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.addStyleTag({ content: "*,*::before,*::after{animation-duration:0s!important;animation-delay:0s!important;transition-duration:0s!important;transition-delay:0s!important;scroll-behavior:auto!important}" });
+  await page.getByTestId("nav-search-mobile").waitFor({ timeout: 15_000 });
+  await waitForCompletedCommand("app_bootstrap", 0);
+  return { context, diagnostics };
+}
+
+async function sectionIdsByTitle() {
+  return page.locator('input[data-testid^="home-config-section-title-"]').evaluateAll((inputs) =>
+    inputs.map((input) => ({
+      id: input.getAttribute("data-testid").replace("home-config-section-title-", ""),
+      title: input.value,
+    })),
+  );
+}
+
+async function addHomeConfigSection(title) {
+  const categorySelect = page.getByTestId("home-config-new-category");
+  await page.waitForFunction(() => {
+    const select = document.querySelector('[data-testid="home-config-new-category"]');
+    return select && [...select.options].some((option) => !option.disabled && option.value);
+  }, undefined, { timeout: 20_000 });
+  const categoryId = await categorySelect.locator("option").evaluateAll((options) =>
+    options.find((option) => !option.disabled && option.value)?.value,
+  );
+  assert(categoryId, `Rust did not load a selectable discovery category for home section '${title}'.`);
+  await categorySelect.selectOption(categoryId);
+  await page.getByTestId("home-config-new-title").fill(title);
+  await page.getByTestId("home-config-add-section").click();
+  await page.waitForFunction((expected) =>
+    [...document.querySelectorAll('input[data-testid^="home-config-section-title-"]')]
+      .some((input) => input.value === expected), title, { timeout: 10_000 });
+  const row = (await sectionIdsByTitle()).find((entry) => entry.title === title);
+  assert(row, `The Home editor did not add section '${title}'.`);
+  return row.id;
+}
+
+async function testHomeConfigEditorFlow() {
+  const { context, diagnostics } = await openFeatureFlowPage();
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("home-config-open-settings").click();
+  await page.getByTestId("home-config-editor").waitFor();
+
+  const homeCall = await waitForCompletedCommand("get_home_config", 0);
+  const original = await readResourceJson(homeCall.result);
+  assert(original.tabs?.length === 1 && original.tabs[0].sections.length === 1,
+    `The Home editor should open the category section saved by the prior Home flow: ${JSON.stringify(original)}.`);
+  const mainTabId = original.tabs[0].id;
+  const originalSectionId = original.tabs[0].sections[0].id;
+  await page.getByTestId(`home-config-tab-name-${mainTabId}`).fill("Editor Main");
+
+  const tabsBeforeAdd = await page.getByRole("tab").count();
+  await page.getByTestId("home-config-add-tab").click();
+  await page.waitForFunction((count) => document.querySelectorAll('[role="tab"]').length > count,
+    tabsBeforeAdd, { timeout: 10_000 });
+  const addedTabButton = page.locator('[role="tab"][aria-selected="true"]');
+  const addedTabId = (await addedTabButton.getAttribute("data-testid")).replace("home-config-tab-", "");
+  await page.getByTestId(`home-config-tab-name-${addedTabId}`).fill("Editor Extra");
+  await page.getByTestId(`home-config-tab-up-${addedTabId}`).click();
+  const extraSectionId = await addHomeConfigSection("Extra tab category");
+  await page.getByTestId(`home-config-section-style-${extraSectionId}`).selectOption("2");
+
+  await page.getByRole("tab", { name: "Editor Main", exact: true }).click();
+  const secondarySectionId = await addHomeConfigSection("Editor Secondary");
+  const tertiarySectionId = await addHomeConfigSection("Editor Tertiary");
+  await page.getByTestId(`home-config-section-title-${secondarySectionId}`).fill("Editor Secondary Edited");
+  await page.getByTestId(`home-config-section-style-${secondarySectionId}`).selectOption("3");
+  await page.getByTestId(`home-config-section-style-${tertiarySectionId}`).selectOption("1");
+  await page.getByTestId(`home-config-section-up-${tertiarySectionId}`).click();
+
+  const editedSectionRows = await sectionIdsByTitle();
+  assert(editedSectionRows.map((entry) => entry.id).join(",") ===
+    [originalSectionId, tertiarySectionId, secondarySectionId].join(","),
+  `The Home editor did not move the section into the requested order: ${JSON.stringify(editedSectionRows)}.`);
+  await page.screenshot({ path: join(outputDir, "home-config-editor-crud.png"), fullPage: true });
+
+  const firstSaveCount = await completedCommandCount("save_home_config");
+  await page.getByTestId("home-config-save").click();
+  const firstSave = await waitForCompletedCommand("save_home_config", firstSaveCount);
+  await page.getByTestId("home-config-overlay").waitFor({ state: "detached", timeout: 15_000 });
+  const saved = await readResourceJson(firstSave.result);
+  assert(saved.tabs.length === 2 && saved.tabs[0].id === addedTabId && saved.tabs[0].title === "Editor Extra" &&
+    saved.tabs[0].sections.length === 1 && saved.tabs[0].sections[0].id === extraSectionId && saved.tabs[0].sections[0].style === 2,
+  `Home tab creation, ordering, title, or style did not persist through the Rust save command: ${JSON.stringify(saved)}.`);
+  const savedMain = saved.tabs.find((tab) => tab.id === mainTabId);
+  assert(savedMain?.title === "Editor Main" && savedMain.sections.map((section) => section.id).join(",") ===
+    [originalSectionId, tertiarySectionId, secondarySectionId].join(",") &&
+    savedMain.sections[1].style === 1 && savedMain.sections[2].style === 3,
+  `Home section creation, edit, order, or styles did not persist: ${JSON.stringify(savedMain)}.`);
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await waitForCompletedCommand("app_bootstrap", 0);
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("home-config-open-settings").click();
+  await page.getByTestId("home-config-editor").waitFor();
+  await page.getByRole("tab", { name: "Editor Extra", exact: true }).waitFor();
+  await page.getByRole("tab", { name: "Editor Main", exact: true }).click();
+  await page.getByTestId(`home-config-section-remove-${secondarySectionId}`).click();
+  await page.getByRole("tab", { name: "Editor Extra", exact: true }).click();
+  await page.getByTestId("home-config-delete-tab").click();
+  const secondSaveCount = await completedCommandCount("save_home_config");
+  await page.getByTestId("home-config-save").click();
+  const secondSave = await waitForCompletedCommand("save_home_config", secondSaveCount);
+  await page.getByTestId("home-config-overlay").waitFor({ state: "detached", timeout: 15_000 });
+  const afterDeletion = await readResourceJson(secondSave.result);
+  assert(afterDeletion.tabs.length === 1 && afterDeletion.tabs[0].id === mainTabId &&
+    afterDeletion.tabs[0].sections.length === 2 &&
+    afterDeletion.tabs[0].sections.every((section) => section.id !== secondarySectionId),
+  `Home tab/section deletion did not persist: ${JSON.stringify(afterDeletion)}.`);
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await waitForCompletedCommand("app_bootstrap", 0);
+  const restartedHomeCall = await waitForCompletedCommand("get_home_config", 0);
+  const restartedHome = await readResourceJson(restartedHomeCall.result);
+  assert(restartedHome.tabs.length === 1 && restartedHome.tabs[0].id === mainTabId &&
+    restartedHome.tabs[0].title === "Editor Main" &&
+    restartedHome.tabs[0].sections.length === 2 &&
+    !restartedHome.tabs[0].sections.some((section) => section.id === secondarySectionId),
+  `The Home tab and section deletion did not survive restarting the Rust service: ${JSON.stringify(restartedHome)}.`);
+
+  verificationEvidence.homeConfigEditor = {
+    tabCreatedRenamedAndReordered: true,
+    tabDeleted: true,
+    sectionCreatedRenamedAndDeleted: true,
+    sectionOrder: savedMain.sections.map((section) => section.title),
+    styles: savedMain.sections.map((section) => section.style),
+    rustRestartRestoredSavedConfiguration: true,
+    finalTabCount: restartedHome.tabs.length,
+    finalSectionCount: restartedHome.tabs[0].sections.length,
+  };
+  report("PASS: HomeConfigEditor tab and section create/edit/delete/order/style flows used Rust saves and survived Rust service restarts.");
+  diagnostics.assertClean("Home configuration editor");
+  await context.close();
+}
+
+async function txtRuleIdForName(name) {
+  const row = page.locator(".txt-toc-editor__rule").filter({ hasText: name });
+  await row.waitFor({ timeout: 10_000 });
+  const testId = await row.getAttribute("data-testid");
+  assert(testId?.startsWith("txt-toc-rule-"), `Cannot locate TXT rule ID for '${name}'.`);
+  return testId.slice("txt-toc-rule-".length);
+}
+
+async function txtRuleOrder() {
+  return page.locator(".txt-toc-editor__rule").evaluateAll((rows) => rows.map((row) => ({
+    id: row.getAttribute("data-testid").replace("txt-toc-rule-", ""),
+    name: row.querySelector(".txt-toc-editor__rule-title strong")?.textContent?.trim() ?? "",
+    state: row.querySelector(".txt-toc-editor__state")?.textContent?.trim() ?? "",
+  })));
+}
+
+async function testTxtTocRulesAndImportFlow() {
+  const { context, diagnostics } = await openFeatureFlowPage();
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("txt-toc-rules-open").click();
+  await page.getByTestId("txt-toc-rules-editor").waitFor();
+  await page.getByTestId("txt-toc-rules-empty").waitFor();
+
+  const invalidCount = await completedCommandCount("upsert_txt_toc_rule");
+  await page.getByTestId("txt-toc-rule-name").fill("Invalid Rust regular expression");
+  await page.getByTestId("txt-toc-rule-pattern").fill("[");
+  await page.getByTestId("txt-toc-rule-save").click();
+  await page.getByTestId("txt-toc-error").waitFor({ timeout: 10_000 });
+  await page.waitForFunction((count) => {
+    const calls = window.__LEGADO_BROWSER_HARNESS__.calls.filter((call) => call.command === "upsert_txt_toc_rule");
+    return calls[count]?.finishedAt !== undefined;
+  }, invalidCount, { timeout: 10_000 });
+  const invalidCall = (await commandLog()).filter((call) => call.command === "upsert_txt_toc_rule")[invalidCount];
+  assert(invalidCall.error?.includes("Invalid TXT TOC expression"),
+    `The invalid expression was not rejected by Rust regex validation: ${JSON.stringify(invalidCall)}.`);
+  assert((await page.getByTestId("txt-toc-error").innerText()).includes("Invalid TXT TOC expression"),
+    "The TXT rule editor did not show the Rust regex validation error beside the form.");
+  assert((await page.locator(".txt-toc-editor__rule").count()) === 0,
+    "An invalid TXT rule appeared in the persisted rules list.");
+
+  const asyncAddRule = async ({ name, pattern, example }) => {
+    const before = await completedCommandCount("upsert_txt_toc_rule");
+    await page.getByTestId("txt-toc-rule-name").fill(name);
+    await page.getByTestId("txt-toc-rule-pattern").fill(pattern);
+    if (example) await page.getByTestId("txt-toc-rule-example").fill(example);
+    await page.getByTestId("txt-toc-rule-save").click();
+    const call = await waitForCompletedCommand("upsert_txt_toc_rule", before);
+    await page.getByText(name, { exact: true }).waitFor({ timeout: 10_000 });
+    return call;
+  };
+  await asyncAddRule({
+    name: "Chapter headings",
+    pattern: "^Chapter [0-9]{2}: .+$",
+    example: "Chapter 01: Opening",
+  });
+  const chapterRuleId = await txtRuleIdForName("Chapter headings");
+  await asyncAddRule({
+    name: "Part headings",
+    pattern: "^Part [A-Z]: .+$",
+    example: "Part A: Opening",
+  });
+  const partRuleId = await txtRuleIdForName("Part headings");
+  await asyncAddRule({
+    name: "Temporary heading",
+    pattern: "^Never matches$",
+  });
+  const transientRuleId = await txtRuleIdForName("Temporary heading");
+
+  await page.getByTestId(`txt-toc-rule-edit-${chapterRuleId}`).click();
+  await page.getByTestId("txt-toc-rule-example").fill("Chapter 01: Edited opening");
+  const editCount = await completedCommandCount("upsert_txt_toc_rule");
+  await page.getByTestId("txt-toc-rule-save").click();
+  const editedRule = await waitForCompletedCommand("upsert_txt_toc_rule", editCount);
+  assert(editedRule.args.rule.id === chapterRuleId && editedRule.args.rule.example === "Chapter 01: Edited opening",
+    "Editing a TXT rule did not update the existing Rust rule record.");
+
+  await page.getByTestId(`txt-toc-rule-delete-${transientRuleId}`).click();
+  await page.getByTestId("txt-toc-delete-dialog").waitFor();
+  const deleteCount = await completedCommandCount("delete_txt_toc_rule");
+  await page.getByTestId("txt-toc-delete-confirm").click();
+  await waitForCompletedCommand("delete_txt_toc_rule", deleteCount);
+  await page.getByTestId(`txt-toc-rule-${transientRuleId}`).waitFor({ state: "detached", timeout: 10_000 });
+
+  await page.getByTestId(`txt-toc-rule-up-${partRuleId}`).click();
+  await page.waitForFunction((id) => document.querySelectorAll(".txt-toc-editor__rule")[0]
+    ?.getAttribute("data-testid") === `txt-toc-rule-${id}`, partRuleId, { timeout: 10_000 });
+  const ruleToggle = page.getByTestId(`txt-toc-rule-toggle-${chapterRuleId}`);
+  if (await ruleToggle.isChecked()) await ruleToggle.uncheck();
+  await page.waitForFunction(() => document.querySelector('[data-testid="txt-toc-success"]')
+    ?.textContent?.includes("规则已停用"), undefined, { timeout: 10_000 });
+
+  const savedRuleOrder = await txtRuleOrder();
+  assert(savedRuleOrder.map((rule) => rule.id).join(",") === `${partRuleId},${chapterRuleId}` &&
+    savedRuleOrder[0].state === "已启用" && savedRuleOrder[1].state === "已停用",
+  `TXT rule order and enable state were not reflected in the editor: ${JSON.stringify(savedRuleOrder)}.`);
+  await page.screenshot({ path: join(outputDir, "txt-toc-rules-editor.png"), fullPage: true });
+
+  const rulesResourceCall = (await commandLog()).filter((call) => call.command === "get_txt_toc_rules").at(-1);
+  assert(rulesResourceCall?.result?.src, "The TXT rule editor did not load its rules from a Rust JSON resource.");
+  const persistedRules = await readResourceJson(rulesResourceCall.result);
+  const persistedRuleOrder = [...persistedRules.rules].sort((left, right) => left.serialNumber - right.serialNumber);
+  assert(persistedRuleOrder.map((rule) => rule.id).join(",") === `${partRuleId},${chapterRuleId}` &&
+    persistedRuleOrder[0].enable === true && persistedRuleOrder[1].enable === false,
+  `Rust did not persist TXT rule order and enable state: ${JSON.stringify(persistedRules)}.`);
+
+  await page.getByTestId("txt-toc-close").click();
+  await page.getByTestId("nav-shelf-mobile").click();
+  const importCount = await completedCommandCount("import_book_from_picker");
+  await page.getByTestId("local-book-import").click();
+  const importCall = await waitForCompletedCommand("import_book_from_picker", importCount, 30_000);
+  const importedBook = await readResourceJson(importCall.result.book);
+  const importedTitles = importedBook.chapters.map((chapter) => chapter.title);
+  assert(importedBook.chapters.length === 2 && importedTitles[0] === "Part A: Part rule opening" &&
+    importedTitles[1] === "Part B: Part rule ending",
+  `The real TXT importer did not apply the ordered enabled Rust rule to produce exactly two chapters: ${JSON.stringify(importedBook.chapters)}.`);
+  assert(importedBook.chapters.every((chapter) => chapter.src),
+    "The imported TXT chapters were not persisted as browser-consumable HTML resources.");
+  for (const [index, marker] of ["Fixture part-a paragraph 01", "Fixture part-b paragraph 01"].entries()) {
+    const response = await fetch(importedBook.chapters[index].src);
+    assert(response.ok && (await response.text()).includes(marker),
+      `TXT chapter ${index + 1} HTML did not contain the corresponding imported body marker.`);
+  }
+  await page.locator(".book-detail-panel").waitFor({ timeout: 10_000 });
+  assert(await page.locator(".catalog-row").count() === 2,
+    "The local TXT book detail UI did not display the two chapters returned by the Rust import.");
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  const restartedBootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  const restartedShelf = await readResourceJson(restartedBootstrap.result.shelf);
+  assert(restartedShelf.books.some((book) => book.id === importedBook.id),
+    "The TXT book was not available on the shelf after restarting the Rust service.");
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("txt-toc-rules-open").click();
+  await page.getByTestId(`txt-toc-rule-${partRuleId}`).waitFor();
+  const restartedRuleOrder = await txtRuleOrder();
+  assert(restartedRuleOrder.map((rule) => rule.id).join(",") === `${partRuleId},${chapterRuleId}` &&
+    restartedRuleOrder[0].state === "已启用" && restartedRuleOrder[1].state === "已停用",
+  `TXT rule order and enable state did not survive the Rust restart: ${JSON.stringify(restartedRuleOrder)}.`);
+  const reopenedBookDescriptor = await fetchJson(`${browserHarnessUrl}/invoke`, {
+    command: "get_book",
+    args: { bookId: importedBook.id },
+  });
+  const reopenedBook = await readResourceJson(reopenedBookDescriptor);
+  assert(reopenedBook.chapters.length === 2 && reopenedBook.chapters.map((chapter) => chapter.title).join("|") === importedTitles.join("|"),
+    `The TXT chapters did not survive the Rust restart: ${JSON.stringify(reopenedBook.chapters)}.`);
+
+  verificationEvidence.txtTocRulesAndImport = {
+    invalidRegexRejectedByRust: invalidCall.error,
+    createdEditedDeletedRules: true,
+    order: persistedRuleOrder.map((rule) => rule.name),
+    enabled: persistedRuleOrder.map((rule) => rule.enable),
+    importedBookId: importedBook.id,
+    importedChapterCount: importedBook.chapters.length,
+    importedChapterTitles: importedTitles,
+    htmlBodiesServed: true,
+    rulesAndChaptersSurvivedRustRestart: true,
+  };
+  report("PASS: TXT rule create/edit/delete/order/enable UI persisted through Rust, and Rust regex errors appeared beside the form.");
+  report("PASS: the real local TXT importer applied the saved enabled rule, produced exactly two chapter HTML resources, and restored them with the rules after Rust restart.");
+  diagnostics.assertClean("TXT rules and local import");
+  await context.close();
+}
+
+async function testSearchHistoryFlow() {
+  const { context, diagnostics } = await openFeatureFlowPage();
+  const searchAttempts = [];
+  const openSearch = async () => {
+    await page.getByTestId("nav-search-mobile").click();
+    await page.getByTestId("discover-mode-search").click();
+  };
+  await openSearch();
+
+  const searchAndWait = async (query) => {
+    const before = await completedCommandCount("start_search");
+    const eventStart = await harnessEventCount();
+    await page.getByTestId("search-submit").waitFor({ timeout: 10_000 });
+    assert(await page.getByTestId("search-submit").isEnabled(),
+      `The search UI was still busy before starting '${query}'.`);
+    await page.getByTestId("search-keyword").fill(query);
+    await page.getByTestId("search-submit").click();
+    const call = await waitForCompletedCommand("start_search", before, 20_000);
+    assert(call.result?.taskId && call.args.keyword === query,
+      `The UI did not send the requested search query to Rust: ${JSON.stringify(call)}.`);
+    const terminal = await waitForTaskTerminal(call.result.taskId);
+    assert(terminal.status === "completed", `KMP search '${query}' did not complete: ${JSON.stringify(terminal)}.`);
+    await page.locator('[data-testid^="search-result-"]').first().waitFor({ timeout: 15_000 });
+    let recovered = false;
+    try {
+      await page.waitForFunction(() => {
+        const submit = document.querySelector('[data-testid="search-submit"]');
+        return submit && !submit.disabled;
+      }, undefined, { timeout: 5_000 });
+      recovered = true;
+    } catch {
+      recovered = false;
+    }
+    const trace = await page.evaluate(({ eventOffset, taskId }) => {
+      const harness = window.__LEGADO_BROWSER_HARNESS__;
+      const button = document.querySelector('[data-testid="search-submit"]');
+      const taskEvents = harness.events.slice(eventOffset).map((entry) => {
+        const payload = entry.payload ?? {};
+        const task = payload.task && typeof payload.task === "object" ? payload.task : payload;
+        return {
+          id: entry.id,
+          event: entry.event,
+          receivedAt: entry.receivedAt,
+          taskId: task.id ?? payload.taskId ?? null,
+          status: task.status ?? null,
+          kind: payload.kind ?? null,
+          keyword: payload.keyword ?? null,
+        };
+      }).filter((entry) => ["task-updated", "search-started", "search-complete", "search-progress", "resource-updated"].includes(entry.event));
+      return {
+        taskId,
+        buttonDisabled: button instanceof HTMLButtonElement ? button.disabled : null,
+        buttonText: button?.textContent?.trim() ?? null,
+        events: taskEvents,
+      };
+    }, { eventOffset: eventStart, taskId: call.result.taskId });
+    const attempt = {
+      query,
+      taskId: call.result.taskId,
+      terminalStatus: terminal.status,
+      commandStartedAt: call.startedAt,
+      commandFinishedAt: call.finishedAt,
+      recoveredOnSameScreen: recovered,
+      ...trace,
+    };
+    searchAttempts.push(attempt);
+    verificationEvidence.searchHistoryAttempts = [...searchAttempts];
+    assert(recovered,
+      `Search '${query}' reached Rust task terminal state '${terminal.status}' but the same-screen submit button did not recover: ${JSON.stringify(attempt)}.`);
+    return call;
+  };
+
+  for (const query of ["History Alpha", "History Beta", "History Alpha", "History Gamma"]) {
+    await searchAndWait(query);
+  }
+
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("search-history").waitFor();
+  const recentRows = await page.locator('[data-testid^="search-history-entry-"]').evaluateAll((rows) =>
+    rows.map((row) => ({ query: row.getAttribute("data-query"), text: row.innerText })),
+  );
+  assert(recentRows[0]?.query === "History Gamma" && recentRows.find((row) => row.query === "History Alpha")?.text.includes("2 次搜索"),
+    `SearchHistory did not show recent order and deduplicated usage counts: ${JSON.stringify(recentRows)}.`);
+
+  await page.getByTestId("search-history-sort-popular").click();
+  const popularRows = await page.locator('[data-testid^="search-history-entry-"]').evaluateAll((rows) =>
+    rows.map((row) => ({ query: row.getAttribute("data-query"), text: row.innerText })),
+  );
+  assert(popularRows[0]?.query === "History Alpha" && popularRows[0].text.includes("2 次搜索"),
+    `The popular-search view did not rank the most used query first: ${JSON.stringify(popularRows)}.`);
+  await page.screenshot({ path: join(outputDir, "search-history-popular.png"), fullPage: true });
+
+  const betaRow = page.locator('[data-testid^="search-history-entry-"][data-query="History Beta"]');
+  const reuseCount = await completedCommandCount("start_search");
+  const reuseEventStart = await harnessEventCount();
+  await betaRow.locator('[data-testid^="search-history-use-"]').click();
+  const reuseCall = await waitForCompletedCommand("start_search", reuseCount, 20_000);
+  assert(reuseCall.args.keyword === "History Beta", `Selecting a recent search did not reuse its query: ${JSON.stringify(reuseCall)}.`);
+  const reusedTask = await waitForTaskTerminal(reuseCall.result.taskId);
+  assert(reusedTask.status === "completed", `Reused KMP search did not complete: ${JSON.stringify(reusedTask)}.`);
+  assert(await page.getByTestId("search-keyword").inputValue() === "History Beta",
+    "The search form did not receive the selected history query.");
+  const reuseRecovered = await page.waitForFunction(() => {
+    const submit = document.querySelector('[data-testid="search-submit"]');
+    return submit && !submit.disabled;
+  }, undefined, { timeout: 5_000 }).then(() => true).catch(() => false);
+  const reuseTrace = await page.evaluate(({ taskId, eventOffset }) => {
+    const harness = window.__LEGADO_BROWSER_HARNESS__;
+    const button = document.querySelector('[data-testid="search-submit"]');
+    const events = harness.events.slice(eventOffset).filter((entry) => {
+      const payload = entry.payload ?? {};
+      const task = payload.task && typeof payload.task === "object" ? payload.task : payload;
+      return ["task-updated", "search-started", "search-complete", "search-progress", "resource-updated"].includes(entry.event)
+        && (task.id === taskId || payload.taskId === taskId || entry.event === "resource-updated" && payload.kind === "searchHistory");
+    }).map((entry) => ({
+      id: entry.id,
+      event: entry.event,
+      receivedAt: entry.receivedAt,
+      status: entry.payload?.task?.status ?? entry.payload?.status ?? null,
+      kind: entry.payload?.kind ?? null,
+    }));
+    return {
+      taskId,
+      buttonDisabled: button instanceof HTMLButtonElement ? button.disabled : null,
+      buttonText: button?.textContent?.trim() ?? null,
+      events,
+    };
+  }, { taskId: reuseCall.result.taskId, eventOffset: reuseEventStart });
+  const reuseAttempt = {
+    query: reuseCall.args.keyword,
+    taskId: reuseCall.result.taskId,
+    terminalStatus: reusedTask.status,
+    commandStartedAt: reuseCall.startedAt,
+    commandFinishedAt: reuseCall.finishedAt,
+    recoveredOnSameScreen: reuseRecovered,
+    ...reuseTrace,
+  };
+  searchAttempts.push(reuseAttempt);
+  verificationEvidence.searchHistoryAttempts = [...searchAttempts];
+  assert(reuseRecovered,
+    `Reused query task '${reuseAttempt.taskId}' completed but same-screen submit did not recover: ${JSON.stringify(reuseAttempt)}.`);
+
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("search-history").waitFor();
+  await page.getByTestId("search-history-sort-recent").click();
+  await page.locator('[data-testid^="search-history-entry-"][data-query="History Beta"]').waitFor();
+  assert((await page.locator('[data-testid^="search-history-entry-"]').first().getAttribute("data-query")) === "History Beta",
+    "Reusing a search did not update its recent position.");
+
+  const deleteCount = await completedCommandCount("delete_search_history");
+  await page.locator('[data-testid^="search-history-entry-"][data-query="History Gamma"] [data-testid^="search-history-delete-"]').click();
+  await waitForCompletedCommand("delete_search_history", deleteCount);
+  await page.waitForFunction(() => ![...document.querySelectorAll('[data-testid^="search-history-entry-"]')]
+    .some((row) => row.getAttribute("data-query") === "History Gamma"), undefined, { timeout: 10_000 });
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  const afterDeleteBootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  const historyAfterDeleteRestart = await readResourceJson(afterDeleteBootstrap.result.searchHistory);
+  assert(!historyAfterDeleteRestart.entries.some((entry) => entry.query === "History Gamma") &&
+    historyAfterDeleteRestart.entries.some((entry) => entry.query === "History Alpha") &&
+    historyAfterDeleteRestart.entries.some((entry) => entry.query === "History Beta"),
+  `Search history deletion or retained records did not survive restart: ${JSON.stringify(historyAfterDeleteRestart)}.`);
+
+  await page.getByTestId("nav-settings-mobile").click();
+  const clearCount = await completedCommandCount("clear_search_history");
+  await page.getByTestId("search-history-clear").click();
+  await page.getByTestId("search-history-clear-confirm").click();
+  await waitForCompletedCommand("clear_search_history", clearCount);
+  await page.getByTestId("search-history-empty").waitFor({ timeout: 10_000 });
+  await page.screenshot({ path: join(outputDir, "search-history-cleared.png"), fullPage: true });
+
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  const afterClearBootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  const historyAfterClearRestart = await readResourceJson(afterClearBootstrap.result.searchHistory);
+  assert(historyAfterClearRestart.entries.length === 0,
+    `Clearing SearchHistory did not survive Rust restart: ${JSON.stringify(historyAfterClearRestart)}.`);
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("search-history-empty").waitFor();
+  await page.screenshot({ path: join(outputDir, "search-history-empty-after-restart.png"), fullPage: true });
+
+  verificationEvidence.searchHistory = {
+    recentOrder: recentRows.slice(0, 3).map((row) => row.query),
+    popularOrder: popularRows.slice(0, 3).map((row) => row.query),
+    reuseQuery: reuseCall.args.keyword,
+    sameScreenSearchRecoveredAfterTask: searchAttempts.map((attempt) => attempt.recoveredOnSameScreen),
+    individualDeletePersistedThroughRestart: true,
+    clearPersistedThroughRestart: true,
+  };
+  report("PASS: SearchHistory displayed recent/popular ordering, reused a query through a real KMP/Rust search, and every same-screen search submit recovered after Rust task completion.");
+  report("PASS: individual deletion and clear-all remained persisted after restarting the real Rust service.");
+  diagnostics.assertClean("Search history");
+  await context.close();
+}
+
+async function testBookSourceChangeFlow(bookId, sources, contentFixture) {
+  const context = await browser.newContext({ viewport: { width: 390, height: 900 }, deviceScaleFactor: 1 });
+  await installInvokeBridge(context);
+  page = await context.newPage();
+  const errorStart = errors.length;
+  const consoleErrorStart = browserConsoleErrors.length;
+  const requestFailureStart = browserRequestFailures.length;
+  const bookJsonSnapshots = [];
+  const pendingBookJsonSnapshots = [];
+  page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
+  page.on("console", (message) => {
+    if (message.type() === "error") browserConsoleErrors.push({ text: message.text(), location: message.location() });
+  });
+  page.on("request", (request) => {
+    if (request.url().includes("/r/")) resourceRequests.push({ url: request.url(), method: request.method() });
+  });
+  page.on("requestfailed", (request) => browserRequestFailures.push({ url: request.url(), error: request.failure()?.errorText }));
+  page.on("response", (response) => {
+    if (response.url().includes("/r/")) {
+      resourceRequests.push({ url: response.url(), status: response.status() });
+      if (response.url().includes(`/books/${bookId}/book.json`)) {
+        pendingBookJsonSnapshots.push(response.json().then((document) => bookJsonSnapshots.push(document)).catch(() => {}));
+      }
+    }
+  });
+
+  const readJson = async (descriptor) => {
+    const src = typeof descriptor === "string" ? descriptor : descriptor?.src;
+    assert(src, `A Rust command did not return a resource URL: ${JSON.stringify(descriptor)}.`);
+    const response = await fetch(src);
+    assert(response.ok, `Resource ${src} returned HTTP ${response.status}.`);
+    return response.json();
+  };
+  const invokeFromPage = async (command, args = {}) => page.evaluate(({ commandName, commandArgs }) =>
+    window.__LEGADO_BROWSER_HARNESS__.invoke(commandName, commandArgs), { commandName: command, commandArgs: args });
+  const saveBookmark = async (note) => {
+    const before = await completedCommandCount("upsert_bookmark");
+    await page.getByTestId("reader-add-bookmark").click();
+    await page.locator(".bookmark-modal textarea").fill(note);
+    await page.locator(".bookmark-modal").getByRole("button", { name: "保存书签" }).click();
+    const call = await waitForCompletedCommand("upsert_bookmark", before);
+    const document = await readJson(call.result);
+    const bookmark = document.bookmarks?.find((entry) => entry.note === note && entry.bookId === bookId);
+    assert(bookmark, `The UI did not persist the '${note}' bookmark: ${JSON.stringify(document)}.`);
+    return bookmark;
+  };
+
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("nav-shelf-mobile").waitFor();
+  const bootstrapCall = await waitForCompletedCommand("app_bootstrap", 0);
+  assert(bootstrapCall.result.shelf?.src, "Source-switch flow did not load its shelf through Rust resources.");
+  await page.getByTestId("nav-shelf-mobile").click();
+  const shelfCard = page.getByTestId(`shelf-book-${bookId}`);
+  await shelfCard.waitFor({ timeout: 15_000 });
+  await shelfCard.locator("button.cover-button").click();
+  const bookDetail = page.locator(".book-detail-panel");
+  await bookDetail.waitFor();
+  const beforeBookmarks = (await getBookDocument(bookId)).document;
+  assert(beforeBookmarks.id === bookId && beforeBookmarks.chapters.map((chapter) => chapter.title).join("|") ===
+    "Fixture Chapter Two|Fixture Chapter One",
+  `The source-switch flow did not start from the persisted reordered catalog: ${JSON.stringify(beforeBookmarks.chapters)}.`);
+  const oldProgressChapterId = beforeBookmarks.progress.chapterId;
+  assert(oldProgressChapterId === beforeBookmarks.chapters[0].id && beforeBookmarks.progress.chapterIndex === 0,
+    `The starting progress is not anchored to Fixture Chapter Two: ${JSON.stringify(beforeBookmarks.progress)}.`);
+  await bookDetail.getByRole("button", { name: "继续阅读" }).click();
+  await page.getByTestId("reader-frame").waitFor({ timeout: 45_000 });
+  await waitForReaderChapter("Fixture Chapter Two");
+  await saveBookmark("migrate to the same chapter title");
+  await page.getByTestId("reader-next-chapter").click();
+  await waitForReaderChapter("Fixture Chapter One");
+  const orphanBookmark = await saveBookmark("keep the unmatched chapter bookmark");
+  await page.getByTestId("reader-prev-chapter").click();
+  await waitForReaderChapter("Fixture Chapter Two");
+  const originalPage = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
+  const expectedOffset = originalPage.current - 1;
+  assert(expectedOffset > 0 && originalPage.current === beforeBookmarks.progress.offset + 1,
+    `The original chapter/page progress did not reopen before source change: ${JSON.stringify({ originalPage, progress: beforeBookmarks.progress })}.`);
+  assert((await readerFrameText()).includes("第二章标记"), "The original source chapter was not displayed before source change.");
+
+  await page.getByRole("button", { name: "阅读显示设置" }).click();
+  await page.getByTestId("reader-change-source").waitFor();
+  const privateBookPath = join(dataDir, "private-data", "books", `${bookId}.json`);
+  const bookDiskPath = join(dataDir, "books", bookId, "book.json");
+  const originalPrivateBook = JSON.parse(await readFile(privateBookPath, "utf8"));
+  const originalBookDocument = beforeBookmarks;
+  for (const chapter of originalBookDocument.chapters) {
+    const cacheResponse = await fetch(chapter.src);
+    assert(cacheResponse.ok, `Original source cache returned HTTP ${cacheResponse.status} before source change.`);
+  }
+
+  const sourceSwitchOpenCalls = await completedCommandCount("search_book_source_candidates");
+  await page.getByTestId("reader-change-source").click();
+  await page.getByTestId("source-switch-results").waitFor({ timeout: 45_000 });
+  const searchCall = await waitForCompletedCommand("search_book_source_candidates", sourceSwitchOpenCalls, 15_000);
+  assert(searchCall.args.bookId === bookId && searchCall.args.sourceIds.includes(sources.replacement.id) &&
+    searchCall.args.sourceIds.includes(sources.broken.id),
+  `Candidate search did not use the actual book and imported target sources: ${JSON.stringify(searchCall.args)}.`);
+  assert(!JSON.stringify(searchCall.args).includes(fixtureOrigin) && !JSON.stringify(searchCall.args).match(/ruleSearch|searchUrl/),
+    "Candidate search IPC exposed a source URL or source rule to the WebView.");
+  const searchTask = await waitForTaskTerminal(searchCall.result.taskId);
+  assert(searchTask.status === "completed", `Source candidate search did not complete: ${JSON.stringify(searchTask)}.`);
+  const candidateDocument = await readJson(searchCall.result.resource);
+  assert(candidateDocument.complete === true && candidateDocument.errors.length === 0,
+    `Source candidate search did not return a complete result: ${JSON.stringify(candidateDocument)}.`);
+  assert(candidateDocument.results.length === 2,
+    `Candidate identity filtering should leave the two same-title sources with unknown authors only: ${JSON.stringify(candidateDocument.results)}.`);
+  assert(candidateDocument.results.every((result) => result.requiresIdentityConfirmation === true),
+    `Unknown authors must require explicit identity confirmation: ${JSON.stringify(candidateDocument.results)}.`);
+  assert(candidateDocument.results.some((result) => result.sourceId === sources.replacement.id) &&
+    candidateDocument.results.some((result) => result.sourceId === sources.broken.id),
+  `The valid and failed-catalog candidates were not both returned: ${JSON.stringify(candidateDocument.results)}.`);
+  assert(!candidateDocument.results.some((result) => [sources.wrongAuthor.id, sources.wrongTitle.id].includes(result.sourceId)),
+    `Identity filtering kept the wrong-author or wrong-title candidate: ${JSON.stringify(candidateDocument.results)}.`);
+  // Search results may carry the engine-processed book URL used by Rust to resolve
+  // the opaque result ID. They must never carry the source definition or rule set.
+  assert(!JSON.stringify(candidateDocument).match(/bookSourceUrl|ruleSearch|searchUrl/),
+    "The processed candidate resource exposed an unprocessed source definition.");
+  const browserCandidateRows = await page.locator('[data-testid^="source-switch-candidate-"]').evaluateAll((rows) =>
+    rows.map((row) => ({ id: row.getAttribute("data-testid"), text: row.innerText })));
+  assert(browserCandidateRows.length === 2 && browserCandidateRows.some((row) => row.text.includes("Replacement without author")) &&
+    browserCandidateRows.some((row) => row.text.includes("Empty replacement catalog")),
+  `The UI did not display exactly the processed identity-matching candidates: ${JSON.stringify(browserCandidateRows)}.`);
+  await page.screenshot({ path: join(outputDir, "source-switch-candidates.png"), fullPage: true, animations: "disabled" });
+
+  const candidatesBySource = new Map(candidateDocument.results.map((result) => [result.sourceId, result]));
+  const brokenCandidate = candidatesBySource.get(sources.broken.id);
+  const replacementCandidate = candidatesBySource.get(sources.replacement.id);
+  const baselineBeforeFailure = (await getBookDocument(bookId)).document;
+  const baselinePrivateBeforeFailure = JSON.parse(await readFile(privateBookPath, "utf8"));
+  const baselineBookDiskBeforeFailure = await readFile(bookDiskPath, "utf8");
+  const baselineCacheHashes = new Map();
+  for (const chapter of baselineBeforeFailure.chapters) {
+    baselineCacheHashes.set(chapter.id, createHash("sha256").update(
+      await readFile(join(dataDir, "books", bookId, "chapters", `${chapter.id}.html`)),
+    ).digest("hex"));
+  }
+  const bookSourceEventsBeforeFailure = (await page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__.events))
+    .filter((event) => event.event === "book-source-changed").length;
+
+  await page.getByTestId(`source-switch-select-${brokenCandidate.resultId}`).click();
+  await page.getByTestId("source-switch-confirm-open").click();
+  await page.locator(".source-identity-confirmation").filter({ hasText: "缺少可核实的作者" }).waitFor();
+  assert((await page.getByTestId("source-switch-confirm").innerText()).includes("确认书名正确并更换"),
+    "A missing-author candidate did not make the user explicitly confirm identity in the dialog.");
+  const changeCallsBeforeRejectedAuthor = await completedCommandCount("change_book_source");
+  await page.getByTestId("source-switch-confirm").click();
+  const brokenCatalogCall = await waitForFinishedCommand("change_book_source", changeCallsBeforeRejectedAuthor, 30_000);
+  assert(brokenCatalogCall.args.confirmMissingAuthor === true &&
+    /chapter_list_empty|no chapters|invalid chapter catalog/i.test(brokenCatalogCall.error ?? ""),
+  `The confirmed empty replacement catalog should fail before committing: ${JSON.stringify(brokenCatalogCall)}.`);
+  const afterBrokenCatalog = (await getBookDocument(bookId)).document;
+  const privateAfterBrokenCatalog = JSON.parse(await readFile(privateBookPath, "utf8"));
+  assert(JSON.stringify(afterBrokenCatalog) === JSON.stringify(baselineBeforeFailure),
+    "A failed replacement catalog changed the public book JSON or progress.");
+  assert(JSON.stringify(privateAfterBrokenCatalog) === JSON.stringify(baselinePrivateBeforeFailure) &&
+    privateAfterBrokenCatalog.sourceId === originalPrivateBook.sourceId,
+  "A failed replacement catalog changed the private source binding or engine book data.");
+  assert(await readFile(bookDiskPath, "utf8") === baselineBookDiskBeforeFailure,
+    "A failed replacement catalog changed the public book JSON file on disk.");
+  for (const chapter of baselineBeforeFailure.chapters) {
+    const cachePath = join(dataDir, "books", bookId, "chapters", `${chapter.id}.html`);
+    assert(createHash("sha256").update(await readFile(cachePath)).digest("hex") === baselineCacheHashes.get(chapter.id),
+      `A failed catalog replacement changed cached chapter '${chapter.title}'.`);
+    assert((await fetch(chapter.src)).ok, `A failed catalog replacement removed original chapter '${chapter.title}'.`);
+  }
+  const bookSourceEventsAfterFailure = (await page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__.events))
+    .filter((event) => event.event === "book-source-changed").length;
+  assert(bookSourceEventsAfterFailure === bookSourceEventsBeforeFailure,
+    "A failed source change emitted the success event book-source-changed.");
+  await page.getByRole("button", { name: "返回候选列表" }).click();
+
+  await page.getByTestId(`source-switch-select-${replacementCandidate.resultId}`).click();
+  await page.getByTestId("source-switch-confirm-open").click();
+  await page.locator(".source-identity-confirmation").filter({ hasText: "缺少可核实的作者" }).waitFor();
+  assert((await page.getByTestId("source-switch-confirm").innerText()).includes("确认书名正确并更换"),
+    "The valid missing-author candidate did not ask for explicit identity confirmation.");
+  const confirmEventCount = await harnessEventCount();
+  const preMutationBookSnapshots = bookJsonSnapshots.length;
+  const successfulChangeIndex = await completedCommandCount("change_book_source");
+  await page.getByTestId("source-switch-confirm").click();
+  const successfulChangeCall = await waitForCompletedCommand("change_book_source", successfulChangeIndex, 45_000);
+  assert(successfulChangeCall.args.bookId === bookId && successfulChangeCall.args.resultId === replacementCandidate.resultId &&
+    successfulChangeCall.args.confirmMissingAuthor === true,
+  `The UI did not send the selected opaque result ID and positive author confirmation: ${JSON.stringify(successfulChangeCall.args)}.`);
+  assert(!JSON.stringify(successfulChangeCall.args).includes(fixtureOrigin) &&
+    !JSON.stringify(successfulChangeCall.args).match(/ruleSearch|searchUrl/),
+  "change_book_source IPC exposed a source URL or source rules.");
+  assert(successfulChangeCall.result?.book?.src && successfulChangeCall.result?.progress?.chapterIndex === 1 &&
+    successfulChangeCall.result?.progress?.offset === expectedOffset && successfulChangeCall.result?.movedProgress === true,
+  `Source change did not remap unique-title progress while preserving page offset: ${JSON.stringify(successfulChangeCall.result)}.`);
+  await waitForHarnessEvent("book-source-changed", null, confirmEventCount);
+  await waitForHarnessEvent("progress-saved", null, confirmEventCount);
+  await waitForHarnessEvent("resource-updated", "bookmarks", confirmEventCount);
+  await waitForReaderChapter("Fixture Chapter Two");
+  await page.getByTestId("reader-frame").waitFor({ timeout: 45_000 });
+  await page.waitForFunction(() => document.querySelector('[data-testid="reader-frame"]')?.contentDocument?.body?.innerText.includes("Replacement-source chapter marker"), null, { timeout: 15_000 });
+  await page.screenshot({ path: join(outputDir, "source-switch-reader.png"), fullPage: true, animations: "disabled" });
+  await Promise.all(pendingBookJsonSnapshots);
+
+  const immediateSnapshots = bookJsonSnapshots.slice(preMutationBookSnapshots);
+  const oldChapterIds = new Set(originalBookDocument.chapters.map((chapter) => chapter.id));
+  assert(immediateSnapshots.some((document) => document.chapters?.[1]?.title === "Fixture Chapter Two" &&
+    document.chapters[1].src == null && !oldChapterIds.has(document.chapters[1].id)),
+    "The resource fetched immediately after source commit did not show the replacement chapter as uncached before JS asked Rust to prepare it.");
+  const prepareCalls = (await commandLog()).filter((call) => call.command === "prepare_chapters" && call.finishedAt !== undefined);
+  const replacementPrepare = prepareCalls.find((call) => call.args.bookId === bookId && call.args.fromIndex === 1 && call.args.count === 1 &&
+    call.result?.prepared === 1 && call.startedAt >= successfulChangeCall.finishedAt);
+  assert(replacementPrepare, "The UI did not request a one-chapter Rust cache for the uncached replacement chapter.");
+  const changedBook = (await getBookDocument(bookId)).document;
+  assert(changedBook.id === bookId && changedBook.chapters.length === 3 &&
+    changedBook.chapters.map((chapter) => chapter.title).join("|") ===
+      "Replacement Opening|Fixture Chapter Two|Replacement Ending",
+  `Replacement source directory did not replace the old chapter list: ${JSON.stringify(changedBook.chapters)}.`);
+  const changedChapter = changedBook.chapters[1];
+  assert(changedChapter.id !== oldProgressChapterId && changedChapter.src &&
+    changedBook.progress.chapterId === changedChapter.id && changedBook.progress.chapterIndex === 1 &&
+    changedBook.progress.offset === expectedOffset,
+  `The title-matched replacement chapter did not receive new chapter identity and mapped progress: ${JSON.stringify({ changedChapter, progress: changedBook.progress })}.`);
+  const replacementHtmlResponse = await fetch(changedChapter.src);
+  assert(replacementHtmlResponse.ok, `Replacement chapter HTML resource returned HTTP ${replacementHtmlResponse.status}.`);
+  const replacementHtml = await replacementHtmlResponse.text();
+  assert(replacementHtml.includes("Replacement-source chapter marker") && replacementHtml.includes("font-size:"),
+    "The replacement source chapter was not cached as browser-ready HTML with default reading styles.");
+  assert(!replacementHtml.includes("ruleSearch") && !replacementHtml.includes("searchUrl") &&
+    !replacementHtml.includes(fixtureOrigin),
+  "Cached replacement chapter HTML exposed source rules or the private source origin.");
+  for (const chapter of originalBookDocument.chapters) {
+    const oldCachePath = join(dataDir, "books", bookId, "chapters", `${chapter.id}.html`);
+    let oldCacheExists = true;
+    try { await access(oldCachePath); } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      oldCacheExists = false;
+    }
+    assert(!oldCacheExists, `Source change left old-source chapter '${chapter.title}' cache on disk.`);
+    assert((await fetch(chapter.src)).status === 404,
+      `Source change left the old chapter resource URL readable for '${chapter.title}'.`);
+  }
+  const changedBookmarks = await readJson(successfulChangeCall.result.bookmarks.resource);
+  const migratedBookmark = changedBookmarks.bookmarks.find((entry) => entry.note === "migrate to the same chapter title");
+  const orphaned = changedBookmarks.bookmarks.find((entry) => entry.id === orphanBookmark.id);
+  assert(migratedBookmark && migratedBookmark.chapterIndex === 1 && migratedBookmark.orphaned !== true,
+    `The bookmark for the unique matching title did not migrate with its chapter: ${JSON.stringify(migratedBookmark)}.`);
+  assert(orphaned?.orphaned === true && orphaned.chapterTitle === "Fixture Chapter One",
+    `The unmatched original bookmark was not retained and marked orphaned: ${JSON.stringify(orphaned)}.`);
+
+  const newPrivateBook = JSON.parse(await readFile(privateBookPath, "utf8"));
+  assert(newPrivateBook.sourceId === sources.replacement.id,
+    `The private book source binding did not move to the replacement source: ${newPrivateBook.sourceId}.`);
+  const changedBookDisk = await readFile(bookDiskPath, "utf8");
+  assert(!changedBookDisk.includes(new URL(resourceServerUrl).origin) && !changedBookDisk.includes(fixtureOrigin) &&
+    !changedBookDisk.match(/ruleSearch|searchUrl/),
+  "Persistent public book JSON contains an HTTP port, private source URL, or source rules.");
+  assert(!JSON.stringify(successfulChangeCall.result).match(/ruleSearch|searchUrl|bookSourceUrl/),
+    "The source-change command response exposed source definitions or rules.");
+
+  const progressCallsBeforeLeave = await completedCommandCount("save_progress");
+  await page.getByTestId("reader-back").click();
+  await waitForCompletedCommand("save_progress", progressCallsBeforeLeave, 15_000);
+  const bookAfterLeave = (await getBookDocument(bookId)).document;
+  assert(bookAfterLeave.progress.chapterId === changedChapter.id && bookAfterLeave.progress.chapterIndex === 1 &&
+    bookAfterLeave.progress.offset === expectedOffset,
+  `Leaving the replacement reader did not persist the mapped chapter and page: ${JSON.stringify(bookAfterLeave.progress)}.`);
+
+  const flowCallsBeforeRestart = await commandLog();
+  const resourceOriginBeforeRestart = new URL(resourceServerUrl).origin;
+  await page.goto("about:blank");
+  await restartRustHarness();
+  const resourceOriginAfterRestart = new URL(resourceServerUrl).origin;
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("nav-shelf-mobile").waitFor();
+  const restartedBootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  assert(restartedBootstrap.result.shelf?.src &&
+    restartedBootstrap.result.sources.some((source) => source.id === sources.replacement.id),
+  "The replacement source or shelf resource disappeared after restarting the Rust service.");
+  await page.getByTestId("nav-shelf-mobile").click();
+  await page.getByTestId(`shelf-book-${bookId}`).waitFor({ timeout: 15_000 });
+  await page.getByTestId(`shelf-book-${bookId}`).locator("button.cover-button").click();
+  await page.locator(".book-detail-panel").waitFor();
+  const reopenedBook = (await getBookDocument(bookId)).document;
+  assert(reopenedBook.id === bookId && reopenedBook.chapters[1].id === changedChapter.id &&
+    reopenedBook.chapters[1].src && reopenedBook.progress.chapterId === changedChapter.id &&
+    reopenedBook.progress.chapterIndex === 1 && reopenedBook.progress.offset === expectedOffset,
+  `The new source, cached HTML URL, or mapped progress did not survive reopening the Rust service: ${JSON.stringify(reopenedBook)}.`);
+  assert(!reopenedBook.chapters[1].src.includes(resourceOriginBeforeRestart) ||
+    resourceOriginBeforeRestart === resourceOriginAfterRestart,
+  "The book JSON persisted the previous process's temporary resource-server origin.");
+  const reopenedHtmlResponse = await fetch(reopenedBook.chapters[1].src);
+  assert(reopenedHtmlResponse.ok && (await reopenedHtmlResponse.text()).includes("Replacement-source chapter marker"),
+    "The replacement chapter HTML resource was not served after restarting Rust.");
+  const reopenedPrivateBook = JSON.parse(await readFile(privateBookPath, "utf8"));
+  assert(reopenedPrivateBook.sourceId === sources.replacement.id,
+    "The private replacement source binding did not survive the Rust service restart.");
+
+  const bookmarksCallsBefore = await completedCommandCount("list_bookmarks");
+  await invokeFromPage("list_bookmarks");
+  const bookmarksCall = await waitForCompletedCommand("list_bookmarks", bookmarksCallsBefore);
+  const reopenedBookmarks = await readJson(bookmarksCall.result);
+  const reopenedOrphan = reopenedBookmarks.bookmarks.find((entry) => entry.id === orphanBookmark.id);
+  assert(reopenedOrphan?.orphaned === true && reopenedOrphan.chapterTitle === "Fixture Chapter One",
+    `The orphaned bookmark was not persisted through restart: ${JSON.stringify(reopenedOrphan)}.`);
+  await page.locator(".book-detail-panel").getByRole("button", { name: "关闭详情" }).click();
+  await page.getByTestId("nav-settings-mobile").click();
+  const orphanButton = page.getByTestId(`bookmark-open-${orphanBookmark.id}`);
+  await orphanButton.waitFor({ timeout: 15_000 });
+  assert(await orphanButton.isDisabled(), "The restored unmatched bookmark can still be opened against the replacement catalog.");
+  assert((await orphanButton.locator("xpath=..").innerText()).includes("无法匹配"),
+    "The settings UI did not tell the user that the retained bookmark no longer matches a chapter.");
+
+  const privateSources = JSON.parse(await readFile(join(dataDir, "private-data", "sources.json"), "utf8"));
+  assert(privateSources.some((source) => source.id === sources.replacement.id && source.source?.searchUrl && source.source?.ruleSearch) &&
+    privateSources.some((source) => source.id === originalPrivateBook.sourceId && source.source?.searchUrl && source.source?.ruleSearch),
+  "The Rust service did not retain current and replacement source definitions privately.");
+  const appBootstrapJson = JSON.stringify(restartedBootstrap.result);
+  assert(!appBootstrapJson.includes(fixtureOrigin) && !appBootstrapJson.match(/ruleSearch|searchUrl|bookSourceUrl/),
+    "The public app bootstrap exposed source definitions or source URLs.");
+
+  const flowCalls = [...flowCallsBeforeRestart, ...(await commandLog())];
+  verificationEvidence.sourceSwitchCommands = flowCalls.map((call) => call.command);
+  for (const required of ["search_book_source_candidates", "change_book_source", "prepare_chapters", "upsert_bookmark", "save_progress", "list_bookmarks"]) {
+    assert(verificationEvidence.sourceSwitchCommands.includes(required),
+      `The source-change browser flow did not call the Rust command '${required}'.`);
+  }
+  assert(sourceRequests.some((request) => request.url.startsWith("/replacement/search")) &&
+    sourceRequests.some((request) => request.url.startsWith("/replacement/book")) &&
+    sourceRequests.some((request) => request.url.startsWith("/replacement/toc")) &&
+    sourceRequests.some((request) => request.url.startsWith("/replacement/chapter/two")) &&
+    sourceRequests.some((request) => request.url.startsWith("/broken/toc")) &&
+    sourceRequests.some((request) => request.url.startsWith("/wrong-author/search")) &&
+    sourceRequests.some((request) => request.url.startsWith("/wrong-title/search")),
+  "The KMP/JNI source engine did not execute all actual replacement, failed-catalog, wrong-author, and wrong-title fixture operations.");
+
+  const newErrors = [
+    ...errors.slice(errorStart),
+    ...browserConsoleErrors.slice(consoleErrorStart).map((entry) => `console: ${entry.text}`),
+    ...browserRequestFailures.slice(requestFailureStart).map((failure) => `request failed: ${failure.url} (${failure.error})`),
+  ];
+  assert(newErrors.length === 0, `Book source change browser flow reported unexpected errors:\n${newErrors.join("\n")}`);
+  verificationEvidence.bookSourceChange = {
+    bookId,
+    candidateSources: candidateDocument.results.map((result) => result.sourceId),
+    excludedWrongAuthorAndWrongTitle: true,
+    explicitMissingAuthorConfirmation: true,
+    failedCatalogPreservedOldBookAndCaches: true,
+    oldCatalog: originalBookDocument.chapters.map((chapter) => chapter.title),
+    newCatalog: changedBook.chapters.map((chapter) => chapter.title),
+    progressBefore: baselineBeforeFailure.progress,
+    progressAfter: bookAfterLeave.progress,
+    progressMovedToTitleMatch: true,
+    offsetPreserved: expectedOffset,
+    migratedBookmarkId: migratedBookmark.id,
+    orphanedBookmarkId: orphanBookmark.id,
+    newChapterId: changedChapter.id,
+    oldCacheResourcesRemoved: true,
+    replacementHtmlServedAfterRestart: true,
+    resourceOriginBeforeRestart,
+    resourceOriginAfterRestart,
+  };
+  report("PASS: real KMP/JNI candidate search filtered wrong-author/title sources and exposed only processed candidate metadata.");
+  report("PASS: missing-author replacement required explicit confirmation; an empty new catalog failed without changing the original book or chapter caches.");
+  report("PASS: replacement reloaded processed HTML through Rust, mapped chapter/page progress by unique title, migrated a matching bookmark, and retained the unmatched bookmark as disabled/orphaned.");
+  report("PASS: replacement source binding, cached HTML, mapped progress, and orphan bookmark survived Rust service restart without persisting a resource-server port in book JSON.");
+  await context.close();
 }
 
 async function main() {
@@ -1025,9 +2449,15 @@ async function main() {
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-features=LocalNetworkAccessChecks"],
   });
   await startRustHarness();
-  await importFixtureSource();
+  const fixtureSources = await importFixtureSource();
   await startVite();
-  await testReaderFlow({ name: "Local Browser E2E" }, contentFixture);
+  const readerFixture = await testReaderFlow(fixtureSources.book, contentFixture);
+  await testHomeRssFlow(fixtureSources, contentFixture);
+  await testHomeConfigEditorFlow();
+  await testTxtTocRulesAndImportFlow();
+  await testSearchHistoryFlow();
+  const replacementSources = await importReplacementFixtureSources();
+  await testBookSourceChangeFlow(readerFixture.bookId, replacementSources, contentFixture);
 }
 
 async function cleanup() {
@@ -1041,21 +2471,45 @@ async function cleanup() {
   if (browser) {
     await Promise.race([browser.close().catch(() => {}), delay(5000)]);
   }
-  for (const child of [viteProcess, rustProcess]) {
-    if (!child || child.exitCode !== null || child.signalCode !== null) continue;
-    signalProcessGroup(child, "SIGTERM");
-    const exited = await waitForChildExit(child, 3000);
-    if (!exited) {
-      signalProcessGroup(child, "SIGKILL");
-      await waitForChildExit(child, 1000);
-    }
+  for (const child of [viteProcess, ...rustHarnessProcesses]) {
+    if (!child) continue;
+    await stopProcessGroup(child);
+    rustHarnessProcesses.delete(child);
   }
-  await terminateRunnerDescendants();
+  rustProcess = null;
   if (fixtureServer) {
     fixtureServer.closeAllConnections();
     await Promise.race([new Promise((resolvePromise) => fixtureServer.close(resolvePromise)), delay(1000)]);
   }
   if (dataDir) await rm(dataDir, { recursive: true, force: true });
+}
+
+async function stopProcessGroup(child) {
+  if (!child?.pid) return;
+  const groupId = child.pid;
+  signalProcessGroup(child, "SIGTERM");
+  await waitForChildExit(child, 2500);
+  if (processGroupExists(groupId)) {
+    await delay(300);
+    if (processGroupExists(groupId)) {
+      try {
+        process.kill(-groupId, "SIGKILL");
+      } catch {
+        // The process group exited while the timeout was pending.
+      }
+    }
+    await waitForChildExit(child, 1000);
+  }
+}
+
+function processGroupExists(groupId) {
+  if (process.platform === "win32") return false;
+  try {
+    process.kill(-groupId, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
 }
 
 function signalProcessGroup(child, signal) {
@@ -1086,44 +2540,6 @@ async function waitForChildExit(child, timeoutMs) {
     const timeout = setTimeout(() => finish(false), timeoutMs);
     child.once("close", onClose);
   });
-}
-
-async function terminateRunnerDescendants() {
-  if (process.platform === "win32") return;
-  const listing = spawnSync("ps", ["-eo", "pid=,ppid="], { encoding: "utf8" });
-  if (listing.status !== 0) return;
-  const parents = new Map();
-  for (const line of listing.stdout.split(/\r?\n/)) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)$/);
-    if (!match) continue;
-    const pid = Number(match[1]);
-    const ppid = Number(match[2]);
-    const children = parents.get(ppid) ?? [];
-    children.push(pid);
-    parents.set(ppid, children);
-  }
-  const descendants = [];
-  const pending = [...(parents.get(process.pid) ?? [])];
-  while (pending.length) {
-    const pid = pending.shift();
-    descendants.push(pid);
-    pending.push(...(parents.get(pid) ?? []));
-  }
-  for (const pid of descendants.reverse()) {
-    try {
-      process.kill(pid, "SIGTERM");
-    } catch {
-      // Already exited.
-    }
-  }
-  await delay(500);
-  for (const pid of descendants.reverse()) {
-    try {
-      process.kill(pid, "SIGKILL");
-    } catch {
-      // Already exited.
-    }
-  }
 }
 
 async function saveRunArtifacts() {
@@ -1162,6 +2578,7 @@ async function saveFailureDiagnostics(error) {
     title: await page.title().catch(() => ""),
     bodyText: await page.locator("body").innerText({ timeout: 3000 }).catch(() => "<body text unavailable>"),
     appInvocations: await page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__?.calls ?? []).catch(() => []),
+    appEvents: await page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__?.events ?? []).catch(() => []),
     browserErrors: [...errors],
     browserConsoleErrors: [...browserConsoleErrors],
     browserRequestFailures: [...browserRequestFailures],

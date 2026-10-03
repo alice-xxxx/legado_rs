@@ -12,6 +12,7 @@ export interface SourceMetadata {
   name: string;
   group?: string;
   enabled: boolean;
+  isRss?: boolean;
 }
 
 export interface ChapterResource {
@@ -26,6 +27,13 @@ export interface BookResource {
   id: string;
   title: string;
   author?: string;
+  intro?: string;
+  kind?: string;
+  wordCount?: string;
+  sourceId?: string;
+  sourceName?: string;
+  sourceGroup?: string;
+  canChangeSource?: boolean;
   coverSrc?: string;
   chapterCount: number;
   latestChapter?: string;
@@ -53,8 +61,10 @@ export interface Bookmark {
   id: string;
   bookId: string;
   chapterIndex: number;
+  chapterTitle?: string;
   offset: number;
   note: string;
+  orphaned?: boolean;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -102,6 +112,7 @@ export interface SearchBookResult {
   bookUrl?: string;
   intro?: string;
   latestChapter?: string;
+  requiresIdentityConfirmation?: boolean;
   [key: string]: unknown;
 }
 
@@ -111,6 +122,21 @@ export interface SearchResource {
   page: number;
   results: SearchBookResult[];
   errors: Array<{ sourceId?: string; message: string }>;
+  complete?: boolean;
+}
+
+export interface SearchHistoryEntry {
+  query: string;
+  normalizedQuery: string;
+  usage: number;
+  firstUseTimeMs: number;
+  lastUseTimeMs: number;
+}
+
+export interface SearchHistoryResource {
+  schemaVersion: number;
+  entries: SearchHistoryEntry[];
+  processedSearchIds: string[];
 }
 
 export interface ReaderSettings {
@@ -146,6 +172,7 @@ export interface AppSettingsResource {
 export interface AppBootstrap {
   shelf: ResourceDescriptor;
   settings: ResourceDescriptor;
+  searchHistory: ResourceDescriptor;
   sources: SourceMetadata[];
 }
 
@@ -158,6 +185,16 @@ export interface SearchResponse {
 export interface BookMutationResponse {
   book: ResourceDescriptor;
   shelf: ResourceDescriptor;
+}
+
+export interface BookSourceMutationResponse extends BookMutationResponse {
+  progress: ReadingProgress;
+  movedProgress: boolean;
+  bookmarks: {
+    resource: ResourceDescriptor;
+    migratedCount: number;
+    orphanedCount: number;
+  };
 }
 
 export interface SourceImportResponse {
@@ -182,6 +219,7 @@ export interface AppTask {
   id: string;
   kind: string;
   status: string;
+  searchId?: string;
   bookId?: string;
   sourceIds?: string[];
   keyword?: string;
@@ -249,6 +287,7 @@ export interface DiscoveryResponse {
   bookCount?: number;
   errors?: Array<{ sourceId?: string; message: string }>;
   resource: ResourceDescriptor;
+  rssState?: ResourceDescriptor;
 }
 
 export interface BackupResponse {
@@ -350,6 +389,10 @@ export class ResourceHttpError extends Error {
 }
 
 export const appBootstrap = () => command<AppBootstrap>("app_bootstrap");
+export const getSearchHistory = () => command<ResourceDescriptor>("get_search_history");
+export const deleteSearchHistory = (query: string) =>
+  command<ResourceDescriptor>("delete_search_history", { query });
+export const clearSearchHistory = () => command<ResourceDescriptor>("clear_search_history");
 export const listSources = () => command<{ sources: SourceMetadata[] }>("list_sources");
 export const importSources = (sourceJson: string) =>
   command<{ sources: SourceMetadata[] }>("import_sources", { sourceJson });
@@ -369,6 +412,10 @@ export const searchBooks = (sourceIds: string[], keyword: string, page = 1) =>
   command<SearchResponse>("search_books", { sourceIds, keyword, page });
 export const startSearch = (sourceIds: string[], keyword: string, page = 1) =>
   command<TaskResponse & { resource: ResourceDescriptor }>("start_search", { sourceIds, keyword, page });
+export const searchBookSourceCandidates = (bookId: string, sourceIds: string[], keyword?: string, page = 1) =>
+  command<TaskResponse>("search_book_source_candidates", { bookId, sourceIds, keyword, page });
+export const changeBookSource = (bookId: string, resultId: string, confirmMissingAuthor = false) =>
+  command<BookSourceMutationResponse>("change_book_source", { bookId, resultId, confirmMissingAuthor });
 export const tasksResource = () => command<{ resource: ResourceDescriptor }>("tasks_resource");
 export const startChapterDownload = (bookId: string, fromIndex: number, count: number) =>
   command<TaskResponse>("start_chapter_download", { bookId, fromIndex, count });

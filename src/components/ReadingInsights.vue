@@ -18,8 +18,10 @@ export interface BookmarkEntry {
   id: string;
   bookId: string;
   chapterIndex: number;
+  chapterTitle?: string;
   offset: number;
   note: string;
+  orphaned?: boolean;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -119,8 +121,8 @@ function dayLabel(date: Date): string {
       <header class="insight-heading"><div><p class="eyebrow">书签</p><h3>留住想再读的那一页。</h3></div><span class="count-pill">{{ bookmarks.length }}</span></header>
       <div v-if="bookmarks.length" class="bookmark-list">
         <article v-for="bookmark in [...bookmarks].sort((a, b) => b.updatedAtMs - a.updatedAtMs)" :key="bookmark.id" class="bookmark-row">
-          <button class="bookmark-open" @click="emit('openBookmark', bookmark)">
-            <span class="bookmark-mark">▮</span><span class="bookmark-copy"><strong>{{ title(bookmark.bookId) }}</strong><small>第 {{ bookmark.chapterIndex + 1 }} 章 · 第 {{ bookmark.offset + 1 }} 页</small><em v-if="bookmark.note">{{ bookmark.note }}</em></span>
+          <button class="bookmark-open" :data-testid="`bookmark-open-${bookmark.id}`" :disabled="bookmark.orphaned" :aria-label="bookmark.orphaned ? `旧章节书签：${bookmark.chapterTitle || `第 ${bookmark.chapterIndex + 1} 章`}，无法打开` : `打开${title(bookmark.bookId)}书签`" @click="emit('openBookmark', bookmark)">
+            <span class="bookmark-mark">▮</span><span class="bookmark-copy"><strong>{{ title(bookmark.bookId) }}</strong><small v-if="bookmark.orphaned" class="bookmark-orphaned-label">旧章节：{{ bookmark.chapterTitle || `第 ${bookmark.chapterIndex + 1} 章` }} · 无法匹配</small><small v-else>第 {{ bookmark.chapterIndex + 1 }} 章 · 第 {{ bookmark.offset + 1 }} 页</small><em v-if="bookmark.note">{{ bookmark.note }}</em></span>
           </button>
           <button class="quiet-action" :aria-label="`删除${title(bookmark.bookId)}书签`" @click="emit('deleteBookmark', bookmark.id)">移除</button>
         </article>
@@ -161,6 +163,8 @@ function dayLabel(date: Date): string {
 .bookmark-list { display:grid; gap:3px; margin-top:17px; }
 .bookmark-row { display:flex; align-items:center; justify-content:space-between; gap:7px; padding:8px 4px; border-bottom:1px solid #f0f2f0; }
 .bookmark-open { min-width:0; min-height:48px; flex:1; display:flex; align-items:center; gap:10px; padding:4px 0; border:0; background:transparent; text-align:left; cursor:pointer; }
+.bookmark-open:disabled { cursor:not-allowed; opacity:.74; }
+.bookmark-copy .bookmark-orphaned-label { color:#955d4e; }
 .bookmark-mark { color:#b58c58; font-size:18px; line-height:1; }
 .bookmark-copy em { max-width:100%; overflow:hidden; color:#59675e; font-size:14px; font-style:normal; text-overflow:ellipsis; white-space:nowrap; }
 .count-pill { min-width:25px; padding:5px 7px; border-radius:12px; color:#67836f; background:#edf4ef; font-size:13px; text-align:center; }

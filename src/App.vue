@@ -3,25 +3,32 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import BookGroupsEditor from "./components/BookGroupsEditor.vue";
 import HomePage from "./components/HomePage.vue";
+import HomeConfigEditor from "./components/HomeConfigEditor.vue";
 import ReadingInsights from "./components/ReadingInsights.vue";
 import ShelfOrganizer from "./components/ShelfOrganizer.vue";
 import TaskCenter from "./components/TaskCenter.vue";
 import BackupControls from "./components/BackupControls.vue";
+import TxtTocRulesEditor from "./components/TxtTocRulesEditor.vue";
+import SearchHistory from "./components/SearchHistory.vue";
 import {
   addBook,
   appBootstrap,
   cancelPendingPdfImport,
   cancelTask,
+  clearSearchHistory,
+  changeBookSource,
   checkNewChapters,
   clearReadingHistory,
   deleteBookmark,
   deleteReadingHistoryForBook,
   deleteReplacementRule,
+  deleteSearchHistory,
   deleteShelfGroup,
   createBackupFromPicker,
   createShelfGroup,
   getBook,
   getHomeConfig,
+  getSearchHistory,
   getRssState,
   importBookFromPicker,
   importProtectedPdf,
@@ -48,6 +55,7 @@ import {
   saveProgress,
   saveHomeConfig,
   saveSettings,
+  searchBookSourceCandidates,
   setBookGroups,
   setDiscoveryFavorite,
   setRssArticleState,
@@ -67,6 +75,7 @@ import {
   type BackupResponse,
   type Bookmark,
   type BookmarksResource,
+  type BookSourceMutationResponse,
   type BookResource,
   type HomeConfigDocument,
   type HomeSection,
@@ -83,6 +92,8 @@ import {
   type RssFilter,
   type RssStateDocument,
   type SearchBookResult,
+  type SearchHistoryResource,
+  type SearchHistoryEntry,
   type SearchResource,
   type ShelfResource,
   type ShelfSortKey,
@@ -128,11 +139,35 @@ const homeConfig = ref<HomeConfigDocument>({ schemaVersion: 1, tabs: [{ id: "tab
 const homeSectionResults = ref<Record<string, SearchResource>>({});
 const homeSectionLoadingIds = ref<string[]>([]);
 const homeConfigBusy = ref(false);
+const homeConfigEditorOpen = ref(false);
+const homeEditorCategories = ref<Record<string, DiscoveryCategory[]>>({});
+const homeEditorLoadingSourceIds = ref<string[]>([]);
+const homeEditorCategoryErrors = ref<Record<string, string>>({});
+const homeEditorCategoryLoads = new Map<string, Promise<void>>();
+const txtTocRulesEditorOpen = ref(false);
+const txtTocRulesResource = ref<ResourceDescriptor | null>(null);
 const rssState = ref<RssStateDocument>({ schemaVersion: 1, subscriptions: [], articles: [] });
 const rssArticleBusyIds = ref<string[]>([]);
 const rssFilterBusy = ref(false);
 const rssUnsubscribeBusy = ref(false);
 const pendingRssUnsubscribe = ref<SourceMetadata | null>(null);
+const bookSourceSwitchOpen = ref(false);
+const bookSourceSwitchBusy = ref(false);
+const bookSourceSearchBusy = ref(false);
+const bookSourceSwitchConfirmOpen = ref(false);
+const bookSourceSwitchFromReader = ref(false);
+const bookSourceSwitchBook = ref<BookResource | null>(null);
+const bookSourceCandidateTaskId = ref<string | null>(null);
+const bookSourceCandidateResource = ref<ResourceDescriptor | null>(null);
+const bookSourceCandidateResults = ref<SearchBookResult[]>([]);
+const bookSourceCandidateErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
+const selectedBookSourceCandidate = ref<SearchBookResult | null>(null);
+const bookSourceIdentityConfirmationNeeded = ref(false);
+const bookSourceSwitchError = ref("");
+const bookSourceChangeError = ref("");
+const bookSourceSearchStatus = ref("");
+const bookSourceCandidateTaskStates = new Set<string>();
+let bookSourceSearchGeneration = 0;
 const settings = ref<AppSettingsResource>(structuredClone(defaultSettings));
 const tasks = ref<AppTask[]>([]);
 const discoverMode = ref<DiscoverMode>("discover");
@@ -150,12 +185,19 @@ const discoveryWasLoaded = ref(false);
 const discoveryError = ref("");
 const discoverySearchResources = new Map<string, ResourceDescriptor>();
 const activeSearchTaskId = ref<string | null>(null);
+const activeSearchId = ref<string | null>(null);
+const activeSearchResourceId = ref<string | null>(null);
+const activeSearchGeneration = ref<number | null>(null);
+let searchRunGeneration = 0;
 const articleOpen = ref(false);
 const articleBusy = ref(false);
 const articleTitle = ref("");
 const articleHtml = ref("");
 const bookmarks = ref<Bookmark[]>([]);
 const readingHistory = ref<ReadingHistoryResource>({ schemaVersion: 1, sessions: [], books: [], days: [], totalDurationMs: 0, totalSessions: 0 });
+const searchHistoryEntries = ref<SearchHistoryEntry[]>([]);
+const searchHistoryBusy = ref(false);
+const searchHistoryError = ref("");
 const replacementRules = ref<DisplayReplacementRule[]>([]);
 const shelfQuery = ref("");
 const shelfActiveGroup = ref("");
@@ -260,6 +302,12 @@ const catalogCheckBusy = computed(() => tasks.value.some((task) =>
   task.bookId === openedBook.value?.id && task.kind === "checkNewChapters" && ["queued", "running", "pausing", "paused", "cancelling"].includes(task.status)));
 const bookTitleMap = computed(() => Object.fromEntries((shelf.value.books ?? []).map((book) => [book.id, book.title])));
 const enabledSources = computed(() => sources.value.filter((source) => source.enabled !== false));
+const bookSourceCandidates = computed(() => enabledSources.value.filter((source) => source.isRss !== true));
+const bookSourceNeedsIdentityConfirmation = computed(() =>
+  bookSourceIdentityConfirmationNeeded.value || selectedBookSourceCandidate.value?.requiresIdentityConfirmation === true);
+const rssSources = computed(() => enabledSources.value.filter((source) => source.isRss === true));
+const discoverySources = computed(() => discoverMode.value === "rss" ? rssSources.value : bookSourceCandidates.value);
+const hasCurrentRssSubscription = computed(() => rssState.value.subscriptions.some((entry) => entry.sourceId === discoverySourceId.value));
 const sourceGroups = computed(() => [...new Set(sources.value.map((source) => source.group).filter((group): group is string => Boolean(group)))].sort());
 const filteredSources = computed(() => {
   const query = sourceQuery.value.trim().toLocaleLowerCase();
@@ -280,7 +328,9 @@ const readPercent = computed(() => {
   const total = Math.max(1, readingBook.value?.chapterCount ?? readingBook.value?.chapters.length ?? 1);
   return Math.min(100, Math.round(((readingChapterIndex.value + 1) / total) * 100));
 });
-const selectedSearchSources = computed(() => enabledSources.value.length > 0 && selectedSourceIds.value.length === enabledSources.value.length);
+const selectedSearchSources = computed(() => bookSourceCandidates.value.length > 0
+  && selectedSourceIds.value.length === bookSourceCandidates.value.length
+  && bookSourceCandidates.value.every((source) => selectedSourceIds.value.includes(source.id)));
 const currentRssFilter = computed<RssFilter>(() => rssState.value.subscriptions.find((entry) => entry.sourceId === discoverySourceId.value)?.filter ?? "all");
 
 function notify(message: string, kind: "success" | "error" = "success"): void {
@@ -303,9 +353,10 @@ async function refreshShelfAndSources(): Promise<void> {
   shelf.value = { ...nextShelf, groups: Array.isArray(nextShelf.groups) ? nextShelf.groups : [], books: Array.isArray(nextShelf.books) ? nextShelf.books : [] };
   settings.value = normalizeSettings(nextSettings);
   sources.value = Array.isArray(bootstrap.sources) ? bootstrap.sources : [];
-  selectedSourceIds.value = enabledSources.value.map((source) => source.id);
+  selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
   bootstrapped.value = true;
   void refreshReadingData().catch((error) => notify(`无法读取阅读记录：${errorText(error)}`, "error"));
+  void refreshSearchHistory(bootstrap.searchHistory).catch((error) => notify(`无法读取搜索历史：${errorText(error)}`, "error"));
   void refreshHomeConfig().catch((error) => notify(`读取主页栏目失败：${errorText(error)}`, "error"));
   void refreshRssState().catch((error) => notify(`读取订阅状态失败：${errorText(error)}`, "error"));
   void refreshDiscoveryFavorites().catch((error) => notify(`读取收藏分类失败：${errorText(error)}`, "error"));
@@ -320,6 +371,128 @@ async function refreshHomeConfig(descriptor?: ResourceDescriptor): Promise<void>
   const sectionIds = new Set(tabs.flatMap((tab) => tab.sections.map((section) => section.id)));
   homeSectionResults.value = Object.fromEntries(Object.entries(homeSectionResults.value).filter(([id]) => sectionIds.has(id)));
   homeSectionLoadingIds.value = homeSectionLoadingIds.value.filter((id) => sectionIds.has(id));
+}
+
+async function refreshSearchHistory(descriptor?: ResourceDescriptor): Promise<void> {
+  const resource = descriptor ?? await getSearchHistory();
+  const document = await readResource<SearchHistoryResource>(resource);
+  searchHistoryEntries.value = Array.isArray(document.entries) ? document.entries : [];
+}
+
+async function reloadSearchHistoryAfterError(): Promise<void> {
+  try {
+    await refreshSearchHistory(await getSearchHistory());
+  } catch {
+    // Keep the last displayed resource when the command and its refresh both fail.
+  }
+}
+
+async function mutateSearchHistory(label: string, mutation: () => Promise<ResourceDescriptor>): Promise<void> {
+  if (searchHistoryBusy.value) return;
+  searchHistoryBusy.value = true;
+  searchHistoryError.value = "";
+  let descriptor: ResourceDescriptor;
+  try {
+    descriptor = await mutation();
+  } catch (error) {
+    searchHistoryError.value = `${label}失败：${errorText(error)}`;
+    await reloadSearchHistoryAfterError();
+    searchHistoryBusy.value = false;
+    return;
+  }
+  try {
+    await refreshSearchHistory(descriptor);
+  } catch (error) {
+    searchHistoryError.value = `${label}已提交，但刷新记录失败：${errorText(error)}`;
+    await reloadSearchHistoryAfterError();
+  } finally {
+    searchHistoryBusy.value = false;
+  }
+}
+
+const removeSearchHistoryEntry = (query: string) => mutateSearchHistory("删除搜索记录", () => deleteSearchHistory(query));
+const clearSearchHistoryEntries = () => mutateSearchHistory("清空搜索记录", clearSearchHistory);
+
+function reuseSearchQuery(query: string): void {
+  const value = query.trim();
+  if (!value) return;
+  setDiscoverMode("search");
+  screen.value = "search";
+  searchKeyword.value = value;
+  void runSearch(1);
+}
+
+function openHomeConfigEditor(): void {
+  if (homeConfigBusy.value) return;
+  homeConfigEditorOpen.value = true;
+  homeEditorCategories.value = {};
+  homeEditorCategoryErrors.value = {};
+  const sourceId = bookSourceCandidates.value[0]?.id;
+  if (sourceId) void loadHomeEditorCategories(sourceId);
+}
+
+async function loadHomeEditorCategories(sourceId: string): Promise<void> {
+  if (!sourceId || !enabledSources.value.some((source) => source.id === sourceId && source.isRss !== true)) return;
+  const current = homeEditorCategoryLoads.get(sourceId);
+  if (current) return current;
+  homeEditorLoadingSourceIds.value = [...new Set([...homeEditorLoadingSourceIds.value, sourceId])];
+  const categoryErrors = { ...homeEditorCategoryErrors.value };
+  delete categoryErrors[sourceId];
+  homeEditorCategoryErrors.value = categoryErrors;
+
+  const request = (async () => {
+    try {
+      const response = await listDiscoveryCategories(sourceId);
+      const document = await readResource<DiscoveryCategoriesResource>(response.resource);
+      if (!enabledSources.value.some((source) => source.id === sourceId && source.isRss !== true)) return;
+      homeEditorCategories.value = {
+        ...homeEditorCategories.value,
+        [sourceId]: Array.isArray(document.categories) ? document.categories : [],
+      };
+    } catch (error) {
+      homeEditorCategoryErrors.value = { ...homeEditorCategoryErrors.value, [sourceId]: errorText(error) };
+    } finally {
+      homeEditorLoadingSourceIds.value = homeEditorLoadingSourceIds.value.filter((id) => id !== sourceId);
+    }
+  })();
+  homeEditorCategoryLoads.set(sourceId, request);
+  try {
+    await request;
+  } finally {
+    if (homeEditorCategoryLoads.get(sourceId) === request) homeEditorCategoryLoads.delete(sourceId);
+  }
+}
+
+async function saveHomeConfigDraft(config: HomeConfigDocument): Promise<void> {
+  if (homeConfigBusy.value) return;
+  homeConfigBusy.value = true;
+  try {
+    let descriptor: ResourceDescriptor;
+    try {
+      descriptor = await saveHomeConfig(config);
+    } catch (error) {
+      notify(`主页设置未能保存，修改仍保留：${errorText(error)}`, "error");
+      return;
+    }
+    try {
+      try {
+        await refreshHomeConfig(descriptor);
+      } catch {
+        await refreshHomeConfig();
+      }
+    } catch (error) {
+      notify(`主页设置已提交，但重新读取失败；编辑草稿仍保留：${errorText(error)}`, "error");
+      return;
+    }
+    homeConfigEditorOpen.value = false;
+    notify("主页设置已保存。");
+  } finally {
+    homeConfigBusy.value = false;
+  }
+}
+
+function updateTxtTocRulesResource(resource: ResourceDescriptor): void {
+  txtTocRulesResource.value = resource;
 }
 
 async function refreshRssState(descriptor?: ResourceDescriptor): Promise<void> {
@@ -466,45 +639,90 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const document = await readResource<TasksResource>(resource);
   tasks.value = Array.isArray(document.tasks) ? document.tasks : [];
   await syncActiveSearchTask();
+  await syncBookSourceCandidateTask();
 }
 
-const completedSearchTasks = new Set<string>();
 const handledCatalogTaskStates = new Set<string>();
+
+function isTerminalSearchStatus(status: string): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "interrupted";
+}
 
 async function syncActiveSearchTask(task?: Partial<AppTask>): Promise<void> {
   const taskId = activeSearchTaskId.value;
-  if (!taskId) return;
-  const current = task?.id === taskId ? task : tasks.value.find((entry) => entry.id === taskId);
-  if (!current) return;
-  if (current.status === "queued" || current.status === "running" || current.status === "pausing" || current.status === "paused") {
-    searchBusy.value = current.status !== "paused";
-    searchProgress.value = current.status === "paused" ? "搜索已暂停。" : `正在搜索书源（${current.completed ?? 0}/${current.total ?? 0}）…`;
+  const generation = activeSearchGeneration.value;
+  if (!taskId || generation === null) return;
+
+  const resourceTask = tasks.value.find((entry) => entry.id === taskId);
+  const eventTask = task?.id === taskId && typeof task.status === "string" ? task : undefined;
+  let current: Partial<AppTask> | undefined = resourceTask ?? eventTask;
+  if (resourceTask && eventTask) {
+    const resourceIsTerminal = isTerminalSearchStatus(resourceTask.status);
+    const eventIsTerminal = isTerminalSearchStatus(eventTask.status ?? "");
+    if (eventIsTerminal !== resourceIsTerminal) {
+      // Task status is monotonic: a terminal state wins over any delayed
+      // queued/running snapshot for the same task.
+      current = eventIsTerminal ? eventTask : resourceTask;
+    } else if ((eventTask.updatedAtMs ?? 0) > resourceTask.updatedAtMs) {
+      current = eventTask;
+    }
+  }
+  if (!current || current.kind !== "search" || !current.status || current.id !== taskId) return;
+  const expectedSearchId = activeSearchId.value;
+  // The task ID is the primary identity. Older task-updated summaries may not
+  // include searchId, so an omitted optional field must not strand the active
+  // task in its previous busy state. When both sides provide it, still require
+  // the search ID to match the generation currently shown by the UI.
+  if (expectedSearchId && current.searchId && current.searchId !== expectedSearchId) return;
+  if (!expectedSearchId && current.searchId) activeSearchId.value = current.searchId;
+  const searchId = activeSearchId.value;
+  if (activeSearchTaskId.value !== taskId || activeSearchGeneration.value !== generation || searchRunGeneration !== generation) return;
+
+  if (current.status === "queued" || current.status === "running" || current.status === "pausing" || current.status === "cancelling") {
+    searchBusy.value = true;
+    searchProgress.value = current.status === "cancelling"
+      ? "正在取消搜索…"
+      : `正在搜索书源（${current.completed ?? 0}/${current.total ?? 0}）…`;
     return;
   }
-  if (completedSearchTasks.has(taskId)) return;
-  completedSearchTasks.add(taskId);
+  if (current.status === "paused") {
+    searchBusy.value = false;
+    searchProgress.value = "搜索已暂停。";
+    return;
+  }
+  if (!isTerminalSearchStatus(current.status)) return;
+
+  // Unbind before awaiting the result. A new generation can start while the
+  // resource read is in flight; its results and status must stay untouched.
+  activeSearchTaskId.value = null;
   searchBusy.value = false;
   if (current.status === "completed") {
     const descriptor = discoverySearchResources.get(taskId);
-    if (!descriptor) {
+    if (!descriptor || descriptor.resourceId !== activeSearchResourceId.value) {
       searchProgress.value = "搜索已完成，但结果资源暂不可用。";
       notify(searchProgress.value, "error");
     } else {
       try {
-        await loadSearchResource(descriptor);
+        const loaded = await loadSearchResource(descriptor, generation, descriptor.resourceId);
+        if (!loaded || activeSearchGeneration.value !== generation || activeSearchId.value !== searchId || searchRunGeneration !== generation) return;
         searchProgress.value = `搜索完成 · ${searchResults.value.length} 本书`;
       } catch (error) {
+        if (activeSearchGeneration.value !== generation || activeSearchId.value !== searchId || searchRunGeneration !== generation) return;
         searchProgress.value = "搜索完成，结果读取失败。";
         notify(`读取搜索结果失败：${errorText(error)}`, "error");
       }
     }
   } else if (current.status === "failed") {
+    if (activeSearchGeneration.value !== generation || activeSearchId.value !== searchId || searchRunGeneration !== generation) return;
     searchProgress.value = "搜索失败";
     notify(`搜索失败：${current.error ?? "请稍后重试。"}`, "error");
   } else if (current.status === "cancelled") {
+    if (activeSearchGeneration.value !== generation || activeSearchId.value !== searchId || searchRunGeneration !== generation) return;
     searchProgress.value = "搜索已取消。";
+  } else if (current.status === "interrupted") {
+    if (activeSearchGeneration.value !== generation || activeSearchId.value !== searchId || searchRunGeneration !== generation) return;
+    searchProgress.value = "搜索已中断。";
   }
-  activeSearchTaskId.value = null;
 }
 
 async function syncCatalogTask(taskSummary?: Partial<AppTask>): Promise<void> {
@@ -614,14 +832,14 @@ async function bootstrap(): Promise<void> {
 async function refreshSources(): Promise<void> {
   const response = await listSources();
   sources.value = Array.isArray(response.sources) ? response.sources : [];
-  selectedSourceIds.value = enabledSources.value.map((source) => source.id);
+  selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
 }
 
 async function changeSourceEnabled(source: SourceMetadata, enabled: boolean): Promise<void> {
   try {
     const response = await updateSource(source.id, { enabled });
     sources.value = response.sources;
-    if (!enabled) selectedSourceIds.value = selectedSourceIds.value.filter((id) => id !== source.id);
+    if (!enabled || source.isRss === true) selectedSourceIds.value = selectedSourceIds.value.filter((id) => id !== source.id);
     else if (!selectedSourceIds.value.includes(source.id)) selectedSourceIds.value.push(source.id);
     notify(`${source.name} 已${enabled ? "启用" : "停用"}。`);
   } catch (error) {
@@ -685,21 +903,32 @@ function toggleCurrentBookmark(): void {
   }
 }
 
-async function loadSearchResource(descriptor: ResourceDescriptor): Promise<void> {
+async function loadSearchResource(descriptor: ResourceDescriptor, generation: number, resourceId: string): Promise<boolean> {
   const result = await readResource<SearchResource>(descriptor);
+  if (generation !== searchRunGeneration || resourceId !== activeSearchResourceId.value) return false;
   searchResults.value = Array.isArray(result.results) ? result.results : [];
   searchResourceErrors.value = Array.isArray(result.errors) ? result.errors : [];
+  return true;
 }
 
 async function runSearch(page = 1): Promise<void> {
+  if (searchBusy.value) return;
   if (!searchKeyword.value.trim()) {
     notify("先输入书名、作者或关键词。", "error");
     return;
   }
-  if (!selectedSourceIds.value.length) {
+  const eligibleSourceIds = new Set(bookSourceCandidates.value.map((source) => source.id));
+  const sourceIds = selectedSourceIds.value.filter((id) => eligibleSourceIds.has(id));
+  if (sourceIds.length !== selectedSourceIds.value.length) selectedSourceIds.value = sourceIds;
+  if (!sourceIds.length) {
     notify("请至少选择一个已启用书源。", "error");
     return;
   }
+  const generation = ++searchRunGeneration;
+  activeSearchGeneration.value = generation;
+  activeSearchTaskId.value = null;
+  activeSearchId.value = null;
+  activeSearchResourceId.value = null;
   searchBusy.value = true;
   searchWasRun.value = true;
   searchPage.value = page;
@@ -707,14 +936,31 @@ async function runSearch(page = 1): Promise<void> {
   searchResponseErrors.value = [];
   searchResourceErrors.value = [];
   searchResults.value = [];
+  let startedTaskId: string | null = null;
   try {
-    const response = await startSearch(selectedSourceIds.value, searchKeyword.value.trim(), page);
-    if (!response.taskId) throw new Error("搜索任务没有返回编号。");
-    discoverySearchResources.set(response.taskId, response.resource);
-    activeSearchTaskId.value = response.taskId;
+    const response = await startSearch(sourceIds, searchKeyword.value.trim(), page);
+    startedTaskId = response.task?.id ?? response.taskId ?? null;
+    if (!startedTaskId || (response.taskId && response.task?.id && response.taskId !== response.task.id)) {
+      throw new Error("搜索任务没有返回有效编号。");
+    }
+    if (response.task?.kind !== "search") throw new Error("返回的任务不是书籍搜索任务。");
+    if (generation !== searchRunGeneration) {
+      void cancelTask(startedTaskId).catch(() => {});
+      return;
+    }
+    discoverySearchResources.set(startedTaskId, response.resource);
+    activeSearchTaskId.value = startedTaskId;
+    activeSearchId.value = response.task.searchId ?? null;
+    activeSearchResourceId.value = response.resource.resourceId;
     searchProgress.value = "已开始搜索所选书源。";
     await refreshTasks().catch(() => {});
   } catch (error) {
+    if (generation !== searchRunGeneration) return;
+    if (startedTaskId) void cancelTask(startedTaskId).catch(() => {});
+    activeSearchTaskId.value = null;
+    activeSearchId.value = null;
+    activeSearchResourceId.value = null;
+    activeSearchGeneration.value = null;
     searchProgress.value = "搜索失败";
     notify(`搜索失败：${errorText(error)}`, "error");
     searchBusy.value = false;
@@ -752,11 +998,12 @@ async function enqueueBookTask(action: "download" | "refresh" | "check"): Promis
 }
 
 async function loadDiscoveryCategories(): Promise<void> {
-  if (!discoverySourceId.value) {
+  const sourceId = discoverySourceId.value;
+  if (!sourceId || !discoverySources.value.some((source) => source.id === sourceId)) {
     discoveryCategories.value = [];
     discoveryCategoryId.value = "";
     discoveryResults.value = [];
-    discoveryError.value = "请先选择一个已启用的书源。";
+    discoveryError.value = discoverMode.value === "rss" ? "请先选择一个 RSS 订阅源。" : "请先选择一个已启用的书源。";
     return;
   }
   discoveryBusy.value = true;
@@ -767,9 +1014,10 @@ async function loadDiscoveryCategories(): Promise<void> {
   discoveryWasLoaded.value = true;
   try {
     const response = discoverMode.value === "rss"
-      ? await listRssCategories(discoverySourceId.value)
-      : await listDiscoveryCategories(discoverySourceId.value);
+      ? await listRssCategories(sourceId)
+      : await listDiscoveryCategories(sourceId);
     const document = await readResource<DiscoveryCategoriesResource>(response.resource);
+    if (discoverMode.value === "rss" && response.rssState) await refreshRssState(response.rssState);
     discoveryCategories.value = Array.isArray(document.categories) ? document.categories : [];
     const first = discoveryCategories.value.find((category) => category.categoryId);
     if (first?.categoryId) {
@@ -874,12 +1122,17 @@ async function loadDiscoveryPage(categoryId = discoveryCategoryId.value, page = 
 function setDiscoverMode(mode: DiscoverMode): void {
   if (discoverMode.value === mode) return;
   discoverMode.value = mode;
+  const eligibleSources = mode === "rss" ? rssSources.value : bookSourceCandidates.value;
+  if (!eligibleSources.some((source) => source.id === discoverySourceId.value)) {
+    discoverySourceId.value = eligibleSources[0]?.id ?? "";
+  }
   discoveryCategories.value = [];
   discoveryCategoryId.value = "";
   discoveryResults.value = [];
   discoveryWasLoaded.value = false;
   discoveryError.value = "";
   if (mode !== "search" && discoverySourceId.value) void loadDiscoveryCategories();
+  else if (mode === "rss") discoveryError.value = "还没有已启用的 RSS 订阅源。";
 }
 
 async function openDiscoveryArticle(result: SearchBookResult): Promise<void> {
@@ -952,7 +1205,7 @@ async function unsubscribeSelectedRss(): Promise<void> {
     sources.value = response.sources;
     await refreshRssState(response.resource);
     pendingRssUnsubscribe.value = null;
-    discoverySourceId.value = enabledSources.value[0]?.id ?? "";
+    discoverySourceId.value = rssSources.value[0]?.id ?? "";
     discoveryCategories.value = [];
     discoveryCategoryId.value = "";
     discoveryResults.value = [];
@@ -967,12 +1220,15 @@ async function unsubscribeSelectedRss(): Promise<void> {
 }
 
 async function loadDiscoveryCategoriesAfterNav(): Promise<void> {
-  if (!discoverySourceId.value) discoverySourceId.value = enabledSources.value[0]?.id ?? "";
+  if (discoverMode.value === "search") return;
+  const eligibleSources = discoverMode.value === "rss" ? rssSources.value : bookSourceCandidates.value;
+  if (!eligibleSources.some((source) => source.id === discoverySourceId.value)) discoverySourceId.value = eligibleSources[0]?.id ?? "";
   if (discoverySourceId.value && !discoveryWasLoaded.value) await loadDiscoveryCategories();
+  else if (!discoverySourceId.value && discoverMode.value === "rss") discoveryError.value = "还没有已启用的 RSS 订阅源。";
 }
 
 function setAllSearchSources(enabled: boolean): void {
-  selectedSourceIds.value = enabled ? enabledSources.value.map((source) => source.id) : [];
+  selectedSourceIds.value = enabled ? bookSourceCandidates.value.map((source) => source.id) : [];
 }
 
 function setReaderTheme(theme: ReaderTheme): void {
@@ -1131,17 +1387,244 @@ async function restoreBackup(): Promise<void> {
     shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
     settings.value = normalizeSettings(nextSettings);
     sources.value = result.bootstrap.sources ?? [];
-    selectedSourceIds.value = enabledSources.value.map((source) => source.id);
+    selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
+    await refreshSearchHistory(result.bootstrap.searchHistory);
     openedBook.value = null;
     searchResults.value = [];
     discoveryResults.value = [];
-    await Promise.all([refreshReadingData(), refreshTasks(), refreshHomeConfig(), refreshRssState()]);
+    await Promise.all([refreshReadingData(), refreshTasks(), refreshHomeConfig(), refreshRssState(), refreshDiscoveryFavorites()]);
     notify("备份已恢复，书架和阅读数据已重新载入。");
   } catch (error) {
     notify(`恢复备份失败：${errorText(error)}`, "error");
   } finally {
     backupBusy.value = null;
   }
+}
+
+async function openBookSourceSwitch(fromReader = false): Promise<void> {
+  const book = fromReader ? readingBook.value : openedBook.value;
+  if (!book || book.canChangeSource !== true || bookSourceSwitchBusy.value) return;
+  if (fromReader) {
+    readerControlsOpen.value = false;
+    await saveCurrentProgress();
+    if (readerProgressDirty.value) {
+      notify("阅读位置尚未保存，请稍后再试。", "error");
+      return;
+    }
+  }
+  bookSourceSearchGeneration += 1;
+  bookSourceSwitchBook.value = book;
+  bookSourceSwitchFromReader.value = fromReader;
+  bookSourceCandidateTaskId.value = null;
+  bookSourceCandidateResource.value = null;
+  bookSourceCandidateResults.value = [];
+  bookSourceCandidateErrors.value = [];
+  selectedBookSourceCandidate.value = null;
+  bookSourceIdentityConfirmationNeeded.value = false;
+  bookSourceSwitchError.value = "";
+  bookSourceChangeError.value = "";
+  bookSourceSearchStatus.value = "";
+  bookSourceSearchBusy.value = false;
+  bookSourceSwitchConfirmOpen.value = false;
+  bookSourceSwitchOpen.value = true;
+  await startBookSourceCandidateSearch();
+}
+
+function closeBookSourceSwitch(): void {
+  const taskId = bookSourceCandidateTaskId.value;
+  const task = taskId ? tasks.value.find((entry) => entry.id === taskId) : undefined;
+  const terminalStatuses = ["completed", "failed", "cancelled", "interrupted"];
+  const shouldCancel = Boolean(taskId && (bookSourceSearchBusy.value || (task && !terminalStatuses.includes(task.status))));
+  bookSourceSearchGeneration += 1;
+  bookSourceCandidateTaskId.value = null;
+  bookSourceSwitchOpen.value = false;
+  bookSourceSwitchConfirmOpen.value = false;
+  selectedBookSourceCandidate.value = null;
+  bookSourceIdentityConfirmationNeeded.value = false;
+  bookSourceSearchBusy.value = false;
+  bookSourceChangeError.value = "";
+  if (shouldCancel && taskId) void cancelTask(taskId).catch(() => {});
+}
+
+async function startBookSourceCandidateSearch(): Promise<void> {
+  const book = bookSourceSwitchBook.value;
+  if (!book || book.canChangeSource !== true || bookSourceSearchBusy.value || bookSourceSwitchBusy.value) return;
+  const generation = ++bookSourceSearchGeneration;
+  const sourceIds = bookSourceCandidates.value.map((source) => source.id);
+  if (!sourceIds.length) {
+    bookSourceSwitchError.value = "没有可用于换源的已启用书源。";
+    return;
+  }
+  bookSourceSwitchError.value = "";
+  bookSourceSearchStatus.value = "正在搜索其他书源…";
+  bookSourceCandidateResults.value = [];
+  bookSourceCandidateErrors.value = [];
+  selectedBookSourceCandidate.value = null;
+  bookSourceIdentityConfirmationNeeded.value = false;
+  bookSourceSearchBusy.value = true;
+  try {
+    const response = await searchBookSourceCandidates(book.id, sourceIds, book.title, 1);
+    const taskId = response.taskId ?? response.task?.id;
+    if (!taskId || !response.resource) throw new Error("候选搜索没有返回结果资源。");
+    if (generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value) {
+      await cancelTask(taskId).catch(() => {});
+      return;
+    }
+    bookSourceCandidateTaskId.value = taskId;
+    bookSourceCandidateResource.value = response.resource;
+    await refreshTasks();
+    if (generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value) return;
+    await syncBookSourceCandidateTask(response.task);
+  } catch (error) {
+    if (generation === bookSourceSearchGeneration && bookSourceSwitchOpen.value) {
+      bookSourceSearchBusy.value = false;
+      bookSourceSwitchError.value = errorText(error);
+      bookSourceSearchStatus.value = "搜索失败";
+    }
+  }
+}
+
+async function syncBookSourceCandidateTask(taskSummary?: Partial<AppTask>): Promise<void> {
+  const taskId = bookSourceCandidateTaskId.value;
+  if (!taskId) return;
+  const generation = bookSourceSearchGeneration;
+  const task = tasks.value.find((entry) => entry.id === taskId)
+    ?? (taskSummary?.id === taskId ? taskSummary as AppTask : undefined);
+  if (!task || task.id !== taskId || task.kind !== "bookSourceCandidates") return;
+  if (["queued", "running", "pausing", "paused", "cancelling"].includes(task.status)) {
+    bookSourceSearchBusy.value = task.status !== "paused";
+    bookSourceSearchStatus.value = task.status === "paused"
+      ? "候选搜索已暂停"
+      : `正在搜索其他书源${task.total ? `（${task.completed} / ${task.total}）` : "…"}`;
+    return;
+  }
+  if (!["completed", "failed", "cancelled", "interrupted"].includes(task.status)) return;
+  const stateKey = `${task.id}:${task.status}`;
+  if (bookSourceCandidateTaskStates.has(stateKey)) return;
+  bookSourceCandidateTaskStates.add(stateKey);
+  bookSourceSearchBusy.value = false;
+  if (task.status !== "completed") {
+    bookSourceSearchStatus.value = task.status === "cancelled" ? "候选搜索已取消" : "候选搜索未能完成";
+    bookSourceSwitchError.value = task.error ?? (task.status === "cancelled" ? "搜索已取消。" : "请重新搜索候选书源。");
+    return;
+  }
+  const descriptor = bookSourceCandidateResource.value;
+  if (!descriptor) {
+    bookSourceSearchStatus.value = "候选资源不可用";
+    bookSourceSwitchError.value = "搜索已完成，但候选资源地址缺失。";
+    return;
+  }
+  try {
+    const resource = await readResource<SearchResource>(descriptor);
+    if (generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
+    bookSourceCandidateResults.value = Array.isArray(resource.results) ? resource.results : [];
+    bookSourceCandidateErrors.value = Array.isArray(resource.errors) ? resource.errors : [];
+    bookSourceSearchStatus.value = resource.complete === false ? "候选结果尚未完整" : `找到 ${bookSourceCandidateResults.value.length} 个可用书源`;
+    if (resource.complete === false) bookSourceSwitchError.value = "候选结果尚未准备完整，请重新搜索。";
+  } catch (error) {
+    if (generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
+    bookSourceSearchStatus.value = "候选资源读取失败";
+    bookSourceSwitchError.value = errorText(error);
+  }
+}
+
+function selectBookSourceCandidate(candidate: SearchBookResult): void {
+  selectedBookSourceCandidate.value = candidate;
+  bookSourceIdentityConfirmationNeeded.value = false;
+  bookSourceChangeError.value = "";
+}
+
+async function confirmBookSourceChange(): Promise<void> {
+  const book = bookSourceSwitchBook.value;
+  const candidate = selectedBookSourceCandidate.value;
+  if (!book || book.canChangeSource !== true || !candidate || bookSourceSwitchBusy.value) return;
+  const readerWasOpen = bookSourceSwitchFromReader.value && readerVisible.value && readingBook.value?.id === book.id;
+  if (readerWasOpen) {
+    await saveCurrentProgress();
+    if (readerProgressDirty.value) {
+      bookSourceSwitchError.value = "阅读位置尚未保存，换源暂未执行。";
+      bookSourceSwitchConfirmOpen.value = false;
+      return;
+    }
+  }
+
+  bookSourceSwitchBusy.value = true;
+  bookSourceSwitchError.value = "";
+  bookSourceChangeError.value = "";
+  let response: BookSourceMutationResponse;
+  try {
+    response = await changeBookSource(book.id, candidate.resultId, bookSourceNeedsIdentityConfirmation.value);
+  } catch (error) {
+    bookSourceSwitchBusy.value = false;
+    const message = errorText(error);
+    if (message.toLocaleLowerCase().includes("author could not be verified")) {
+      bookSourceIdentityConfirmationNeeded.value = true;
+      bookSourceChangeError.value = "无法核实作者。请确认书名对应的是同一本书，再继续更换。";
+    } else {
+      bookSourceChangeError.value = message;
+    }
+    return;
+  }
+
+  // The Rust mutation is committed now. Close the confirmation immediately so
+  // a transient resource fetch error cannot invite a second mutation request.
+  bookSourceSwitchOpen.value = false;
+  bookSourceSwitchConfirmOpen.value = false;
+  bookSourceCandidateTaskId.value = null;
+  selectedBookSourceCandidate.value = null;
+  bookSourceIdentityConfirmationNeeded.value = false;
+  let updatedBook: BookResource;
+  try {
+    try {
+      updatedBook = await readResource<BookResource>(response.book);
+    } catch {
+      updatedBook = await readResource<BookResource>(await getBook(book.id));
+    }
+  } catch (error) {
+    bookSourceSwitchBusy.value = false;
+    if (readerWasOpen) {
+      readingBook.value = null;
+      readerVisible.value = false;
+      readingChapterHtml.value = "";
+      readingChapterRaw.value = "";
+      readingPdfPage.value = null;
+    }
+    openedBook.value = null;
+    void refreshShelfFromDescriptor(response.shelf).catch(() => {});
+    notify(`已切换到“${candidate.sourceName}”，但新目录暂时无法读取：${errorText(error)}`, "error");
+    return;
+  }
+
+  updatedBook.progress = { ...response.progress };
+  try {
+    const nextShelf = await readResource<ShelfResource>(response.shelf);
+    shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
+  } catch (error) {
+    notify(`书源已切换，书架更新稍后重试：${errorText(error)}`, "error");
+  }
+  try {
+    const bookmarkResource = await readResource<BookmarksResource>(response.bookmarks.resource);
+    bookmarks.value = bookmarkResource.bookmarks ?? [];
+  } catch (error) {
+    notify(`书源已切换，书签列表读取失败：${errorText(error)}`, "error");
+  }
+
+  openedBook.value = openedBook.value?.id === book.id ? updatedBook : openedBook.value;
+  if (readerWasOpen) {
+    readingBook.value = updatedBook;
+    readingPdfPage.value = null;
+    readingChapterHtml.value = "";
+    readingChapterRaw.value = "";
+    readingChapterIndex.value = response.progress.chapterIndex;
+    readerPageIndex.value = response.progress.offset;
+    await loadReaderChapter(response.progress.chapterIndex);
+  }
+  const progressMessage = "阅读位置已按新目录更新";
+  const bookmarkMessage = response.bookmarks.orphanedCount
+    ? `，${response.bookmarks.orphanedCount} 个未匹配书签仍保留在列表中`
+    : "";
+  bookSourceSwitchBusy.value = false;
+  notify(`已切换到“${candidate.sourceName}”；${progressMessage}${bookmarkMessage}。`);
 }
 
 async function openShelfBook(bookId: string): Promise<void> {
@@ -1245,6 +1728,10 @@ async function finishReadingSession(): Promise<void> {
 }
 
 async function openBookmark(bookmark: Bookmark): Promise<void> {
+  if (bookmark.orphaned) {
+    notify(`“${bookmark.chapterTitle || `第 ${bookmark.chapterIndex + 1} 章`}”无法与新书源目录匹配，书签仍保留在列表中。`, "error");
+    return;
+  }
   try {
     const descriptor = await getBook(bookmark.bookId);
     const book = await readResource<BookResource>(descriptor);
@@ -1930,7 +2417,7 @@ async function importSourceFileFromPicker(): Promise<void> {
     const response = await importSourcesFromPicker();
     if (response.cancelled) return;
     sources.value = response.sources;
-    selectedSourceIds.value = enabledSources.value.map((source) => source.id);
+    selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
     sourceImportOpen.value = false;
     notify("书源已导入。");
   } catch (error) {
@@ -1960,6 +2447,7 @@ function toggleSourceRow(id: string): void {
 }
 
 function toggleSearchSource(id: string): void {
+  if (!bookSourceCandidates.value.some((source) => source.id === id)) return;
   selectedSourceIds.value = selectedSourceIds.value.includes(id)
     ? selectedSourceIds.value.filter((item) => item !== id)
     : [...selectedSourceIds.value, id];
@@ -2020,9 +2508,9 @@ async function setupEvents(): Promise<void> {
     }));
     unlisteners.push(await listen<SourceMetadata[]>("sources-updated", (event) => {
       sources.value = event.payload;
-      selectedSourceIds.value = selectedSourceIds.value.filter((id) => enabledSources.value.some((source) => source.id === id));
-      if (!enabledSources.value.some((source) => source.id === discoverySourceId.value)) {
-        discoverySourceId.value = enabledSources.value[0]?.id ?? "";
+      selectedSourceIds.value = selectedSourceIds.value.filter((id) => bookSourceCandidates.value.some((source) => source.id === id));
+      if (!discoverySources.value.some((source) => source.id === discoverySourceId.value)) {
+        discoverySourceId.value = discoverySources.value[0]?.id ?? "";
         discoveryCategories.value = [];
         discoveryResults.value = [];
       }
@@ -2055,19 +2543,25 @@ async function setupEvents(): Promise<void> {
           await refreshDiscoveryFavorites(event.payload.resource);
         } else if (event.payload.kind === "homeConfig") {
           await refreshHomeConfig(event.payload.resource);
+        } else if (event.payload.kind === "txtTocRules") {
+          updateTxtTocRulesResource(event.payload.resource);
         } else if (event.payload.kind === "rssState") {
           await refreshRssState(event.payload.resource);
+        } else if (event.payload.kind === "searchHistory") {
+          await refreshSearchHistory(event.payload.resource);
         }
       } catch (error) {
-        notify(`阅读数据更新失败：${errorText(error)}`, "error");
+        notify(`数据更新失败：${errorText(error)}`, "error");
       }
     }));
     unlisteners.push(await listen<{ task: Partial<AppTask>; resource: ResourceDescriptor }>("task-updated", async (event) => {
       try {
         await refreshTasks(event.payload.resource);
         await syncActiveSearchTask(event.payload.task);
+        await syncBookSourceCandidateTask(event.payload.task);
         await syncCatalogTask(event.payload.task);
       } catch (error) {
+        if (event.payload.task.kind === "search" && event.payload.task.id !== activeSearchTaskId.value) return;
         notify(`任务状态更新失败：${errorText(error)}`, "error");
       }
     }));
@@ -2081,8 +2575,8 @@ async function setupEvents(): Promise<void> {
         shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
         settings.value = normalizeSettings(nextSettings);
         sources.value = restored.sources ?? [];
-        selectedSourceIds.value = enabledSources.value.map((source) => source.id);
-        await Promise.all([refreshReadingData(), refreshTasks(), refreshDiscoveryFavorites(), refreshHomeConfig(), refreshRssState()]);
+        selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
+        await Promise.all([refreshReadingData(), refreshTasks(), refreshDiscoveryFavorites(), refreshHomeConfig(), refreshRssState(), refreshSearchHistory(restored.searchHistory)]);
       } catch (error) {
         notify(`恢复后的数据重新载入失败：${errorText(error)}`, "error");
       }
@@ -2097,12 +2591,16 @@ async function setupEvents(): Promise<void> {
       }
     }));
     unlisteners.push(await listen<{ resource: ResourceDescriptor; bookCount: number; errors: Array<{ sourceId?: string; message: string }> }>("search-complete", async (event) => {
-      if (!searchWasRun.value || !searchKeyword.value.trim()) return;
+      const generation = searchRunGeneration;
+      const resourceId = event.payload.resource.resourceId;
+      if (!searchWasRun.value || !searchKeyword.value.trim() || !resourceId || resourceId !== activeSearchResourceId.value) return;
       try {
-        await loadSearchResource(event.payload.resource);
+        const loaded = await loadSearchResource(event.payload.resource, generation, resourceId);
+        if (!loaded || generation !== searchRunGeneration || resourceId !== activeSearchResourceId.value) return;
         searchResponseErrors.value = event.payload.errors ?? [];
         searchProgress.value = `搜索完成 · ${event.payload.bookCount} 本书`;
       } catch (error) {
+        if (generation !== searchRunGeneration || resourceId !== activeSearchResourceId.value) return;
         notify(`读取搜索结果失败：${errorText(error)}`, "error");
       }
     }));
@@ -2209,6 +2707,7 @@ watch(readerSettings, () => {
             @open-history="chooseScreen('settings')"
             @open-tasks="chooseScreen('settings')"
             @open-sources="chooseScreen('sources')"
+            @manage-home="openHomeConfigEditor"
           />
 
           <section v-if="screen === 'shelf'" class="shelf-view">
@@ -2249,16 +2748,17 @@ watch(readerSettings, () => {
             <template v-if="discoverMode !== 'search'">
               <div class="discover-toolbar">
                 <label for="discovery-source">选择书源</label>
-                <select id="discovery-source" data-testid="discovery-source" v-model="discoverySourceId" :disabled="!enabledSources.length" @change="loadDiscoveryCategories">
-                  <option value="" disabled>选择一个已启用的书源</option><option v-for="source in enabledSources" :key="source.id" :value="source.id">{{ source.name }}</option>
+                <select id="discovery-source" data-testid="discovery-source" v-model="discoverySourceId" :disabled="!discoverySources.length" @change="loadDiscoveryCategories">
+                  <option value="" disabled>{{ discoverMode === 'rss' ? '选择一个 RSS 订阅源' : '选择一个已启用的书源' }}</option><option v-for="source in discoverySources" :key="source.id" :value="source.id">{{ source.name }}</option>
                 </select>
                 <select v-if="discoverMode === 'rss'" data-testid="rss-filter" aria-label="筛选订阅文章" :value="currentRssFilter" :disabled="rssFilterBusy || !discoverySourceId" @change="changeRssFilter(($event.target as HTMLSelectElement).value as RssFilter)">
                   <option value="all">全部文章</option><option value="unread">未读</option><option value="read">已读</option><option value="favorites">已收藏</option>
                 </select>
-                <button v-if="discoverMode === 'rss' && discoverySourceId" data-testid="rss-unsubscribe" class="button danger-outline" :disabled="rssFilterBusy || rssUnsubscribeBusy" @click="pendingRssUnsubscribe = sources.find((source) => source.id === discoverySourceId) ?? null">取消订阅</button>
+                <button v-if="discoverMode === 'rss' && discoverySourceId && hasCurrentRssSubscription" data-testid="rss-unsubscribe" class="button danger-outline" :disabled="rssFilterBusy || rssUnsubscribeBusy" @click="pendingRssUnsubscribe = sources.find((source) => source.id === discoverySourceId) ?? null">取消订阅</button>
                 <button data-testid="discovery-refresh" class="button secondary" :disabled="discoveryBusy || !discoverySourceId" @click="loadDiscoveryCategories">{{ discoveryBusy ? '正在加载…' : discoverMode === 'rss' ? '刷新订阅' : '加载分类' }}</button>
               </div>
-              <div v-if="!enabledSources.length" class="empty-card"><h3>还没有已启用书源</h3><p>启用书源后，可以浏览书籍分类和订阅文章。</p><button class="button secondary" @click="chooseScreen('sources')">管理书源</button></div>
+              <div v-if="discoverMode === 'rss' && !rssSources.length" class="empty-card"><h3>还没有可用的 RSS 源</h3><p>导入 RSS 书源后，可以浏览文章、筛选未读内容和收藏文章。</p><button class="button secondary" @click="chooseScreen('sources')">管理书源</button></div>
+              <div v-else-if="discoverMode === 'discover' && !bookSourceCandidates.length" class="empty-card"><h3>还没有可用于书籍发现的来源</h3><p>启用普通书源后，可以浏览书籍分类和书目。</p><button class="button secondary" @click="chooseScreen('sources')">管理书源</button></div>
               <div v-if="discoverMode === 'discover' && discoveryFavorites.length" class="discovery-favorites" data-testid="discovery-favorites">
                 <strong>收藏分类</strong>
                 <div class="discovery-favorite-list">
@@ -2311,10 +2811,10 @@ watch(readerSettings, () => {
               </form>
               <div class="source-scope-card">
                 <div class="scope-heading"><div><strong>搜索范围</strong><small>选择参与搜索的书源</small></div><button class="text-button" @click="setAllSearchSources(!selectedSearchSources)">{{ selectedSearchSources ? '取消全选' : '选择全部' }}</button></div>
-                <div v-if="enabledSources.length" class="source-chips">
-                  <label v-for="source in enabledSources" :key="source.id" class="source-chip" :class="{ checked: selectedSourceIds.includes(source.id) }"><input type="checkbox" :checked="selectedSourceIds.includes(source.id)" @change="toggleSearchSource(source.id)" /><span class="chip-check">✓</span><span class="chip-label">{{ source.name }}</span><small v-if="source.group">{{ source.group }}</small></label>
+                <div v-if="bookSourceCandidates.length" class="source-chips">
+                  <label v-for="source in bookSourceCandidates" :key="source.id" class="source-chip" :class="{ checked: selectedSourceIds.includes(source.id) }"><input type="checkbox" :checked="selectedSourceIds.includes(source.id)" @change="toggleSearchSource(source.id)" /><span class="chip-check">✓</span><span class="chip-label">{{ source.name }}</span><small v-if="source.group">{{ source.group }}</small></label>
                 </div>
-                <div v-else class="inline-empty">还没有已启用书源。<button class="text-button" @click="chooseScreen('sources')">前往书源管理 →</button></div>
+                <div v-else class="inline-empty">还没有可用于书籍搜索的已启用来源。<button class="text-button" @click="chooseScreen('sources')">前往书源管理 →</button></div>
               </div>
               <div v-if="searchWasRun" class="results-section">
                 <div class="results-heading"><div><p class="eyebrow">搜索结果</p><h3>{{ searchBusy ? '正在寻找…' : searchKeyword }}</h3></div><span v-if="searchProgress" class="search-status"><i :class="{ spinning: searchBusy }"></i>{{ searchProgress }}</span></div>
@@ -2334,7 +2834,7 @@ watch(readerSettings, () => {
           </section>
 
           <section v-else-if="screen === 'sources'" class="sources-view">
-            <div class="source-summary"><div><p class="eyebrow">书源管理</p><h2>把常用的书源整理在这里。</h2><p>按名称和分组管理书源，也可以随时启用或停用。</p></div><div class="source-count"><strong>{{ sources.length }}</strong><span>已导入书源</span><small>{{ enabledSources.length }} 个可用于搜索</small></div></div>
+            <div class="source-summary"><div><p class="eyebrow">书源管理</p><h2>把常用的书源整理在这里。</h2><p>按名称和分组管理书源，也可以随时启用或停用。</p></div><div class="source-count"><strong>{{ sources.length }}</strong><span>已导入书源</span><small>{{ bookSourceCandidates.length }} 个可用于书籍搜索</small></div></div>
             <div class="source-toolbar"><label class="source-search"><span>⌕</span><input v-model="sourceQuery" placeholder="搜索名称或分组" aria-label="筛选书源" /></label><select v-model="sourceGroupFilter" aria-label="按分组筛选"><option value="">全部分组</option><option v-for="group in sourceGroups" :key="group" :value="group">{{ group }}</option></select><select v-model="sourceFilter" aria-label="按状态筛选"><option value="all">全部状态</option><option value="enabled">已启用</option><option value="disabled">已停用</option></select><button class="button danger-outline small" :disabled="!selectedSourceRows.length" @click="pendingSourceRemoval = [...selectedSourceRows]">移除所选<span v-if="selectedSourceRows.length"> · {{ selectedSourceRows.length }}</span></button></div>
             <div v-if="filteredSources.length" class="source-table-wrap"><div class="source-table-head"><span>书源名称</span><span>分组</span><span>状态</span><span>操作</span></div>
               <article v-for="source in filteredSources" :key="source.id" class="source-row"><label class="source-row-name"><input type="checkbox" :checked="selectedSourceRows.includes(source.id)" @change="toggleSourceRow(source.id)" /><span class="source-monogram">{{ source.name.slice(0, 1) }}</span><span><strong>{{ source.name }}</strong><small>{{ source.id }}</small></span></label><span class="source-group-name">{{ source.group || '未分组' }}</span><label class="source-state-toggle"><input type="checkbox" :checked="source.enabled" :aria-label="`${source.enabled ? '停用' : '启用'}${source.name}`" @change="changeSourceEnabled(source, ($event.target as HTMLInputElement).checked)" /><span class="source-state" :class="{ disabled: !source.enabled }"><i></i>{{ source.enabled ? '已启用' : '已停用' }}</span></label><button class="icon-action" :aria-label="`编辑${source.name}`" title="编辑名称和分组" @click="beginSourceEdit(source)">✎</button></article>
@@ -2344,15 +2844,17 @@ watch(readerSettings, () => {
           </section>
 
           <section v-else class="settings-view">
-            <div class="settings-intro"><h2>我的</h2><p>阅读记录、阅读偏好、书源和数据管理。</p></div>
+            <div class="settings-intro-row"><div class="settings-intro"><h2>我的</h2><p>阅读记录、阅读偏好、书源和数据管理。</p></div><button data-testid="home-config-open-settings" class="button secondary" :disabled="homeConfigBusy" @click="openHomeConfigEditor">管理主页栏目</button></div>
             <div class="my-management-row">
               <div><strong>书源管理</strong><span>{{ sources.length }} 个已导入 · {{ enabledSources.length }} 个已启用</span></div>
               <button data-testid="source-manager-open" class="button secondary" @click="chooseScreen('sources')">管理书源</button>
             </div>
             <TaskCenter :tasks="tasks" :book-titles="bookTitleMap" @command="controlTask" />
             <BackupControls :busy="backupBusy" :last-backup-at="lastBackupAt" @create="createBackup" @restore="restoreBackup" />
+            <SearchHistory :entries="searchHistoryEntries" :busy="searchHistoryBusy" :error="searchHistoryError" @use-query="reuseSearchQuery" @delete-query="removeSearchHistoryEntry" @clear-all="clearSearchHistoryEntries" />
             <ReadingInsights :days="readingHistory.days" :books="readingHistory.books" :bookmarks="bookmarks" :book-titles="bookTitleMap" :total-duration-ms="readingHistory.totalDurationMs" :total-sessions="readingHistory.totalSessions" @clear-history="clearReadingHistoryData" @delete-book-history="removeBookHistory" @open-bookmark="openBookmark" @delete-bookmark="removeBookmark" />
             <div class="settings-layout">
+              <div class="settings-card txt-toc-settings-card"><div class="settings-card-heading"><div class="settings-icon">TXT</div><div><h3>TXT 章节识别</h3><p>规则只用于之后新导入的 TXT；已在书架上的章节目录不会自动重建。</p></div></div><button data-testid="txt-toc-rules-open" class="button secondary" @click="txtTocRulesEditorOpen = true">管理章节识别规则</button></div>
               <div class="settings-card reader-settings-card">
                 <div class="settings-card-heading"><div class="settings-icon">Aa</div><div><h3>阅读显示</h3><p>调整章节的显示效果</p></div></div>
                 <div class="setting-control"><div><label for="reader-font-size">字体大小</label><small>当前 {{ settings.reader.fontSizePx }} px</small></div><div class="range-control"><button aria-label="减小字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx - 1, 12, 36))">−</button><input id="reader-font-size" type="range" min="12" max="36" :value="settings.reader.fontSizePx" @input="updateReaderSetting('fontSizePx', Number(($event.target as HTMLInputElement).value))" /><button aria-label="增大字号" @click="updateReaderSetting('fontSizePx', clamp(settings.reader.fontSizePx + 1, 12, 36))">＋</button></div></div>
@@ -2370,6 +2872,28 @@ watch(readerSettings, () => {
       </div>
     </main>
 
+    <section v-if="homeConfigEditorOpen" class="modal-backdrop home-config-backdrop" data-testid="home-config-overlay" @click.self="homeConfigEditorOpen = false">
+      <HomeConfigEditor
+        :home-config="homeConfig"
+        :sources="sources"
+        :categories-by-source="homeEditorCategories"
+        :loading-source-ids="homeEditorLoadingSourceIds"
+        :category-errors="homeEditorCategoryErrors"
+        :busy="homeConfigBusy"
+        @save="saveHomeConfigDraft"
+        @cancel="homeConfigEditorOpen = false"
+        @load-categories="loadHomeEditorCategories"
+      />
+    </section>
+
+    <section v-if="txtTocRulesEditorOpen" class="modal-backdrop txt-toc-editor-backdrop" data-testid="txt-toc-rules-overlay" @click.self="txtTocRulesEditorOpen = false">
+      <TxtTocRulesEditor
+        :resource="txtTocRulesResource ?? undefined"
+        @close="txtTocRulesEditorOpen = false"
+        @updated="updateTxtTocRulesResource"
+      />
+    </section>
+
     <nav v-if="!readerVisible" class="mobile-nav" aria-label="主导航"><button data-testid="nav-home-mobile" :class="{ active: screen === 'home' }" @click="chooseScreen('home')"><span>⌂</span>主页</button><button data-testid="nav-shelf-mobile" :class="{ active: screen === 'shelf' }" @click="chooseScreen('shelf')"><span>▤</span>书架</button><button data-testid="nav-search-mobile" :class="{ active: screen === 'search' }" @click="chooseScreen('search')"><span>⌕</span>发现</button><button data-testid="nav-settings-mobile" :class="{ active: screen === 'settings' || screen === 'sources' }" @click="chooseScreen('settings')"><span>☻</span>我的</button></nav>
 
     <section v-if="openedBook && !readerVisible" class="overlay-backdrop" @click.self="openedBook = null">
@@ -2378,13 +2902,28 @@ watch(readerSettings, () => {
         <div class="detail-hero">
           <img v-if="openedBook.coverSrc" :src="openedBook.coverSrc" alt="" />
           <div v-else class="detail-cover-fallback">{{ openedBook.title.slice(0, 1) }}</div>
-          <div>
-            <p class="eyebrow">书籍详情</p><h2>{{ openedBook.title }}</h2><p>{{ openedBook.author || '作者未知' }}</p>
-            <span class="detail-stat">{{ openedBook.chapterCount || openedBook.chapters.length }} 章 <i></i> {{ openedBook.latestChapter || '目录已同步' }}</span>
+          <div class="detail-title-copy">
+            <p class="eyebrow">书籍详情</p>
+            <h2>{{ openedBook.title }}</h2>
+            <p v-if="openedBook.author" class="detail-author">{{ openedBook.author }}</p>
+            <span class="detail-stat">{{ openedBook.chapterCount || openedBook.chapters.length }} 章</span>
           </div>
         </div>
+        <p v-if="openedBook.latestChapter" class="book-detail-latest">最新章节：{{ openedBook.latestChapter }}</p>
+        <div
+          v-if="openedBook.kind || openedBook.wordCount !== undefined || openedBook.sourceName || openedBook.sourceGroup"
+          class="book-detail-facts"
+          aria-label="书籍信息"
+        >
+          <span v-if="openedBook.kind" class="book-detail-fact"><small>分类</small><strong>{{ openedBook.kind }}</strong></span>
+          <span v-if="openedBook.wordCount" class="book-detail-fact"><small>字数</small><strong>{{ openedBook.wordCount }}</strong></span>
+          <span v-if="openedBook.sourceName" class="book-detail-fact"><small>来源</small><strong>{{ openedBook.sourceName }}</strong></span>
+          <span v-if="openedBook.sourceGroup" class="book-detail-fact"><small>分组</small><strong>{{ openedBook.sourceGroup }}</strong></span>
+        </div>
+        <p v-if="openedBook.intro?.trim()" class="book-detail-intro">{{ openedBook.intro }}</p>
         <div class="detail-actions">
           <button class="button primary" :disabled="bookPanelBusy || !openedBook.chapterCount" @click="startReading(openedBook)">{{ openedBook.progress?.chapterIndex != null ? '继续阅读' : '开始阅读' }} <span>→</span></button>
+          <button v-if="openedBook.canChangeSource === true" data-testid="book-change-source" class="button secondary" :disabled="bookPanelBusy" @click="openBookSourceSwitch(false)">更换书源</button>
           <button class="button secondary" @click="pendingRemoval = { id: openedBook.id, title: openedBook.title }">从书架移除</button>
         </div>
         <BookGroupsEditor :key="openedBook.id" :groups="shelfGroups" :assigned="shelf.books.find((book) => book.id === openedBook?.id)?.groups ?? []" @save="saveBookGroups(openedBook.id, $event)" />
@@ -2455,8 +2994,42 @@ watch(readerSettings, () => {
           <div><label>阅读主题</label></div>
           <div class="theme-options"><button v-for="theme in ([['paper','纸'],['sepia','暖'],['dark','夜'],['system','白']] as const)" :key="theme[0]" class="theme-option compact-theme" :class="[`theme-${theme[0]}`, { selected: settings.reader.theme === theme[0] }]" @click="setReaderTheme(theme[0])">{{ theme[1] }}</button></div>
         </div>
+        <button v-if="readingBook?.canChangeSource === true" data-testid="reader-change-source" class="button secondary reader-change-source" :disabled="bookSourceSwitchBusy" @click="openBookSourceSwitch(true)">更换书源</button>
         <button class="text-button popover-save" :disabled="saveSettingsBusy" @click="persistSettings">{{ saveSettingsBusy ? '保存中…' : '保存阅读设置' }}</button>
       </aside>
+    </section>
+
+    <section v-if="bookSourceSwitchOpen" class="overlay-backdrop book-source-switch-backdrop" @click.self="closeBookSourceSwitch">
+      <article class="book-source-switch-panel" role="dialog" aria-modal="true" aria-labelledby="book-source-switch-title">
+        <header class="book-source-switch-heading">
+          <div><p class="eyebrow">更换书源</p><h2 id="book-source-switch-title">为《{{ bookSourceSwitchBook?.title }}》寻找其他来源</h2></div>
+          <button data-testid="source-switch-close" class="detail-close" aria-label="关闭换源窗口" @click="closeBookSourceSwitch">×</button>
+        </header>
+        <p class="book-source-switch-description">搜索结果只显示匹配的书籍。确认后会重新获取目录，并尽量按章节名称保留阅读位置和书签。</p>
+        <div class="book-source-switch-toolbar">
+          <span>{{ bookSourceSearchStatus || '可用书源' }}<small>{{ bookSourceCandidates.length }} 个已启用来源</small></span>
+          <button data-testid="source-switch-search" class="button secondary" :disabled="bookSourceSearchBusy || bookSourceSwitchBusy || !bookSourceCandidates.length" @click="startBookSourceCandidateSearch">{{ bookSourceSearchBusy ? '正在搜索…' : '重新搜索' }}</button>
+        </div>
+        <div v-if="bookSourceSearchBusy" class="source-switch-state" aria-live="polite"><span class="loader-ring"></span><strong>{{ bookSourceSearchStatus || '正在寻找匹配书籍' }}</strong><p>搜索可能需要一些时间，你可以关闭窗口稍后再查看任务。</p></div>
+        <div v-else-if="bookSourceSwitchError" class="source-switch-state source-switch-error" role="alert"><strong>暂时无法完成</strong><p>{{ bookSourceSwitchError }}</p><button class="button secondary" :disabled="!bookSourceCandidates.length" @click="startBookSourceCandidateSearch">重新搜索</button></div>
+        <div v-else-if="bookSourceCandidateResults.length" class="book-source-candidate-list" data-testid="source-switch-results">
+          <article v-for="candidate in bookSourceCandidateResults" :key="candidate.resultId" :data-testid="`source-switch-candidate-${candidate.resultId}`" class="book-source-candidate" :class="{ selected: selectedBookSourceCandidate?.resultId === candidate.resultId }">
+            <img v-if="candidate.coverSrc" :src="candidate.coverSrc" alt="" loading="lazy" />
+            <div v-else class="book-source-candidate-cover">{{ candidate.title.slice(0, 1) }}</div>
+            <div class="book-source-candidate-copy"><span class="source-label">{{ candidate.sourceName }}</span><strong>{{ candidate.title }}</strong><small>{{ candidate.author || '作者未知' }}</small><p v-if="candidate.requiresIdentityConfirmation" class="source-candidate-identity-warning">作者信息缺失，需要你确认书名对应同一本书。</p><p v-else-if="candidate.latestChapter">最新章节：{{ candidate.latestChapter }}</p></div>
+            <button :data-testid="`source-switch-select-${candidate.resultId}`" class="button secondary" :aria-pressed="selectedBookSourceCandidate?.resultId === candidate.resultId" :disabled="bookSourceSwitchBusy" @click="selectBookSourceCandidate(candidate)">{{ selectedBookSourceCandidate?.resultId === candidate.resultId ? '已选择' : '选择' }}</button>
+          </article>
+        </div>
+        <div v-else-if="bookSourceCandidateErrors.length" class="book-source-candidate-errors"><strong>部分书源没有完成搜索</strong><p v-for="(error, index) in bookSourceCandidateErrors" :key="`${error.sourceId ?? 'source'}-${index}`">{{ error.sourceId ? sourceName(error.sourceId) : '书源' }}：{{ error.message }}</p></div>
+        <div v-else-if="bookSourceCandidateTaskId && !bookSourceSearchBusy" class="source-switch-state"><strong>没有找到匹配的其他书源</strong><p>可以稍后重试，或先检查是否启用了其他可用书源。</p><button class="button secondary" :disabled="!bookSourceCandidates.length" @click="startBookSourceCandidateSearch">重新搜索</button></div>
+        <div v-else class="source-switch-state"><strong>准备搜索候选书源</strong><p>{{ bookSourceCandidates.length ? '正在查找名称和作者相符的书籍。' : '请先启用其他书源。' }}</p></div>
+        <div v-if="bookSourceCandidateErrors.length && bookSourceCandidateResults.length" class="book-source-candidate-errors"><strong>部分书源未能完成</strong><p v-for="(error, index) in bookSourceCandidateErrors" :key="`partial-${error.sourceId ?? 'source'}-${index}`">{{ error.sourceId ? sourceName(error.sourceId) : '书源' }}：{{ error.message }}</p></div>
+        <footer class="book-source-switch-footer"><button class="button secondary" @click="closeBookSourceSwitch">关闭</button><button data-testid="source-switch-confirm-open" class="button primary" :disabled="!selectedBookSourceCandidate || bookSourceSwitchBusy" @click="bookSourceSwitchConfirmOpen = true">更换为所选书源</button></footer>
+      </article>
+    </section>
+
+    <section v-if="bookSourceSwitchConfirmOpen && selectedBookSourceCandidate" class="modal-backdrop book-source-change-confirm-backdrop" @click.self="!bookSourceSwitchBusy && (bookSourceSwitchConfirmOpen = false)">
+      <article class="app-modal confirm-modal"><div class="confirm-symbol">⇄</div><h2>确认更换书源？</h2><p>将《{{ bookSourceSwitchBook?.title }}》切换到“{{ selectedBookSourceCandidate.sourceName }}”。阅读位置会按新目录更新；无法匹配的书签仍会保留，并标记为旧章节。</p><p v-if="bookSourceNeedsIdentityConfirmation" class="source-identity-confirmation" role="alert">{{ bookSourceChangeError || '这个候选书源缺少可核实的作者信息。请确认书名对应的是同一本书。' }}</p><p v-else-if="bookSourceChangeError" class="source-identity-confirmation" role="alert">{{ bookSourceChangeError }}</p><div class="modal-actions"><button class="button secondary" :disabled="bookSourceSwitchBusy" @click="bookSourceSwitchConfirmOpen = false">返回候选列表</button><button data-testid="source-switch-confirm" class="button primary" :disabled="bookSourceSwitchBusy" @click="confirmBookSourceChange">{{ bookSourceSwitchBusy ? '正在更换…' : bookSourceNeedsIdentityConfirmation ? '确认书名正确并更换' : '确认更换' }}</button></div></article>
     </section>
 
     <section v-if="bookmarkEditorOpen" class="modal-backdrop" @click.self="bookmarkEditorOpen = false"><article class="app-modal bookmark-modal"><button class="detail-close" aria-label="关闭书签窗口" @click="bookmarkEditorOpen = false">×</button><p class="eyebrow">书签</p><h2>为这一页添加备注</h2><p class="modal-description">{{ readingBook?.title }} · {{ currentChapterTitle }} · {{ readerPositionDescription }}</p><textarea v-model="bookmarkNote" aria-label="书签备注" maxlength="300" placeholder="写下想记住的内容（可选）"></textarea><div class="modal-actions"><button class="button secondary" @click="bookmarkEditorOpen = false">取消</button><button class="button primary" :disabled="bookmarkBusy" @click="addBookmark">{{ bookmarkBusy ? '保存中…' : '保存书签' }}</button></div></article></section>

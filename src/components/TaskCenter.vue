@@ -27,6 +27,7 @@ const emit = defineEmits<{ command: [action: "pause" | "resume" | "cancel", task
 function label(task: AppTask): string {
   if (task.kind === "search") return task.keyword ? `搜索“${task.keyword}”` : "书籍搜索";
   const book = task.bookId ? props.bookTitles[task.bookId] ?? "书籍" : "书籍";
+  if (task.kind === "bookSourceCandidates") return `为《${book}》寻找其他书源`;
   if (task.kind === "chapterDownload") return `准备《${book}》的章节`;
   if (task.kind === "refreshChapters") return `更新《${book}》的目录`;
   if (task.kind === "checkNewChapters") return `检查《${book}》的新章节`;
