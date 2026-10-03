@@ -88,3 +88,9 @@ run `37113999486`（commit `38913f5`）的四个非 iOS job 均通过。iOS devi
 新增 exact-only iOS framework/native archive 缓存：键包含源码、原生工具链输入、Xcode/SDK 版本及目标；不接受部分恢复。命中后检查 device/simulator slice 和 arm64 archives，未命中构建后在 IPA 步骤前保存，避免最终 app 失败丢掉成功的 KMP 编译结果。生成 build 输出不参与键，保存使用 restore 时的固定 key。
 
 该次 macOS job 为357 s，比上一轮1,068 s缩短；Rust exact cache 命中，Gradle首次保存新缓存。缓存条件不同，该单次结果不能作为统一冷构建加速比例。Basic Caching 信息提示无需升级付费缓存。
+
+
+最终 Xcode 配置复核进一步改为显式本地 XCFramework dependency（`framework: ../../plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework`, `embed: false`），避免 `sdk:` 把自定义 framework 当作 SDK 内置路径。模板配置为 `src-tauri/ios-project.yml`，匹配 workflow 在仓库根运行 `tauri ios init` 的实际模板读取路径；SDK 条件搜索路径保留。两项仍待 run `37116333002` 的 macOS 初始化和最终 IPA 验证。
+
+
+run `37116777187`（`da28565`）四个非iOS平台job均通过；iOS框架构建、校验和Rust链接成功，最终Xcode app仍缺 `_sqlite3_*`。模板加入 SDK `libsqlite3.tbd`，让最终app满足现有KMP静态framework的链接依赖。独立引擎 `IosSourceEngineRuntime` 使用HeadlessAppDb，书架/进度等DAO不可用，cache/cookie通过Rust HostStorage；框架含旧SQLite driver符号不表示新app使用SQL业务存储，新app仍持久化JSON/HTML。新补链还须下轮macOS实际IPA验证。

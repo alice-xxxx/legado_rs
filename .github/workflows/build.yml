@@ -357,6 +357,7 @@ jobs:
           grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]' "$project"
           grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]' "$project"
           grep -Fq 'LegadoSourceEngine.xcframework' "$project"
+          grep -Fq 'libsqlite3.tbd' "$project"
       # Deliberately omit Apple signing credentials; the IPA must be re-signed before device installation.
       - name: Build unsigned test IPA
         run: npm run tauri -- ios build --no-sign --ci

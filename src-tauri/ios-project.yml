@@ -108,6 +108,7 @@ targets:
       - framework: {{this}}{{/each}}{{/if}}{{#if ios-vendor-sdks}}{{~#each ios-vendor-sdks}}
       - sdk: {{prefix-path this}}{{/each}}{{/if}}
       - sdk: CoreGraphics.framework
+      - sdk: libsqlite3.tbd
       - sdk: Metal.framework
       - sdk: MetalKit.framework
       - sdk: QuartzCore.framework
