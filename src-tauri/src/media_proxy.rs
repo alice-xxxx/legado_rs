@@ -102,7 +102,55 @@ impl MediaProxyRegistry {
         upstream_url: &str,
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
+        let (reference, target) = Self::parse_target(opaque_id, upstream_url, private_headers)?;
+        self.entries
+            .write()
+            .await
+            .insert(opaque_id.to_owned(), target);
+        Ok(reference)
+    }
+
+    pub(super) async fn replace_mappings(
+        &self,
+        mappings: &[(String, String, Vec<(String, String)>)],
+    ) -> Result<(), ResourceError> {
+        let mut replacement = HashMap::with_capacity(mappings.len());
+        for (opaque_id, upstream_url, private_headers) in mappings {
+            let (_, target) = Self::parse_target(opaque_id, upstream_url, private_headers)?;
+            if replacement.insert(opaque_id.clone(), target).is_some() {
+                return Err(ResourceError::new(
+                    "Duplicate private media mapping identifier",
+                ));
+            }
+        }
+        *self.entries.write().await = replacement;
+        Ok(())
+    }
+
+    pub(super) fn validate_mapping(
+        opaque_id: &str,
+        upstream_url: &str,
+        private_headers: &[(String, String)],
+    ) -> Result<ResourceRef, ResourceError> {
+        Self::parse_target(opaque_id, upstream_url, private_headers).map(|(reference, _)| reference)
+    }
+
+    fn parse_target(
+        opaque_id: &str,
+        upstream_url: &str,
+        private_headers: &[(String, String)],
+    ) -> Result<(ResourceRef, ProxyTarget), ResourceError> {
         let reference = ResourceRef::new(format!("resource://media/{opaque_id}"))?;
+        if upstream_url.len() > 16 * 1024
+            || private_headers.len() > 64
+            || private_headers
+                .iter()
+                .any(|(name, value)| name.len() > 256 || value.len() > 8 * 1024)
+        {
+            return Err(ResourceError::new(
+                "Private media mapping exceeds supported limits",
+            ));
+        }
         let url = Url::parse(upstream_url)
             .map_err(|_| ResourceError::new("Media source must be a valid HTTP(S) URL"))?;
         if !matches!(url.scheme(), "http" | "https")
@@ -131,15 +179,13 @@ impl MediaProxyRegistry {
             value.set_sensitive(true);
             headers.append(name, value);
         }
-
-        self.entries.write().await.insert(
-            opaque_id.to_owned(),
+        Ok((
+            reference,
             ProxyTarget {
                 url,
                 private_headers: headers,
             },
-        );
-        Ok(reference)
+        ))
     }
 
     pub(super) async fn unregister(&self, opaque_id: &str) {
@@ -523,6 +569,81 @@ mod tests {
             .unwrap();
         assert_eq!(redirected.status(), StatusCode::OK);
         assert_eq!(redirected.bytes().await.unwrap(), "all media bytes");
+    }
+
+    #[tokio::test]
+    async fn private_media_mappings_survive_restart_and_reload_after_restore() {
+        let upstream = start_fixture(FixtureState {
+            expected_secret: Some("durable-secret"),
+            cross_redirect: None,
+            cross_hits: Arc::new(AtomicUsize::new(0)),
+            stream_cancelled: Arc::new(Notify::new()),
+        })
+        .await;
+        let (directory, store) = temp_store();
+        let first_server = store
+            .start_http(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .unwrap();
+        let media = first_server
+            .register_media_with_id(
+                "durable-media",
+                &format!("http://{upstream}/media"),
+                &[("x-api-key".to_owned(), "durable-secret".to_owned())],
+            )
+            .await
+            .unwrap();
+        let descriptor = store.search_ref("durable-media-ref").unwrap();
+        store
+            .write_json_ref(
+                &descriptor,
+                &serde_json::json!({
+                    "resourceId": media.as_str(),
+                    "src": media.as_str(),
+                    "contentType": "video/mp4"
+                }),
+            )
+            .await
+            .unwrap();
+
+        let durable_json_path = directory.path().join("search/durable-media-ref.json");
+        let durable_json = tokio::fs::read_to_string(&durable_json_path).await.unwrap();
+        assert!(durable_json.contains("resource://media/durable-media"));
+        assert!(!durable_json.contains("durable-secret"));
+        assert!(!durable_json.contains(&first_server.base_url().to_owned()));
+        let private_mapping_path = directory
+            .path()
+            .join("private-data/media-maps/durable-media.json");
+        let private_mapping = tokio::fs::read_to_string(&private_mapping_path)
+            .await
+            .unwrap();
+        assert!(private_mapping.contains("durable-secret"));
+        assert!(!private_mapping.contains("/r/"));
+
+        let first_url = first_server.url_for(&media);
+        let first_response = Client::new().get(&first_url).send().await.unwrap();
+        assert_eq!(first_response.status(), StatusCode::OK);
+        assert_eq!(first_response.bytes().await.unwrap(), "all media bytes");
+        first_server.shutdown().await.unwrap();
+
+        let second_server = store
+            .start_http(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .unwrap();
+        let restored_url = second_server.url_for(&media);
+        let restored = Client::new().get(&restored_url).send().await.unwrap();
+        assert_eq!(restored.status(), StatusCode::OK);
+        assert_eq!(restored.bytes().await.unwrap(), "all media bytes");
+
+        // Model a backup restore whose snapshot did not include this mapping.
+        tokio::fs::remove_file(&private_mapping_path).await.unwrap();
+        second_server
+            .reload_private_media_mappings()
+            .await
+            .expect("atomically reload restored private mapping tree");
+        let removed = Client::new().get(&restored_url).send().await.unwrap();
+        assert_eq!(removed.status(), StatusCode::NOT_FOUND);
+        let _ = tokio::fs::remove_dir_all(directory.path()).await;
     }
 
     #[tokio::test]

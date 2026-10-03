@@ -100,13 +100,26 @@ pub struct ReaderDefaults {
     pub background_color: String,
     #[serde(default = "default_text_align")]
     pub text_align: String,
-    #[serde(default = "default_reader_theme")]
-    pub theme: String,
+    #[serde(default)]
+    pub theme: ReaderTheme,
     #[serde(default = "default_preload_count")]
     pub preload_count: usize,
     /// Display-only replacements run by the WebView and never change cached HTML.
     #[serde(default)]
     pub replacements: Vec<serde_json::Value>,
+}
+
+/// Themes supported by the Vue reader. `light` is accepted only as a legacy
+/// alias; serializing it always writes the canonical `system` value.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReaderTheme {
+    #[default]
+    Paper,
+    Sepia,
+    Dark,
+    #[serde(alias = "light")]
+    System,
 }
 
 impl Default for ReaderDefaults {
@@ -118,7 +131,7 @@ impl Default for ReaderDefaults {
             text_color: default_text_color(),
             background_color: default_background_color(),
             text_align: default_text_align(),
-            theme: default_reader_theme(),
+            theme: ReaderTheme::Paper,
             preload_count: default_preload_count(),
             replacements: Vec::new(),
         }
@@ -126,11 +139,11 @@ impl Default for ReaderDefaults {
 }
 
 fn default_font_family() -> String {
-    "system-ui, sans-serif".to_owned()
+    "serif".to_owned()
 }
 
 fn default_font_size_px() -> f32 {
-    18.0
+    19.0
 }
 
 fn default_line_height() -> f32 {
@@ -138,11 +151,11 @@ fn default_line_height() -> f32 {
 }
 
 fn default_text_color() -> String {
-    "#252525".to_owned()
+    "#3f3b34".to_owned()
 }
 
 fn default_background_color() -> String {
-    "#ffffff".to_owned()
+    "#f7f3e9".to_owned()
 }
 
 fn default_text_align() -> String {
@@ -157,12 +170,43 @@ fn default_shelf_sort_order() -> String {
     "descending".to_owned()
 }
 
-fn default_reader_theme() -> String {
-    "light".to_owned()
-}
-
 fn default_preload_count() -> usize {
     5
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ReaderDefaults, ReaderTheme, SettingsDocument};
+
+    #[test]
+    fn reader_defaults_match_vue_and_round_trip_canonical_settings() {
+        let settings = SettingsDocument::default();
+        let json = serde_json::to_value(&settings).expect("settings serialize");
+        assert_eq!(json["reader"]["fontSizePx"], 19.0);
+        assert_eq!(json["reader"]["fontFamily"], "serif");
+        assert_eq!(json["reader"]["textColor"], "#3f3b34");
+        assert_eq!(json["reader"]["backgroundColor"], "#f7f3e9");
+        assert!((json["reader"]["lineHeight"].as_f64().unwrap() - 1.8).abs() < 0.00001);
+        assert_eq!(json["reader"]["textAlign"], "justify");
+        assert_eq!(json["reader"]["theme"], "paper");
+        assert_eq!(json["reader"]["preloadCount"], 5);
+        assert_eq!(json["reader"]["replacements"], serde_json::json!([]));
+
+        let decoded: SettingsDocument = serde_json::from_value(json).expect("settings decode");
+        assert_eq!(decoded.reader.theme, ReaderTheme::Paper);
+        assert_eq!(decoded.reader.font_size_px, 19.0);
+        let missing_theme: ReaderDefaults =
+            serde_json::from_value(serde_json::json!({})).expect("reader defaults decode");
+        assert_eq!(missing_theme.theme, ReaderTheme::Paper);
+    }
+
+    #[test]
+    fn legacy_light_theme_reads_as_system_and_serializes_canonically() {
+        let reader: ReaderDefaults = serde_json::from_value(serde_json::json!({"theme":"light"}))
+            .expect("legacy theme remains readable");
+        assert_eq!(reader.theme, ReaderTheme::System);
+        assert_eq!(serde_json::to_value(reader).unwrap()["theme"], "system");
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

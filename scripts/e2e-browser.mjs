@@ -15,13 +15,16 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const chromiumPath = process.env.CHROMIUM_EXECUTABLE_PATH || "/usr/bin/chromium";
 const playwrightPath = process.env.PLAYWRIGHT_CORE_ENTRY ||
   "/workspace/.setup/browser-testing/node_modules/playwright-core/index.mjs";
-const outputDir = resolve(process.env.PLAYWRIGHT_OUTPUT_DIR || "/tmp/legado-browser-e2e-results");
+const runId = new Date().toISOString().replace(/[:.]/g, "-");
+const outputDir = resolve(process.env.PLAYWRIGHT_OUTPUT_DIR || join("/tmp/legado-browser-e2e-results", runId));
 const origin = "http://127.0.0.1:1420";
 const errors = [];
+const browserConsoleErrors = [];
 const sourceRequests = [];
 const resourceRequests = [];
 const browserRequestFailures = [];
 const runMessages = [];
+const layoutChecks = [];
 const runStartedAt = new Date().toISOString();
 let runStatus = "NOT_RUN";
 let runFailure;
@@ -168,11 +171,17 @@ async function startRustHarness() {
     LEGADO_BROWSER_HARNESS_DATA: dataDir,
     ANDROID_USER_HOME: process.env.ANDROID_USER_HOME || "/workspace/.setup/android-user",
   };
-  rustProcess = startProcess(
-    "cargo",
-    ["run", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--example", "browser_harness"],
-    { env: rustEnv },
-  );
+  if (process.env.BROWSER_HARNESS_BINARY) {
+    const binary = resolve(process.env.BROWSER_HARNESS_BINARY);
+    await requireFile(binary, "Rust browser harness binary", constants.X_OK);
+    rustProcess = startProcess(binary, [], { env: rustEnv });
+  } else {
+    rustProcess = startProcess(
+      "cargo",
+      ["run", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--example", "browser_harness"],
+      { env: rustEnv },
+    );
+  }
   const ready = await parseReadyOutput(rustProcess, "BROWSER_HARNESS_READY");
   const resourceLine = rustProcess.tail.join("").match(/BROWSER_HARNESS_RESOURCE_URL=([^\s]+)/);
   browserHarnessUrl = ready;
@@ -246,21 +255,27 @@ async function installInvokeBridge(context) {
       async invoke(command, args = {}) {
         const call = { command, args, startedAt: performance.now() };
         calls.push(call);
-        const response = await fetch(`${harnessUrl}/invoke`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ command, args }),
-        });
-        const result = await response.json();
-        if (!response.ok || result.ok === false) throw new Error(result.error || `Rust command failed: ${command}`);
-        call.result = result.value;
-        call.finishedAt = performance.now();
-        if (command === "plugin:event|listen") {
-          listeners.set(result.value, { event: args.event, callbackId: args.handler });
-        } else if (command === "plugin:event|unlisten") {
-          listeners.delete(args.eventId);
+        try {
+          const response = await fetch(`${harnessUrl}/invoke`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ command, args }),
+          });
+          const result = await response.json();
+          if (!response.ok || result.ok === false) throw new Error(result.error || `Rust command failed: ${command}`);
+          call.result = result.value;
+          if (command === "plugin:event|listen") {
+            listeners.set(result.value, { event: args.event, callbackId: args.handler });
+          } else if (command === "plugin:event|unlisten") {
+            listeners.delete(args.eventId);
+          }
+          return result.value;
+        } catch (error) {
+          call.error = error instanceof Error ? error.message : String(error);
+          throw error;
+        } finally {
+          call.finishedAt = performance.now();
         }
-        return result.value;
       },
     };
 
@@ -284,6 +299,10 @@ async function installInvokeBridge(context) {
 
     async function pollEvents() {
       while (!stop) {
+        if (window.location.origin === "null" || window.location.origin === "about:blank") {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+          continue;
+        }
         try {
           const response = await fetch(`${harnessUrl}/events?after=${eventCursor}`);
           const result = await response.json();
@@ -318,7 +337,24 @@ async function commandLog() {
     command: call.command,
     args: call.args,
     result: call.result,
+    error: call.error,
+    finishedAt: call.finishedAt,
   })));
+}
+
+async function completedCommandCount(command) {
+  return (await commandLog()).filter((call) => call.command === command && call.finishedAt !== undefined).length;
+}
+
+async function waitForCompletedCommand(command, previousCount = 0, timeoutMs = 15_000) {
+  await page.waitForFunction(({ expectedCommand, count }) =>
+    window.__LEGADO_BROWSER_HARNESS__.calls.filter((call) =>
+      call.command === expectedCommand && call.finishedAt !== undefined).length > count,
+  { expectedCommand: command, count: previousCount }, { timeout: timeoutMs });
+  const completed = (await commandLog()).filter((call) => call.command === command && call.finishedAt !== undefined);
+  const result = completed[completed.length - 1];
+  if (result.error) throw new Error(`Rust command '${command}' failed: ${result.error}`);
+  return result;
 }
 
 function readPageIndicator(value) {
@@ -327,8 +363,12 @@ function readPageIndicator(value) {
   return { current: Number(match[1]), total: Number(match[2]) };
 }
 
+async function waitForReaderChapter(title) {
+  await page.getByTestId("reader-chapter-title").filter({ hasText: title }).waitFor();
+}
+
 async function visibleTextOnCurrentPage() {
-  return page.getByTestId("reader-frame").locator("body").evaluate((body) => {
+  return page.frameLocator('[data-testid="reader-frame"]').locator("body").evaluate((body) => {
     const document = body.ownerDocument;
     const width = document.documentElement.clientWidth;
     const height = document.documentElement.clientHeight;
@@ -351,7 +391,49 @@ async function visibleTextOnCurrentPage() {
 }
 
 async function visibleReaderFontSize() {
-  return page.getByTestId("reader-frame").locator("body").evaluate((body) => getComputedStyle(body).fontSize);
+  return page.frameLocator('[data-testid="reader-frame"]').locator("body").evaluate((body) => getComputedStyle(body).fontSize);
+}
+
+async function readerFrameText() {
+  return page.frameLocator('[data-testid="reader-frame"]').locator("body").innerText();
+}
+
+async function measureLayout(selector, label) {
+  const locator = page.locator(selector).first();
+  await locator.waitFor();
+  const measurement = await locator.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return {
+      fontSizePx: Number.parseFloat(getComputedStyle(element).fontSize),
+      widthPx: rect.width,
+      heightPx: rect.height,
+    };
+  });
+  const result = { label, selector, ...measurement };
+  layoutChecks.push(result);
+  return result;
+}
+
+async function assertNoHorizontalOverflow(selector, label) {
+  const measurement = await page.locator(selector).evaluate((element) => {
+    const viewportWidth = element.ownerDocument.documentElement.clientWidth;
+    const rect = element.getBoundingClientRect();
+    const children = [...element.querySelectorAll(":scope > *")].map((child) => {
+      const childRect = child.getBoundingClientRect();
+      return { leftPx: childRect.left, rightPx: childRect.right, widthPx: childRect.width };
+    });
+    return {
+      viewportWidthPx: viewportWidth,
+      leftPx: rect.left,
+      rightPx: rect.right,
+      children,
+      overflows: rect.left < -1 || rect.right > viewportWidth + 1 ||
+        children.some((child) => child.leftPx < -1 || child.rightPx > viewportWidth + 1),
+    };
+  });
+  const result = { label, selector, ...measurement };
+  layoutChecks.push(result);
+  assert(!result.overflows, `Horizontal overflow in ${label}: ${JSON.stringify(result)}.`);
 }
 
 async function getBookDocument(bookId) {
@@ -372,11 +454,23 @@ async function assertPrivateSourceIsNotPublic() {
 
 async function testReaderFlow(sourceMetadata, contentFixture) {
   const context = await browser.newContext({ viewport: { width: 360, height: 900 }, deviceScaleFactor: 1 });
+  let expected404Recovery = null;
   await installInvokeBridge(context);
   page = await context.newPage();
   page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(`console: ${message.text()}`);
+    if (message.type() === "error") {
+      const text = message.text();
+      const at = Date.now();
+      browserConsoleErrors.push({
+        text,
+        location: message.location(),
+        at,
+        expectedResourceUrl: expected404Recovery && at >= expected404Recovery.startedAt
+          ? expected404Recovery.url
+          : undefined,
+      });
+    }
   });
   page.on("request", (request) => {
     if (request.url().includes("/r/")) resourceRequests.push({ url: request.url(), method: request.method() });
@@ -392,9 +486,12 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   await page.getByTestId("nav-search-mobile").waitFor();
   await page.waitForFunction(() => window.__LEGADO_BROWSER_HARNESS__.calls.some((call) => call.command === "app_bootstrap"), { timeout: 10_000 });
   assert((await commandLog()).some((call) => call.command === "app_bootstrap"), "Rust-backed UI bootstrap never completed.");
-  await page.getByTestId("nav-sources-mobile").click();
+  await page.getByTestId("nav-settings-mobile").click();
+  await page.getByTestId("source-manager-open").click();
   await page.getByText(sourceMetadata.name, { exact: true }).waitFor();
   await page.getByTestId("nav-search-mobile").click();
+  await page.getByTestId("discover-mode-search").click();
+  await page.getByTestId("search-keyword").waitFor();
   await setViewport(360);
   await page.screenshot({ path: join(outputDir, "mobile-search-360.png"), fullPage: true });
 
@@ -405,32 +502,49 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   assert((await resultCard.innerText()).includes("Browser E2E Novel"), "Search results did not display the parsed fixture book.");
   const resultTestId = await resultCard.getAttribute("data-testid");
   const resultId = resultTestId.replace("search-result-", "");
+  const addBooksBefore = await completedCommandCount("add_book");
   await page.getByTestId(`search-add-${resultId}`).click();
-  await page.getByText("Browser E2E Novel", { exact: true }).last().waitFor();
-  await page.getByTestId("nav-shelf-mobile").click();
-  const shelfCard = page.locator('[data-testid^="shelf-book-"]').first();
-  await shelfCard.waitFor();
-  const shelfTestId = await shelfCard.getAttribute("data-testid");
-  const bookId = shelfTestId.replace("shelf-book-", "");
-  await shelfCard.locator("button.cover-button").click();
-  await page.getByRole("button", { name: /开始阅读|继续阅读/ }).click();
+  const addCall = await waitForCompletedCommand("add_book", addBooksBefore);
+  const bookDetails = page.locator(".book-detail-panel");
+  await bookDetails.waitFor();
+  await setViewport(360);
+  const catalogHeading = await measureLayout(".catalog-heading h3", "mobile chapter catalog heading");
+  assert(catalogHeading.fontSizePx >= 14, `Mobile chapter catalog heading is too small: ${catalogHeading.fontSizePx}px.`);
+  const catalogRow = await measureLayout(".catalog-row", "mobile chapter catalog row");
+  assert(catalogRow.heightPx >= 44, `Mobile chapter catalog row is below 44px: ${catalogRow.heightPx}px.`);
+  const catalogRowTitle = await measureLayout(".catalog-row strong", "mobile chapter catalog title");
+  assert(catalogRowTitle.fontSizePx >= 14, `Mobile chapter title is too small: ${catalogRowTitle.fontSizePx}px.`);
+  const detailAction = await measureLayout(".detail-actions .button", "mobile book detail action");
+  assert(detailAction.heightPx >= 44, `Mobile book detail action is below 44px: ${detailAction.heightPx}px.`);
+  await page.screenshot({ path: join(outputDir, "book-detail-360.png"), fullPage: true });
+  assert(addCall?.result?.book?.src, "Rust add_book did not return a book resource URL.");
+  const addedBook = await (await fetch(addCall.result.book.src)).json();
+  const bookId = addedBook.id;
+  assert(bookId && addCall.result.book.resourceId.endsWith(`/books/${bookId}/book.json`),
+    "Rust book resource id did not match the added book JSON.");
+  const prepareCallsBeforeOpen = await completedCommandCount("prepare_chapters");
+  await bookDetails.getByRole("button", { name: /开始阅读|继续阅读/ }).click();
   await page.getByTestId("reader-frame").waitFor({ timeout: 60_000 });
-  await page.getByText("Fixture Chapter One", { exact: true }).waitFor();
-  await page.waitForFunction(() => {
-    const calls = window.__LEGADO_BROWSER_HARNESS__.calls.filter((call) => call.command === "prepare_chapters");
-    return calls.some((call) => call.args.fromIndex === 0) && calls.some((call) => call.args.fromIndex === 1);
-  }, { timeout: 45_000 });
+  await waitForReaderChapter("Fixture Chapter One");
+  const initialPrepare = await waitForCompletedCommand("prepare_chapters", prepareCallsBeforeOpen, 45_000);
+  assert(initialPrepare.args.fromIndex === 0 && Number(initialPrepare.result?.prepared) >= 2,
+    `Rust did not prepare both initial chapters: ${JSON.stringify(initialPrepare)}.`);
   await page.waitForFunction(() => !document.querySelector(".preload-indicator"), null, { timeout: 45_000 }).catch(() => {});
 
   const { document: firstBookDoc } = await getBookDocument(bookId);
   const firstChapter = firstBookDoc.chapters[0];
+  const prefetchedChapter = firstBookDoc.chapters[1];
+  assert(prefetchedChapter?.src, "Rust did not include the next prepared chapter URL in the book resource.");
   const firstCacheResponse = await fetch(firstChapter.src);
   assert(firstCacheResponse.ok, `Prepared chapter resource failed with HTTP ${firstCacheResponse.status}.`);
   const firstCacheHtml = await firstCacheResponse.text();
   const firstHash = createHash("sha256").update(firstCacheHtml).digest("hex");
   assert(firstCacheHtml.includes("font-size:"), "Chapter HTML does not include default reading styles.");
+  const prefetchedResponse = await fetch(prefetchedChapter.src);
+  assert(prefetchedResponse.ok, `Prefetched next chapter resource failed with HTTP ${prefetchedResponse.status}.`);
 
   const startFontSize = Number.parseFloat(await visibleReaderFontSize());
+  const settingsWritesBefore = await completedCommandCount("save_settings");
   await page.getByRole("button", { name: "阅读显示设置" }).click();
   await page.getByTestId("reader-font-increase").click();
   await page.waitForFunction((expected) => {
@@ -439,12 +553,37 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   }, `${startFontSize}px`);
   const increasedFontSize = Number.parseFloat(await visibleReaderFontSize());
   assert(increasedFontSize > startFontSize, `Reader font size did not increase (${startFontSize} -> ${increasedFontSize}).`);
-  await page.waitForFunction(() => window.__LEGADO_BROWSER_HARNESS__.calls.some((call) => call.command === "save_settings"), { timeout: 10_000 });
+  const settingsSaveCall = await waitForCompletedCommand("save_settings", settingsWritesBefore, 15_000);
+  assert(settingsSaveCall?.result?.src, "Reader setting change did not persist a settings resource.");
+  const savedSettings = await (await fetch(settingsSaveCall.result.src)).json();
+  assert(savedSettings.reader.fontSizePx === increasedFontSize,
+    `Saved reader font size differs from the displayed setting: ${savedSettings.reader.fontSizePx} vs ${increasedFontSize}.`);
   const afterFontHtml = await (await fetch(firstChapter.src)).text();
   assert(createHash("sha256").update(afterFontHtml).digest("hex") === firstHash, "Changing reader font rewrote cached chapter HTML.");
+  await page.getByRole("button", { name: "关闭阅读设置" }).click();
+  await page.getByTestId("reader-settings-popover").waitFor({ state: "hidden" });
 
   await setViewport(360);
-  await page.screenshot({ path: join(outputDir, "reader-360.png"), fullPage: true });
+  await assertNoHorizontalOverflow(".reader-topbar", "mobile reader header");
+  const readerBack = await measureLayout('[data-testid="reader-back"]', "mobile reader back label");
+  assert(readerBack.fontSizePx >= 14 && readerBack.heightPx >= 44,
+    `Mobile reader back target/label is too small: ${JSON.stringify(readerBack)}.`);
+  const readerChapterTitle = await measureLayout('[data-testid="reader-chapter-title"]', "mobile reader chapter title");
+  assert(readerChapterTitle.fontSizePx >= 14, `Mobile reader chapter title is too small: ${readerChapterTitle.fontSizePx}px.`);
+  const readerPageStatus = await measureLayout(".reader-page-status", "mobile reader page status");
+  assert(readerPageStatus.fontSizePx >= 14, `Mobile reader page status is too small: ${readerPageStatus.fontSizePx}px.`);
+  for (const selector of [
+    '[data-testid="reader-prev-chapter"]',
+    '[data-testid="reader-prev"]',
+    '[data-testid="reader-next"]',
+    '[data-testid="reader-next-chapter"]',
+    '[aria-label="阅读显示设置"]',
+    '[data-testid="reader-add-bookmark"]',
+  ]) {
+    const target = await measureLayout(selector, `mobile reader control ${selector}`);
+    assert(target.widthPx >= 44 && target.heightPx >= 44,
+      `Mobile reader control is below a 44px touch target: ${JSON.stringify(target)}.`);
+  }
   const initialPage = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   assert(initialPage.total >= 3, `The long fixture chapter should occupy at least three mobile pages, got ${initialPage.total}.`);
   const visiblePages = [];
@@ -465,37 +604,40 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
     const marker = `段落${String(index + 1).padStart(2, "0")}`;
     assert(allVisible.includes(marker), `Paged reader skipped fixture paragraph ${marker}.`);
   }
+  await page.screenshot({ path: join(outputDir, "reader-360.png"), fullPage: true });
   const callsBeforeChapterTurn = await commandLog();
-  const commandCountBeforeChapterTurn = callsBeforeChapterTurn.length;
+  const chapterFetchCommands = (calls) => calls.filter((call) =>
+    call.command === "get_book" || /chapter|content|prepare/i.test(call.command));
+  const chapterFetchCountBeforeTurn = chapterFetchCommands(callsBeforeChapterTurn).length;
   await page.getByTestId("reader-next").click();
-  await page.getByText("Fixture Chapter Two", { exact: true }).waitFor();
+  await waitForReaderChapter("Fixture Chapter Two");
   await page.waitForTimeout(200);
   const callsAfterChapterTurn = await commandLog();
-  assert(callsAfterChapterTurn.length === commandCountBeforeChapterTurn,
-    `Turning to an already cached chapter invoked Rust: ${callsAfterChapterTurn.slice(commandCountBeforeChapterTurn).map((call) => call.command).join(", ")}`);
-  assert(callsAfterChapterTurn.filter((call) => call.command === "prepare_chapters").length === callsBeforeChapterTurn.filter((call) => call.command === "prepare_chapters").length,
-    "Turning between prepared chapters requested redundant chapter preparation.");
+  const chapterFetchCallsAfterTurn = chapterFetchCommands(callsAfterChapterTurn);
+  assert(chapterFetchCallsAfterTurn.length === chapterFetchCountBeforeTurn,
+    `Turning to an already cached chapter invoked Rust chapter retrieval: ${chapterFetchCallsAfterTurn.slice(chapterFetchCountBeforeTurn).map((call) => call.command).join(", ")}`);
 
   await setViewport(1440);
   await page.screenshot({ path: join(outputDir, "reader-1440.png"), fullPage: true });
   const desktopIndicator = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   assert(desktopIndicator.current <= desktopIndicator.total, "Reader resize left its page position outside the new page range.");
-  assert((await page.getByTestId("reader-frame").locator("body").innerText()).includes("第二章标记"), "Resizing the reader lost its current cached chapter.");
+  assert((await readerFrameText()).includes("第二章标记"), "Resizing the reader lost its current cached chapter content.");
+  assert((await visibleTextOnCurrentPage()).includes("第二章标记"), "Resizing the reader moved the visible page away from its current chapter content.");
   const { document: secondBookDoc } = await getBookDocument(bookId);
   const secondChapter = secondBookDoc.chapters[1];
   const secondChapterFile = join(dataDir, "books", bookId, "chapters", `${secondChapter.id}.html`);
   const secondCache = await readFile(secondChapterFile);
   const secondHash = createHash("sha256").update(secondCache).digest("hex");
-  await page.getByTestId("reader-next").click();
   const beforeSecondPage = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   if (beforeSecondPage.total > 1) {
+    await page.getByTestId("reader-next").click();
     await page.waitForFunction((expected) => {
       const value = document.querySelector('[data-testid="reader-page-indicator"]')?.textContent || "";
       return new RegExp(`^${expected}\\s*/`).test(value.trim());
     }, beforeSecondPage.current + 1);
   }
   const secondPageIndicator = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
-  if (secondPageIndicator.total > 1) {
+  if (secondPageIndicator.current < secondPageIndicator.total) {
     await page.getByTestId("reader-next").click();
     await page.waitForFunction((expected) => {
       const value = document.querySelector('[data-testid="reader-page-indicator"]')?.textContent || "";
@@ -504,20 +646,29 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
   }
   const savedPosition = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   const expectedOffset = savedPosition.current - 1;
-  await page.getByRole("button", { name: "返回目录" }).click();
-  await page.waitForFunction(() => window.__LEGADO_BROWSER_HARNESS__.calls.some((call) => call.command === "save_progress"), { timeout: 15_000 });
+  const progressWritesBeforeLeave = await completedCommandCount("save_progress");
+  await page.getByTestId("reader-back").click();
+  await waitForCompletedCommand("save_progress", progressWritesBeforeLeave, 15_000);
   await page.waitForFunction(() => !document.querySelector(".reader-shell"));
+  const shelfCard = page.locator('[data-testid^="shelf-book-"]').first();
+  await shelfCard.waitFor();
+  const shelfTestId = await shelfCard.getAttribute("data-testid");
+  assert(shelfTestId === `shelf-book-${bookId}`, `Shelf displayed an unexpected book after add: ${shelfTestId}.`);
   const persisted = await getBookDocument(bookId);
   assert(persisted.document.progress.chapterIndex === 1, `Saved progress has the wrong chapter: ${JSON.stringify(persisted.document.progress)}.`);
   assert(persisted.document.progress.offset === expectedOffset, `Saved progress has the wrong page offset: ${JSON.stringify(persisted.document.progress)}.`);
 
+  expected404Recovery = { url: secondChapter.src, startedAt: Date.now() };
   await rm(secondChapterFile, { force: true });
-  const prepareCountBefore404 = (await commandLog()).filter((call) => call.command === "prepare_chapters").length;
+  const prepareCountBefore404 = await completedCommandCount("prepare_chapters");
+  await page.getByRole("button", { name: "关闭详情" }).click();
   await page.locator(`[data-testid="shelf-book-${bookId}"] button.cover-button`).click();
-  await page.getByRole("button", { name: "继续阅读" }).click();
+  await page.locator(".book-detail-panel").getByRole("button", { name: "继续阅读" }).click();
   await page.getByTestId("reader-frame").waitFor({ timeout: 60_000 });
-  await page.getByText("Fixture Chapter Two", { exact: true }).waitFor();
-  await page.waitForFunction((count) => window.__LEGADO_BROWSER_HARNESS__.calls.filter((call) => call.command === "prepare_chapters").length > count, prepareCountBefore404, { timeout: 45_000 });
+  await waitForReaderChapter("Fixture Chapter Two");
+  const recoveryPrepare = await waitForCompletedCommand("prepare_chapters", prepareCountBefore404, 45_000);
+  assert(recoveryPrepare.args.fromIndex === 1 && Number(recoveryPrepare.result?.prepared) >= 1,
+    `404 recovery did not re-prepare the missing chapter from index 1: ${JSON.stringify(recoveryPrepare)}.`);
   const restored = readPageIndicator(await page.getByTestId("reader-page-indicator").innerText());
   assert(restored.current === expectedOffset + 1,
     `Saved reader page was not restored after reopening and repairing the missing chapter: expected ${expectedOffset + 1}, got ${restored.current}.`);
@@ -529,20 +680,40 @@ async function testReaderFlow(sourceMetadata, contentFixture) {
 
   await assertPrivateSourceIsNotPublic();
   const allCalls = await commandLog();
-  const requiredCommands = ["app_bootstrap", "list_sources", "search_books", "add_book", "get_book", "prepare_chapters", "save_settings", "save_progress"];
+  const requiredCommands = ["app_bootstrap", "list_sources", "start_search", "add_book", "get_book", "prepare_chapters", "save_settings", "save_progress"];
   for (const command of requiredCommands) assert(allCalls.some((call) => call.command === command), `Browser flow did not exercise real Rust command '${command}'.`);
   assert(sourceRequests.some((request) => request.url.startsWith("/search") && request.method === "POST"), "The local book-source engine did not execute a real fixture HTTP search.");
   assert(sourceRequests.some((request) => request.url.startsWith("/book")) && sourceRequests.some((request) => request.url.startsWith("/toc")), "The source engine did not fetch book details and chapter listing from the fixture server.");
   assert(sourceRequests.some((request) => request.url.startsWith("/chapter/1")) && sourceRequests.some((request) => request.url.startsWith("/chapter/2")), "The source engine did not fetch both chapter bodies from the fixture server.");
   assert(resourceRequests.some((request) => request.url.includes("/r/") && request.url.endsWith("/shelf.json") && request.status === 200), "Browser did not fetch the shelf JSON resource.");
   assert(resourceRequests.some((request) => request.url.includes("/chapters/") && request.status === 200), "Browser did not fetch a processed chapter HTML resource.");
-  assert(resourceRequests.some((request) => request.url.includes("/chapters/") && request.status === 404), "Browser did not encounter the deliberately missing chapter resource.");
-  assert(errors.length === 0, `Browser reported errors:\n${errors.join("\n")}`);
+  const failedChapterRequestIndex = resourceRequests.findIndex((request) =>
+    request.url === expected404Recovery.url && request.status === 404);
+  assert(failedChapterRequestIndex >= 0, `Browser did not receive the expected 404 for ${expected404Recovery.url}.`);
+  const repairedChapterResponse = resourceRequests.slice(failedChapterRequestIndex + 1).find((request) =>
+    request.url === expected404Recovery.url && request.status === 200);
+  assert(repairedChapterResponse, `The exact missing chapter URL was not served successfully after recovery: ${expected404Recovery.url}.`);
+
+  const expected404Message = "Failed to load resource: the server responded with a status of 404 (Not Found)";
+  const expected404ConsoleErrors = browserConsoleErrors.filter((entry) =>
+    entry.text === expected404Message && entry.expectedResourceUrl === expected404Recovery.url);
+  assert(expected404ConsoleErrors.length <= 1,
+    `The deliberate chapter 404 produced repeated console errors for ${expected404Recovery.url}.`);
+  const unexpectedConsoleErrors = browserConsoleErrors.filter((entry) => !expected404ConsoleErrors.includes(entry));
+  const unexpectedRequestFailures = browserRequestFailures.filter((failure) =>
+    failure.url !== expected404Recovery.url || failure.error !== "net::ERR_ABORTED");
+  const unexpectedErrors = [
+    ...errors,
+    ...unexpectedConsoleErrors.map((entry) => `console: ${entry.text}`),
+    ...unexpectedRequestFailures.map((failure) => `request failed: ${failure.url} (${failure.error})`),
+  ];
+  assert(unexpectedErrors.length === 0, `Browser reported unexpected errors:\n${unexpectedErrors.join("\n")}`);
 
   report(`PASS: real Rust service + KMP source search/read on Chromium (${allCalls.length} IPC calls).`);
   report(`PASS: ${contentFixture.paragraphs.length} mobile-page paragraphs were all visible; font ${startFontSize}px -> ${increasedFontSize}px.`);
   report("PASS: cached chapter flips invoked no Rust commands; saved chapter/page restored after reopen.");
   report("PASS: cached HTML hash stayed stable after display-only font adjustment; missing chapter URL recovered through Rust.");
+  report(`PASS: exact chapter URL returned 404 then 200 after repair${expected404ConsoleErrors.length ? " (one expected browser 404 notice)" : ""}.`);
   report("PASS: private source rules stayed off the browser resource server; real JSON and HTML resources were fetched.");
   report(`Screenshots: ${outputDir}`);
   await context.close();
@@ -673,8 +844,11 @@ async function saveRunArtifacts() {
     status: runStatus,
     startedAt: runStartedAt,
     finishedAt: new Date().toISOString(),
-    command: "source /workspace/.setup/activate.sh && node scripts/e2e-browser.mjs",
+    command: process.env.BROWSER_HARNESS_BINARY
+      ? `source /workspace/.setup/activate.sh && BROWSER_HARNESS_BINARY=${process.env.BROWSER_HARNESS_BINARY} node scripts/e2e-browser.mjs`
+      : "source /workspace/.setup/activate.sh && node scripts/e2e-browser.mjs",
     screenshots: screenshots.map((file) => join(outputDir, file)),
+    layoutChecks: [...layoutChecks],
     failure: runFailure,
   };
   await writeFile(join(outputDir, "run.log"), `${runMessages.join("\n")}\n`, "utf8");
@@ -691,6 +865,7 @@ async function saveFailureDiagnostics(error) {
     bodyText: await page.locator("body").innerText({ timeout: 3000 }).catch(() => "<body text unavailable>"),
     appInvocations: await page.evaluate(() => window.__LEGADO_BROWSER_HARNESS__?.calls ?? []).catch(() => []),
     browserErrors: [...errors],
+    browserConsoleErrors: [...browserConsoleErrors],
     browserRequestFailures: [...browserRequestFailures],
     sourceRequests: [...sourceRequests],
     resourceRequests: [...resourceRequests],

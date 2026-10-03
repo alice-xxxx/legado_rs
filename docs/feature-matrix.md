@@ -2,16 +2,17 @@
 
 本清单于 **2026-10-02 首轮源码快照** 根据旧仓库的产品入口、路由、界面和服务/模型代码盘点。它描述需要在 `legado_rs` 中实现并实际验收的能力，不表示旧项目每个旧行为都正确，也不要求保留旧版 bug 或未完成 UI。源码路径相对于对应仓库根目录。`旧版源码依据` 表明需求和原有实现线索，**不单凭 route/页面存在推定旧版各平台功能成熟**；源码可确认的旧版缺失/未完备项另列在“旧版成熟度边界”。矩阵状态描述初始 `legado_rs` 快照，代码演进后需按后续实现记录及时更新；没有功能可因代码“看起来已连上”就标记为端到端完成。
 
-状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有可复用引擎/宿主底座或测试/演示入口，但用户功能、资源架构或验收链未完整；**已验收** = 需要真实可用流程及证据后才能使用。当前没有任何整项达到“已验收”。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵里尚未更新的状态单元格；首次源码快照及其结论保留作历史，不代表今天全部仍未实现。
+状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有可复用引擎/宿主底座或测试/演示入口，但用户功能、资源架构或验收链未完整；**已验收** = 需要真实可用流程及证据后才能使用。当前没有任何整项达到“已验收”。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵里尚未更新的状态单元格；首次源码快照及其结论保留作历史，不代表今天全部仍未实现。当前锁定 no-default Rust library 全套测试已通过 55/55，但这不是 app 或跨平台功能验收。
 
 ## 当前实现与缺口（2026-10-03）
 
 | ID | 当前状态与证据 | 本次提交快照仍缺少的工作 |
 |---|---|---|
+| CORE-TEST | `cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --lib -j4`：55/55 通过；headless 测试不依赖 GTK/WebKitGTK。当前 browser_harness E2E 的核心阅读链也通过 | 测试与 browser_harness 不代替 Android/桌面/iOS 完整产品验收 |
 | APP-01 | 部分实现：Vue 有主导航和多个页面入口 | Rust 持久化可配置首页 tabs/sections；导航和首页展示完整验收 |
 | LIB-01 | 部分实现：Rust shelf JSON、排序、每书分组与空分组注册表；Vue 书架页面；分组/排序及重启测试通过 | 批量管理、全部书架交互、跨平台 UI 验收 |
-| DISC-01 | 部分实现：Rust/KMP 分类和分页 adapter、私有分类 URL→opaque ID、公开处理后结果资源；Kotlin/JVM 源码编译通过 | KMP runtime 真实分类/分页 fixture、发现 UI、持久收藏/排序、错误/刷新完整流程 |
-| SEARCH-01 | 部分实现：Rust/KMP 搜索与浏览器真实搜索运行；添加结果步骤因覆盖层挡住按钮失败（见验证日志） | 修复并跑通搜索→详情→加入书架；分页、历史、筛选、失败恢复 |
+| DISC-01 | 部分实现：Rust/KMP 分类和分页 adapter、私有分类 URL→opaque ID、公开处理后结果资源、收藏 JSON service；5/5 定向 Rust tests 通过，包含真实 DesktopSourceExecutor/JNI/KMP 分类与第 1–3 页 fixture | Tauri 收藏命令与发现 UI 尚未接入；收藏排序、错误/刷新完整流程和跨平台用户验收 |
+| SEARCH-01 | 部分实现：当前源码快照 browser_harness E2E 已通过搜索→加入书架→阅读流程和已列明的分页、缓存、进度及失败恢复场景（27 次真实 IPC；见验证记录） | 多源搜索、筛选/历史完整体验及取消/部分失败等高级搜索场景；Android/桌面/iOS 产品流程仍待分别验收 |
 | BOOK-01 | 部分实现：搜索结果可创建书架资源；Rust 集成测试跑通详情/目录流程 | 编辑、刷新和完整产品详情 UI 流程 |
 | READ-01 | 部分实现：目录 JSON/章节 `src` 与源引擎调用存在 | 目录搜索、换源/章节源、刷新、离线和 UI 完整验收 |
 | READ-02 | 部分实现：Rust 集成用例验证源引擎结果写入 HTML、章节资源 URL、重启持久 | cache window/预取体验、认证图片在各平台读取及离线边界验收 |
@@ -23,9 +24,9 @@
 | SOURCE-02 | 部分实现：KMP 现有操作可经 Rust 调用 | 产品化调试/帮助/逐规则诊断与用户可理解错误 |
 | SOURCE-03 | 部分实现：Rust 引擎 HTTP/storage/Cookie 宿主已有底座 | 用户级登录、UA/代理/请求头配置与移动/桌面实测 |
 | SOURCE-04 | 部分实现：保留兼容现有引擎及 QuickJS；图片 `image.*` 处理已知未接入 | 对支持规则格式完整跑兼容矩阵并补宿主能力缺口 |
-| IMPORT-01 | 部分实现：Rust 本地 TXT/EPUB 导入、章节 HTML/资源路径实现；当前全套 Rust 测试通过 | PDF/压缩包、平台授权与文件 UI 逐项验收 |
+| IMPORT-01 | 部分实现：Rust TXT/EPUB/CBZ/PDF 本地解析与资源后端；`local_books::tests` 8/8 headless tests 通过 | PDF/CBZ 尚未接入实际 Tauri 文件选择/导入 UI；平台授权、错误提示及 Android/桌面/iOS 文件流程待验收 |
 | IMPORT-02 | 未实现：WebDAV/远程书籍导入服务不在当前代码 | 远程浏览/上传下载、凭据、重试/取消和平台测试 |
-| RSS-01 | 部分实现：旧 RSS 走既有 KMP adapter；普通 Atom/RSS 由 `feed-rs` 解析。Rust fixture 验证 sanitizer、稳定 `resource://`、重启读取；本次 34 个 Rust tests 全部通过 | 订阅 UI、稳定文章已读/未读/收藏状态、过滤、刷新和退订资源清理 |
+| RSS-01 | 部分实现：旧 RSS 走既有 KMP adapter；普通 Atom/RSS 由 `feed-rs` 解析。Rust fixture 验证 sanitizer、稳定 `resource://`、重启读取；当前锁定 Rust headless 全套 55/55 通过 | 订阅 UI、稳定文章已读/未读/收藏状态、过滤、刷新和退订资源清理 |
 | MEDIA-01 | 未实现：资源层有 media proxy，不等同漫画产品流程 | 漫画源、图像目录、缩放/翻页和内存压力验证 |
 | MEDIA-02 | 未实现 | TTS/音频引擎接入、后台和平台媒体控制 |
 | MEDIA-03 | 未实现 | 视频源/选集/画质/播放器集成 |
@@ -38,15 +39,15 @@
 | SYSTEM-01 | 部分实现：Rust 任务 JSON、下载/刷新任务服务命令存在 | 后台调度、完整任务 UI、取消/重试/断网恢复和平台验收 |
 | SYSTEM-02 | 未实现：没有完整封面管理产品流程 | 封面来源/替换、资源更新及显示验收 |
 | SYSTEM-03 | 部分实现：基础关于/帮助页面入口 | 日志导出、崩溃记录、隐私处理和升级能力 |
-| PLATFORM-01 | 部分实现：桌面 browser harness 可运行；Android/iOS 架构和资源策略在接入；KMP JVM 编译成功 | Android AAR 与真机、Windows/macOS/Linux 包、iOS 包和每平台关键流程验收；当前未声称跨平台通过 |
+| PLATFORM-01 | 部分实现：desktop `browser_harness` example 检查/构建通过；Android 四 ABI AAR 已构建；KMP JVM 编译成功 | Android APK 构建受 Gradle plugin resolution 阻塞且尚无 APK；Windows/macOS/Linux 用户流程、iOS 构建和各目标平台关键流程仍待验收 |
 | PLATFORM-02 | 部分实现：应用内部 loopback JSON/HTML 资源服务器存在 | 对外 Web 服务、深链、文件关联及完整授权/路由 |
 
-| ID | 功能域 | 旧版源码依据（功能/UI 参考） | `legado_rs` 当前状态 | 完成验收要点 |
+| ID | 功能域 | 旧版源码依据（功能/UI 参考） | `legado_rs` 首轮源码快照状态（2026-10-02；历史基线，当前状态见上表） | 完成验收要点 |
 |---|---|---|---|---|
 | APP-01 | 首次启动、主导航、可配置首页分组/标签/展示项 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/MainRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/home/HomeScreen.kt`; `HomeTabManageDialog.kt`, `HomeSectionManageDialog.kt` | 未实现；只有书源测试页 | Android、桌面、iOS 可启动进入完整主界面；首页配置保存并重启恢复；各窗口尺寸下无空白/溢出 |
 | LIB-01 | 书架列表/网格、分组、排序、筛选、搜索、多选和批量管理 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/home/HomeScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/manage/BookshelfManageScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/group/` | **部分实现（2026-10-03）**：Rust shelf JSON、书籍/空分组注册表、排序与分组操作已有实现及定向测试；Vue 有书架页面。批量管理、空组端到端消费和跨平台流程仍待验收 | 添加、排序、分组、批量操作/删除后 JSON 正确更新；通知后 UI 重读资源；重启保持一致 |
-| DISC-01 | 书源发现页、来源列表与发现分类、订阅分类、置顶/收藏 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/explore/ExploreScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/ExploreShowRoute.kt` | **部分实现（2026-10-03）**：Rust 私有分类 URL 映射、opaque category ID、公开 metadata/card 资源和 KMP operation adapter 已落盘；Kotlin/JVM 编译通过，真实引擎 fixture、发现 UI、分页、置顶收藏未验收 | 展示结果来自 Rust/KMP 处理后的资源；分页/筛选/刷新/收藏可用；源定义不由前端执行或当内容资源消费 |
-| SEARCH-01 | 单源和多源搜索、分页/筛选/结果合并、搜索历史、无结果与错误恢复 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/SearchRoute.kt`; `SearchContentRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/search/`; `data/src/roomEntitiesMain/kotlin/io/legado/app/data/entities/SearchKeyword.kt` | **部分实现（2026-10-03）**：Rust/KMP 搜索资源和真实浏览器搜索流程已运行；浏览器加入书架步骤被详情覆盖层挡住，正在修复。筛选、历史及完整错误恢复未验收 | 真实多源搜索、翻页、取消/失败/部分成功、结果继续打开详情；结果经 Rust 更新资源/发轻量通知，JS 读取并展示 |
+| DISC-01 | 书源发现页、来源列表与发现分类、订阅分类、置顶/收藏 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/main/explore/ExploreScreen.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/ExploreShowRoute.kt` | **部分实现（2026-10-03）**：Rust 私有分类 URL 映射、opaque category ID、公开 metadata/card 资源、KMP adapter 和收藏 JSON service 已落盘。定向测试 5/5 通过，含真实 KMP/JNI categories 与第 1–3 页、规则隔离和收藏重启；Tauri 收藏命令、发现 UI 与跨平台用户流程未验收 | 展示结果来自 Rust/KMP 处理后的资源；分页/筛选/刷新/收藏可用；源定义不由前端执行或当内容资源消费 |
+| SEARCH-01 | 单源和多源搜索、分页/筛选/结果合并、搜索历史、无结果与错误恢复 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/SearchRoute.kt`; `SearchContentRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/search/`; `data/src/roomEntitiesMain/kotlin/io/legado/app/data/entities/SearchKeyword.kt` | **部分实现（2026-10-03）**：当前 browser_harness E2E 同源码快照通过搜索、加入书架、章节 HTML 阅读/翻页、进度恢复与一次 404→修复→200 恢复；完整交互证据见 `validation.md`。多源、筛选/历史、取消/部分失败和各平台产品流程仍待验收 | 真实多源搜索、翻页、取消/失败/部分成功、结果继续打开详情；结果经 Rust 更新资源/发轻量通知，JS 读取并展示 |
 | BOOK-01 | 书籍详情、元信息刷新、加入/移出书架、书籍信息编辑 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/BookInfoRoute.kt`; `BookInfoEditRoute.kt`; `app/src/main/java/io/legado/app/model/webBook/BookInfoRefresherImpl.kt` | 部分实现：有 `bookInfo` 引擎测试操作，无书目持久化或完整交互 | 详情展示处理后 JSON；加入书架时 Rust 创建/初始化书籍 JSON；编辑/刷新后跨页与重启状态一致 |
 | READ-01 | 在线章节目录、目录搜索/定位、目录刷新与换源/分卷章节源 | `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/TocRoute.kt`; `ChangeSourceRoute.kt`; `ChangeChapterSourceRoute.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/book/toc/` | 部分实现：有 `chapters` 引擎测试操作，目录不持久化为应用资源 | Rust/KMP 取得与整理目录 JSON；JS 直接消费目录、搜索/定位/切换可用章节；换源后章节地址和进度语义正确 |
 | READ-02 | 正文取得、章节 HTML 缓存、图片/认证资源 URL、缓存前后补充 | `app/src/main/java/io/legado/app/model/ReadBook.kt`; `CacheBook.kt`; `service/CacheBookService.kt`; `ui/src/sharedUiMain/kotlin/io/legado/app/ui/route/ReaderRoute.kt` | 部分实现：`content` 可返回文本给 demo IPC；还没有 HTML 缓存/JSON `src` 契约，当前展示链不符合目标架构 | KMP 处理书源正文和替换；Rust 写含默认样式的章节 HTML 和章节 `src`；图片/认证资源在 Android、桌面、iOS 都可由 WebView 读取；缓存不足时补章，缓存足够时翻章不调 Rust |

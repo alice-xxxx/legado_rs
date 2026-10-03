@@ -22,7 +22,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
@@ -35,6 +35,8 @@ use crate::models::{
     BookDocument, ProgressDocument, ReaderDefaults, SettingsDocument, ShelfDocument,
 };
 use http_range_header::parse_range_header;
+
+const MAX_PRIVATE_MEDIA_MAPPING_BYTES: usize = 1024 * 1024;
 
 #[path = "media_proxy.rs"]
 mod media_proxy;
@@ -137,6 +139,22 @@ struct StoreInner {
     update_lock: Mutex<()>,
 }
 
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrivateMediaMapping {
+    schema_version: u32,
+    id: String,
+    upstream_url: String,
+    headers: Vec<PrivateMediaHeader>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct PrivateMediaHeader {
+    name: String,
+    value: String,
+}
+
 /// JSON-file storage for public app state and the resources consumed by the UI.
 /// Private engine data should live in another directory and is never routed by
 /// this store's HTTP server.
@@ -232,6 +250,10 @@ impl ResourceStore {
     pub fn discovery_ref(&self, discovery_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(discovery_id)?;
         ResourceRef::new(format!("resource://discovery/{discovery_id}.json"))
+    }
+
+    pub fn discovery_favorites_ref(&self) -> ResourceRef {
+        ResourceRef::from_validated_path("discovery-favorites.json")
     }
 
     pub fn asset_ref(&self, book_id: &str, asset_id: &str) -> Result<ResourceRef, ResourceError> {
@@ -428,6 +450,46 @@ impl ResourceStore {
         Ok(reference)
     }
 
+    /// Store one local-PDF page as a safe, typed HTML resource. The PDF itself
+    /// remains an asset file; the viewer fetches it through the browser resource
+    /// server and can use byte ranges without copying the document into JSON.
+    pub async fn write_pdf_page(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        pdf_asset_id: &str,
+        page_index: u32,
+        default_zoom: &str,
+        defaults: &ReaderDefaults,
+    ) -> Result<ResourceRef, ResourceError> {
+        let reference = self.chapter_ref(book_id, chapter_id)?;
+        validate_asset_id(pdf_asset_id)?;
+        if !pdf_asset_id.to_ascii_lowercase().ends_with(".pdf") {
+            return Err(ResourceError::new("PDF page must refer to a PDF asset"));
+        }
+        if !matches!(default_zoom, "page-fit" | "page-width" | "actual-size") {
+            return Err(ResourceError::new("Unsupported default PDF zoom mode"));
+        }
+        let pdf_ref = self.asset_ref(book_id, pdf_asset_id)?;
+        let pdf_path = self.path_for(&pdf_ref)?;
+        check_path_no_symlink(&self.inner.root, &pdf_path, false)?;
+        let metadata = tokio::fs::metadata(&pdf_path)
+            .await
+            .map_err(|error| ResourceError::new(format!("Cannot inspect PDF asset: {error}")))?;
+        if !metadata.is_file() {
+            return Err(ResourceError::new("PDF asset is not a regular file"));
+        }
+
+        let escaped_asset = escape_html(pdf_asset_id);
+        let html = format!(
+            "<section data-legado-document=\"pdf-page\" data-page-index=\"{page_index}\" data-default-zoom=\"{default_zoom}\"><a data-legado-pdf-src href=\"../assets/{escaped_asset}\">Open PDF page {}</a></section>",
+            page_index.saturating_add(1)
+        );
+        let document = chapter_document(&html, defaults);
+        self.write_html_resource(&reference, &document).await?;
+        Ok(reference)
+    }
+
     async fn write_html_resource(
         &self,
         reference: &ResourceRef,
@@ -494,6 +556,62 @@ impl ResourceStore {
                 "Resource server must bind to a loopback address",
             ));
         }
+        let private_media_dir = self.inner.root.join("private-data").join("media-maps");
+        let media_dir_root = self.inner.root.clone();
+        let create_media_dir = private_media_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            check_path_no_symlink(&media_dir_root, &create_media_dir, true)?;
+            std::fs::create_dir_all(&create_media_dir).map_err(|error| {
+                ResourceError::new(format!(
+                    "Cannot create private media mapping directory: {error}"
+                ))
+            })?;
+            check_path_no_symlink(&media_dir_root, &create_media_dir, false)?;
+            let metadata = std::fs::metadata(&create_media_dir).map_err(|error| {
+                ResourceError::new(format!(
+                    "Cannot inspect private media mapping directory: {error}"
+                ))
+            })?;
+            if !metadata.is_dir() {
+                return Err(ResourceError::new(
+                    "Private media mapping path is not a directory",
+                ));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media directory worker failed: {error}"))
+        })??;
+
+        let mappings_root = self.inner.root.clone();
+        let mappings_dir = private_media_dir.clone();
+        let mappings = tokio::task::spawn_blocking(move || {
+            read_private_media_mappings(&mappings_root, &mappings_dir, false)
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media mapping worker failed: {error}"))
+        })??;
+        let media_proxy = MediaProxyRegistry::new()?;
+        for mapping in mappings {
+            let headers = mapping
+                .headers
+                .iter()
+                .map(|header| (header.name.clone(), header.value.clone()))
+                .collect::<Vec<_>>();
+            if let Err(error) = media_proxy
+                .register(&mapping.id, &mapping.upstream_url, &headers)
+                .await
+            {
+                // One damaged/obsolete mapping should not prevent the rest of the
+                // reader from opening. Invalid records stay private and unserved.
+                eprintln!(
+                    "Ignoring invalid persisted media mapping {}: {error}",
+                    mapping.id
+                );
+            }
+        }
         let listener = TcpListener::bind(bind)
             .await
             .map_err(|error| ResourceError::new(format!("Cannot bind resource server: {error}")))?;
@@ -502,7 +620,6 @@ impl ResourceStore {
         })?;
         let token = Uuid::new_v4().simple().to_string();
         let base_url = format!("http://{local_addr}/r/{token}/");
-        let media_proxy = MediaProxyRegistry::new()?;
         let state = HttpState {
             store: self.clone(),
             token,
@@ -530,6 +647,8 @@ impl ResourceStore {
             local_addr,
             base_url,
             media_proxy,
+            private_media_dir,
+            media_update_lock: Mutex::new(()),
             shutdown_sender: Some(shutdown_sender),
             task: Some(task),
         })
@@ -560,6 +679,8 @@ pub struct ResourceServer {
     local_addr: SocketAddr,
     base_url: String,
     media_proxy: MediaProxyRegistry,
+    private_media_dir: PathBuf,
+    media_update_lock: Mutex<()>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -589,8 +710,7 @@ impl ResourceServer {
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
         let opaque_id = Uuid::new_v4().simple().to_string();
-        self.media_proxy
-            .register(&opaque_id, upstream_url, private_headers)
+        self.register_media_with_id(&opaque_id, upstream_url, private_headers)
             .await
     }
 
@@ -602,13 +722,144 @@ impl ResourceServer {
         upstream_url: &str,
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
+        let _guard = self.media_update_lock.lock().await;
+        let reference =
+            MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)?;
+        let mapping = PrivateMediaMapping {
+            schema_version: 1,
+            id: opaque_id.to_owned(),
+            upstream_url: upstream_url.to_owned(),
+            headers: private_headers
+                .iter()
+                .map(|(name, value)| PrivateMediaHeader {
+                    name: name.clone(),
+                    value: value.clone(),
+                })
+                .collect(),
+        };
+        self.write_private_media_mapping(mapping).await?;
         self.media_proxy
             .register(opaque_id, upstream_url, private_headers)
-            .await
+            .await?;
+        Ok(reference)
     }
 
-    pub async fn unregister_media(&self, opaque_id: &str) {
+    pub async fn unregister_media(&self, opaque_id: &str) -> Result<(), ResourceError> {
+        ResourceRef::new(format!("resource://media/{opaque_id}"))?;
+        let _guard = self.media_update_lock.lock().await;
+        self.delete_private_media_mapping(opaque_id).await?;
         self.media_proxy.unregister(opaque_id).await;
+        Ok(())
+    }
+
+    /// Replace the runtime media registry from the protected on-disk snapshot.
+    /// Backup restore calls this after atomically replacing the app-data tree,
+    /// so mappings added after the backup are removed and restored IDs point
+    /// to the restored private URLs and headers.
+    pub async fn reload_private_media_mappings(&self) -> Result<(), ResourceError> {
+        let _guard = self.media_update_lock.lock().await;
+        let root = self
+            .private_media_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
+            .to_path_buf();
+        let directory = self.private_media_dir.clone();
+        let create_root = root.clone();
+        let create_dir = directory.clone();
+        tokio::task::spawn_blocking(move || {
+            check_path_no_symlink(&create_root, &create_dir, true)?;
+            std::fs::create_dir_all(&create_dir).map_err(|error| {
+                ResourceError::new(format!(
+                    "Cannot create private media mapping directory: {error}"
+                ))
+            })?;
+            check_path_no_symlink(&create_root, &create_dir, false)
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media directory worker failed: {error}"))
+        })??;
+
+        let mappings_dir = directory;
+        let mappings_root = root;
+        let mappings = tokio::task::spawn_blocking(move || {
+            read_private_media_mappings(&mappings_root, &mappings_dir, true)
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media mapping worker failed: {error}"))
+        })??;
+        let mappings = mappings
+            .into_iter()
+            .map(|mapping| {
+                (
+                    mapping.id,
+                    mapping.upstream_url,
+                    mapping
+                        .headers
+                        .into_iter()
+                        .map(|header| (header.name, header.value))
+                        .collect(),
+                )
+            })
+            .collect::<Vec<_>>();
+        self.media_proxy.replace_mappings(&mappings).await
+    }
+
+    async fn write_private_media_mapping(
+        &self,
+        mapping: PrivateMediaMapping,
+    ) -> Result<(), ResourceError> {
+        let root = self
+            .private_media_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
+            .to_path_buf();
+        let path = self.private_media_dir.join(format!("{}.json", mapping.id));
+        let bytes = serde_json::to_vec_pretty(&mapping).map_err(|error| {
+            ResourceError::new(format!("Cannot encode private media mapping: {error}"))
+        })?;
+        if bytes.len() > MAX_PRIVATE_MEDIA_MAPPING_BYTES {
+            return Err(ResourceError::new("Private media mapping is too large"));
+        }
+        tokio::task::spawn_blocking(move || {
+            check_path_no_symlink(&root, &path, true)?;
+            atomic_replace(&path, &bytes).map_err(|error| {
+                ResourceError::new(format!("Cannot persist private media mapping: {error}"))
+            })
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media write worker failed: {error}"))
+        })??;
+        Ok(())
+    }
+
+    async fn delete_private_media_mapping(&self, opaque_id: &str) -> Result<(), ResourceError> {
+        let root = self
+            .private_media_dir
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
+            .to_path_buf();
+        let path = self.private_media_dir.join(format!("{opaque_id}.json"));
+        tokio::task::spawn_blocking(move || {
+            check_path_no_symlink(&root, &path, true)?;
+            match std::fs::remove_file(&path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(ResourceError::new(format!(
+                    "Cannot remove private media mapping: {error}"
+                ))),
+            }
+        })
+        .await
+        .map_err(|error| {
+            ResourceError::new(format!("Private media delete worker failed: {error}"))
+        })??;
+        Ok(())
     }
 
     /// Rewrite stable resource refs inside a JSON value to this server's
@@ -1000,7 +1251,8 @@ fn validate_public_path(path: &str) -> Result<(), ResourceError> {
         | ["settings.json"]
         | ["bookmarks.json"]
         | ["reading-history.json"]
-        | ["replacement-rules.json"] => true,
+        | ["replacement-rules.json"]
+        | ["discovery-favorites.json"] => true,
         ["progress", name] => filename_id(name, ".json").is_some(),
         ["search", name] => filename_id(name, ".json").is_some(),
         ["reading", name] => filename_id(name, ".json").is_some(),
@@ -1060,6 +1312,7 @@ fn valid_asset_id(id: &str) -> bool {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
                 "css"
+                    | "bmp"
                     | "png"
                     | "jpg"
                     | "jpeg"
@@ -1076,6 +1329,7 @@ fn valid_asset_id(id: &str) -> bool {
                     | "ogg"
                     | "opus"
                     | "mp4"
+                    | "pdf"
                     | "webm"
             )
         })
@@ -1091,6 +1345,7 @@ fn mime_type(path: &str) -> &'static str {
     {
         "html" | "xhtml" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
+        "bmp" => "image/bmp",
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
@@ -1104,6 +1359,7 @@ fn mime_type(path: &str) -> &'static str {
         "wav" => "audio/wav",
         "ogg" | "opus" => "audio/ogg",
         "mp4" => "video/mp4",
+        "pdf" => "application/pdf",
         "webm" => "video/webm",
         _ => "application/octet-stream",
     }
@@ -1153,6 +1409,110 @@ fn check_path_no_symlink(
         }
     }
     Ok(())
+}
+
+fn read_private_media_mappings(
+    root: &Path,
+    directory: &Path,
+    strict: bool,
+) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
+    check_path_no_symlink(root, directory, false)?;
+    let entries = std::fs::read_dir(directory).map_err(|error| {
+        ResourceError::new(format!("Cannot list private media mappings: {error}"))
+    })?;
+    let mut mappings = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            ResourceError::new(format!("Cannot inspect private media mapping: {error}"))
+        })?;
+        let path = entry.path();
+        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
+            if strict {
+                return Err(ResourceError::new(
+                    "Restored media mapping has an invalid filename",
+                ));
+            }
+            continue;
+        };
+        let Some(id) = filename.strip_suffix(".json") else {
+            if strict {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping has an unexpected file: {filename}"
+                )));
+            }
+            continue;
+        };
+        if !valid_id(id) {
+            if strict {
+                return Err(ResourceError::new(
+                    "Restored media mapping filename contains an invalid ID",
+                ));
+            }
+            continue;
+        }
+        let metadata = match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => metadata,
+            _ if strict => {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping {id} is not a regular file"
+                )))
+            }
+            _ => continue,
+        };
+        if metadata.len() as usize > MAX_PRIVATE_MEDIA_MAPPING_BYTES {
+            if strict {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping {id} exceeds its size limit"
+                )));
+            }
+            eprintln!("Ignoring oversized private media mapping {id}");
+            continue;
+        }
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if strict => {
+                return Err(ResourceError::new(format!(
+                    "Cannot read restored media mapping {id}: {error}"
+                )))
+            }
+            Err(_) => continue,
+        };
+        let mapping: PrivateMediaMapping = match serde_json::from_slice(&bytes) {
+            Ok(mapping) => mapping,
+            Err(error) if strict => {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping {id} is invalid JSON: {error}"
+                )))
+            }
+            Err(_) => continue,
+        };
+        if mapping.schema_version != 1 || mapping.id != id {
+            if strict {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping {id} has invalid schema or ID"
+                )));
+            }
+            continue;
+        }
+        let headers = mapping
+            .headers
+            .iter()
+            .map(|header| (header.name.clone(), header.value.clone()))
+            .collect::<Vec<_>>();
+        if MediaProxyRegistry::validate_mapping(&mapping.id, &mapping.upstream_url, &headers)
+            .is_err()
+        {
+            if strict {
+                return Err(ResourceError::new(format!(
+                    "Restored media mapping {id} has invalid source or headers"
+                )));
+            }
+            eprintln!("Ignoring invalid private media mapping {id}");
+            continue;
+        }
+        mappings.push(mapping);
+    }
+    Ok(mappings)
 }
 
 fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -1242,7 +1602,7 @@ fn safe_reader_style(defaults: &ReaderDefaults) -> SafeReaderStyle {
         }) {
         defaults.font_family.clone()
     } else {
-        "system-ui, sans-serif".to_owned()
+        ReaderDefaults::default().font_family
     };
     SafeReaderStyle {
         font_family,
@@ -1256,8 +1616,8 @@ fn safe_reader_style(defaults: &ReaderDefaults) -> SafeReaderStyle {
         } else {
             ReaderDefaults::default().line_height
         },
-        text_color: safe_color(&defaults.text_color, "#252525"),
-        background_color: safe_color(&defaults.background_color, "#ffffff"),
+        text_color: safe_color(&defaults.text_color, "#3f3b34"),
+        background_color: safe_color(&defaults.background_color, "#f7f3e9"),
         text_align: match defaults.text_align.as_str() {
             "left" | "right" | "center" | "justify" | "start" | "end" => {
                 defaults.text_align.clone()
@@ -1399,6 +1759,98 @@ mod tests {
                 .as_str(),
             "https://covers.example/cover.jpg"
         );
+        assert_eq!(
+            ResourceRef::new("resource://discovery-favorites.json")
+                .unwrap()
+                .path(),
+            "discovery-favorites.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_favorites_is_a_public_processed_json_resource() {
+        let root = temp_dir("favorites-http");
+        let store = ResourceStore::open(&root).expect("open store");
+        let reference = store.discovery_favorites_ref();
+        let document = json!({"schemaVersion": 1, "items": [{"sourceId": "source-a", "bookUrl": "https://example.test/book/1"}]});
+        store
+            .write_json_ref(&reference, &document)
+            .await
+            .expect("write discovery favorites");
+        let server = store
+            .start_http(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("start resource server");
+        let response = reqwest::get(server.url_for(&reference))
+            .await
+            .expect("fetch discovery favorites");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let response: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.expect("read response bytes"))
+                .expect("decode served favorites JSON");
+        assert_eq!(response, document);
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn pdf_page_marker_and_asset_support_application_pdf_byte_ranges() {
+        let root = temp_dir("pdf-page");
+        let store = ResourceStore::open(&root).expect("open store");
+        let pdf = b"%PDF-1.7\n0123456789abcdef\n%%EOF";
+        let pdf_ref = store
+            .write_asset("book-pdf", "document-1.pdf", pdf)
+            .await
+            .expect("write PDF asset");
+        let chapter = store
+            .write_pdf_page(
+                "book-pdf",
+                "page-0003",
+                "document-1.pdf",
+                2,
+                "page-fit",
+                &crate::models::ReaderDefaults::default(),
+            )
+            .await
+            .expect("write PDF page marker");
+        let html = tokio::fs::read_to_string(root.join(chapter.path()))
+            .await
+            .expect("read marker HTML");
+        assert!(html.contains("data-legado-document=\"pdf-page\""));
+        assert!(html.contains("data-page-index=\"2\""));
+        assert!(html.contains("data-default-zoom=\"page-fit\""));
+        assert!(html.contains("data-legado-pdf-src href=\"../assets/document-1.pdf\""));
+
+        let server = store
+            .start_http(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("start resource server");
+        let response = reqwest::get(server.url_for(&pdf_ref))
+            .await
+            .expect("fetch PDF asset");
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        assert_eq!(response.headers()[CONTENT_TYPE], "application/pdf");
+        assert_eq!(response.bytes().await.unwrap(), pdf.as_slice());
+        let partial = reqwest::Client::new()
+            .get(server.url_for(&pdf_ref))
+            .header(RANGE, "bytes=5-11")
+            .send()
+            .await
+            .expect("fetch PDF byte range");
+        assert_eq!(partial.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(partial.headers()[CONTENT_RANGE], "bytes 5-11/31");
+        assert_eq!(partial.bytes().await.unwrap(), &pdf[5..=11]);
+        assert!(store
+            .write_pdf_page(
+                "book-pdf",
+                "bad-zoom",
+                "document-1.pdf",
+                0,
+                "<script>",
+                &crate::models::ReaderDefaults::default(),
+            )
+            .await
+            .is_err());
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]
@@ -1442,7 +1894,7 @@ mod tests {
             .unwrap();
         assert!(html.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt; &amp; text<br>"));
         assert!(html.contains("<p>Second paragraph</p>"));
-        assert!(html.contains("--reader-font-size:18px"));
+        assert!(html.contains("--reader-font-size:19px"));
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

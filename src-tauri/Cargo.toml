@@ -69,6 +69,9 @@ atomicwrites = "0.4.4"
 encoding_rs = "0.8"
 feed-rs = "2"
 http-range-header = "0.4"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+lopdf = { version = "0.45", default-features = false }
+natord = "1.0.9"
 percent-encoding = "2"
 quick-xml = "0.42"
 regex = "1"

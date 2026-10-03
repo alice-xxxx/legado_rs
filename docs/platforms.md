@@ -2,6 +2,33 @@
 
 The app shares one Vue interface across desktop, Android, and iOS. Rust owns application work and resource preparation. The mobile source-engine bridge hands the request to the existing Kotlin Multiplatform engine; the web frontend receives processed JSON and resource URLs. Tauri and KMP are built per target. The iOS build must run on macOS with Xcode.
 
+## Latest verification record (2026-10-03)
+
+These results use the current working-tree snapshot after the application and frontend owners reported their changes frozen. The Linux Chromium run used the real Rust service and JVM source engine; it does not validate the GTK/WebKitGTK Tauri window, Android runtime, or iOS runtime.
+
+| Target | Status | Evidence |
+| --- | --- | --- |
+| Browser + real Rust/KMP source engine | **PASS** | Fresh no-default-features `browser_harness` build and a full Playwright Chromium flow; 27 Rust IPC calls. |
+| Android Rust/KMP AAR | **PASS** | `stageTauriAndroidAar` built all four configured Android ABI outputs. |
+| Android APK | **IN PROGRESS** | `gradlew help` passed after preserving Gradle Plugin Portal in the cloud mirror config; debug APK packaging is being attempted separately. |
+| Android emulator/device runtime | **NOT RUN** | API 36 AOSP x86_64 image and `LegadoApi36Aosp` AVD are installed, but the app was not installed or launched in this run. |
+| Linux native Tauri desktop | **NOT RUN** | The browser harness uses the real service but does not start a Tauri window or WebKitGTK. |
+| iOS build/runtime on this host | **BLOCKED** | This host is Linux and has no Xcode or Apple SDK. The repository macOS CI job builds unsigned iOS artifacts; no simulator/device runtime was exercised here. |
+
+The browser run started at `2026-10-03T02:18:04Z` and completed at `02:18:15Z` with `PASS`:
+
+```sh
+source /workspace/.setup/activate.sh
+cargo build --locked --manifest-path src-tauri/Cargo.toml --no-default-features --example browser_harness -j4
+BROWSER_HARNESS_BINARY=/workspace/legado_rs/src-tauri/target/debug/examples/browser_harness node scripts/e2e-browser.mjs
+```
+
+It searched the local source fixture through the KMP/JNI source engine, added a book, opened two prepared chapter resources, changed reader font, paged through all 36 fixture paragraphs, saved progress, reopened the book, and repaired a deliberately deleted chapter after the exact resource URL returned 404. Turns between cached chapters made no Rust chapter retrieval calls. The display-only font change left the cached chapter HTML hash unchanged. Private source rules were not served as a browser resource.
+
+At 360px, measured layout was: catalog heading 15px, chapter title 14px, row height 52px, detail action height 44px, reader title 19px, reader page status 14px, and reader page/chapter controls 44–46px. The reader header and children stayed inside the viewport. The script closed the reading settings popover before validating visible chapter text and capturing the reader screenshot. Four screenshots, `result.json`, and `run.log` are under `/tmp/legado-browser-e2e-results/2026-10-03T02-18-04-040Z`.
+
+The cloud Gradle init script redirects Maven Central to a mirror that lacks the Kotlin DSL plugin marker (`org.gradle.kotlin.kotlin-dsl:6.6.4`). The workspace Gradle mirror config was adjusted to retain Gradle Plugin Portal for plugin resolution; Android `gradlew help` then passed. This change is cloud environment setup, not a repository Gradle-file change.
+
 ## Current bridge and build facts
 
 The repository has working source-engine adapter code for each target:
@@ -12,7 +39,7 @@ The repository has working source-engine adapter code for each target:
 
 These source checks establish that adapter files and symbol names line up. They do **not** establish that an app installs, launches, or completes an in-app workflow. A platform is accepted only after its app artifact is inspected and a representative user flow is run on that platform.
 
-The existing CI workflow in `.github/workflows/build.yml` describes the intended target matrix and build sequence. On 2026-10-03 this Linux cloud machine has Android build-tools 36.0.0, NDK 30.0.14904198 release candidate 1, CMake 3.31.1, API 36 and API 37.0, and all four Rust Android targets installed. The Tauri Android Gradle project has been generated and its resource-packaging rule configured. Its network security config denies cleartext by default and permits it only for `127.0.0.1` and `localhost`, where Rust serves app resources. The SDK lists NDK 30.0.14904198 as `rc.1`, so the local install used the Android CLI's beta channel. Confirm CI installs that NDK version before depending on it. Linux GTK/WebKitGTK development files are staged under `/workspace/.setup/sysroot`; source `/workspace/.setup/native-env.sh` after activating the cloud environment before building the native Linux app. The `--no-default-features` Rust and browser tests do not need those native libraries. The adjacent iOS `Info.ios.plist` adds ATS exceptions for the same two loopback names and does not allow arbitrary HTTP loads; its merged plist and runtime behavior still need verification on macOS. Android APK packaging and a device/emulator workflow, plus the final native desktop build and run, remain unverified.
+The existing CI workflow in `.github/workflows/build.yml` describes the intended target matrix and build sequence. On 2026-10-03 this Linux cloud machine has Android build-tools 36.0.0, NDK 30.0.14904198 release candidate 1, CMake 3.31.1, API 36 and API 37.0, and all four Rust Android targets installed. The Tauri Android Gradle project has been generated and its resource-packaging rule configured. Its network security config denies cleartext by default and permits it only for `127.0.0.1` and `localhost`, where Rust serves app resources. The SDK lists NDK 30.0.14904198 as `rc.1`, so the local install used the Android CLI's beta channel. Confirm CI installs that NDK version before depending on it. Linux GTK/WebKitGTK development files are staged under `/workspace/.setup/sysroot`; source `/workspace/.setup/native-env.sh` after activating the cloud environment before building the native Linux app. The `--no-default-features` Rust and browser tests do not need those native libraries. The adjacent iOS `Info.ios.plist` adds ATS exceptions for the same two loopback names and does not allow arbitrary HTTP loads; its merged plist and runtime behavior still need verification on macOS. Android APK and native desktop launch status are recorded above.
 
 ## Readiness report
 
@@ -51,7 +78,7 @@ source /workspace/.setup/activate.sh
 node scripts/e2e-browser.mjs
 ```
 
-The harness builds/runs the Rust example with `--no-default-features`, so it does not pull Tauri's GTK/WebKitGTK windowing runtime into browser tests. It creates a fresh temporary app-data directory and local source fixture, exercises search, add-to-shelf, chapter resource delivery, page turns, display-only font changes, progress restore, private source isolation, and recovery from a deliberately deleted cached chapter. It saves 360px and 1440px screenshots under `/tmp/legado-browser-e2e-results`. Chromium must be installed at `/usr/bin/chromium`, or `CHROMIUM_EXECUTABLE_PATH` can point to it. Set `PLAYWRIGHT_CORE_ENTRY` if the isolated npm prefix differs.
+The harness builds/runs the Rust example with `--no-default-features`, so it does not pull Tauri's GTK/WebKitGTK windowing runtime into browser tests. It creates a fresh temporary app-data directory and local source fixture, exercises search, add-to-shelf, chapter resource delivery, page turns, display-only font changes, progress restore, private source isolation, responsive 360px/1440px layouts, and recovery from a deliberately deleted cached chapter. It saves timestamped screenshots and a machine-readable `result.json` under `/tmp/legado-browser-e2e-results/<run-id>`. Chromium must be installed at `/usr/bin/chromium`, or `CHROMIUM_EXECUTABLE_PATH` can point to it. Set `PLAYWRIGHT_CORE_ENTRY` if the isolated npm prefix differs.
 
 ## Android
 
@@ -79,7 +106,7 @@ ANDROID_CLI="$ANDROID_HOME/cmdline-tools/latest/bin/android"
 "$ANDROID_CLI" --sdk="$ANDROID_HOME" sdk install 'cmake/3.31.1'
 ```
 
-The current CI also installs `platform-tools` and both compile platforms, which are already present in this machine's environment. Keep Android package setup non-interactive and use the packages declared in CI. The Android command-line tool may create user state under `ANDROID_USER_HOME`; set that to a writable environment-owned path in this cloud machine. On this image, `adb devices -l` still aborts while trying to create `/home/agent/.android` even when `ANDROID_USER_HOME` and `ANDROID_SDK_HOME` point to `/workspace/.setup/android-user`; no emulator/device runtime can be verified here until adb has a writable key location or a connected test runner.
+The current CI also installs `platform-tools` and both compile platforms, which are already present in this machine's environment. Keep Android package setup non-interactive and use the packages declared in CI. Set `ANDROID_USER_HOME=/workspace/.setup/android-user` and unset `ANDROID_SDK_HOME` to avoid Gradle's conflicting home-directory selection. The API 36 AOSP x86_64 system image and `LegadoApi36Aosp` AVD are installed; image availability is not an app runtime test.
 
 Build in the order encoded in CI so the app consumes the correct per-ABI engine libraries:
 

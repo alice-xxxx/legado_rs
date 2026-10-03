@@ -380,12 +380,23 @@ async function saveBookGroups(bookId: string, groups: string[]): Promise<void> {
 
 function normalizeSettings(value: AppSettingsResource): AppSettingsResource {
   const reader = value?.reader ?? {};
+  const storedTheme = typeof reader.theme === "string" ? reader.theme : defaultSettings.reader.theme;
+  const theme: ReaderTheme = storedTheme === "light"
+    ? "system"
+    : (["paper", "sepia", "dark", "system"].includes(storedTheme) ? storedTheme as ReaderTheme : "paper");
+  const fontSize = Number(reader.fontSizePx ?? (reader as Partial<ReaderSettings> & { fontSize?: number }).fontSize ?? defaultSettings.reader.fontSizePx);
+  const lineHeight = Number(reader.lineHeight ?? defaultSettings.reader.lineHeight);
+  const preloadCount = Number(reader.preloadCount ?? defaultSettings.reader.preloadCount);
   return {
     ...defaultSettings,
     ...value,
     reader: {
       ...defaultSettings.reader,
       ...reader,
+      fontSizePx: clamp(fontSize, 12, 36),
+      lineHeight: clamp(lineHeight, 1.2, 2.8),
+      preloadCount: clamp(preloadCount, 1, 20),
+      theme,
       replacements: [],
     },
   };
@@ -1297,7 +1308,7 @@ async function persistSettings(): Promise<void> {
   try {
     const normalized = normalizeSettings(settings.value);
     const descriptor = await saveSettings(normalized);
-    settings.value = await readResource<AppSettingsResource>(descriptor);
+    settings.value = normalizeSettings(await readResource<AppSettingsResource>(descriptor));
     notify("阅读设置已保存。");
   } catch (error) {
     notify(`阅读设置保存失败：${errorText(error)}`, "error");

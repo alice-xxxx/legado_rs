@@ -571,6 +571,70 @@ fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
                     }
                 }
             }
+            path if path.starts_with("private-data/media-maps/") && path.ends_with(".json") => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct MediaMapping {
+                    schema_version: u32,
+                    id: String,
+                    upstream_url: String,
+                    headers: Vec<MediaHeader>,
+                }
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct MediaHeader {
+                    name: String,
+                    value: String,
+                }
+                let mapping: MediaMapping = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid private media mapping at {path}: {error}"))?;
+                let expected_id = path
+                    .strip_prefix("private-data/media-maps/")
+                    .and_then(|value| value.strip_suffix(".json"))
+                    .ok_or_else(|| format!("Invalid private media mapping path: {path}"))?;
+                let upstream_url = reqwest::Url::parse(&mapping.upstream_url)
+                    .map_err(|_| format!("Private media mapping has an invalid URL: {path}"))?;
+                if mapping.schema_version != 1
+                    || mapping.id != expected_id
+                    || !valid_resource_id(&mapping.id)
+                    || !matches!(upstream_url.scheme(), "http" | "https")
+                    || upstream_url.host_str().is_none()
+                    || !upstream_url.username().is_empty()
+                    || upstream_url.password().is_some()
+                    || mapping.headers.len() > 64
+                {
+                    return Err(format!("Private media mapping has invalid fields: {path}"));
+                }
+                for header in &mapping.headers {
+                    let name = reqwest::header::HeaderName::from_bytes(header.name.as_bytes())
+                        .map_err(|_| {
+                            format!("Private media mapping has an invalid header: {path}")
+                        })?;
+                    reqwest::header::HeaderValue::from_str(&header.value).map_err(|_| {
+                        format!("Private media mapping has an invalid header: {path}")
+                    })?;
+                    if header.name.len() > 256
+                        || header.value.len() > 8 * 1024
+                        || matches!(
+                            name.as_str(),
+                            "connection"
+                                | "content-length"
+                                | "host"
+                                | "keep-alive"
+                                | "proxy-authenticate"
+                                | "proxy-authorization"
+                                | "te"
+                                | "trailer"
+                                | "transfer-encoding"
+                                | "upgrade"
+                        )
+                    {
+                        return Err(format!(
+                            "Private media mapping has an unsupported header: {path}"
+                        ));
+                    }
+                }
+            }
             path if path.starts_with("private-data/") && path.ends_with(".json") => {
                 let value: serde_json::Value = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid private JSON data at {path}: {error}"))?;
@@ -1048,6 +1112,8 @@ fn valid_asset_file(filename: &str) -> bool {
                 | "jpeg"
                 | "webp"
                 | "gif"
+                | "pdf"
+                | "bmp"
                 | "woff"
                 | "woff2"
                 | "ttf"
@@ -1103,8 +1169,40 @@ mod tests {
     use base64::Engine;
     use serde_json::{json, Value};
     use std::io::Write;
+    use std::net::SocketAddr;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
+
+    async fn start_media_upstream() -> (SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut request = [0u8; 2048];
+                    let count = stream.read(&mut request).await.unwrap_or(0);
+                    let path = String::from_utf8_lossy(&request[..count]);
+                    let body = if path.contains("/media/snapshot") {
+                        b"snapshot-media".as_slice()
+                    } else {
+                        b"later-media".as_slice()
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                    let _ = stream.write_all(body).await;
+                    let _ = stream.shutdown().await;
+                });
+            }
+        });
+        (address, task)
+    }
 
     async fn add_book(store: &ResourceStore, id: &str, title: &str) -> BookDocument {
         let pixel = base64::engine::general_purpose::STANDARD
@@ -1202,12 +1300,6 @@ mod tests {
             br#"{"schemaVersion":1,"sourceId":"source-private","categories":[{"categoryId":"category-1","title":"Latest","url":"https://example.test/list","kind":"engine"}]}"#,
         )
         .unwrap();
-        std::fs::create_dir_all(private_root.join("media-maps")).unwrap();
-        std::fs::write(
-            private_root.join("media-maps/media-1.json"),
-            br#"{"mediaId":"media-1","source":"https://example.test/video.m3u8"}"#,
-        )
-        .unwrap();
         std::fs::create_dir_all(root.join("search")).unwrap();
         std::fs::write(
             root.join("search/search-1.json"),
@@ -1293,15 +1385,44 @@ mod tests {
         )
         .unwrap();
 
-        let archive_path = temporary.path().join("snapshot.legado.zip");
-        create_backup(&store, &archive_path).await.unwrap();
+        let (upstream_addr, upstream_task) = start_media_upstream().await;
         let server = store
             .start_http("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
+        let media_ref = server
+            .register_media_with_id(
+                "media-1",
+                &format!("http://{upstream_addr}/media/snapshot"),
+                &[],
+            )
+            .await
+            .unwrap();
+        let mapping: Value = serde_json::from_slice(
+            &std::fs::read(private_root.join("media-maps/media-1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mapping["schemaVersion"], 1);
+        assert_eq!(mapping["id"], "media-1");
+        assert_eq!(
+            mapping["upstreamUrl"],
+            format!("http://{upstream_addr}/media/snapshot")
+        );
+        assert!(mapping["headers"].as_array().unwrap().is_empty());
+
+        let archive_path = temporary.path().join("snapshot.legado.zip");
+        create_backup(&store, &archive_path).await.unwrap();
 
         store.remove_book_resources(&original.id).await.unwrap();
         add_book(&store, "later-book", "Later Book").await;
+        server
+            .register_media_with_id(
+                "media-1",
+                &format!("http://{upstream_addr}/media/later"),
+                &[],
+            )
+            .await
+            .unwrap();
         std::fs::write(private_root.join("sources.json"), b"[]").unwrap();
         std::fs::write(
             storage.join("cookies.json"),
@@ -1320,6 +1441,7 @@ mod tests {
         .unwrap();
 
         restore_backup(&store, &archive_path).await.unwrap();
+        server.reload_private_media_mappings().await.unwrap();
         let restored_ref = store.book_ref("snapshot-book").unwrap();
         let restored: BookDocument =
             serde_json::from_value(store.read_json_ref(&restored_ref).await.unwrap()).unwrap();
@@ -1401,6 +1523,17 @@ mod tests {
         assert!(image.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert_eq!(u32::from_be_bytes(image[16..20].try_into().unwrap()), 1);
         assert_eq!(u32::from_be_bytes(image[20..24].try_into().unwrap()), 1);
+
+        let media_response = reqwest::get(server.url_for(&media_ref))
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        assert_eq!(
+            media_response.bytes().await.unwrap().as_ref(),
+            b"snapshot-media"
+        );
+        upstream_task.abort();
     }
 
     #[tokio::test]

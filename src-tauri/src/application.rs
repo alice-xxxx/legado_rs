@@ -11,7 +11,7 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +19,8 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     models::{
-        BookDocument, ChapterDescriptor, ProgressDocument, ReaderDefaults, CURRENT_SCHEMA_VERSION,
+        BookDocument, ChapterDescriptor, ProgressDocument, ReaderDefaults, ReaderTheme,
+        CURRENT_SCHEMA_VERSION,
     },
     resources::{ResourceRef, ResourceServer, ResourceStore},
     source_engine::SourceEngineRequest,
@@ -136,7 +137,25 @@ pub struct ApplicationService {
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
     task_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
+    admission_gate: Arc<tokio::sync::RwLock<()>>,
     operation_gate: Arc<tokio::sync::RwLock<()>>,
+    restore_barrier: Arc<tokio::sync::watch::Sender<bool>>,
+    restore_serial: Arc<tokio::sync::Mutex<()>>,
+}
+
+struct RestoreAdmissionGuard {
+    barrier: Arc<tokio::sync::watch::Sender<bool>>,
+}
+
+pub struct OperationReadGuard {
+    _admission: tokio::sync::OwnedRwLockReadGuard<()>,
+    _operation: tokio::sync::OwnedRwLockReadGuard<()>,
+}
+
+impl Drop for RestoreAdmissionGuard {
+    fn drop(&mut self) {
+        self.barrier.send_replace(false);
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -262,6 +281,7 @@ impl ApplicationService {
             )
             .await
             .map_err(|error| error.to_string())?;
+        let (restore_barrier, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             root,
             private_root,
@@ -273,7 +293,10 @@ impl ApplicationService {
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             task_notifier: Arc::new(std::sync::RwLock::new(None)),
+            admission_gate: Arc::new(tokio::sync::RwLock::new(())),
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
+            restore_barrier: Arc::new(restore_barrier),
+            restore_serial: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -295,8 +318,30 @@ impl ApplicationService {
         }
     }
 
-    pub async fn operation_read(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
-        self.operation_gate.clone().read_owned().await
+    pub async fn operation_read(&self) -> OperationReadGuard {
+        let mut barrier = self.restore_barrier.subscribe();
+        loop {
+            if *barrier.borrow() {
+                if barrier.changed().await.is_err() {
+                    continue;
+                }
+                continue;
+            }
+            let admission = self.admission_gate.clone().read_owned().await;
+            if *barrier.borrow() {
+                drop(admission);
+                continue;
+            }
+            let operation = self.operation_gate.clone().read_owned().await;
+            if !*barrier.borrow() {
+                return OperationReadGuard {
+                    _admission: admission,
+                    _operation: operation,
+                };
+            }
+            drop(operation);
+            drop(admission);
+        }
     }
 
     pub fn resource_descriptor(&self, resource: &ResourceRef) -> Value {
@@ -870,34 +915,47 @@ impl ApplicationService {
         task_id: String,
         mut signal: tokio::sync::watch::Receiver<TaskSignal>,
     ) {
-        let task = match self.task_summary_record(&task_id).await {
-            Ok(task) => task,
-            Err(_) => return,
-        };
-        if let Err(error) = self
-            .update_task(&task_id, |task| task.status = "running".into())
-            .await
-        {
-            eprintln!("Cannot mark task running: {error}");
-            return;
+        let outcome = async {
+            let operation = self.operation_gate.clone().read_owned().await;
+            let task = self.task_summary_record(&task_id).await?;
+            if let Err(error) = self
+                .update_task(&task_id, |task| task.status = "running".into())
+                .await
+            {
+                drop(operation);
+                let message = format!("Cannot mark task running: {error}");
+                let _ = self
+                    .update_task(&task_id, |task| {
+                        task.status = "failed".into();
+                        task.error = Some(message.clone());
+                    })
+                    .await;
+                return Err(message);
+            }
+            drop(operation);
+            let result = match task.kind.as_str() {
+                "chapterDownload" => self.run_download_task(&task_id, &mut signal).await,
+                "search" => self.run_search_task(&task_id, &mut signal).await,
+                "refreshChapters" | "checkNewChapters" => {
+                    self.run_refresh_task(&task_id, &mut signal).await
+                }
+                _ => Err(format!("Unsupported task kind '{}'", task.kind)),
+            };
+            match result {
+                Ok(Some(_)) => {
+                    let _operation = self.operation_gate.clone().read_owned().await;
+                    self.finish_task(&task_id, "completed", None).await
+                }
+                Ok(None) => Ok(()),
+                Err(error) => {
+                    let _operation = self.operation_gate.clone().read_owned().await;
+                    self.finish_task(&task_id, "failed", Some(error)).await
+                }
+            }
         }
-        let result = match task.kind.as_str() {
-            "chapterDownload" => self.run_download_task(&task_id, &mut signal).await,
-            "search" => self.run_search_task(&task_id, &mut signal).await,
-            "refreshChapters" | "checkNewChapters" => {
-                self.run_refresh_task(&task_id, &mut signal).await
-            }
-            _ => Err(format!("Unsupported task kind '{}'", task.kind)),
-        };
-        match result {
-            Ok(Some(message)) => {
-                let _ = self.finish_task(&task_id, "completed", None).await;
-                let _ = message;
-            }
-            Ok(None) => { /* cancellation / interruption already persisted */ }
-            Err(error) => {
-                let _ = self.finish_task(&task_id, "failed", Some(error)).await;
-            }
+        .await;
+        if let Err(error) = outcome {
+            eprintln!("Task {task_id} stopped with an error: {error}");
         }
         let mut registry = self.tasks.lock().await;
         registry.signals.remove(&task_id);
@@ -937,14 +995,17 @@ impl ApplicationService {
             if current.cancelled {
                 if let Ok(task) = self.task_summary_record(task_id).await {
                     if task.kind == "search" {
+                        let _operation = self.operation_gate.clone().read_owned().await;
                         self.finish_search_document(&task, true).await?;
                     }
                 }
+                let _operation = self.operation_gate.clone().read_owned().await;
                 self.finish_task(task_id, "cancelled", None).await?;
                 return Ok(false);
             }
             if current.paused {
                 if self.task_summary_record(task_id).await?.status != "paused" {
+                    let _operation = self.operation_gate.clone().read_owned().await;
                     self.update_task(task_id, |task| task.status = "paused".into())
                         .await?;
                 }
@@ -954,6 +1015,7 @@ impl ApplicationService {
                 continue;
             }
             if self.task_summary_record(task_id).await?.status != "running" {
+                let _operation = self.operation_gate.clone().read_owned().await;
                 self.update_task(task_id, |task| task.status = "running".into())
                     .await?;
             }
@@ -993,12 +1055,22 @@ impl ApplicationService {
                 }
                 continue;
             }
-            self.prepare_chapters(book_id, index, 1).await?;
-            drop(permit);
+            let _operation = self.operation_gate.clone().read_owned().await;
+            let control = *signal.borrow_and_update();
+            if control.paused || control.cancelled {
+                drop(_operation);
+                drop(permit);
+                if !self.task_checkpoint(task_id, signal).await? {
+                    return Ok(None);
+                }
+                continue;
+            }
+            self.prepare_chapters_unlocked(book_id, index, 1).await?;
             self.update_task(task_id, |task| {
                 task.completed = task.completed.saturating_add(1)
             })
             .await?;
+            drop(permit);
         }
     }
 
@@ -1013,24 +1085,18 @@ impl ApplicationService {
             }
             let task = self.task_summary_record(task_id).await?;
             if task.completed >= task.total {
+                let _operation = self.operation_gate.clone().read_owned().await;
+                let control = *signal.borrow_and_update();
+                if control.paused || control.cancelled {
+                    drop(_operation);
+                    if !self.task_checkpoint(task_id, signal).await? {
+                        return Ok(None);
+                    }
+                    continue;
+                }
                 self.finish_search_document(&task, false).await?;
                 return Ok(Some(String::new()));
             }
-            let _operation = self.operation_read().await;
-            let sources = self.read_sources().await?;
-            let source_id = task
-                .source_ids
-                .as_ref()
-                .and_then(|ids| ids.get(task.completed))
-                .ok_or_else(|| "Search task source list is incomplete".to_owned())?;
-            let source = sources
-                .into_iter()
-                .find(|source| &source.id == source_id)
-                .ok_or_else(|| format!("Search source '{source_id}' was removed"))?;
-            let keyword = task
-                .keyword
-                .as_deref()
-                .ok_or_else(|| "Search task has no keyword".to_owned())?;
             let permit = self
                 .task_slots
                 .clone()
@@ -1045,6 +1111,30 @@ impl ApplicationService {
                 }
                 continue;
             }
+            let _operation = self.operation_gate.clone().read_owned().await;
+            let control = *signal.borrow_and_update();
+            if control.paused || control.cancelled {
+                drop(_operation);
+                drop(permit);
+                if !self.task_checkpoint(task_id, signal).await? {
+                    return Ok(None);
+                }
+                continue;
+            }
+            let sources = self.read_sources().await?;
+            let source_id = task
+                .source_ids
+                .as_ref()
+                .and_then(|ids| ids.get(task.completed))
+                .ok_or_else(|| "Search task source list is incomplete".to_owned())?;
+            let source = sources
+                .into_iter()
+                .find(|source| &source.id == source_id)
+                .ok_or_else(|| format!("Search source '{source_id}' was removed"))?;
+            let keyword = task
+                .keyword
+                .as_deref()
+                .ok_or_else(|| "Search task has no keyword".to_owned())?;
             let result = self
                 .executor
                 .execute(engine_request(
@@ -1061,6 +1151,15 @@ impl ApplicationService {
             drop(_operation);
             if !self.task_checkpoint(task_id, signal).await? {
                 return Ok(None);
+            }
+            let _operation = self.operation_gate.clone().read_owned().await;
+            let control = *signal.borrow_and_update();
+            if control.paused || control.cancelled {
+                drop(_operation);
+                if !self.task_checkpoint(task_id, signal).await? {
+                    return Ok(None);
+                }
+                continue;
             }
             self.append_search_source(&task, &source, result).await?;
             self.update_task(task_id, |task| {
@@ -1153,50 +1252,56 @@ impl ApplicationService {
         task_id: &str,
         signal: &mut tokio::sync::watch::Receiver<TaskSignal>,
     ) -> Result<Option<String>, String> {
-        if !self.task_checkpoint(task_id, signal).await? {
-            return Ok(None);
-        }
-        let task = self.task_summary_record(task_id).await?;
-        let book_id = task
-            .book_id
-            .as_deref()
-            .ok_or_else(|| "Refresh task has no bookId".to_owned())?;
-        let mut permit = Some(
-            self.task_slots
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|error| error.to_string())?,
-        );
         loop {
-            let control = *signal.borrow_and_update();
-            if !control.paused && !control.cancelled {
-                break;
-            }
-            drop(permit.take());
             if !self.task_checkpoint(task_id, signal).await? {
                 return Ok(None);
             }
-            permit = Some(
-                self.task_slots
-                    .clone()
-                    .acquire_owned()
-                    .await
-                    .map_err(|error| error.to_string())?,
-            );
+            let task = self.task_summary_record(task_id).await?;
+            let book_id = task
+                .book_id
+                .as_deref()
+                .ok_or_else(|| "Refresh task has no bookId".to_owned())?;
+            let permit = self
+                .task_slots
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|error| error.to_string())?;
+            let control = *signal.borrow_and_update();
+            if control.paused || control.cancelled {
+                drop(permit);
+                if !self.task_checkpoint(task_id, signal).await? {
+                    return Ok(None);
+                }
+                continue;
+            }
+            let _operation = self.operation_gate.clone().read_owned().await;
+            let control = *signal.borrow_and_update();
+            if control.paused || control.cancelled {
+                drop(_operation);
+                drop(permit);
+                if !self.task_checkpoint(task_id, signal).await? {
+                    return Ok(None);
+                }
+                continue;
+            }
+            if task.completed >= task.total {
+                return Ok(Some(String::new()));
+            }
+            let result = self
+                .refresh_catalog_unlocked(book_id, !task.check_only)
+                .await?;
+            self.update_task(task_id, |task| {
+                task.completed = 1;
+                task.result = Some(result);
+            })
+            .await?;
+            drop(permit);
+            return Ok(Some(String::new()));
         }
-        let result = self.refresh_catalog(book_id, !task.check_only).await?;
-        drop(permit);
-        self.update_task(task_id, |task| {
-            task.completed = 1;
-            task.result = Some(result);
-        })
-        .await?;
-        Ok(Some(String::new()))
     }
 
-    async fn refresh_catalog(&self, book_id: &str, commit: bool) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
+    async fn refresh_catalog_unlocked(&self, book_id: &str, commit: bool) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
         let _book_lock = self.book_lock(book_id).await;
         let private_path = Path::new("books").join(format!("{book_id}.json"));
@@ -1367,9 +1472,19 @@ impl ApplicationService {
     }
 
     pub async fn restore_backup(&self, archive: &Path) -> Result<Value, String> {
+        let _restore_serial = self.restore_serial.clone().lock_owned().await;
+        self.restore_barrier.send_replace(true);
+        let _admission = RestoreAdmissionGuard {
+            barrier: self.restore_barrier.clone(),
+        };
+        let _admission_gate = self.admission_gate.clone().write_owned().await;
         self.cancel_active_tasks().await?;
         let _exclusive = self.operation_gate.clone().write_owned().await;
         crate::backup::restore_backup(&self.store, archive).await?;
+        self.server
+            .reload_private_media_mappings()
+            .await
+            .map_err(|error| error.to_string())?;
         self.reload_tasks_after_restore().await?;
         self.bootstrap().await
     }
@@ -1450,12 +1565,18 @@ impl ApplicationService {
         for task in &changed {
             self.notify_task(task).await;
         }
-        loop {
-            if self.tasks.lock().await.signals.is_empty() {
-                return Ok(());
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if self.tasks.lock().await.signals.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
+        })
+        .await
+        .map_err(|_| {
+            "Timed out waiting for active tasks to stop; backup restore was not applied".to_owned()
+        })
     }
 
     pub(crate) async fn store_processed_results(
@@ -1718,6 +1839,16 @@ impl ApplicationService {
         count: usize,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
+        self.prepare_chapters_unlocked(book_id, from_index, count)
+            .await
+    }
+
+    async fn prepare_chapters_unlocked(
+        &self,
+        book_id: &str,
+        from_index: usize,
+        count: usize,
+    ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
         let _book_lock = self.book_lock(book_id).await;
         let count = count.clamp(1, 50);
@@ -1970,30 +2101,38 @@ impl ApplicationService {
             .get("reader")
             .and_then(Value::as_object)
             .ok_or_else(|| "Settings reader must be an object".to_owned())?;
-        validate_number_range(reader, "fontSize", 8.0, 96.0)?;
-        validate_number_range(reader, "lineHeight", 1.0, 4.0)?;
-        validate_number_range(reader, "preloadCount", 1.0, 50.0)?;
-        if let Some(replacements) = reader.get("replacements") {
-            if !replacements.is_array() {
-                return Err("Settings replacements must be an array".into());
-            }
-            if replacements.as_array().map(Vec::len).unwrap_or_default() > 200 {
-                return Err("Settings can contain at most 200 replacement rules".into());
-            }
-            for item in replacements.as_array().expect("checked array") {
-                if item.get("find").and_then(Value::as_str).is_none()
-                    || item.get("replace").and_then(Value::as_str).is_none()
-                {
-                    return Err("Each replacement requires string find and replace fields".into());
-                }
-            }
+        if reader.contains_key("fontSizePx") {
+            validate_number_range(reader, "fontSizePx", 12.0, 36.0)?;
+        } else {
+            // Accept the pre-canonical field when reading older settings, then
+            // write only `fontSizePx` below.
+            validate_number_range(reader, "fontSize", 12.0, 36.0)?;
         }
+        validate_number_range(reader, "lineHeight", 1.2, 2.8)?;
+        validate_integer_range(reader, "preloadCount", 1, 20)?;
         if let Some(theme) = reader.get("theme") {
             match theme.as_str() {
-                Some("paper" | "sepia" | "dark" | "system") => {}
+                Some("paper" | "sepia" | "dark" | "system" | "light") => {}
                 _ => return Err("Settings theme must be paper, sepia, dark, or system".into()),
             }
         }
+        let reader = document
+            .get_mut("reader")
+            .and_then(Value::as_object_mut)
+            .ok_or_else(|| "Settings reader must be an object".to_owned())?;
+        if !reader.contains_key("fontSizePx") {
+            if let Some(legacy_size) = reader.remove("fontSize") {
+                reader.insert("fontSizePx".to_owned(), legacy_size);
+            }
+        } else {
+            reader.remove("fontSize");
+        }
+        if reader.get("theme").and_then(Value::as_str) == Some("light") {
+            reader.insert("theme".to_owned(), json!("system"));
+        }
+        // Replacement rules have their own resource and command surface. Keep
+        // this legacy settings field empty so there is only one stored copy.
+        reader.insert("replacements".to_owned(), json!([]));
         document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
         self.store
             .write_json_ref(&self.store.settings_ref(), &document)
@@ -2263,19 +2402,68 @@ fn reader_defaults(settings: Option<Value>) -> ReaderDefaults {
     }
     let mut defaults = ReaderDefaults::default();
     if let Some(size) = value
-        .get("fontSize")
-        .or_else(|| value.get("fontSizePx"))
+        .get("fontSizePx")
+        .or_else(|| value.get("fontSize"))
         .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
     {
-        defaults.font_size_px = (size as f32).clamp(8.0, 96.0);
+        defaults.font_size_px = (size as f32).clamp(12.0, 36.0);
     }
-    if let Some(line_height) = value.get("lineHeight").and_then(Value::as_f64) {
-        defaults.line_height = (line_height as f32).clamp(1.0, 4.0);
+    if let Some(line_height) = value
+        .get("lineHeight")
+        .and_then(Value::as_f64)
+        .filter(|number| number.is_finite())
+    {
+        defaults.line_height = (line_height as f32).clamp(1.2, 2.8);
     }
     if let Some(family) = value.get("fontFamily").and_then(Value::as_str) {
-        defaults.font_family = family.chars().take(128).collect();
+        defaults.font_family = match family {
+            "serif" => "serif",
+            "sans" => "sans-serif",
+            "system" => "system-ui, sans-serif",
+            "mono" => "monospace",
+            _ => defaults.font_family.as_str(),
+        }
+        .to_owned();
+    }
+    if let Some(color) = value.get("textColor").and_then(Value::as_str) {
+        defaults.text_color = reader_color(color, &defaults.text_color);
+    }
+    if let Some(color) = value.get("backgroundColor").and_then(Value::as_str) {
+        defaults.background_color = reader_color(color, &defaults.background_color);
+    }
+    if let Some(align) = value.get("textAlign").and_then(Value::as_str) {
+        if matches!(align, "left" | "right" | "center" | "justify") {
+            defaults.text_align = align.to_owned();
+        }
+    }
+    if let Some(preload_count) = value.get("preloadCount").and_then(Value::as_u64) {
+        if (1..=20).contains(&preload_count) {
+            defaults.preload_count = preload_count as usize;
+        }
+    }
+    if let Some(theme) = value.get("theme").and_then(Value::as_str) {
+        defaults.theme = match theme {
+            "sepia" => ReaderTheme::Sepia,
+            "dark" => ReaderTheme::Dark,
+            "system" | "light" => ReaderTheme::System,
+            _ => ReaderTheme::Paper,
+        };
     }
     defaults
+}
+
+fn reader_color(value: &str, fallback: &str) -> String {
+    let hex = value.strip_prefix('#').unwrap_or("");
+    if matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return format!("#{hex}");
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "black" | "white" | "red" | "green" | "blue" | "gray" | "grey" | "transparent" => {
+            value.to_ascii_lowercase()
+        }
+        _ => fallback.to_owned(),
+    }
 }
 
 fn text_at(value: &Value, keys: &[&str]) -> Option<String> {
@@ -2315,6 +2503,23 @@ fn validate_number_range(
             return Err(format!("Settings {field} must be a number"));
         };
         if !number.is_finite() || number < min || number > max {
+            return Err(format!("Settings {field} must be between {min} and {max}"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_integer_range(
+    object: &Map<String, Value>,
+    field: &str,
+    min: u64,
+    max: u64,
+) -> Result<(), String> {
+    if let Some(value) = object.get(field) {
+        let Some(number) = value.as_u64() else {
+            return Err(format!("Settings {field} must be a non-negative integer"));
+        };
+        if number < min || number > max {
             return Err(format!("Settings {field} must be between {min} and {max}"));
         }
     }
@@ -2718,7 +2923,7 @@ mod tauri_commands {
         options: crate::local_books::LocalImportOptions,
         service: State<'_, ApplicationService>,
     ) -> Result<Value, String> {
-        let Some(path) = pick_file(&app, "Books", &["txt", "epub"]).await? else {
+        let Some(path) = pick_file(&app, "Books", &["txt", "epub", "cbz", "pdf"]).await? else {
             return Ok(json!({ "cancelled": true }));
         };
         let result = service.import_local_book(&path.path, options).await?;
@@ -3179,6 +3384,7 @@ pub use tauri_commands::*;
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::HashMap,
         io::{BufRead, BufReader, Read, Write},
         net::{TcpListener, TcpStream},
         path::PathBuf,
@@ -3192,7 +3398,162 @@ mod tests {
 
     use serde_json::{json, Value};
 
-    use super::ApplicationService;
+    use super::{AppTask, ApplicationService, EngineFuture, SourceExecutor};
+    use crate::source_engine::SourceEngineRequest;
+
+    #[derive(Clone)]
+    struct ControlledExecutor {
+        chapter_count: usize,
+        content_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        search_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        content_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
+    }
+
+    struct ExecutionGate {
+        entered: tokio::sync::Notify,
+        permits: tokio::sync::Semaphore,
+    }
+
+    impl ExecutionGate {
+        fn new() -> Self {
+            Self {
+                entered: tokio::sync::Notify::new(),
+                permits: tokio::sync::Semaphore::new(0),
+            }
+        }
+
+        async fn wait_until_entered(&self) {
+            tokio::time::timeout(Duration::from_secs(5), self.entered.notified())
+                .await
+                .expect("executor should reach the controlled operation");
+        }
+
+        fn release(&self) {
+            self.permits.add_permits(1);
+        }
+    }
+
+    impl ControlledExecutor {
+        fn new(chapter_count: usize) -> Self {
+            Self {
+                chapter_count,
+                content_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                search_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                content_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+            }
+        }
+
+        fn gate_content(&self, book_url: &str) -> Arc<ExecutionGate> {
+            let gate = Arc::new(ExecutionGate::new());
+            self.content_gates
+                .lock()
+                .expect("content gate mutex")
+                .insert(book_url.to_owned(), gate.clone());
+            gate
+        }
+
+        fn gate_search(&self, keyword: &str) -> Arc<ExecutionGate> {
+            let gate = Arc::new(ExecutionGate::new());
+            self.search_gates
+                .lock()
+                .expect("search gate mutex")
+                .insert(keyword.to_owned(), gate.clone());
+            gate
+        }
+
+        fn content_calls(&self) -> Vec<(String, String)> {
+            self.content_calls
+                .lock()
+                .expect("content call mutex")
+                .clone()
+        }
+    }
+
+    impl SourceExecutor for ControlledExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async move {
+                match request.operation.as_str() {
+                    "search" => {
+                        let keyword = request.keyword.unwrap_or_default();
+                        let gate = self
+                            .search_gates
+                            .lock()
+                            .expect("search gate mutex")
+                            .remove(&keyword);
+                        if let Some(gate) = gate {
+                            gate.entered.notify_one();
+                            let permit = gate
+                                .permits
+                                .acquire()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            permit.forget();
+                        }
+                        Ok(json!({ "books": [{
+                            "name": keyword,
+                            "author": "Controlled executor",
+                            "bookUrl": format!("mock://book/{keyword}"),
+                        }] }))
+                    }
+                    "bookInfo" => Ok(request.book.unwrap_or_else(|| json!({}))),
+                    "chapters" => {
+                        let book_url = request
+                            .book
+                            .as_ref()
+                            .and_then(|book| book.get("bookUrl"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "mock bookUrl missing".to_owned())?;
+                        Ok(Value::Array(
+                            (0..self.chapter_count)
+                                .map(|index| {
+                                    json!({
+                                        "title": format!("Chapter {index}"),
+                                        "url": format!("{book_url}/chapter/{index}"),
+                                    })
+                                })
+                                .collect(),
+                        ))
+                    }
+                    "content" => {
+                        let book_url = request
+                            .book
+                            .as_ref()
+                            .and_then(|book| book.get("bookUrl"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "mock bookUrl missing".to_owned())?
+                            .to_owned();
+                        let chapter_url = request
+                            .chapter
+                            .as_ref()
+                            .and_then(|chapter| chapter.get("url"))
+                            .and_then(Value::as_str)
+                            .ok_or_else(|| "mock chapter URL missing".to_owned())?
+                            .to_owned();
+                        let gate = self
+                            .content_gates
+                            .lock()
+                            .expect("content gate mutex")
+                            .remove(&book_url);
+                        if let Some(gate) = gate {
+                            gate.entered.notify_one();
+                            let permit = gate
+                                .permits
+                                .acquire()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            permit.forget();
+                        }
+                        self.content_calls
+                            .lock()
+                            .expect("content call mutex")
+                            .push((book_url, chapter_url.clone()));
+                        Ok(json!(format!("<p>Cached from {chapter_url}</p>")))
+                    }
+                    other => Err(format!("unexpected mock operation {other}")),
+                }
+            })
+        }
+    }
 
     struct SourceFixture {
         address: std::net::SocketAddr,
@@ -3302,6 +3663,92 @@ mod tests {
         std::env::temp_dir().join(format!("legado-app-flow-{}", uuid::Uuid::new_v4().simple()))
     }
 
+    #[tokio::test]
+    async fn settings_round_trip_migrates_legacy_fields_and_validates_ui_ranges() {
+        let root = temp_root();
+        let service =
+            ApplicationService::open_with_executor(&root, Arc::new(ControlledExecutor::new(1)))
+                .await
+                .expect("application service");
+
+        service
+            .save_settings(json!({
+                "reader": {
+                    "fontSize": 19,
+                    "lineHeight": 1.8,
+                    "preloadCount": 5,
+                    "theme": "light"
+                }
+            }))
+            .await
+            .expect("legacy settings should migrate");
+        let settings_ref = service.store.settings_ref();
+        let saved = service
+            .store
+            .read_json_ref(&settings_ref)
+            .await
+            .expect("saved settings");
+        assert_eq!(saved["reader"]["fontSizePx"], 19);
+        assert!(saved["reader"].get("fontSize").is_none());
+        assert_eq!(saved["reader"]["theme"], "system");
+        assert_eq!(saved["reader"]["replacements"], json!([]));
+
+        assert!(service
+            .save_settings(json!({ "reader": { "fontSizePx": 37 } }))
+            .await
+            .is_err());
+        assert!(service
+            .save_settings(json!({ "reader": { "fontSizePx": "20" } }))
+            .await
+            .is_err());
+        assert!(service
+            .save_settings(json!({ "reader": { "lineHeight": 2.9 } }))
+            .await
+            .is_err());
+        assert!(service
+            .save_settings(json!({ "reader": { "preloadCount": 5.5 } }))
+            .await
+            .is_err());
+        assert_eq!(
+            service
+                .store
+                .read_json_ref(&settings_ref)
+                .await
+                .expect("settings remain unchanged after rejected input"),
+            saved
+        );
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reader_defaults_use_canonical_fields_and_reject_unsafe_css_values() {
+        let defaults = super::reader_defaults(Some(json!({
+            "reader": {
+                "fontSizePx": 28,
+                "fontSize": 13,
+                "lineHeight": 2.4,
+                "fontFamily": "mono",
+                "textColor": "red",
+                "backgroundColor": "url(javascript:alert(1))",
+                "textAlign": "center",
+                "theme": "dark",
+                "preloadCount": 9,
+                "replacements": [{ "find": "x", "replace": "y" }]
+            }
+        })));
+        assert_eq!(defaults.font_size_px, 28.0);
+        assert_eq!(defaults.line_height, 2.4);
+        assert_eq!(defaults.font_family, "monospace");
+        assert_eq!(defaults.text_color, "red");
+        assert_eq!(defaults.background_color, "#f7f3e9");
+        assert_eq!(defaults.text_align, "center");
+        assert_eq!(defaults.theme, crate::models::ReaderTheme::Dark);
+        assert_eq!(defaults.preload_count, 9);
+        assert!(defaults.replacements.is_empty());
+    }
+
     async fn json_get(client: &reqwest::Client, url: &str) -> Value {
         let text = client
             .get(url)
@@ -3314,6 +3761,635 @@ mod tests {
             .await
             .expect("resource body");
         serde_json::from_str(&text).expect("resource JSON")
+    }
+
+    async fn controlled_service(
+        chapter_count: usize,
+    ) -> (ApplicationService, Arc<ControlledExecutor>, PathBuf, String) {
+        let root = temp_root();
+        let executor = Arc::new(ControlledExecutor::new(chapter_count));
+        let service = ApplicationService::open_with_executor(&root, executor.clone())
+            .await
+            .expect("controlled application service");
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Controlled fixture",
+                    "bookSourceUrl": "mock://source/controlled",
+                    "bookSourceType": 0,
+                    "ruleSearch": { "privateRule": "never expose" }
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import controlled source");
+        let source_id = imported["sources"][0]["id"]
+            .as_str()
+            .expect("controlled source ID")
+            .to_owned();
+        (service, executor, root, source_id)
+    }
+
+    async fn add_controlled_book(
+        service: &ApplicationService,
+        source_id: &str,
+        keyword: &str,
+    ) -> String {
+        let search = service
+            .search_books(&[source_id.to_owned()], keyword, 1, |_| {})
+            .await
+            .expect("controlled search");
+        let search_ref = crate::resources::ResourceRef::new(
+            search["resource"]["resourceId"]
+                .as_str()
+                .expect("search resource ID"),
+        )
+        .expect("valid search resource");
+        let document = service
+            .store
+            .read_json_ref(&search_ref)
+            .await
+            .expect("controlled search results");
+        let result_id = document["results"][0]["resultId"]
+            .as_str()
+            .expect("search result ID");
+        let added = service
+            .add_book(result_id)
+            .await
+            .expect("add controlled book");
+        let book_ref = crate::resources::ResourceRef::new(
+            added["book"]["resourceId"]
+                .as_str()
+                .expect("book resource ID"),
+        )
+        .expect("valid book resource");
+        service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("controlled book document")["id"]
+            .as_str()
+            .expect("book ID")
+            .to_owned()
+    }
+
+    async fn wait_for_task<F>(service: &ApplicationService, task_id: &str, predicate: F) -> AppTask
+    where
+        F: Fn(&AppTask) -> bool,
+    {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let task = service
+                    .task_summary_record(task_id)
+                    .await
+                    .expect("task must remain available");
+                if predicate(&task) {
+                    return task;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("task should reach expected state")
+    }
+
+    async fn wait_for_task_status(
+        service: &ApplicationService,
+        task_id: &str,
+        status: &str,
+    ) -> AppTask {
+        wait_for_task(service, task_id, |task| task.status == status).await
+    }
+
+    fn task_id_from_start(result: &Value) -> String {
+        result["taskId"]
+            .as_str()
+            .expect("task ID returned from start")
+            .to_owned()
+    }
+
+    async fn wait_for_task_worker_exit(service: &ApplicationService, task_id: &str) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if !service.tasks.lock().await.signals.contains_key(task_id) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("task worker should release its control signal");
+    }
+
+    #[tokio::test]
+    async fn chapter_download_task_processes_more_than_fifty_requested_chapters() {
+        let (service, executor, root, source_id) = controlled_service(61).await;
+        let book_id = add_controlled_book(&service, &source_id, "long-book").await;
+        let started = service
+            .start_chapter_download(&book_id, 0, 61)
+            .await
+            .expect("start full-book download");
+        let task_id = task_id_from_start(&started);
+        let completed = wait_for_task_status(&service, &task_id, "completed").await;
+        assert_eq!(completed.total, 61);
+        assert_eq!(completed.completed, 61);
+        assert_eq!(executor.content_calls().len(), 61);
+
+        let book_ref = service.store.book_ref(&book_id).expect("book resource");
+        let book = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("downloaded book document");
+        assert_eq!(book["chapters"].as_array().unwrap().len(), 61);
+        assert!(book["chapters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|chapter| chapter["src"].is_string()));
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn pausing_a_download_releases_its_worker_slot_for_another_task() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_a = add_controlled_book(&service, &source_id, "paused-a").await;
+        let book_b = add_controlled_book(&service, &source_id, "available-b").await;
+        let book_c = add_controlled_book(&service, &source_id, "blocked-c").await;
+        let gate_a = executor.gate_content("mock://book/paused-a");
+        let gate_c = executor.gate_content("mock://book/blocked-c");
+
+        let task_a = task_id_from_start(
+            &service
+                .start_chapter_download(&book_a, 0, 2)
+                .await
+                .expect("start task A"),
+        );
+        gate_a.wait_until_entered().await;
+        let task_c = task_id_from_start(
+            &service
+                .start_chapter_download(&book_c, 0, 1)
+                .await
+                .expect("start task C"),
+        );
+        gate_c.wait_until_entered().await;
+
+        service.pause_task(&task_a).await.expect("pause task A");
+        gate_a.release();
+        let paused = wait_for_task_status(&service, &task_a, "paused").await;
+        assert_eq!(paused.completed, 1);
+
+        let task_b = task_id_from_start(
+            &service
+                .start_chapter_download(&book_b, 0, 1)
+                .await
+                .expect("start task B while A is paused and C is blocked"),
+        );
+        let completed_b = wait_for_task_status(&service, &task_b, "completed").await;
+        assert_eq!(completed_b.completed, 1);
+        assert_eq!(
+            service
+                .task_summary_record(&task_a)
+                .await
+                .expect("paused task A")
+                .status,
+            "paused"
+        );
+
+        gate_c.release();
+        wait_for_task_status(&service, &task_c, "completed").await;
+        service.resume_task(&task_a).await.expect("resume task A");
+        let completed_a = wait_for_task_status(&service, &task_a, "completed").await;
+        assert_eq!(completed_a.completed, 2);
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_delayed_search_discards_its_late_results() {
+        let (service, executor, root, source_id) = controlled_service(1).await;
+        let gate = executor.gate_search("cancel-me");
+        let started = service
+            .start_search(&[source_id], "cancel-me", 1)
+            .await
+            .expect("start delayed search");
+        let task_id = task_id_from_start(&started);
+        gate.wait_until_entered().await;
+        service.cancel_task(&task_id).await.expect("cancel search");
+        gate.release();
+        let cancelled = wait_for_task_status(&service, &task_id, "cancelled").await;
+        assert_eq!(cancelled.completed, 0);
+
+        let search_ref = crate::resources::ResourceRef::new(
+            started["resource"]["resourceId"]
+                .as_str()
+                .expect("search resource ID"),
+        )
+        .expect("valid search resource");
+        let document = service
+            .store
+            .read_json_ref(&search_ref)
+            .await
+            .expect("cancelled search document");
+        assert_eq!(document["complete"], true);
+        assert_eq!(document["cancelled"], true);
+        assert!(document["results"].as_array().unwrap().is_empty());
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn interrupted_download_resumes_from_its_persisted_chapter_cursor() {
+        let (service, executor, root, source_id) = controlled_service(3).await;
+        let book_id = add_controlled_book(&service, &source_id, "restart-book").await;
+        let gate = executor.gate_content("mock://book/restart-book");
+        let task_id = task_id_from_start(
+            &service
+                .start_chapter_download(&book_id, 0, 3)
+                .await
+                .expect("start restartable download"),
+        );
+        gate.wait_until_entered().await;
+        service.pause_task(&task_id).await.expect("pause download");
+        gate.release();
+        let paused = wait_for_task_status(&service, &task_id, "paused").await;
+        assert_eq!(paused.completed, 1);
+        service
+            .cancel_task(&task_id)
+            .await
+            .expect("stop old worker");
+        wait_for_task_status(&service, &task_id, "cancelled").await;
+        wait_for_task_worker_exit(&service, &task_id).await;
+
+        let tasks_ref = service.store.reading_ref("tasks").expect("tasks resource");
+        service
+            .store
+            .update_json_ref(&tasks_ref, |mut document| {
+                let task = document["tasks"]
+                    .as_array_mut()
+                    .and_then(|tasks| tasks.iter_mut().find(|task| task["id"] == task_id))
+                    .ok_or_else(|| "restart test task missing".to_owned())?;
+                task["status"] = json!("running");
+                Ok(document)
+            })
+            .await
+            .expect("simulate process interruption on disk");
+        drop(service);
+
+        let restarted = ApplicationService::open_with_executor(&root, executor.clone())
+            .await
+            .expect("reopen after interruption");
+        let interrupted = restarted
+            .task_summary_record(&task_id)
+            .await
+            .expect("restored task history");
+        assert_eq!(interrupted.status, "interrupted");
+        assert_eq!(interrupted.completed, 1);
+
+        restarted
+            .resume_task(&task_id)
+            .await
+            .expect("resume interrupted task");
+        let completed = wait_for_task_status(&restarted, &task_id, "completed").await;
+        assert_eq!(completed.completed, 3);
+        let calls = executor.content_calls();
+        for chapter_index in 0..3 {
+            let chapter_url = format!("mock://book/restart-book/chapter/{chapter_index}");
+            assert_eq!(
+                calls.iter().filter(|(_, url)| url == &chapter_url).count(),
+                1,
+                "chapter {chapter_index} must be prepared exactly once"
+            );
+        }
+
+        drop(restarted);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn restore_excludes_new_operations_drains_workers_and_keeps_archived_task_history() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let snapshot_book = add_controlled_book(&service, &source_id, "snapshot-book").await;
+        let archived_task = task_id_from_start(
+            &service
+                .start_chapter_download(&snapshot_book, 0, 1)
+                .await
+                .expect("start archived task"),
+        );
+        wait_for_task_status(&service, &archived_task, "completed").await;
+        service
+            .save_progress(
+                &snapshot_book,
+                json!({
+                    "chapterIndex": 0,
+                    "offset": 7,
+                    "updatedAtMs": 1_800_000_000_001u64,
+                }),
+            )
+            .await
+            .expect("persist snapshot progress");
+        crate::reading_tools::record_reading_session(
+            &service.store,
+            crate::reading_tools::ReadingSession {
+                book_id: snapshot_book.clone(),
+                session_id: "before-restore".to_owned(),
+                duration_ms: 1_000,
+                ended_at_ms: 10_000,
+                utc_offset_minutes: 0,
+            },
+        )
+        .await
+        .expect("persist snapshot history");
+
+        let archive = root.with_extension("zip");
+        service
+            .create_backup(&archive)
+            .await
+            .expect("create snapshot backup");
+        service
+            .save_progress(
+                &snapshot_book,
+                json!({
+                    "chapterIndex": 0,
+                    "offset": 99,
+                    "updatedAtMs": 1_800_000_000_099u64,
+                }),
+            )
+            .await
+            .expect("write data after snapshot");
+
+        let active_book = add_controlled_book(&service, &source_id, "post-snapshot-book").await;
+        let active_gate = executor.gate_content("mock://book/post-snapshot-book");
+        let active_task = task_id_from_start(
+            &service
+                .start_chapter_download(&active_book, 0, 1)
+                .await
+                .expect("start active download"),
+        );
+        active_gate.wait_until_entered().await;
+
+        let restoring_service = service.clone();
+        let restoring_archive = archive.clone();
+        let restore =
+            tokio::spawn(async move { restoring_service.restore_backup(&restoring_archive).await });
+        wait_for_task_status(&service, &active_task, "cancelling").await;
+
+        let progress_service = service.clone();
+        let progress_book = snapshot_book.clone();
+        let progress_write = tokio::spawn(async move {
+            progress_service
+                .save_progress(
+                    &progress_book,
+                    json!({
+                        "chapterIndex": 0,
+                        "offset": 55,
+                        "updatedAtMs": 1_800_000_000_155u64,
+                    }),
+                )
+                .await
+        });
+        let history_service = service.clone();
+        let history_book = snapshot_book.clone();
+        let history_write = tokio::spawn(async move {
+            let _operation = history_service.operation_read().await;
+            crate::reading_tools::record_reading_session(
+                &history_service.store,
+                crate::reading_tools::ReadingSession {
+                    book_id: history_book,
+                    session_id: "after-restore".to_owned(),
+                    duration_ms: 2_000,
+                    ended_at_ms: 20_000,
+                    utc_offset_minutes: 0,
+                },
+            )
+            .await
+        });
+        let start_service = service.clone();
+        let start_book = active_book.clone();
+        let blocked_start = tokio::spawn(async move {
+            start_service
+                .start_chapter_download(&start_book, 0, 1)
+                .await
+        });
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !restore.is_finished(),
+            "restore must drain the active engine call"
+        );
+        assert!(
+            !progress_write.is_finished(),
+            "progress mutation must wait behind restore"
+        );
+        assert!(
+            !history_write.is_finished(),
+            "history mutation must wait behind restore"
+        );
+        assert!(
+            !blocked_start.is_finished(),
+            "new task starts must be rejected until restore ends"
+        );
+
+        active_gate.release();
+        restore
+            .await
+            .expect("restore task join")
+            .expect("restore backup");
+        progress_write
+            .await
+            .expect("progress task join")
+            .expect("progress write after restore");
+        history_write
+            .await
+            .expect("history task join")
+            .expect("history write after restore");
+        assert!(
+            blocked_start
+                .await
+                .expect("blocked task-start join")
+                .is_err(),
+            "a task targeting a removed book must fail after restore opens admission"
+        );
+
+        let restored_book_ref = service
+            .store
+            .book_ref(&snapshot_book)
+            .expect("restored book ref");
+        let restored_book = service
+            .store
+            .read_json_ref(&restored_book_ref)
+            .await
+            .expect("restored book");
+        assert_eq!(restored_book["progress"]["offset"], 55);
+        let removed_book_ref = service
+            .store
+            .book_ref(&active_book)
+            .expect("removed book ref is syntactically valid");
+        assert!(service
+            .store
+            .read_json_ref(&removed_book_ref)
+            .await
+            .is_err());
+
+        let history_ref = crate::reading_tools::reading_history_resource(&service.store)
+            .await
+            .expect("history ref");
+        let history = service
+            .store
+            .read_json_ref(&history_ref)
+            .await
+            .expect("restored and updated history");
+        let sessions = history["sessions"].as_array().unwrap();
+        assert!(sessions
+            .iter()
+            .any(|session| session["sessionId"] == "before-restore"));
+        assert!(sessions
+            .iter()
+            .any(|session| session["sessionId"] == "after-restore"));
+
+        let tasks_ref = service.store.reading_ref("tasks").expect("tasks ref");
+        let tasks = service
+            .store
+            .read_json_ref(&tasks_ref)
+            .await
+            .expect("restored task history");
+        let archived = tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|task| task["id"] == archived_task)
+            .expect("completed task from snapshot");
+        assert_eq!(archived["status"], "completed");
+        assert!(!tasks["tasks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|task| task["id"] == active_task));
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(archive);
+    }
+
+    #[tokio::test]
+    async fn backup_waits_for_a_chapter_boundary_and_keeps_a_resumable_cursor() {
+        let (service, executor, root, source_id) = controlled_service(3).await;
+        let book_id = add_controlled_book(&service, &source_id, "backup-cursor").await;
+        let gate = executor.gate_content("mock://book/backup-cursor");
+        let task_id = task_id_from_start(
+            &service
+                .start_chapter_download(&book_id, 0, 3)
+                .await
+                .expect("start download"),
+        );
+        gate.wait_until_entered().await;
+
+        let archive = root.with_extension("snapshot.zip");
+        let backup_service = service.clone();
+        let backup_archive = archive.clone();
+        let backup =
+            tokio::spawn(async move { backup_service.create_backup(&backup_archive).await });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !backup.is_finished(),
+            "backup must wait while the current chapter is being materialized"
+        );
+
+        gate.release();
+        backup
+            .await
+            .expect("backup task join")
+            .expect("create consistent backup");
+        let completed = wait_for_task_status(&service, &task_id, "completed").await;
+        assert_eq!(completed.completed, 3);
+
+        service
+            .restore_backup(&archive)
+            .await
+            .expect("restore boundary snapshot");
+        let interrupted = service
+            .task_summary_record(&task_id)
+            .await
+            .expect("archived task cursor");
+        assert_eq!(interrupted.status, "interrupted");
+        assert_eq!(interrupted.completed, 1);
+
+        let book_ref = service.store.book_ref(&book_id).expect("book resource");
+        let book = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("book from boundary snapshot");
+        assert!(book["chapters"][0]["src"].is_string());
+        assert!(book["chapters"][1]["src"].is_null());
+        assert!(book["chapters"][2]["src"].is_null());
+
+        service
+            .resume_task(&task_id)
+            .await
+            .expect("resume from cursor");
+        let resumed = wait_for_task_status(&service, &task_id, "completed").await;
+        assert_eq!(resumed.completed, 3);
+        let calls = executor.content_calls();
+        for chapter_index in 0..3 {
+            let chapter_url = format!("mock://book/backup-cursor/chapter/{chapter_index}");
+            assert_eq!(
+                calls.iter().filter(|(_, url)| url == &chapter_url).count(),
+                if chapter_index == 0 { 1 } else { 2 },
+                "snapshot-resume must not redownload chapter {chapter_index}"
+            );
+        }
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(archive);
+    }
+
+    #[tokio::test]
+    async fn paused_download_does_not_hold_the_backup_operation_gate() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "paused-backup").await;
+        let gate = executor.gate_content("mock://book/paused-backup");
+        let task_id = task_id_from_start(
+            &service
+                .start_chapter_download(&book_id, 0, 2)
+                .await
+                .expect("start download"),
+        );
+        gate.wait_until_entered().await;
+        service.pause_task(&task_id).await.expect("pause download");
+        gate.release();
+        let paused = wait_for_task_status(&service, &task_id, "paused").await;
+        assert_eq!(paused.completed, 1);
+
+        let archive = root.with_extension("paused.zip");
+        tokio::time::timeout(Duration::from_secs(2), service.create_backup(&archive))
+            .await
+            .expect("a paused task must not hold the operation gate")
+            .expect("backup paused state");
+        assert_eq!(
+            service
+                .task_summary_record(&task_id)
+                .await
+                .expect("paused task record")
+                .status,
+            "paused"
+        );
+
+        service
+            .resume_task(&task_id)
+            .await
+            .expect("resume after backup");
+        let completed = wait_for_task_status(&service, &task_id, "completed").await;
+        assert_eq!(completed.completed, 2);
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(archive);
     }
 
     #[tokio::test]
@@ -3397,6 +4473,43 @@ mod tests {
             .await
             .expect("chapter HTML");
         assert!(first_html.contains("First cached chapter"));
+
+        let second_download = service
+            .start_chapter_download(&book_id, 1, 1)
+            .await
+            .expect("start real KMP second chapter download");
+        let second_task_id = task_id_from_start(&second_download);
+        let second_task = wait_for_task_status(&service, &second_task_id, "completed").await;
+        assert_eq!(second_task.completed, 1);
+        let second_book = service
+            .store
+            .read_json_ref(
+                &service
+                    .store
+                    .book_ref(&book_id)
+                    .expect("book ref after second chapter"),
+            )
+            .await
+            .expect("book after second chapter download");
+        let second_chapter_id = second_book["chapters"][1]["id"]
+            .as_str()
+            .expect("second chapter ID");
+        let second_chapter_ref = service
+            .store
+            .chapter_ref(&book_id, second_chapter_id)
+            .expect("second chapter resource ref");
+        let second_src = service.resource_server().url_for(&second_chapter_ref);
+        let second_html = client
+            .get(second_src)
+            .send()
+            .await
+            .expect("second chapter resource")
+            .error_for_status()
+            .expect("second chapter HTTP status")
+            .text()
+            .await
+            .expect("second chapter HTML");
+        assert!(second_html.contains("Second cached chapter"));
 
         assert!(service
             .save_progress(

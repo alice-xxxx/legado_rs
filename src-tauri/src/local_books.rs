@@ -1,4 +1,4 @@
-//! Imports local text and EPUB files into the same public book/HTML resources
+//! Imports local text, EPUB, CBZ, and PDF files into public book/HTML resources
 //! used by books fetched through the Kotlin source engine.
 //!
 //! This module accepts filesystem paths only after the native file picker has
@@ -6,11 +6,14 @@
 //! evaluates source rules or scripts.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::OnceLock;
 
 use encoding_rs::{Encoding, GBK};
+use image::{ImageFormat, ImageReader, Limits};
+use lopdf::{Dictionary, Document as PdfDocument, LoadOptions, Object};
 use quick_xml::events::Event;
 use quick_xml::Reader;
 use regex::{Regex, RegexBuilder};
@@ -30,11 +33,20 @@ const MAX_EPUB_FILES: usize = 100_000;
 const MAX_EPUB_XML_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_EPUB_CHAPTERS: usize = 20_000;
 const MAX_EPUB_ASSET_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_CBZ_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_CBZ_EXPANDED_BYTES: u64 = 768 * 1024 * 1024;
+const MAX_CBZ_FILES: usize = 100_000;
+const MAX_CBZ_PAGES: usize = 20_000;
+const MAX_CBZ_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_PDF_FILE_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_PDF_DECOMPRESSED_STREAM_BYTES: usize = 64 * 1024 * 1024;
+const MAX_PDF_PAGES: usize = 10_000;
+const MAX_PDF_PASSWORD_BYTES: usize = 1024;
 
 /// Rust-side import options. The optional TOC pattern is a regular expression
 /// over complete text lines; it is not a book-source rule and is never sent to
 /// the source engine or WebView for execution.
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalImportOptions {
     /// An encoding_rs label such as `gbk`, `big5`, or `utf-8`. When omitted,
@@ -45,6 +57,23 @@ pub struct LocalImportOptions {
     /// without a capture, the full matching line becomes the chapter title.
     #[serde(default)]
     pub toc_regex: Option<String>,
+    /// Used only while inspecting a protected PDF. Never serialized or saved.
+    #[serde(default, skip_serializing)]
+    pub pdf_password: Option<String>,
+}
+
+impl fmt::Debug for LocalImportOptions {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalImportOptions")
+            .field("charset", &self.charset)
+            .field("toc_regex", &self.toc_regex)
+            .field(
+                "pdf_password",
+                &self.pdf_password.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug)]
@@ -52,6 +81,7 @@ struct ParsedChapter {
     title: String,
     html: Option<String>,
     text: Option<String>,
+    pdf_page_index: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -68,6 +98,7 @@ struct ParsedBook {
     chapters: Vec<ParsedChapter>,
     assets: Vec<ParsedAsset>,
     cover_asset_id: Option<String>,
+    pdf_asset_id: Option<String>,
 }
 
 /// Import a user-selected local `.txt` or `.epub` path. The caller should pass
@@ -135,7 +166,21 @@ async fn persist_parsed_book(
     let mut chapters = Vec::with_capacity(parsed.chapters.len());
     for (index, parsed_chapter) in parsed.chapters.into_iter().enumerate() {
         let chapter_id = format!("chapter-{:05}", index + 1);
-        let src = if let Some(html) = parsed_chapter.html {
+        let src = if let (Some(pdf_asset_id), Some(page_index)) = (
+            parsed.pdf_asset_id.as_deref(),
+            parsed_chapter.pdf_page_index,
+        ) {
+            store
+                .write_pdf_page(
+                    book_id,
+                    &chapter_id,
+                    pdf_asset_id,
+                    page_index,
+                    "page-fit",
+                    defaults,
+                )
+                .await
+        } else if let Some(html) = parsed_chapter.html {
             store
                 .write_chapter_html(book_id, &chapter_id, &html, defaults)
                 .await
@@ -190,10 +235,19 @@ fn parse_selected_file(path: &Path, options: &LocalImportOptions) -> Result<Pars
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if options
+        .pdf_password
+        .as_deref()
+        .is_some_and(|password| password.len() > MAX_PDF_PASSWORD_BYTES)
+    {
+        return Err("PDF password exceeds the supported length limit".to_owned());
+    }
     let max_size = match extension.as_str() {
         "txt" => MAX_TEXT_FILE_BYTES,
         "epub" => MAX_EPUB_FILE_BYTES,
-        _ => return Err("Only TXT and EPUB files can be imported".to_owned()),
+        "cbz" => MAX_CBZ_FILE_BYTES,
+        "pdf" => MAX_PDF_FILE_BYTES,
+        _ => return Err("Supported local book formats are TXT, EPUB, CBZ, and PDF".to_owned()),
     };
     if metadata.len() == 0 || metadata.len() > max_size {
         return Err(format!(
@@ -206,6 +260,8 @@ fn parse_selected_file(path: &Path, options: &LocalImportOptions) -> Result<Pars
     let mut parsed = match extension.as_str() {
         "txt" => parse_text_file(&path, &bytes, options),
         "epub" => parse_epub_file(&bytes),
+        "cbz" => parse_cbz_file(&path, &bytes),
+        "pdf" => parse_pdf_file(bytes, &path, options.pdf_password.as_deref()),
         _ => unreachable!("extension was checked above"),
     }?;
     parsed.identity = identity;
@@ -226,6 +282,201 @@ fn local_identity(path: &Path, bytes: &[u8], options: &LocalImportOptions) -> St
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+fn parse_cbz_file(path: &Path, bytes: &[u8]) -> Result<ParsedBook, String> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes))
+        .map_err(|_| "The selected CBZ is not a valid ZIP archive".to_owned())?;
+    let members = index_zip_members(&mut archive, MAX_CBZ_FILES, MAX_CBZ_EXPANDED_BYTES, "CBZ")?;
+    let mut pages = members
+        .keys()
+        .filter(|name| cbz_image_format(name).is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    pages.sort_by(|left, right| {
+        natord::compare_ignore_case(left, right).then_with(|| left.cmp(right))
+    });
+    if pages.is_empty() {
+        return Err("CBZ archive contains no supported image pages".to_owned());
+    }
+    if pages.len() > MAX_CBZ_PAGES {
+        return Err("CBZ archive contains too many image pages".to_owned());
+    }
+
+    let mut assets = Vec::with_capacity(pages.len());
+    let mut chapters = Vec::with_capacity(pages.len());
+    let mut cover_asset_id = None;
+    for (index, name) in pages.iter().enumerate() {
+        let format = cbz_image_format(name).expect("filtered supported image format");
+        let image_bytes =
+            read_archive_member(&mut archive, &members, name, MAX_CBZ_IMAGE_BYTES, "CBZ")?;
+        let mut decoder = ImageReader::with_format(Cursor::new(&image_bytes), format);
+        let mut limits = Limits::default();
+        limits.max_image_width = Some(32_768);
+        limits.max_image_height = Some(32_768);
+        limits.max_alloc = Some(256 * 1024 * 1024);
+        decoder.limits(limits);
+        decoder
+            .decode()
+            .map_err(|_| format!("CBZ page image is invalid or exceeds decoder limits: {name}"))?;
+
+        let extension = Path::new(name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let id = format!("cbz-{}.{}", short_hash(name), extension);
+        if index == 0 {
+            cover_asset_id = Some(id.clone());
+        }
+        assets.push(ParsedAsset {
+            id: id.clone(),
+            bytes: image_bytes,
+        });
+        let page_name = Path::new(name)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.trim().is_empty())
+            .map(|stem| stem.chars().take(200).collect::<String>())
+            .unwrap_or_else(|| format!("Page {}", index + 1));
+        chapters.push(ParsedChapter {
+            title: page_name.clone(),
+            html: Some(format!(
+                r#"<img src="../assets/{id}" alt="{}">"#,
+                escape_html_attr(&page_name)
+            )),
+            text: None,
+            pdf_page_index: None,
+        });
+    }
+
+    let title = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|title| !title.trim().is_empty())
+        .unwrap_or("CBZ Book")
+        .chars()
+        .take(200)
+        .collect();
+    Ok(ParsedBook {
+        identity: String::new(),
+        title,
+        author: String::new(),
+        chapters,
+        assets,
+        cover_asset_id,
+        pdf_asset_id: None,
+    })
+}
+
+fn cbz_image_format(name: &str) -> Option<ImageFormat> {
+    match Path::new(name)
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some(ImageFormat::Png),
+        "jpg" | "jpeg" => Some(ImageFormat::Jpeg),
+        "webp" => Some(ImageFormat::WebP),
+        "gif" => Some(ImageFormat::Gif),
+        "bmp" => Some(ImageFormat::Bmp),
+        _ => None,
+    }
+}
+
+fn parse_pdf_file(
+    bytes: Vec<u8>,
+    path: &Path,
+    password: Option<&str>,
+) -> Result<ParsedBook, String> {
+    let options = LoadOptions {
+        password: password.map(str::to_owned),
+        max_decompressed_size: Some(MAX_PDF_DECOMPRESSED_STREAM_BYTES),
+        ..LoadOptions::default()
+    };
+    let document =
+        PdfDocument::load_mem_with_options(&bytes, options).map_err(|error| match error {
+            lopdf::Error::Unimplemented(message) if message.contains("requires a password") => {
+                "This PDF is password protected; provide pdfPassword to inspect it".to_owned()
+            }
+            lopdf::Error::InvalidPassword => "The PDF password is incorrect".to_owned(),
+            _ => "The selected PDF is damaged, unsupported, or could not be opened".to_owned(),
+        })?;
+    if document.is_encrypted() {
+        return Err("This PDF is password protected; provide pdfPassword to inspect it".to_owned());
+    }
+    let pages = document.get_pages();
+    if pages.is_empty() {
+        return Err("PDF contains no readable pages".to_owned());
+    }
+    validate_pdf_page_count(pages.len())?;
+
+    let info = pdf_info_dictionary(&document);
+    let title = info
+        .and_then(|info| pdf_info_text(info, b"Title"))
+        .filter(|title| !title.trim().is_empty())
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "PDF Book".to_owned())
+        .chars()
+        .take(200)
+        .collect();
+    let author = info
+        .and_then(|info| pdf_info_text(info, b"Author"))
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    let chapters = pages
+        .keys()
+        .enumerate()
+        .map(|(index, _)| ParsedChapter {
+            title: format!("Page {}", index + 1),
+            html: None,
+            text: None,
+            pdf_page_index: Some(index as u32),
+        })
+        .collect::<Vec<_>>();
+    let pdf_asset_id = format!("pdf-{}.pdf", short_hash(path.to_string_lossy().as_ref()));
+    Ok(ParsedBook {
+        identity: String::new(),
+        title,
+        author,
+        chapters,
+        assets: vec![ParsedAsset {
+            id: pdf_asset_id.clone(),
+            bytes,
+        }],
+        cover_asset_id: None,
+        pdf_asset_id: Some(pdf_asset_id),
+    })
+}
+
+fn pdf_info_dictionary(document: &PdfDocument) -> Option<&Dictionary> {
+    let info = document.trailer.get(b"Info").ok()?;
+    match info {
+        Object::Reference(id) => document.get_object(*id).ok()?.as_dict().ok(),
+        Object::Dictionary(dictionary) => Some(dictionary),
+        _ => None,
+    }
+}
+
+fn pdf_info_text(info: &Dictionary, key: &[u8]) -> Option<String> {
+    lopdf::decode_text_string(info.get(key).ok()?).ok()
+}
+
+fn validate_pdf_page_count(page_count: usize) -> Result<(), String> {
+    if page_count == 0 {
+        return Err("PDF contains no readable pages".to_owned());
+    }
+    if page_count > MAX_PDF_PAGES {
+        return Err(format!("PDF exceeds the {MAX_PDF_PAGES}-page import limit"));
+    }
+    Ok(())
 }
 
 fn parse_text_file(
@@ -289,6 +540,7 @@ fn parse_text_file(
             title,
             html: None,
             text: Some(text),
+            pdf_page_index: None,
         })
         .collect::<Vec<_>>();
     if chapters.is_empty() {
@@ -302,6 +554,7 @@ fn parse_text_file(
         chapters,
         assets: Vec::new(),
         cover_asset_id: None,
+        pdf_asset_id: None,
     })
 }
 
@@ -521,6 +774,7 @@ fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
             title: chapter_title(&html, &item.href, index),
             html: Some(html),
             text: None,
+            pdf_page_index: None,
         });
     }
 
@@ -536,39 +790,51 @@ fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
         chapters,
         assets: rewritten_assets,
         cover_asset_id,
+        pdf_asset_id: None,
     })
 }
 
 fn index_epub_members<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
 ) -> Result<HashMap<String, usize>, String> {
-    if archive.len() > MAX_EPUB_FILES {
-        return Err("EPUB contains too many ZIP entries".to_owned());
+    index_zip_members(archive, MAX_EPUB_FILES, MAX_EPUB_EXPANDED_BYTES, "EPUB")
+}
+
+fn index_zip_members<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    max_files: usize,
+    max_expanded_bytes: u64,
+    format: &str,
+) -> Result<HashMap<String, usize>, String> {
+    if archive.len() > max_files {
+        return Err(format!("{format} contains too many ZIP entries"));
     }
     let mut names = HashMap::new();
     let mut expanded_total = 0u64;
     for index in 0..archive.len() {
         let member = archive
             .by_index(index)
-            .map_err(|_| "Cannot inspect EPUB ZIP entry".to_owned())?;
+            .map_err(|_| format!("Cannot inspect {format} ZIP entry"))?;
         let name = member.name().to_owned();
         if member
             .unix_mode()
             .is_some_and(|mode| mode & 0o170000 == 0o120000)
         {
-            return Err("EPUB must not contain symbolic-link ZIP entries".to_owned());
+            return Err(format!(
+                "{format} must not contain symbolic-link ZIP entries"
+            ));
         }
         let normalized = validate_zip_member_name(&name)
-            .ok_or_else(|| "EPUB contains an unsafe ZIP entry path".to_owned())?;
+            .ok_or_else(|| format!("{format} contains an unsafe ZIP entry path"))?;
         if member.is_dir() {
             continue;
         }
         if names.insert(normalized, index).is_some() {
-            return Err("EPUB contains duplicate ZIP entry names".to_owned());
+            return Err(format!("{format} contains duplicate ZIP entry names"));
         }
         expanded_total = expanded_total.saturating_add(member.size());
-        if expanded_total > MAX_EPUB_EXPANDED_BYTES {
-            return Err("EPUB expands beyond the supported size limit".to_owned());
+        if expanded_total > max_expanded_bytes {
+            return Err(format!("{format} expands beyond the supported size limit"));
         }
     }
     Ok(names)
@@ -640,22 +906,34 @@ fn read_epub_member<R: Read + std::io::Seek>(
     name: &str,
     max_size: u64,
 ) -> Result<Vec<u8>, String> {
+    read_archive_member(archive, members, name, max_size, "EPUB")
+}
+
+fn read_archive_member<R: Read + std::io::Seek>(
+    archive: &mut ZipArchive<R>,
+    members: &HashMap<String, usize>,
+    name: &str,
+    max_size: u64,
+    format: &str,
+) -> Result<Vec<u8>, String> {
     let index = *members
         .get(name)
-        .ok_or_else(|| format!("EPUB entry is missing: {name}"))?;
+        .ok_or_else(|| format!("{format} entry is missing: {name}"))?;
     let member = archive
         .by_index(index)
-        .map_err(|_| "Cannot open EPUB ZIP entry".to_owned())?;
+        .map_err(|_| format!("Cannot open {format} ZIP entry"))?;
     if member.size() > max_size {
-        return Err("EPUB entry exceeds the supported size limit".to_owned());
+        return Err(format!("{format} entry exceeds the supported size limit"));
     }
     let mut bytes = Vec::with_capacity(member.size() as usize);
     member
         .take(max_size + 1)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot decompress EPUB ZIP entry".to_owned())?;
+        .map_err(|_| format!("Cannot decompress {format} ZIP entry"))?;
     if bytes.len() as u64 > max_size {
-        return Err("EPUB entry expands beyond the supported size limit".to_owned());
+        return Err(format!(
+            "{format} entry expands beyond the supported size limit"
+        ));
     }
     Ok(bytes)
 }
@@ -1124,14 +1402,405 @@ fn inline_style_regex() -> &'static Regex {
 
 #[cfg(test)]
 mod tests {
-    use super::{import_local_book, LocalImportOptions};
+    use super::{import_local_book, validate_pdf_page_count, LocalImportOptions};
     use crate::models::{ProgressDocument, ReaderDefaults, CURRENT_SCHEMA_VERSION};
     use crate::resources::ResourceStore;
     use base64::Engine;
     use encoding_rs::GBK;
-    use std::io::Write;
+    use image::{GenericImageView, ImageBuffer, Rgba};
+    use lopdf::content::{Content, Operation};
+    use lopdf::dictionary;
+    use lopdf::{
+        Document as PdfDocument, EncryptionState, EncryptionVersion, LoadOptions, Object,
+        Permissions, Stream,
+    };
+    use std::io::{Cursor, Write};
     use zip::write::SimpleFileOptions;
     use zip::{CompressionMethod, ZipWriter};
+
+    fn png_fixture(color: [u8; 4]) -> Vec<u8> {
+        let image = ImageBuffer::from_pixel(2, 2, Rgba(color));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        bytes.into_inner()
+    }
+
+    fn pdf_fixture(page_count: usize, password: Option<&str>) -> Vec<u8> {
+        let mut document = PdfDocument::with_version("1.4");
+        let pages_id = document.new_object_id();
+        let font_id = document.add_object(lopdf::dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Courier",
+        });
+        let resources_id = document.add_object(lopdf::dictionary! {
+            "Font" => lopdf::dictionary! { "F1" => font_id },
+        });
+        let mut page_ids = Vec::with_capacity(page_count);
+        for index in 0..page_count {
+            let content = Content {
+                operations: vec![
+                    Operation::new("BT", vec![]),
+                    Operation::new("Tf", vec!["F1".into(), 14.into()]),
+                    Operation::new("Td", vec![36.into(), 740.into()]),
+                    Operation::new(
+                        "Tj",
+                        vec![Object::string_literal(format!(
+                            "Fixture page {}",
+                            index + 1
+                        ))],
+                    ),
+                    Operation::new("ET", vec![]),
+                ],
+            };
+            let content_id = document.add_object(Stream::new(
+                lopdf::dictionary! {},
+                content.encode().unwrap(),
+            ));
+            page_ids.push(document.add_object(lopdf::dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => content_id,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            }));
+        }
+        let pages = lopdf::dictionary! {
+            "Type" => "Pages",
+            "Kids" => page_ids.iter().copied().map(Object::Reference).collect::<Vec<_>>(),
+            "Count" => page_count as i64,
+            "Resources" => resources_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+        };
+        document.objects.insert(pages_id, Object::Dictionary(pages));
+        let catalog_id = document.add_object(lopdf::dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        let info_id = document.add_object(lopdf::dictionary! {
+            "Title" => lopdf::text_string("Fixture PDF Title"),
+            "Author" => lopdf::text_string("Fixture PDF Author"),
+        });
+        document.trailer.set("Root", catalog_id);
+        document.trailer.set("Info", info_id);
+        document.trailer.set(
+            "ID",
+            vec![
+                Object::string_literal("fixture-id"),
+                Object::string_literal("fixture-id"),
+            ],
+        );
+        if let Some(password) = password {
+            let state = EncryptionState::try_from(EncryptionVersion::V1 {
+                document: &document,
+                owner_password: "fixture-owner",
+                user_password: password,
+                permissions: Permissions::default(),
+            })
+            .unwrap();
+            document.encrypt(&state).unwrap();
+        }
+        let mut bytes = Vec::new();
+        document.save_to(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn write_cbz(path: &std::path::Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = ZipWriter::new(file);
+        for (name, bytes) in entries {
+            zip.start_file(
+                *name,
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+            )
+            .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    #[tokio::test]
+    async fn imports_cbz_in_natural_order_and_serves_decodable_image_assets() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(temporary.path().join("app-data")).unwrap();
+        let cbz_path = temporary.path().join("Comic.cbz");
+        let page1 = png_fixture([240, 30, 20, 255]);
+        let page2 = png_fixture([20, 220, 30, 255]);
+        let page10 = png_fixture([20, 30, 240, 255]);
+        write_cbz(
+            &cbz_path,
+            &[
+                ("pages/page10.png", &page10),
+                ("pages/page2.png", &page2),
+                ("pages/page1.png", &page1),
+            ],
+        );
+
+        let book = import_local_book(
+            &store,
+            &cbz_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(book.title, "Comic");
+        assert_eq!(book.chapter_count, 3);
+        assert_eq!(
+            book.chapters
+                .iter()
+                .map(|chapter| chapter.title.as_str())
+                .collect::<Vec<_>>(),
+            ["page1", "page2", "page10"]
+        );
+
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let expected_colors = [[240, 30, 20, 255], [20, 220, 30, 255], [20, 30, 240, 255]];
+        let mut first_image_url = None;
+        for (index, chapter) in book.chapters.iter().enumerate() {
+            let chapter_url =
+                reqwest::Url::parse(&server.url_for(chapter.src.as_ref().unwrap())).unwrap();
+            let html = reqwest::get(chapter_url.clone())
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert!(html.contains(&format!("alt=\"{}\"", chapter.title)));
+            let relative = html
+                .split("src=\"../assets/")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap();
+            let image_url = chapter_url.join(&format!("../assets/{relative}")).unwrap();
+            if index == 0 {
+                first_image_url = Some(image_url.clone());
+            }
+            let image_response = reqwest::get(image_url)
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            assert_eq!(
+                image_response.headers()[reqwest::header::CONTENT_TYPE],
+                "image/png"
+            );
+            let image_bytes = image_response.bytes().await.unwrap();
+            let decoded = image::load_from_memory(&image_bytes).unwrap();
+            assert_eq!(decoded.get_pixel(0, 0).0, expected_colors[index]);
+        }
+        let cover = book.cover_src.as_ref().unwrap();
+        assert_eq!(
+            first_image_url.unwrap(),
+            reqwest::Url::parse(&server.url_for(cover)).unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn cbz_corrupt_images_and_unsafe_zip_paths_fail_before_writing_resources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(temporary.path().join("app-data")).unwrap();
+        let valid = png_fixture([100, 120, 140, 255]);
+        let corrupt_path = temporary.path().join("Corrupt.cbz");
+        write_cbz(
+            &corrupt_path,
+            &[("1.png", &valid), ("2.png", b"not a PNG image")],
+        );
+        let corrupt_bytes = std::fs::read(&corrupt_path).unwrap();
+        let corrupt_id = super::local_identity(
+            &corrupt_path,
+            &corrupt_bytes,
+            &LocalImportOptions::default(),
+        );
+        let error = import_local_book(
+            &store,
+            &corrupt_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("image is invalid"));
+        assert!(!store
+            .root()
+            .join(format!("books/local-{corrupt_id}/book.json"))
+            .exists());
+
+        let unsafe_path = temporary.path().join("Unsafe.cbz");
+        write_cbz(&unsafe_path, &[("../escaped.png", &valid)]);
+        let error = import_local_book(
+            &store,
+            &unsafe_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("unsafe ZIP entry path"));
+        assert!(!temporary.path().join("escaped.png").exists());
+    }
+
+    #[tokio::test]
+    async fn imports_pdf_pages_with_range_readable_original_binary_and_password_errors() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(temporary.path().join("app-data")).unwrap();
+        let pdf_path = temporary.path().join("Fixture.pdf");
+        let pdf_bytes = pdf_fixture(2, None);
+        std::fs::write(&pdf_path, &pdf_bytes).unwrap();
+        let book = import_local_book(
+            &store,
+            &pdf_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(book.title, "Fixture PDF Title");
+        assert_eq!(book.author, "Fixture PDF Author");
+        assert_eq!(book.chapter_count, 2);
+        assert_eq!(book.chapters[1].title, "Page 2");
+
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let chapter_url =
+            reqwest::Url::parse(&server.url_for(book.chapters[0].src.as_ref().unwrap())).unwrap();
+        let html = reqwest::get(chapter_url.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(html.contains("data-legado-document=\"pdf-page\""));
+        assert!(html.contains("data-page-index=\"0\""));
+        assert!(html.contains("data-default-zoom=\"page-fit\""));
+        let relative_pdf = html
+            .split("href=\"../assets/")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let pdf_url = chapter_url
+            .join(&format!("../assets/{relative_pdf}"))
+            .unwrap();
+        let range = reqwest::Client::new()
+            .get(pdf_url.clone())
+            .header(reqwest::header::RANGE, "bytes=0-7")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(range.status(), reqwest::StatusCode::PARTIAL_CONTENT);
+        assert_eq!(
+            range.headers()[reqwest::header::CONTENT_TYPE],
+            "application/pdf"
+        );
+        assert_eq!(range.bytes().await.unwrap().as_ref(), b"%PDF-1.4");
+
+        let complete_response = reqwest::get(pdf_url)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        assert_eq!(
+            complete_response.headers()[reqwest::header::CONTENT_TYPE],
+            "application/pdf"
+        );
+        let served_pdf = complete_response.bytes().await.unwrap();
+        let reopened =
+            PdfDocument::load_mem_with_options(&served_pdf, LoadOptions::default()).unwrap();
+        assert_eq!(reopened.get_pages().len(), 2);
+
+        let protected_path = temporary.path().join("Protected.pdf");
+        let protected_bytes = pdf_fixture(2, Some("secret-reader-password"));
+        std::fs::write(&protected_path, &protected_bytes).unwrap();
+        let no_password = import_local_book(
+            &store,
+            &protected_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(no_password.contains("password protected"));
+        let wrong_options = LocalImportOptions {
+            pdf_password: Some("wrong-password".to_owned()),
+            ..LocalImportOptions::default()
+        };
+        let wrong_password = import_local_book(
+            &store,
+            &protected_path,
+            &ReaderDefaults::default(),
+            &wrong_options,
+        )
+        .await
+        .unwrap_err();
+        assert!(wrong_password.contains("password is incorrect"));
+        assert!(!format!("{wrong_options:?}").contains("wrong-password"));
+        assert!(!serde_json::to_string(&wrong_options)
+            .unwrap()
+            .contains("pdfPassword"));
+
+        let correct_options = LocalImportOptions {
+            pdf_password: Some("secret-reader-password".to_owned()),
+            ..LocalImportOptions::default()
+        };
+        let protected_book = import_local_book(
+            &store,
+            &protected_path,
+            &ReaderDefaults::default(),
+            &correct_options,
+        )
+        .await
+        .unwrap();
+        let pdf_resource = store
+            .asset_ref(
+                &protected_book.id,
+                &format!(
+                    "pdf-{}.pdf",
+                    super::short_hash(protected_path.to_string_lossy().as_ref())
+                ),
+            )
+            .unwrap();
+        let encrypted_asset = reqwest::get(server.url_for(&pdf_resource))
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(encrypted_asset.as_ref(), protected_bytes.as_slice());
+        let reopened = PdfDocument::load_mem_with_options(
+            &encrypted_asset,
+            LoadOptions::with_password("secret-reader-password"),
+        )
+        .unwrap();
+        assert_eq!(reopened.get_pages().len(), 2);
+    }
+
+    #[test]
+    fn pdf_page_limit_and_damaged_file_are_reported() {
+        assert!(validate_pdf_page_count(super::MAX_PDF_PAGES).is_ok());
+        assert!(validate_pdf_page_count(super::MAX_PDF_PAGES + 1)
+            .unwrap_err()
+            .contains("page import limit"));
+        assert!(validate_pdf_page_count(0).is_err());
+        let damaged =
+            super::parse_pdf_file(b"not a pdf".to_vec(), std::path::Path::new("bad.pdf"), None)
+                .unwrap_err();
+        assert!(damaged.contains("damaged"));
+    }
 
     #[tokio::test]
     async fn imports_utf8_bom_txt_and_serves_each_chapter_as_html() {
@@ -1168,7 +1837,7 @@ mod tests {
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         let html = response.text().await.unwrap();
         assert!(html.contains("第一章正文。"));
-        assert!(html.contains("--reader-font-size:18px"));
+        assert!(html.contains("--reader-font-size:19px"));
     }
 
     #[tokio::test]
