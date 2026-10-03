@@ -351,7 +351,7 @@ impl ResourceStore {
                 return Err(ResourceError::new(format!(
                     "Cannot read {}: {error}",
                     reference.path()
-                )))
+                )));
             }
         };
         let updated = update(current).map_err(ResourceError::new)?;
@@ -530,7 +530,7 @@ impl ResourceStore {
                 Err(error) => {
                     return Err(ResourceError::new(format!(
                         "Cannot remove book resources: {error}"
-                    )))
+                    )));
                 }
             }
             check_path_no_symlink(&root, &progress_path, true)?;
@@ -544,6 +544,37 @@ impl ResourceStore {
         })
         .await
         .map_err(|error| ResourceError::new(format!("Book deletion worker failed: {error}")))??;
+        Ok(())
+    }
+
+    /// Remove only cached RSS article HTML and media for a source's private
+    /// pseudo-book namespace. Shelf, progress, and ordinary book resources are
+    /// outside this operation and remain untouched.
+    pub async fn remove_rss_chapter_resources(&self, source_id: &str) -> Result<(), ResourceError> {
+        validate_id(source_id)?;
+        let rss_book_id = format!("rss-{source_id}");
+        validate_id(&rss_book_id)?;
+        let book_dir = self.inner.root.join("books").join(rss_book_id);
+        let directories = [book_dir.join("chapters"), book_dir.join("assets")];
+        let root = self.inner.root.clone();
+        let _guard = self.inner.update_lock.lock().await;
+        tokio::task::spawn_blocking(move || {
+            for directory in directories {
+                check_path_no_symlink(&root, &directory, true)?;
+                match std::fs::remove_dir_all(&directory) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(ResourceError::new(format!(
+                            "Cannot remove cached RSS resources: {error}"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| ResourceError::new(format!("RSS cleanup worker failed: {error}")))??;
         Ok(())
     }
 
@@ -1404,7 +1435,7 @@ fn check_path_no_symlink(
             Err(error) => {
                 return Err(ResourceError::new(format!(
                     "Cannot inspect resource path: {error}"
-                )))
+                )));
             }
         }
     }
@@ -1455,7 +1486,7 @@ fn read_private_media_mappings(
             _ if strict => {
                 return Err(ResourceError::new(format!(
                     "Restored media mapping {id} is not a regular file"
-                )))
+                )));
             }
             _ => continue,
         };
@@ -1473,7 +1504,7 @@ fn read_private_media_mappings(
             Err(error) if strict => {
                 return Err(ResourceError::new(format!(
                     "Cannot read restored media mapping {id}: {error}"
-                )))
+                )));
             }
             Err(_) => continue,
         };
@@ -1482,7 +1513,7 @@ fn read_private_media_mappings(
             Err(error) if strict => {
                 return Err(ResourceError::new(format!(
                     "Restored media mapping {id} is invalid JSON: {error}"
-                )))
+                )));
             }
             Err(_) => continue,
         };
@@ -1683,6 +1714,7 @@ fn hex_digit(value: u8) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::{ResourceRef, ResourceStore};
+    use crate::models::ReaderDefaults;
     use axum::http::header::{CONTENT_RANGE, CONTENT_SECURITY_POLICY, CONTENT_TYPE, RANGE};
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -1789,6 +1821,63 @@ mod tests {
             serde_json::from_slice(&response.bytes().await.expect("read response bytes"))
                 .expect("decode served favorites JSON");
         assert_eq!(response, document);
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn rss_cleanup_removes_only_its_article_html_and_assets() {
+        let root = temp_dir("rss-cleanup");
+        let store = ResourceStore::open(&root).expect("open store");
+        let rss_book_id = "rss-source-a";
+        let rss_chapter = store
+            .write_chapter_html(
+                rss_book_id,
+                "article-a",
+                "<p>Cached article</p>",
+                &ReaderDefaults::default(),
+            )
+            .await
+            .expect("write RSS article");
+        let rss_asset = store
+            .write_asset(rss_book_id, "cover.png", b"processed image")
+            .await
+            .expect("write RSS image");
+        let pseudo_book = store.book_ref(rss_book_id).unwrap();
+        store
+            .write_json_ref(&pseudo_book, &json!({"id": rss_book_id, "kind": "rss"}))
+            .await
+            .expect("write pseudo-book metadata");
+        let pseudo_progress = store.progress_ref(rss_book_id).unwrap();
+        store
+            .write_json_ref(&pseudo_progress, &json!({"bookId": rss_book_id}))
+            .await
+            .expect("write pseudo-book progress");
+
+        let normal_chapter = store
+            .write_chapter_text(
+                "ordinary-book",
+                "chapter-a",
+                "Keep this book",
+                &ReaderDefaults::default(),
+            )
+            .await
+            .expect("write normal chapter");
+        let normal_asset = store
+            .write_asset("ordinary-book", "cover.png", b"ordinary image")
+            .await
+            .expect("write normal image");
+
+        store
+            .remove_rss_chapter_resources("source-a")
+            .await
+            .expect("clean RSS cache");
+        assert!(!root.join(rss_chapter.path()).exists());
+        assert!(!root.join(rss_asset.path()).exists());
+        assert!(root.join(pseudo_book.path()).is_file());
+        assert!(root.join(pseudo_progress.path()).is_file());
+        assert!(root.join(normal_chapter.path()).is_file());
+        assert!(root.join(normal_asset.path()).is_file());
+        assert!(store.remove_rss_chapter_resources("../bad").await.is_err());
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

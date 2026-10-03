@@ -53,7 +53,6 @@ import io.legado.app.help.source.SourceNetworkProvider
 import io.legado.app.help.source.SourceNetworkProviders
 import io.legado.app.model.script.registerNativeJsEngines
 import io.legado.app.model.webBook.registerNativeWebBookProviders
-import io.legado.app.help.image.ImageOps
 import io.legado.app.utils.systemCurrentTimeMillis
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
@@ -83,7 +82,7 @@ object IosSourceEngineRuntime {
 
         // 注册 Native 规则替换、URL intent 和目录刷新 provider，完成 framework 执行环境初始化。
         registerNativeWebBookProviders()
-        registerNativeJsEngines(UnsupportedImageOps)
+        registerNativeJsEngines(RustImageOpsProvider(::rustImageRequest))
         io.legado.app.help.http.registerNativeHttpProvider()
     }
 
@@ -376,17 +375,5 @@ private object HeadlessSourceDebugLogger : SourceDebugLogger {
     override fun log(msg: String) = log("", msg)
 }
 
-private object UnsupportedImageOps : ImageOps {
-    override fun decode(bytes: ByteArray): io.legado.app.help.image.ImageRef = unsupported()
-    override fun decode(base64: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun encode(img: io.legado.app.help.image.ImageRef, format: String, quality: Int): ByteArray = unsupported()
-    override fun split(img: io.legado.app.help.image.ImageRef, rows: Int, cols: Int): List<io.legado.app.help.image.ImageRef> = unsupported()
-    override fun stitch(imgs: List<io.legado.app.help.image.ImageRef>, direction: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun crop(img: io.legado.app.help.image.ImageRef, x: Int, y: Int, w: Int, h: Int): io.legado.app.help.image.ImageRef = unsupported()
-    override fun rotate(img: io.legado.app.help.image.ImageRef, deg: Int): io.legado.app.help.image.ImageRef = unsupported()
-    override fun flip(img: io.legado.app.help.image.ImageRef, direction: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun size(img: io.legado.app.help.image.ImageRef): Map<String, Int> = unsupported()
-    private fun <T> unsupported(): T = error("Source engine image operations are not available")
-}
 
 private fun currentTimeMillis(): Long = systemCurrentTimeMillis()

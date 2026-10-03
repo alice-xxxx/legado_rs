@@ -6,3 +6,5 @@ package io.legado.sourceengine.bridge.http
 external fun nativeHttpRequest(eventJson: String): String
 
 external fun nativeStorageRequest(eventJson: String): String
+
+external fun nativeImageRequest(eventJson: String): String

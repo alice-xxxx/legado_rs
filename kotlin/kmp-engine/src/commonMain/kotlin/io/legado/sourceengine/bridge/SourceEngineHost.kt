@@ -40,8 +40,16 @@ data class HostHttpResponse(
     val finalUrl: String,
     val status: Int,
     val reason: String,
+    val redirects: List<HostHttpRedirect> = emptyList(),
     val headers: List<HostHeader> = emptyList(),
     val body: ByteArray = byteArrayOf(),
+)
+
+/** A real redirect hop followed by Rust's HTTP client for this request. */
+data class HostHttpRedirect(
+    val fromUrl: String,
+    val toUrl: String,
+    val status: Int,
 )
 
 data class HostHeader(val name: String, val value: String)

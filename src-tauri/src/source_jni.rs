@@ -32,6 +32,9 @@ mod desktop {
         native_method! {
             static fn native_storage_request(event_json: JString) -> JString,
         },
+        native_method! {
+            static fn native_image_request(event_json: JString) -> JString,
+        },
     ];
 
     struct DataDirScope(Option<PathBuf>);
@@ -198,6 +201,15 @@ mod desktop {
         let input = event_json.try_to_string(env)?;
         let response = run_storage_event(&input);
         env.new_string(response)
+    }
+
+    fn native_image_request<'local>(
+        env: &mut Env<'local>,
+        _class: JClass<'local>,
+        event_json: JString<'local>,
+    ) -> Result<JString<'local>, jni::errors::Error> {
+        let input = event_json.try_to_string(env)?;
+        env.new_string(crate::source_host_ffi::image_json(&input))
     }
 
     fn run_http_event(event_json: &str) -> String {
@@ -381,7 +393,7 @@ pub(super) fn execute(
 
 #[cfg(target_os = "android")]
 mod android {
-    use crate::source_host_ffi::{http_json, storage_json};
+    use crate::source_host_ffi::{http_json, image_json, storage_json};
     use jni::errors::ThrowRuntimeExAndDefault;
     use jni::objects::{JObject, JString};
     use jni::{jni_mangle, EnvUnowned};
@@ -415,6 +427,20 @@ mod android {
                 let input = request_json.try_to_string(env)?;
                 let data_dir = app_data_dir.try_to_string(env)?;
                 env.new_string(storage_json(&input, Path::new(&data_dir)))
+            })
+            .resolve::<ThrowRuntimeExAndDefault>()
+    }
+
+    #[jni_mangle("io.legado.sourceengine.android.RustSourceEngineNative")]
+    pub fn native_image_request<'local>(
+        mut unowned_env: EnvUnowned<'local>,
+        _class: JObject<'local>,
+        request_json: JString<'local>,
+    ) -> JString<'local> {
+        unowned_env
+            .with_env(|env| {
+                let input = request_json.try_to_string(env)?;
+                env.new_string(image_json(&input))
             })
             .resolve::<ThrowRuntimeExAndDefault>()
     }

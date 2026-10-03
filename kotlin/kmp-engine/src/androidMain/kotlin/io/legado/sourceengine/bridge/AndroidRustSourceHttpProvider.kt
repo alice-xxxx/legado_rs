@@ -12,6 +12,7 @@ import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -93,6 +94,18 @@ private class RustHttpInterceptor(private val proxy: String?) : Interceptor {
         } else {
             rustResponse.body.toResponseBody(responseHeaders["Content-Type"]?.toMediaTypeOrNull())
         }
+        var priorResponse: Response? = null
+        rustResponse.redirects.forEach { redirect ->
+            val redirectBuilder = Response.Builder()
+                .request(Request.Builder().url(redirect.fromUrl.toHttpUrl()).build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(redirect.status)
+                // Only the actual status and destination are available from reqwest.
+                .message("")
+                .header("Location", redirect.toUrl)
+            priorResponse?.let(redirectBuilder::priorResponse)
+            priorResponse = redirectBuilder.build()
+        }
         return Response.Builder()
             .request(request.newBuilder().url(rustResponse.finalUrl.toHttpUrl()).build())
             .protocol(Protocol.HTTP_1_1)
@@ -100,6 +113,7 @@ private class RustHttpInterceptor(private val proxy: String?) : Interceptor {
             .message(rustResponse.reason)
             .headers(responseHeaders)
             .body(responseBody)
+            .apply { priorResponse?.let { this.priorResponse(it) } }
             .build()
     }
 }

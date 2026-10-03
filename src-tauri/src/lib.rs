@@ -1,6 +1,7 @@
 pub mod application;
 pub mod backup;
 pub mod discovery;
+mod image_ops_host;
 pub mod local_books;
 pub mod models;
 pub mod reading_tools;
@@ -62,11 +63,22 @@ pub fn run() {
             application::cancel_task,
             application::add_book,
             application::import_book_from_picker,
+            application::import_protected_pdf,
+            application::cancel_pending_pdf_import,
             application::get_book,
             application::prepare_chapters,
             application::remove_book,
             application::save_progress,
             application::save_settings,
+            application::get_home_config,
+            application::save_home_config,
+            application::get_rss_state,
+            application::set_rss_filter,
+            application::set_rss_article_state,
+            application::unsubscribe_rss,
+            application::get_txt_toc_rules,
+            application::upsert_txt_toc_rule,
+            application::delete_txt_toc_rule,
             application::list_bookmarks,
             application::upsert_bookmark,
             application::delete_bookmark,
@@ -87,6 +99,8 @@ pub fn run() {
             application::restore_backup_from_picker,
             application::list_discovery_categories,
             application::list_discovery_books,
+            application::list_discovery_favorites,
+            application::set_discovery_favorite,
             application::list_rss_categories,
             application::list_rss_articles,
             application::open_rss_article,

@@ -61,6 +61,15 @@ object SourceEngineHostWire {
                 value = item.jsonObject["value"].requiredString("header value"),
             )
         }
+        val redirects = payload["redirects"]?.jsonArray.orEmpty().map { item ->
+            val redirect = item.jsonObject
+            HostHttpRedirect(
+                fromUrl = redirect["fromUrl"].requiredString("redirect fromUrl"),
+                toUrl = redirect["toUrl"].requiredString("redirect toUrl"),
+                status = redirect["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
+                    ?: error("Rust HTTP redirect has no valid status"),
+            )
+        }
         val body = payload["bodyBase64"]?.jsonPrimitive?.contentOrNull.orEmpty()
             .decodeBase64()?.toByteArray()
             ?: error("Rust HTTP response contains invalid base64 body")
@@ -70,6 +79,7 @@ object SourceEngineHostWire {
             status = payload["status"]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
                 ?: error("Rust HTTP response has no valid status"),
             reason = payload["reason"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            redirects = redirects,
             headers = headers,
             body = body,
         )

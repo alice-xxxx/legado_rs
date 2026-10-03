@@ -105,7 +105,9 @@ object AndroidSourceEngineRuntime {
             check(type == JsEngineType.QUICKJS)
             SourceEngineQuickJsSharedJsScope
         }
-        JsBindingInjector.registerImageOps(UnsupportedImageOps)
+        JsBindingInjector.registerImageOps(
+            io.legado.sourceengine.bridge.RustImageOpsProvider(::rustSourceImageRequest),
+        )
         initialized = true
     }
 }
@@ -419,18 +421,4 @@ private object HeadlessSourceDebugLogger : SourceDebugLogger {
     }
 
     override fun log(msg: String) = log("", msg)
-}
-
-private object UnsupportedImageOps : io.legado.app.help.image.ImageOps {
-    override fun decode(bytes: ByteArray): io.legado.app.help.image.ImageRef = unsupported()
-    override fun decode(base64: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun encode(img: io.legado.app.help.image.ImageRef, format: String, quality: Int): ByteArray = unsupported()
-    override fun split(img: io.legado.app.help.image.ImageRef, rows: Int, cols: Int): List<io.legado.app.help.image.ImageRef> = unsupported()
-    override fun stitch(imgs: List<io.legado.app.help.image.ImageRef>, direction: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun crop(img: io.legado.app.help.image.ImageRef, x: Int, y: Int, w: Int, h: Int): io.legado.app.help.image.ImageRef = unsupported()
-    override fun rotate(img: io.legado.app.help.image.ImageRef, deg: Int): io.legado.app.help.image.ImageRef = unsupported()
-    override fun flip(img: io.legado.app.help.image.ImageRef, direction: String): io.legado.app.help.image.ImageRef = unsupported()
-    override fun size(img: io.legado.app.help.image.ImageRef): Map<String, Int> = unsupported()
-
-    private fun <T> unsupported(): T = error("The headless source executor does not provide image decoding")
 }

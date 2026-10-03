@@ -13,6 +13,7 @@ extern "C" {
  */
 char *legado_source_host_http(const char *request_json);
 char *legado_source_host_storage(const char *request_json, const char *app_data_dir);
+char *legado_source_host_image(const char *request_json);
 void legado_source_host_string_free(char *value);
 
 #ifdef __cplusplus

@@ -49,6 +49,12 @@ That confirms dependency selection only; a fresh project macOS CI run must compi
 
 The Linux cloud host still cannot build or run iOS because it has no Xcode or Apple SDK. The CI result above is from a macOS runner. No iOS simulator or device user flow has been exercised.
 
+### Follow-up linker diagnosis
+
+Run [37097426245](https://github.com/alice-xxxx/legado_rs/actions/runs/37097426245) built commit `fe654d6`. Android, Linux, macOS, and Windows build jobs passed. On iOS, the SwiftPM target-selection fix was consumed: both KMP device/simulator frameworks were built and packaged, and `SourceEnginePlugin.swift` no longer failed to import `LegadoSourceEngine`. The unsigned IPA then failed at the final Rust link with `Could not find or use auto-linked framework 'LegadoSourceEngine'` and an undefined `_OBJC_CLASS_$_LSEIosSourceEngine` symbol. The Rust link command had the Swift plugin archive search directory but no framework search directory for the XCFramework slice.
+
+Commit `d753fad631aede58ca92046133f3cec58836bbbc` updates `src-tauri/plugins/source-engine/build.rs` to select the packaged XCFramework slice for the active Apple Rust target and emit the framework search/link directives. macOS CI run [37099973156](https://github.com/alice-xxxx/legado_rs/actions/runs/37099973156) is the validation for this change; its result is pending. This is a build fix under test, not iOS runtime evidence.
+
 ## Current bridge and build facts
 
 The repository has working source-engine adapter code for each target:

@@ -6,6 +6,7 @@ package io.legado.app.help.http
 import io.legado.app.constant.AppConst
 import io.legado.app.help.UserAgentProviders
 import io.legado.sourceengine.bridge.HostHeader
+import io.legado.sourceengine.bridge.HostHttpRedirect
 import io.legado.sourceengine.bridge.HostHttpRequest
 import io.legado.sourceengine.bridge.SourceEngineHost
 import io.legado.sourceengine.bridge.SourceEngineHostRegistry
@@ -421,6 +422,7 @@ actual class KmpResponse : Closeable {
         ktorResponse: HttpResponse,
         request: KmpRequest,
         finalUrl: String? = null,
+        redirects: List<HostHttpRedirect> = emptyList(),
     ) {
         codeVal = ktorResponse.status.value
         messageVal = ktorResponse.status.description
@@ -433,27 +435,29 @@ actual class KmpResponse : Closeable {
                 ktorResponse.headers[HttpHeaders.ContentEncoding]
             )
         }
-        // OkHttp 语义: response.request = 实际发送的请求 (重定向后的最终请求)。Ktor 自动跟随
-        // 重定向时最终请求 URL 经 finalUrl 传入, 否则 StrResponse.url() 会拿到重定向前的地址。
-        // priorResponse 合成一个 302 占位 (Ktor 不暴露重定向链中间跳, 只标记发生过重定向,
-        // 供 WebBook.checkRedirect 的调试日志判定)
+        // response.request 使用实际最终 URL；priorResponse 仅由 Rust 提供的真实跳转状态构造，
+        // 不根据 URL 不同伪造一个 302。跳转响应体不可用，因此 prior 节点不带 body。
         val finalRequest = if (finalUrl != null && finalUrl != request.url.toString()) {
             KmpRequest(finalUrl, request.method, request.headers, request.body, request.tags)
         } else {
             request
         }
         requestVal = finalRequest
-        priorResponseVal = if (finalUrl != null && finalUrl != request.url.toString()) {
+        priorResponseVal = redirects.fold(null as KmpResponse?) { previous, redirect ->
             KmpResponse(
-                code = 302,
-                message = "redirect",
-                headers = emptyMap(),
+                code = redirect.status,
+                message = "",
+                headers = mapOf("Location" to listOf(redirect.toUrl)),
                 body = null,
                 contentType = null,
-                request = request,
-            )
-        } else {
-            null
+                request = KmpRequest(
+                    redirect.fromUrl,
+                    request.method,
+                    request.headers,
+                    request.body,
+                    request.tags,
+                ),
+            ).also { it.priorResponseVal = previous }
         }
     }
 
@@ -706,6 +710,7 @@ internal class NativeKmpCall(
                 .firstOrNull { it.key.equals("Content-Type", ignoreCase = true) }
                 ?.value?.firstOrNull(),
             request = finalRequest,
+            redirects = response.redirects,
         )
     }
 

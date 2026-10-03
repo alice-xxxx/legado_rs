@@ -14,6 +14,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use std::time::Instant;
+
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
@@ -32,6 +34,194 @@ pub type EngineFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> +
 /// supplied to this executor by Rust, never by the WebView.
 pub trait SourceExecutor: Send + Sync {
     fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a>;
+}
+
+const PENDING_PDF_IMPORT_TTL: Duration = Duration::from_secs(5 * 60);
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+const MAX_PICKER_FILE_BYTES: u64 = 512 * 1024 * 1024;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+const MAX_PICKER_SOURCE_JSON_BYTES: u64 = 32 * 1024 * 1024;
+
+pub struct PickerFile {
+    path: PathBuf,
+    temporary: bool,
+    cleanup_dir: Option<PathBuf>,
+}
+
+impl PickerFile {
+    /// Wrap a caller-owned file path for the shared PDF challenge flow.
+    /// Native picker flows use a temporary staged path and transfer cleanup
+    /// ownership into the same type before calling the service.
+    pub fn from_existing_path(path: impl Into<PathBuf>) -> Self {
+        Self {
+            path: path.into(),
+            temporary: false,
+            cleanup_dir: None,
+        }
+    }
+}
+
+impl Drop for PickerFile {
+    fn drop(&mut self) {
+        if self.temporary {
+            let _ = std::fs::remove_file(&self.path);
+            if let Some(directory) = &self.cleanup_dir {
+                let _ = std::fs::remove_dir_all(directory);
+            }
+        }
+    }
+}
+
+struct PendingPdfImport {
+    file: PickerFile,
+    created_at: Instant,
+}
+
+/// GUI-independent owner for temporary protected-PDF picker files.
+/// Supplying an `Instant` to these methods keeps expiry, retry, and cleanup
+/// behavior testable in headless builds without waiting for the production TTL.
+#[derive(Clone)]
+struct PendingPdfImportRegistry {
+    ttl: Duration,
+    state: Arc<std::sync::Mutex<PendingPdfImportState>>,
+}
+
+#[derive(Default)]
+struct PendingPdfImportState {
+    active_token: Option<String>,
+    created_at: Option<Instant>,
+    pending: Option<PendingPdfImport>,
+}
+
+impl PendingPdfImportRegistry {
+    fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            state: Arc::new(std::sync::Mutex::new(PendingPdfImportState::default())),
+        }
+    }
+
+    fn insert_at(&self, file: PickerFile, now: Instant) -> Result<String, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        // A service has one active password challenge. Starting another
+        // protected-file import invalidates and cleans up the older picker.
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let replaced = state.pending.replace(PendingPdfImport {
+            file,
+            created_at: now,
+        });
+        state.active_token = Some(token.clone());
+        state.created_at = Some(now);
+        drop(state);
+        drop(replaced);
+        Ok(token)
+    }
+
+    fn take_at(&self, token: &str, now: Instant) -> Result<Option<PendingPdfImport>, String> {
+        self.prune_at(now)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        if state.active_token.as_deref() != Some(token) {
+            return Ok(None);
+        }
+        Ok(state.pending.take())
+    }
+
+    /// Reinsert an attempted import after a recoverable parse/password error.
+    /// Expiry remains anchored to the original picker selection time.
+    fn reinsert_at(
+        &self,
+        token: String,
+        pending: PendingPdfImport,
+        now: Instant,
+    ) -> Result<(), String> {
+        if now
+            .checked_duration_since(pending.created_at)
+            .unwrap_or_default()
+            >= self.ttl
+        {
+            self.expire_at(&token, now)?;
+            return Ok(());
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        if state.active_token.as_deref() == Some(token.as_str()) && state.pending.is_none() {
+            state.pending = Some(pending);
+        }
+        Ok(())
+    }
+
+    fn expire_at(&self, token: &str, now: Instant) -> Result<bool, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        let expired = state.active_token.as_deref() == Some(token)
+            && state.created_at.is_some_and(|created_at| {
+                now.checked_duration_since(created_at).unwrap_or_default() >= self.ttl
+            });
+        if expired {
+            state.active_token = None;
+            state.created_at = None;
+            state.pending = None;
+        }
+        Ok(expired)
+    }
+
+    fn cancel_at(&self, token: &str, now: Instant) -> Result<bool, String> {
+        self.prune_at(now)?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        if state.active_token.as_deref() != Some(token) {
+            return Ok(false);
+        }
+        state.active_token = None;
+        state.created_at = None;
+        state.pending = None;
+        Ok(true)
+    }
+
+    fn clear(&self) -> Result<(), String> {
+        let old = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+            std::mem::take(&mut *state)
+        };
+        drop(old);
+        Ok(())
+    }
+
+    fn prune_at(&self, now: Instant) -> Result<(), String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "Pending PDF import registry is unavailable".to_owned())?;
+        let expired = state.created_at.is_some_and(|created_at| {
+            now.checked_duration_since(created_at).unwrap_or_default() >= self.ttl
+        });
+        if expired {
+            *state = PendingPdfImportState::default();
+        }
+        Ok(())
+    }
+}
+
+fn schedule_pending_pdf_cleanup(registry: PendingPdfImportRegistry, token: String) {
+    tokio::spawn(async move {
+        tokio::time::sleep(PENDING_PDF_IMPORT_TTL).await;
+        let _ = registry.expire_at(&token, Instant::now());
+    });
 }
 
 /// Desktop/JVM executor also used by the real-browser harness. Mobile app
@@ -141,6 +331,7 @@ pub struct ApplicationService {
     operation_gate: Arc<tokio::sync::RwLock<()>>,
     restore_barrier: Arc<tokio::sync::watch::Sender<bool>>,
     restore_serial: Arc<tokio::sync::Mutex<()>>,
+    pending_pdf_imports: PendingPdfImportRegistry,
 }
 
 struct RestoreAdmissionGuard {
@@ -243,6 +434,14 @@ impl ApplicationService {
         tokio::fs::create_dir_all(private_root.join("discovery-categories"))
             .await
             .map_err(|error| format!("Cannot create private discovery data directory: {error}"))?;
+        let staged_picker_imports = private_root.join("picker-imports");
+        match tokio::fs::remove_dir_all(&staged_picker_imports).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("Cannot clear stale picker imports: {error}"));
+            }
+        }
         let root = store.root().to_path_buf();
         let task_ref = store
             .reading_ref("tasks")
@@ -297,6 +496,7 @@ impl ApplicationService {
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
             restore_barrier: Arc::new(restore_barrier),
             restore_serial: Arc::new(tokio::sync::Mutex::new(())),
+            pending_pdf_imports: PendingPdfImportRegistry::new(PENDING_PDF_IMPORT_TTL),
         })
     }
 
@@ -350,6 +550,94 @@ impl ApplicationService {
             "src": self.server.url_for(resource),
             "contentType": content_type(resource.as_str()),
         })
+    }
+
+    /// Return the browser-readable, processed home configuration resource.
+    pub async fn get_home_config(&self) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource = crate::discovery::home_config::home_config_resource(&self.store).await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    /// Validate and save the home layout. Source/category IDs are resolved by
+    /// Rust; the public document contains no source URLs or source rules.
+    pub async fn save_home_config(
+        &self,
+        config: crate::discovery::home_config::HomeConfigDocument,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let input = serde_json::to_value(config)
+            .map_err(|error| format!("Cannot encode home configuration: {error}"))?;
+        let resource = crate::discovery::home_config::save_home_config(self, input).await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    /// Return the RSS read/favorite/filter state resource.
+    pub async fn get_rss_state(&self) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource = crate::rss::rss_state_resource(&self.store).await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn set_rss_filter(&self, source_id: &str, filter: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource = crate::rss::set_subscription_filter(self, source_id, filter).await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn set_rss_article_state(
+        &self,
+        source_id: &str,
+        article_id: &str,
+        is_read: Option<bool>,
+        is_favorite: Option<bool>,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource =
+            crate::rss::set_article_state(self, source_id, article_id, is_read, is_favorite)
+                .await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    /// Remove an RSS subscription and its private category mapping, cached
+    /// article HTML, and read/favorite/filter state under one restore guard.
+    pub async fn unsubscribe_rss(&self, source_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let _sources = self.sources_lock.lock().await;
+        let resource = crate::rss::remove_subscription_data(self, source_id).await?;
+        let mut records = self.read_sources().await?;
+        records.retain(|source| source.id != source_id);
+        self.write_sources(&records).await?;
+        Ok(json!({
+            "sources": metadata(&records),
+            "resource": self.resource_descriptor(&resource),
+        }))
+    }
+
+    /// Initialize the TXT chapter-recognition document and return its public
+    /// JSON resource. These are local import patterns, never book-source rules.
+    pub async fn get_txt_toc_rules(&self) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        crate::local_books::txt_toc_rules::read_document(&self.store).await?;
+        let resource = crate::local_books::txt_toc_rules::resource_ref(&self.store)?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn upsert_txt_toc_rule(
+        &self,
+        rule: crate::local_books::txt_toc_rules::TxtTocRule,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        crate::local_books::txt_toc_rules::upsert_rule(&self.store, rule).await?;
+        let resource = crate::local_books::txt_toc_rules::resource_ref(&self.store)?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn delete_txt_toc_rule(&self, rule_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        crate::local_books::txt_toc_rules::delete_rule(&self.store, rule_id).await?;
+        let resource = crate::local_books::txt_toc_rules::resource_ref(&self.store)?;
+        Ok(self.resource_descriptor(&resource))
     }
 
     pub async fn bootstrap(&self) -> Result<Value, String> {
@@ -1481,6 +1769,7 @@ impl ApplicationService {
         self.cancel_active_tasks().await?;
         let _exclusive = self.operation_gate.clone().write_owned().await;
         crate::backup::restore_backup(&self.store, archive).await?;
+        self.pending_pdf_imports.clear()?;
         self.server
             .reload_private_media_mappings()
             .await
@@ -2147,6 +2436,15 @@ impl ApplicationService {
         options: crate::local_books::LocalImportOptions,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
+        self.import_local_book_unlocked(selected_path, options)
+            .await
+    }
+
+    async fn import_local_book_unlocked(
+        &self,
+        selected_path: &Path,
+        options: crate::local_books::LocalImportOptions,
+    ) -> Result<Value, String> {
         let defaults = reader_defaults(
             self.store
                 .read_json_ref(&self.store.settings_ref())
@@ -2165,6 +2463,94 @@ impl ApplicationService {
             "book": self.resource_descriptor(&book_ref),
             "shelf": self.resource_descriptor(&self.store.shelf_ref()),
         }))
+    }
+
+    /// Import a selected local file using the same recoverable encrypted-PDF
+    /// challenge registry that the native picker commands use. The method is
+    /// also available to headless browser harnesses, which supply a fixture
+    /// path instead of opening a native picker.
+    pub async fn import_local_book_with_challenge(
+        &self,
+        picked_file: PickerFile,
+        options: crate::local_books::LocalImportOptions,
+    ) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let pdf_password_supplied = options.pdf_password.is_some();
+        let is_pdf = picked_file
+            .path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+        match self
+            .import_local_book_unlocked(&picked_file.path, options)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error)
+                if is_pdf && !pdf_password_supplied && error.contains("provide pdfPassword") =>
+            {
+                let import_token = self
+                    .pending_pdf_imports
+                    .insert_at(picked_file, Instant::now())?;
+                schedule_pending_pdf_cleanup(
+                    self.pending_pdf_imports.clone(),
+                    import_token.clone(),
+                );
+                Ok(json!({ "passwordRequired": true, "importToken": import_token }))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Retry a pending protected PDF import. Recoverable errors put the same
+    /// temporary file back in the registry, preserving its original expiry.
+    pub async fn retry_pending_pdf_import(
+        &self,
+        import_token: &str,
+        password: String,
+    ) -> Result<Value, String> {
+        validate_id(import_token, "importToken")?;
+        let _operation = self.operation_read().await;
+        let Some(pending) = self
+            .pending_pdf_imports
+            .take_at(import_token, Instant::now())?
+        else {
+            return Err("PDF import expired; select the file again".to_owned());
+        };
+        if !tokio::fs::try_exists(&pending.file.path)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(
+                "PDF import file expired after app data was restored; select the file again"
+                    .to_owned(),
+            );
+        }
+        let options = crate::local_books::LocalImportOptions {
+            pdf_password: Some(password),
+            ..Default::default()
+        };
+        match self
+            .import_local_book_unlocked(&pending.file.path, options)
+            .await
+        {
+            Ok(result) => Ok(result),
+            Err(error) => {
+                self.pending_pdf_imports.reinsert_at(
+                    import_token.to_owned(),
+                    pending,
+                    Instant::now(),
+                )?;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn cancel_pending_pdf_import(&self, import_token: &str) -> Result<bool, String> {
+        validate_id(import_token, "importToken")?;
+        let _operation = self.operation_read().await;
+        self.pending_pdf_imports
+            .cancel_at(import_token, Instant::now())
     }
 
     async fn source_metadata(&self) -> Result<Vec<Value>, String> {
@@ -2571,24 +2957,608 @@ fn content_type(resource: &str) -> &'static str {
     }
 }
 
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn picker_display_name(uri: &str, metadata_name: Option<&str>) -> Option<String> {
+    let encoded_name = metadata_name.or_else(|| {
+        uri.split(|character| character == '?' || character == '#')
+            .next()?
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .filter(|segment| !segment.is_empty())
+    })?;
+    let decoded = percent_encoding::percent_decode_str(encoded_name).decode_utf8_lossy();
+    let name = Path::new(decoded.as_ref())
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)?;
+    // Android providers commonly expose a stable opaque document ID as the
+    // last `content://` URI segment. Do not mistake it for a display name.
+    if metadata_name.is_none()
+        && uri.starts_with("content:")
+        && Path::new(&name).extension().is_none()
+    {
+        return None;
+    }
+    Some(name)
+}
+
+/// Determine Android `content://` file types without trusting the opaque URI
+/// suffix. Dialog/fs metadata does not expose the provider's MIME type, so use
+/// a reported filename first and inspect bounded file signatures/ZIP entries
+/// when the provider returns only an opaque document id.
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn infer_picker_extension(
+    _uri: &str,
+    metadata_name: Option<&str>,
+    file_path: &Path,
+    allowed_extensions: &[&str],
+) -> Result<String, String> {
+    // Only trust a provider-supplied filename, never an opaque content URI
+    // suffix. Tauri's current dialog API does not expose MIME metadata, so
+    // Android content URIs fall through to actual bytes/ZIP structure.
+    if let Some(name) = metadata_name {
+        if let Some(extension) = Path::new(&name)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase)
+        {
+            if allowed_extensions.contains(&extension.as_str()) {
+                return Ok(extension);
+            }
+            return Err(format!(
+                "Selected file extension .{extension} is not supported"
+            ));
+        }
+    }
+
+    let prefix = read_file_prefix(file_path, 4096)?;
+    if allowed_extensions.contains(&"pdf")
+        && prefix
+            .get(..prefix.len().min(1024))
+            .is_some_and(|header| header.windows(5).any(|window| window == b"%PDF-"))
+    {
+        return Ok("pdf".to_owned());
+    }
+
+    if prefix.starts_with(b"PK") {
+        let mut archive = zip::ZipArchive::new(
+            std::fs::File::open(file_path)
+                .map_err(|error| format!("Cannot inspect the selected ZIP archive: {error}"))?,
+        )
+        .map_err(|_| "Cannot identify the selected ZIP-based book".to_owned())?;
+        if archive.len() > 100_000 {
+            return Err("Selected archive contains too many entries".to_owned());
+        }
+        let has_container = archive
+            .file_names()
+            .any(|name| name == "META-INF/container.xml");
+        let mime_type = match archive.by_name("mimetype") {
+            Ok(member) if member.size() <= 128 => {
+                use std::io::Read;
+                let mut content = Vec::new();
+                member
+                    .take(128)
+                    .read_to_end(&mut content)
+                    .map_err(|_| "Cannot inspect the selected EPUB archive".to_owned())?;
+                String::from_utf8_lossy(&content).trim().to_owned()
+            }
+            _ => String::new(),
+        };
+        if has_container
+            && mime_type == "application/epub+zip"
+            && allowed_extensions.contains(&"epub")
+        {
+            return Ok("epub".to_owned());
+        }
+        let contains_comic_image = archive.file_names().any(|name| {
+            matches!(
+                Path::new(name)
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .as_deref(),
+                Some("png" | "jpg" | "jpeg" | "webp" | "gif" | "bmp")
+            )
+        });
+        if contains_comic_image && allowed_extensions.contains(&"cbz") {
+            return Ok("cbz".to_owned());
+        }
+        return Err("The selected ZIP file is neither a supported EPUB nor a CBZ".to_owned());
+    }
+
+    if allowed_extensions.contains(&"json") && looks_like_picker_json(&prefix) {
+        return Ok("json".to_owned());
+    }
+    if allowed_extensions.contains(&"txt") && looks_like_picker_text(&prefix) {
+        return Ok("txt".to_owned());
+    }
+    Err("Cannot determine the selected file type; choose a TXT, EPUB, CBZ, or PDF file".to_owned())
+}
+
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn read_file_prefix(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("Cannot inspect the selected file: {error}"))?;
+    let mut prefix = Vec::with_capacity(limit);
+    file.take(limit as u64)
+        .read_to_end(&mut prefix)
+        .map_err(|error| format!("Cannot inspect the selected file: {error}"))?;
+    Ok(prefix)
+}
+
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn copy_stream_limited<R: std::io::Read, W: std::io::Write>(
+    reader: R,
+    writer: &mut W,
+    limit: u64,
+) -> std::io::Result<u64> {
+    let mut limited_reader = std::io::Read::take(reader, limit.saturating_add(1));
+    let copied = std::io::copy(&mut limited_reader, writer)?;
+    if copied > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "selected file exceeds the configured import limit",
+        ));
+    }
+    Ok(copied)
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+fn safe_picker_file_name(display_name: Option<&str>, extension: &str) -> String {
+    let stem = display_name
+        .and_then(|name| Path::new(name).file_stem())
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("Imported book");
+    let mut safe_stem = stem
+        .chars()
+        .filter_map(|character| {
+            if character.is_alphanumeric() || matches!(character, '-' | '_' | ' ') {
+                Some(if character == ' ' { '_' } else { character })
+            } else {
+                None
+            }
+        })
+        .take(100)
+        .collect::<String>();
+    while safe_stem.starts_with('.') {
+        safe_stem.remove(0);
+    }
+    if safe_stem.is_empty() {
+        safe_stem = "Imported_book".to_owned();
+    }
+    format!("{safe_stem}.{extension}")
+}
+
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn looks_like_picker_text(bytes: &[u8]) -> bool {
+    if bytes.is_empty() || bytes.contains(&0) {
+        return false;
+    }
+    let sample = &bytes[..bytes.len().min(4096)];
+    let control_count = sample
+        .iter()
+        .filter(|byte| **byte < 0x20 && !matches!(**byte, b'\t' | b'\n' | b'\r' | 0x0c))
+        .count();
+    control_count * 100 <= sample.len()
+}
+
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+fn looks_like_picker_json(bytes: &[u8]) -> bool {
+    if !looks_like_picker_text(bytes) {
+        return false;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    matches!(
+        text.trim_start()
+            .trim_start_matches('\u{feff}')
+            .chars()
+            .next(),
+        Some('[' | '{')
+    )
+}
+
+#[cfg(test)]
+mod picker_helper_tests {
+    use super::*;
+
+    fn temp_dir() -> tempfile::TempDir {
+        tempfile::tempdir().expect("temporary picker fixture directory")
+    }
+
+    fn write_file(directory: &tempfile::TempDir, bytes: &[u8]) -> PathBuf {
+        let path = directory.path().join("opaque-document-id");
+        std::fs::write(&path, bytes).expect("write picker fixture");
+        path
+    }
+
+    fn write_zip(directory: &tempfile::TempDir, files: &[(&str, &[u8])]) -> PathBuf {
+        use std::io::Write;
+        let path = directory.path().join("opaque-zip-id");
+        let output = std::fs::File::create(&path).expect("create ZIP fixture");
+        let mut archive = zip::ZipWriter::new(output);
+        for (name, body) in files {
+            archive
+                .start_file(
+                    *name,
+                    zip::write::SimpleFileOptions::default()
+                        .compression_method(zip::CompressionMethod::Stored),
+                )
+                .expect("start ZIP member");
+            archive.write_all(body).expect("write ZIP member");
+        }
+        archive.finish().expect("finish ZIP fixture");
+        path
+    }
+
+    const BOOK_EXTENSIONS: &[&str] = &["txt", "epub", "cbz", "pdf"];
+
+    #[test]
+    fn opaque_content_uris_are_classified_from_file_signatures_and_zip_members() {
+        let directory = temp_dir();
+        let pdf = write_file(&directory, b"%PDF-1.7\nfixture");
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/opaque-1",
+                None,
+                &pdf,
+                BOOK_EXTENSIONS
+            )
+            .expect("PDF signature"),
+            "pdf"
+        );
+
+        let epub = write_zip(
+            &directory,
+            &[
+                ("mimetype", b"application/epub+zip"),
+                ("META-INF/container.xml", b"<container/>"),
+            ],
+        );
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/opaque-2",
+                None,
+                &epub,
+                BOOK_EXTENSIONS
+            )
+            .expect("EPUB ZIP entries"),
+            "epub"
+        );
+
+        let cbz = write_zip(&directory, &[("001/cover.png", b"not parsed here")]);
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/opaque-3",
+                None,
+                &cbz,
+                BOOK_EXTENSIONS
+            )
+            .expect("comic image entry"),
+            "cbz"
+        );
+
+        let txt = write_file(&directory, "chapter one\n正文".as_bytes());
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/opaque-4",
+                None,
+                &txt,
+                BOOK_EXTENSIONS
+            )
+            .expect("plain text fallback"),
+            "txt"
+        );
+        assert!(picker_display_name("content://provider/document/opaque-4", None).is_none());
+    }
+
+    #[test]
+    fn picker_keeps_a_reported_supported_extension_and_rejects_unknown_zip() {
+        let directory = temp_dir();
+        let fake_pdf = write_file(&directory, b"not a PDF");
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/file.pdf",
+                Some("My Book.PDF"),
+                &fake_pdf,
+                BOOK_EXTENSIONS,
+            )
+            .expect("provider filename extension"),
+            "pdf"
+        );
+
+        assert_eq!(
+            infer_picker_extension(
+                "content://provider/document/opaque-id.pdf",
+                None,
+                &fake_pdf,
+                BOOK_EXTENSIONS,
+            )
+            .expect("content type comes from file bytes, not URI suffix"),
+            "txt"
+        );
+
+        let unknown_zip = write_zip(&directory, &[("readme.txt", b"zip archive")]);
+        assert!(infer_picker_extension(
+            "content://provider/document/opaque-zip",
+            None,
+            &unknown_zip,
+            BOOK_EXTENSIONS,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn staging_copy_stops_at_the_configured_limit_plus_one_byte() {
+        let mut exact_copy = Vec::new();
+        assert_eq!(
+            copy_stream_limited(std::io::Cursor::new(b"12345678"), &mut exact_copy, 8)
+                .expect("copy exactly at limit"),
+            8
+        );
+        assert_eq!(exact_copy, b"12345678");
+
+        let mut over_limit_copy = Vec::new();
+        let error =
+            copy_stream_limited(std::io::Cursor::new(b"1234567890"), &mut over_limit_copy, 8)
+                .expect_err("reject one byte over limit");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(over_limit_copy.len(), 9);
+    }
+}
+
+#[cfg(test)]
+mod pending_pdf_registry_tests {
+    use super::{ApplicationService, PendingPdfImportRegistry, PickerFile};
+    use std::{
+        path::PathBuf,
+        time::{Duration, Instant},
+    };
+
+    fn temporary_picker_file(
+        root: &tempfile::TempDir,
+        directory_name: &str,
+    ) -> (PickerFile, PathBuf, PathBuf) {
+        let stage = root.path().join(directory_name);
+        std::fs::create_dir(&stage).expect("create staged import directory");
+        let file = stage.join("document.pdf");
+        std::fs::write(&file, b"encrypted-pdf-fixture").expect("create staged PDF");
+        (
+            PickerFile {
+                path: file.clone(),
+                temporary: true,
+                cleanup_dir: Some(stage.clone()),
+            },
+            file,
+            stage,
+        )
+    }
+
+    #[test]
+    fn cancelling_pending_pdf_removes_the_staged_file_and_directory() {
+        let root = tempfile::tempdir().expect("temporary registry fixture");
+        let registry = PendingPdfImportRegistry::new(Duration::from_secs(300));
+        let now = Instant::now();
+        let (file, path, stage) = temporary_picker_file(&root, "cancel-import");
+        let token = registry.insert_at(file, now).expect("insert pending PDF");
+
+        assert!(registry
+            .cancel_at(&token, now + Duration::from_secs(1))
+            .expect("cancel pending PDF"));
+        assert!(!path.exists());
+        assert!(!stage.exists());
+        assert!(!registry
+            .cancel_at(&token, now + Duration::from_secs(1))
+            .expect("repeat cancellation is harmless"));
+    }
+
+    #[test]
+    fn recoverable_password_failure_can_reinsert_the_same_pending_file() {
+        let root = tempfile::tempdir().expect("temporary registry fixture");
+        let registry = PendingPdfImportRegistry::new(Duration::from_secs(300));
+        let now = Instant::now();
+        let (file, path, _) = temporary_picker_file(&root, "retry-import");
+        let token = registry.insert_at(file, now).expect("insert pending PDF");
+
+        // A bad password follows the Tauri flow: take for one attempt, then put
+        // the same file back so the user can retry with another password.
+        let pending = registry
+            .take_at(&token, now + Duration::from_secs(20))
+            .expect("take for password attempt")
+            .expect("pending file exists");
+        assert!(path.exists());
+        registry
+            .reinsert_at(token.clone(), pending, now + Duration::from_secs(21))
+            .expect("restore retry state");
+
+        let retry = registry
+            .take_at(&token, now + Duration::from_secs(22))
+            .expect("take for retry")
+            .expect("retry entry is present");
+        assert!(path.exists());
+        drop(retry);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn pending_pdf_expires_and_cleans_up_without_waiting_for_the_ttl() {
+        let root = tempfile::tempdir().expect("temporary registry fixture");
+        let registry = PendingPdfImportRegistry::new(Duration::from_secs(300));
+        let now = Instant::now();
+        let (file, path, stage) = temporary_picker_file(&root, "expire-import");
+        let token = registry.insert_at(file, now).expect("insert pending PDF");
+
+        assert!(
+            registry
+                .expire_at(&token, now + Duration::from_secs(299))
+                .expect("check before expiry")
+                == false
+        );
+        assert!(path.exists());
+        assert!(registry
+            .expire_at(&token, now + Duration::from_secs(300))
+            .expect("expire pending PDF"));
+        assert!(!path.exists());
+        assert!(!stage.exists());
+    }
+
+    #[test]
+    fn replacing_the_active_challenge_invalidates_and_cleans_the_previous_file() {
+        let root = tempfile::tempdir().expect("temporary registry fixture");
+        let registry = PendingPdfImportRegistry::new(Duration::from_secs(300));
+        let now = Instant::now();
+        let (first, first_path, first_stage) = temporary_picker_file(&root, "first-import");
+        let first_token = registry
+            .insert_at(first, now)
+            .expect("insert first pending PDF");
+        let (second, second_path, second_stage) = temporary_picker_file(&root, "second-import");
+        let second_token = registry
+            .insert_at(second, now + Duration::from_secs(1))
+            .expect("replace pending PDF");
+
+        assert_ne!(first_token, second_token);
+        assert!(!first_path.exists());
+        assert!(!first_stage.exists());
+        assert!(second_path.exists());
+        assert!(second_stage.exists());
+        assert!(registry
+            .take_at(&first_token, now + Duration::from_secs(2))
+            .expect("check stale challenge")
+            .is_none());
+        drop(
+            registry
+                .take_at(&second_token, now + Duration::from_secs(2))
+                .expect("take current challenge")
+                .expect("current challenge remains active"),
+        );
+        assert!(!second_path.exists());
+    }
+
+    #[test]
+    fn clearing_pending_imports_drops_the_current_temporary_file() {
+        let root = tempfile::tempdir().expect("temporary registry fixture");
+        let registry = PendingPdfImportRegistry::new(Duration::from_secs(300));
+        let (file, path, stage) = temporary_picker_file(&root, "restore-import");
+        let token = registry
+            .insert_at(file, Instant::now())
+            .expect("insert pending PDF");
+
+        registry.clear().expect("clear after restore");
+        assert!(!path.exists());
+        assert!(!stage.exists());
+        assert!(registry
+            .take_at(&token, Instant::now())
+            .expect("read cleared registry")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn protected_pdf_challenge_is_singleton_and_allows_a_password_retry() {
+        let root = tempfile::tempdir().expect("temporary application data");
+        let service = ApplicationService::open(root.path(), None)
+            .await
+            .expect("open app service");
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/local-books/two-page-encrypted.pdf");
+        let challenge = service
+            .import_local_book_with_challenge(
+                PickerFile::from_existing_path(&fixture),
+                crate::local_books::LocalImportOptions::default(),
+            )
+            .await
+            .expect("return password challenge");
+        assert_eq!(challenge["passwordRequired"], true);
+        let token = challenge["importToken"]
+            .as_str()
+            .expect("opaque challenge token")
+            .to_owned();
+
+        let replacement = service
+            .import_local_book_with_challenge(
+                PickerFile::from_existing_path(&fixture),
+                crate::local_books::LocalImportOptions::default(),
+            )
+            .await
+            .expect("replace existing password challenge");
+        let replacement_token = replacement["importToken"]
+            .as_str()
+            .expect("replacement challenge token")
+            .to_owned();
+        assert_ne!(token, replacement_token);
+        assert!(service
+            .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
+            .await
+            .unwrap_err()
+            .contains("expired"));
+
+        let wrong_password = service
+            .retry_pending_pdf_import(&replacement_token, "wrong-pass".to_owned())
+            .await
+            .expect_err("wrong password should allow a retry");
+        assert!(wrong_password.contains("password is incorrect"));
+
+        let imported = service
+            .retry_pending_pdf_import(&replacement_token, "fixture-pass".to_owned())
+            .await
+            .expect("retry with the correct password");
+        assert!(imported["book"]["src"].is_string());
+        assert!(service
+            .retry_pending_pdf_import(&replacement_token, "fixture-pass".to_owned())
+            .await
+            .unwrap_err()
+            .contains("expired"));
+    }
+
+    #[tokio::test]
+    async fn successful_restore_invalidates_and_cleans_pending_picker_imports() {
+        let temporary = tempfile::tempdir().expect("temporary application data");
+        let app_root = temporary.path().join("app-data");
+        let archive = temporary.path().join("snapshot.zip");
+        let service = ApplicationService::open(&app_root, None)
+            .await
+            .expect("open app service");
+        service
+            .create_backup(&archive)
+            .await
+            .expect("create restore fixture");
+
+        let staging = app_root.join("private-data/picker-imports/active");
+        std::fs::create_dir_all(&staging).expect("create pending picker stage");
+        let staged_file = staging.join("encrypted.pdf");
+        std::fs::write(&staged_file, b"encrypted fixture").expect("write pending PDF");
+        let token = service
+            .pending_pdf_imports
+            .insert_at(
+                PickerFile {
+                    path: staged_file.clone(),
+                    temporary: true,
+                    cleanup_dir: Some(staging.clone()),
+                },
+                Instant::now(),
+            )
+            .expect("register pending PDF");
+
+        service
+            .restore_backup(&archive)
+            .await
+            .expect("restore snapshot");
+        assert!(!staged_file.exists());
+        assert!(!staging.exists());
+        assert!(service
+            .retry_pending_pdf_import(&token, "fixture-pass".to_owned())
+            .await
+            .unwrap_err()
+            .contains("expired"));
+    }
+}
+
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 mod tauri_commands {
     use super::*;
     use tauri::{Emitter, Manager, State};
     use tauri_plugin_dialog::{DialogExt, FilePath};
-
-    struct PickerFile {
-        path: PathBuf,
-        temporary: bool,
-    }
-
-    impl Drop for PickerFile {
-        fn drop(&mut self) {
-            if self.temporary {
-                let _ = std::fs::remove_file(&self.path);
-            }
-        }
-    }
 
     async fn pick_file(
         app: &tauri::AppHandle,
@@ -2637,59 +3607,134 @@ mod tauri_commands {
         selected: FilePath,
         allowed_extensions: &[&str],
     ) -> Result<PickerFile, String> {
+        let selected_uri = selected.to_string();
+        let display_name = picker_display_name(&selected_uri, None);
+
+        // Desktop paths can be used directly. On Android/iOS, always go
+        // through the fs plugin so content URIs and security-scoped URLs are
+        // opened while the native permission is active.
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
         if let Ok(path) = selected.clone().into_path() {
             validate_picker_extension(&path, allowed_extensions)?;
+            validate_picker_size(&path, allowed_extensions)?;
             return Ok(PickerFile {
                 path,
                 temporary: false,
+                cleanup_dir: None,
             });
         }
+
         use tauri_plugin_fs::FsExt;
-        let bytes = app
+        let mut options = tauri_plugin_fs::OpenOptions::new();
+        options.read(true);
+        let source = app
             .fs()
-            .read(selected.clone())
+            .open(selected.clone(), options)
             .map_err(|error| format!("Cannot read selected file: {error}"))?;
-        let preferred = selected_extension(&selected);
-        let extension = preferred
-            .filter(|extension| allowed_extensions.contains(&extension.as_str()))
-            .or_else(|| {
-                if allowed_extensions.contains(&"epub") && bytes.starts_with(b"PK\x03\x04") {
-                    Some("epub".to_owned())
-                } else {
-                    allowed_extensions
-                        .first()
-                        .map(|extension| (*extension).to_owned())
-                }
-            })
-            .ok_or_else(|| "Selected file type is not supported".to_owned())?;
+        if source
+            .metadata()
+            .ok()
+            .is_some_and(|metadata| metadata.len() > MAX_PICKER_FILE_BYTES)
+        {
+            return Err(format!(
+                "Selected file exceeds the {} MiB import limit",
+                MAX_PICKER_FILE_BYTES / (1024 * 1024)
+            ));
+        }
         let directory = app
             .path()
             .app_data_dir()
             .map_err(|error| error.to_string())?
             .join("private-data")
             .join("picker-imports");
-        tokio::fs::create_dir_all(&directory)
+        let staging_directory = directory.join(uuid::Uuid::new_v4().simple().to_string());
+        tokio::fs::create_dir_all(&staging_directory)
             .await
             .map_err(|error| error.to_string())?;
-        let path = directory.join(format!("{}.{}", uuid::Uuid::new_v4().simple(), extension));
-        tokio::fs::write(&path, bytes)
-            .await
-            .map_err(|error| format!("Cannot stage selected file: {error}"))?;
+        let raw_path = staging_directory.join("source.bin");
+        let copy_path = raw_path.clone();
+        let copy_result = tokio::task::spawn_blocking(move || {
+            use std::io;
+            let mut destination = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&copy_path)?;
+            let copied = copy_stream_limited(source, &mut destination, MAX_PICKER_FILE_BYTES)?;
+            destination.sync_all()?;
+            Ok::<u64, io::Error>(copied)
+        })
+        .await;
+        let copy_result = match copy_result {
+            Ok(result) => result,
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&staging_directory).await;
+                return Err(format!("Cannot stage selected file: {error}"));
+            }
+        };
+        let file_size = match copy_result {
+            Ok(size) => size,
+            Err(error) => {
+                let _ = tokio::fs::remove_dir_all(&staging_directory).await;
+                if error.kind() == std::io::ErrorKind::InvalidData {
+                    return Err(format!(
+                        "Selected file exceeds the {} MiB import limit",
+                        MAX_PICKER_FILE_BYTES / (1024 * 1024)
+                    ));
+                }
+                return Err(format!("Cannot stage selected file: {error}"));
+            }
+        };
+        let extension =
+            match infer_picker_extension(&selected_uri, None, &raw_path, allowed_extensions) {
+                Ok(extension) => extension,
+                Err(error) => {
+                    let _ = tokio::fs::remove_dir_all(&staging_directory).await;
+                    return Err(error);
+                }
+            };
+        if extension == "json" && file_size > MAX_PICKER_SOURCE_JSON_BYTES {
+            let _ = tokio::fs::remove_dir_all(&staging_directory).await;
+            return Err(format!(
+                "Selected source file exceeds the {} MiB import limit",
+                MAX_PICKER_SOURCE_JSON_BYTES / (1024 * 1024)
+            ));
+        }
+        let path =
+            staging_directory.join(safe_picker_file_name(display_name.as_deref(), &extension));
+        if let Err(error) = tokio::fs::rename(&raw_path, &path).await {
+            let _ = tokio::fs::remove_dir_all(&staging_directory).await;
+            return Err(format!("Cannot finalize selected file: {error}"));
+        }
         Ok(PickerFile {
             path,
             temporary: true,
+            cleanup_dir: Some(staging_directory),
         })
     }
 
-    fn selected_extension(selected: &FilePath) -> Option<String> {
-        let name = match selected {
-            FilePath::Path(path) => path.file_name()?.to_str()?.to_owned(),
-            FilePath::Url(url) => url.path_segments()?.next_back()?.to_owned(),
-        };
-        Path::new(&name)
-            .extension()?
-            .to_str()
-            .map(|extension| extension.to_ascii_lowercase())
+    fn validate_picker_size(path: &Path, allowed_extensions: &[&str]) -> Result<(), String> {
+        let size = std::fs::metadata(path)
+            .map_err(|error| format!("Cannot inspect selected file: {error}"))?
+            .len();
+        if size > MAX_PICKER_FILE_BYTES {
+            return Err(format!(
+                "Selected file exceeds the {} MiB import limit",
+                MAX_PICKER_FILE_BYTES / (1024 * 1024)
+            ));
+        }
+        if allowed_extensions.contains(&"json")
+            && path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            && size > MAX_PICKER_SOURCE_JSON_BYTES
+        {
+            return Err(format!(
+                "Selected source file exceeds the {} MiB import limit",
+                MAX_PICKER_SOURCE_JSON_BYTES / (1024 * 1024)
+            ));
+        }
+        Ok(())
     }
 
     fn validate_picker_extension(path: &Path, allowed: &[&str]) -> Result<(), String> {
@@ -2926,10 +3971,39 @@ mod tauri_commands {
         let Some(path) = pick_file(&app, "Books", &["txt", "epub", "cbz", "pdf"]).await? else {
             return Ok(json!({ "cancelled": true }));
         };
-        let result = service.import_local_book(&path.path, options).await?;
+        let result = service
+            .import_local_book_with_challenge(path, options)
+            .await?;
+        if result.get("passwordRequired").and_then(Value::as_bool) == Some(true) {
+            return Ok(result);
+        }
         let _ = app.emit("book-added", result["book"].clone());
         let _ = app.emit("shelf-updated", result["shelf"].clone());
         Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn import_protected_pdf(
+        app: tauri::AppHandle,
+        import_token: String,
+        password: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let result = service
+            .retry_pending_pdf_import(&import_token, password)
+            .await?;
+        let _ = app.emit("book-added", result["book"].clone());
+        let _ = app.emit("shelf-updated", result["shelf"].clone());
+        Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn cancel_pending_pdf_import(
+        import_token: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let _ = service.cancel_pending_pdf_import(&import_token).await?;
+        Ok(json!({ "cancelled": true }))
     }
 
     #[tauri::command]
@@ -3002,6 +4076,114 @@ mod tauri_commands {
         let result = service.save_settings(settings).await?;
         let _ = app.emit("settings-updated", result.clone());
         Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn get_home_config(service: State<'_, ApplicationService>) -> Result<Value, String> {
+        service.get_home_config().await
+    }
+
+    #[tauri::command]
+    pub async fn save_home_config(
+        app: tauri::AppHandle,
+        config: crate::discovery::home_config::HomeConfigDocument,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.save_home_config(config).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "homeConfig", "resource": resource }),
+        );
+        Ok(resource)
+    }
+
+    #[tauri::command]
+    pub async fn get_rss_state(service: State<'_, ApplicationService>) -> Result<Value, String> {
+        service.get_rss_state().await
+    }
+
+    #[tauri::command]
+    pub async fn set_rss_filter(
+        app: tauri::AppHandle,
+        source_id: String,
+        filter: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.set_rss_filter(&source_id, &filter).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "rssState", "resource": resource }),
+        );
+        Ok(resource)
+    }
+
+    #[tauri::command]
+    pub async fn set_rss_article_state(
+        app: tauri::AppHandle,
+        source_id: String,
+        article_id: String,
+        is_read: Option<bool>,
+        is_favorite: Option<bool>,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service
+            .set_rss_article_state(&source_id, &article_id, is_read, is_favorite)
+            .await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "rssState", "resource": resource }),
+        );
+        Ok(resource)
+    }
+
+    #[tauri::command]
+    pub async fn unsubscribe_rss(
+        app: tauri::AppHandle,
+        source_id: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let result = service.unsubscribe_rss(&source_id).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "rssState", "resource": result["resource"] }),
+        );
+        let _ = app.emit("sources-updated", result["sources"].clone());
+        Ok(result)
+    }
+
+    #[tauri::command]
+    pub async fn get_txt_toc_rules(
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        service.get_txt_toc_rules().await
+    }
+
+    #[tauri::command]
+    pub async fn upsert_txt_toc_rule(
+        app: tauri::AppHandle,
+        rule: crate::local_books::txt_toc_rules::TxtTocRule,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.upsert_txt_toc_rule(rule).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "txtTocRules", "resource": resource }),
+        );
+        Ok(resource)
+    }
+
+    #[tauri::command]
+    pub async fn delete_txt_toc_rule(
+        app: tauri::AppHandle,
+        rule_id: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.delete_txt_toc_rule(&rule_id).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "txtTocRules", "resource": resource }),
+        );
+        Ok(resource)
     }
 
     #[tauri::command]
@@ -3283,6 +4465,34 @@ mod tauri_commands {
     }
 
     #[tauri::command]
+    pub async fn list_discovery_favorites(
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let _operation = service.operation_read().await;
+        let resource = crate::discovery::favorites_resource(service.resource_store()).await?;
+        Ok(json!({ "resource": service.resource_descriptor(&resource) }))
+    }
+
+    #[tauri::command]
+    pub async fn set_discovery_favorite(
+        app: tauri::AppHandle,
+        source_id: String,
+        category_id: String,
+        favorite: bool,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let _operation = service.operation_read().await;
+        let resource =
+            crate::discovery::set_favorite(&service, &source_id, &category_id, favorite).await?;
+        let descriptor = service.resource_descriptor(&resource);
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "discoveryFavorites", "resource": descriptor }),
+        );
+        Ok(descriptor)
+    }
+
+    #[tauri::command]
     pub async fn list_rss_categories(
         app: tauri::AppHandle,
         source_id: String,
@@ -3351,6 +4561,7 @@ mod tauri_commands {
             let staged = PickerFile {
                 path: directory.join(format!("{}.zip", uuid::Uuid::new_v4().simple())),
                 temporary: true,
+                cleanup_dir: None,
             };
             service.create_backup(&staged.path).await?;
             let bytes = tokio::fs::read(&staged.path)
@@ -3473,6 +4684,12 @@ mod tests {
         fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
             Box::pin(async move {
                 match request.operation.as_str() {
+                    "exploreKinds" => Ok(json!([{
+                        "title": "Fantasy",
+                        "type": "text",
+                        "url": "mock://catalog/fantasy",
+                        "style": { "layout": "list" }
+                    }])),
                     "search" => {
                         let keyword = request.keyword.unwrap_or_default();
                         let gate = self
@@ -3635,9 +4852,13 @@ mod tests {
             return;
         }
         let body = match path {
-            "/search" => "<div class='item'><h3><a href='/book'>Fixture Novel</a></h3><span class='author'>A. Writer</span></div>",
+            "/search" => {
+                "<div class='item'><h3><a href='/book'>Fixture Novel</a></h3><span class='author'>A. Writer</span></div>"
+            }
             "/book" => "<h1>Fixture Novel</h1><a class='toc' href='/toc'>目录</a>",
-            "/toc" => "<ul id='list'><li><a href='/chapter/one'>Chapter One</a></li><li><a href='/chapter/two'>Chapter Two</a></li></ul>",
+            "/toc" => {
+                "<ul id='list'><li><a href='/chapter/one'>Chapter One</a></li><li><a href='/chapter/two'>Chapter Two</a></li></ul>"
+            }
             "/chapter/one" => "<div class='content'>First cached chapter</div>",
             "/chapter/two" => "<div class='content'>Second cached chapter</div>",
             _ => "not found",
@@ -3661,6 +4882,256 @@ mod tests {
 
     fn temp_root() -> PathBuf {
         std::env::temp_dir().join(format!("legado-app-flow-{}", uuid::Uuid::new_v4().simple()))
+    }
+
+    #[tokio::test]
+    async fn home_rss_and_txt_toc_service_apis_persist_public_resources() {
+        let (service, _executor, root, source_id) = controlled_service(2).await;
+        let client = reqwest::Client::new();
+
+        let categories = crate::discovery::list_categories(&service, &source_id, Some(false))
+            .await
+            .expect("processed categories");
+        let category_ref = service
+            .store
+            .discovery_ref(&source_id)
+            .expect("category resource ref");
+        let category_document = service
+            .store
+            .read_json_ref(&category_ref)
+            .await
+            .expect("category document");
+        let category_id = category_document["categories"][0]["categoryId"]
+            .as_str()
+            .expect("stable public category ID")
+            .to_owned();
+
+        let initial_home_ref = service
+            .get_home_config()
+            .await
+            .expect("get home descriptor");
+        let home_resource_id = initial_home_ref["resourceId"]
+            .as_str()
+            .expect("home resource ID");
+        let home_ref =
+            crate::resources::ResourceRef::new(home_resource_id).expect("valid home resource ref");
+        let initial_home = service
+            .store
+            .read_json_ref(&home_ref)
+            .await
+            .expect("initialized home config");
+        assert_eq!(initial_home["tabs"][0]["title"], "主页");
+
+        let config: crate::discovery::home_config::HomeConfigDocument =
+            serde_json::from_value(json!({
+                "schemaVersion": crate::models::CURRENT_SCHEMA_VERSION,
+                "tabs": [{
+                    "id": "tab-main",
+                    "title": "首页",
+                    "sortOrder": 0,
+                    "sections": [{
+                        "id": "section-featured",
+                        "title": "精选",
+                        "sourceId": source_id,
+                        "sourceName": "UI-supplied source name",
+                        "categoryId": category_id,
+                        "categoryName": "UI-supplied category name",
+                        "style": 0,
+                        "sortOrder": 0,
+                        "coverVideo": false
+                    }]
+                }]
+            }))
+            .expect("valid processed home DTO");
+        let mut invalid_home = config.clone();
+        invalid_home.tabs[0].sections[0].source_id = "source-does-not-exist".to_owned();
+        let saved_home_ref = service
+            .save_home_config(config)
+            .await
+            .expect("save home config");
+        let saved_home = json_get(&client, saved_home_ref["src"].as_str().unwrap()).await;
+        assert_eq!(
+            saved_home["tabs"][0]["sections"][0]["sourceName"],
+            "Controlled fixture"
+        );
+        assert_eq!(
+            saved_home["tabs"][0]["sections"][0]["categoryName"],
+            "Fantasy"
+        );
+        assert!(!saved_home.to_string().contains("mock://catalog/fantasy"));
+        assert!(!saved_home.to_string().contains("privateRule"));
+        assert!(categories["resource"]["src"].as_str().is_some());
+        assert!(service.save_home_config(invalid_home).await.is_err());
+        assert_eq!(
+            service.store.read_json_ref(&home_ref).await.unwrap(),
+            saved_home
+        );
+
+        let rss_source = service
+            .import_sources(
+                &json!([{
+                    "sourceName": "Fixture feed",
+                    "sourceUrl": "https://feed.example.test/rss",
+                    "bookSourceType": 5
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import processed RSS source");
+        let rss_source_id = rss_source["sources"]
+            .as_array()
+            .and_then(|sources| sources.last())
+            .and_then(|source| source.get("id"))
+            .and_then(Value::as_str)
+            .expect("RSS source ID")
+            .to_owned();
+        let stored_rss_source = service
+            .source_record(&rss_source_id)
+            .await
+            .expect("stored RSS source");
+        assert!(
+            crate::rss::is_rss_source(&stored_rss_source.source),
+            "expected RSS envelope, got {}",
+            stored_rss_source.source
+        );
+        let rss_resource = service.get_rss_state().await.expect("RSS state descriptor");
+        let rss_resource_id = rss_resource["resourceId"]
+            .as_str()
+            .expect("RSS state resource ID");
+        let rss_ref =
+            crate::resources::ResourceRef::new(rss_resource_id).expect("valid RSS state ref");
+        service
+            .set_rss_filter(&rss_source_id, "favorites")
+            .await
+            .expect("set RSS filter");
+        let article_id = "article-00000000000000000000000000000001";
+        let mut rss_state = service
+            .store
+            .read_json_ref(&rss_ref)
+            .await
+            .expect("RSS state document");
+        rss_state["articles"] = json!([{
+            "sourceId": rss_source_id,
+            "articleId": article_id,
+            "isRead": false,
+            "isFavorite": false,
+            "updatedAtMs": 1
+        }]);
+        service
+            .store
+            .write_json_ref(&rss_ref, &rss_state)
+            .await
+            .expect("seed one already processed RSS article");
+        service
+            .set_rss_article_state(&rss_source_id, article_id, Some(true), Some(true))
+            .await
+            .expect("update RSS read/favorite flags");
+        let changed_state = service
+            .store
+            .read_json_ref(&rss_ref)
+            .await
+            .expect("updated RSS state");
+        assert_eq!(changed_state["subscriptions"][0]["filter"], "favorites");
+        assert_eq!(changed_state["articles"][0]["isRead"], true);
+        assert_eq!(changed_state["articles"][0]["isFavorite"], true);
+        assert!(!changed_state.to_string().contains("feed.example.test"));
+        assert!(service
+            .set_rss_filter(&rss_source_id, "unknown-filter")
+            .await
+            .is_err());
+        assert!(service
+            .set_rss_article_state(&rss_source_id, "invalid", Some(false), None)
+            .await
+            .is_err());
+
+        let unsubscribe = service
+            .unsubscribe_rss(&rss_source_id)
+            .await
+            .expect("unsubscribe RSS source and clear state");
+        assert_eq!(unsubscribe["sources"].as_array().unwrap().len(), 1);
+        assert_eq!(unsubscribe["sources"][0]["id"], source_id);
+        let cleared_rss_state = service
+            .store
+            .read_json_ref(&rss_ref)
+            .await
+            .expect("cleared RSS state");
+        assert!(cleared_rss_state["subscriptions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert!(cleared_rss_state["articles"].as_array().unwrap().is_empty());
+        assert!(service.source_record(&rss_source_id).await.is_err());
+
+        let initial_toc = service
+            .get_txt_toc_rules()
+            .await
+            .expect("TXT TOC resource descriptor");
+        let toc_ref = crate::resources::ResourceRef::new(
+            initial_toc["resourceId"]
+                .as_str()
+                .expect("TXT TOC resource ID"),
+        )
+        .expect("valid TXT TOC resource ref");
+        let initial_toc_document = service
+            .store
+            .read_json_ref(&toc_ref)
+            .await
+            .expect("initialized TXT TOC JSON");
+        assert!(initial_toc_document["rules"].as_array().unwrap().is_empty());
+        let rule = crate::local_books::txt_toc_rules::TxtTocRule {
+            id: "custom-heading".to_owned(),
+            name: "Chapter headings".to_owned(),
+            rule: r"^第[0-9一二三四五六七八九十]+章\s+(.+)$".to_owned(),
+            example: Some("第一章 开始".to_owned()),
+            serial_number: 0,
+            enable: true,
+        };
+        let saved_toc = service
+            .upsert_txt_toc_rule(rule.clone())
+            .await
+            .expect("save TXT TOC rule");
+        let persisted_toc = json_get(&client, saved_toc["src"].as_str().unwrap()).await;
+        assert_eq!(persisted_toc["rules"][0]["id"], "custom-heading");
+        assert_eq!(persisted_toc["rules"][0]["rule"], rule.rule);
+        let invalid_rule = crate::local_books::txt_toc_rules::TxtTocRule {
+            id: "broken-pattern".to_owned(),
+            name: "Broken".to_owned(),
+            rule: "[".to_owned(),
+            example: None,
+            serial_number: 1,
+            enable: true,
+        };
+        assert!(service.upsert_txt_toc_rule(invalid_rule).await.is_err());
+        assert_eq!(
+            service.store.read_json_ref(&toc_ref).await.unwrap(),
+            persisted_toc
+        );
+        drop(service);
+        let reopened = ApplicationService::open_with_executor(
+            &root,
+            std::sync::Arc::new(ControlledExecutor::new(2)),
+        )
+        .await
+        .expect("reopen service for persisted resource");
+        let reopened_toc = reopened
+            .get_txt_toc_rules()
+            .await
+            .expect("read persisted TXT TOC descriptor");
+        let persisted_after_reopen = json_get(&client, reopened_toc["src"].as_str().unwrap()).await;
+        assert_eq!(persisted_after_reopen, persisted_toc);
+        reopened
+            .delete_txt_toc_rule("custom-heading")
+            .await
+            .expect("delete TXT TOC rule");
+        assert!(
+            reopened.store.read_json_ref(&toc_ref).await.unwrap()["rules"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+
+        drop(reopened);
+        let _ = tokio::fs::remove_dir_all(root).await;
     }
 
     #[tokio::test]

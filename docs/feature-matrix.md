@@ -2,16 +2,16 @@
 
 本清单于 **2026-10-02 首轮源码快照** 根据旧仓库的产品入口、路由、界面和服务/模型代码盘点。它描述需要在 `legado_rs` 中实现并实际验收的能力，不表示旧项目每个旧行为都正确，也不要求保留旧版 bug 或未完成 UI。源码路径相对于对应仓库根目录。`旧版源码依据` 表明需求和原有实现线索，**不单凭 route/页面存在推定旧版各平台功能成熟**；源码可确认的旧版缺失/未完备项另列在“旧版成熟度边界”。矩阵状态描述初始 `legado_rs` 快照，代码演进后需按后续实现记录及时更新；没有功能可因代码“看起来已连上”就标记为端到端完成。
 
-状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有可复用引擎/宿主底座或测试/演示入口，但用户功能、资源架构或验收链未完整；**已验收** = 需要真实可用流程及证据后才能使用。当前没有任何整项达到“已验收”。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵里尚未更新的状态单元格；首次源码快照及其结论保留作历史，不代表今天全部仍未实现。当前锁定 no-default Rust library 全套测试已通过 55/55，但这不是 app 或跨平台功能验收。
+状态含义：**未实现** = 当前没有产品级实现；**部分实现** = 有可复用引擎/宿主底座或测试/演示入口，但用户功能、资源架构或验收链未完整；**已验收** = 需要真实可用流程及证据后才能使用。当前没有任何整项达到“已验收”。下表是 **2026-10-03 当前状态覆盖表**，优先于首轮快照矩阵里尚未更新的状态单元格；首次源码快照及其结论保留作历史，不代表今天全部仍未实现。当前锁定 no-default Rust library 全套测试已通过 81/81，但这不是 app 或跨平台功能验收。
 
 ## 当前实现与缺口（2026-10-03）
 
 | ID | 当前状态与证据 | 本次提交快照仍缺少的工作 |
 |---|---|---|
-| CORE-TEST | `cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --lib -j4`：55/55 通过；headless 测试不依赖 GTK/WebKitGTK。当前 browser_harness E2E 的核心阅读链也通过 | 测试与 browser_harness 不代替 Android/桌面/iOS 完整产品验收 |
-| APP-01 | 部分实现：Vue 有主导航和多个页面入口 | Rust 持久化可配置首页 tabs/sections；导航和首页展示完整验收 |
+| CORE-TEST | 当前共享快照 `CARGO_INCREMENTAL=0 cargo test --locked --manifest-path src-tauri/Cargo.toml --no-default-features --lib -j2`：81/81 通过；headless 测试不依赖 GTK/WebKitGTK，normal/build 依赖树均无 GTK/WebKitGTK 匹配。当前 browser_harness E2E 的核心阅读链也通过 | 测试与 browser_harness 不代替 Android/桌面/iOS 完整产品验收 |
+| APP-01 | 部分实现：Vue 有主导航；`discovery::home_config` 的 `reading/home-tabs.json` helper 定向测试通过 2/2，回查 opaque source/category ID、拒绝 URL/rules 字段并验证 JSON 重启持久 | Tauri 读写命令、Vue tabs/sections 编辑/展示、重启和 Android/桌面/iOS 窗口验收 |
 | LIB-01 | 部分实现：Rust shelf JSON、排序、每书分组与空分组注册表；Vue 书架页面；分组/排序及重启测试通过 | 批量管理、全部书架交互、跨平台 UI 验收 |
-| DISC-01 | 部分实现：Rust/KMP 分类和分页 adapter、私有分类 URL→opaque ID、公开处理后结果资源、收藏 JSON service；5/5 定向 Rust tests 通过，包含真实 DesktopSourceExecutor/JNI/KMP 分类与第 1–3 页 fixture | Tauri 收藏命令与发现 UI 尚未接入；收藏排序、错误/刷新完整流程和跨平台用户验收 |
+| DISC-01 | 部分实现：Rust/KMP 分类和分页 adapter、私有分类 URL→opaque ID、公开处理后结果资源、收藏 JSON service；5/5 定向 Rust tests 通过，包含真实 DesktopSourceExecutor/JNI/KMP 分类与第 1–3 页 fixture；收藏 Tauri commands 与 Vue 收藏列表/开关已在工作树接入 | 收藏用户流程 browser E2E 与排序、错误/刷新恢复、Android/桌面/iOS 产品验收 |
 | SEARCH-01 | 部分实现：当前源码快照 browser_harness E2E 已通过搜索→加入书架→阅读流程和已列明的分页、缓存、进度及失败恢复场景（27 次真实 IPC；见验证记录） | 多源搜索、筛选/历史完整体验及取消/部分失败等高级搜索场景；Android/桌面/iOS 产品流程仍待分别验收 |
 | BOOK-01 | 部分实现：搜索结果可创建书架资源；Rust 集成测试跑通详情/目录流程 | 编辑、刷新和完整产品详情 UI 流程 |
 | READ-01 | 部分实现：目录 JSON/章节 `src` 与源引擎调用存在 | 目录搜索、换源/章节源、刷新、离线和 UI 完整验收 |
@@ -23,10 +23,10 @@
 | SOURCE-01 | 部分实现：Rust 私有来源管理、导入/启停 metadata 与现有 KMP 执行桥存在 | 完整书源编辑/导出/排序/分组/多选与产品 UI 验收 |
 | SOURCE-02 | 部分实现：KMP 现有操作可经 Rust 调用 | 产品化调试/帮助/逐规则诊断与用户可理解错误 |
 | SOURCE-03 | 部分实现：Rust 引擎 HTTP/storage/Cookie 宿主已有底座 | 用户级登录、UA/代理/请求头配置与移动/桌面实测 |
-| SOURCE-04 | 部分实现：保留兼容现有引擎及 QuickJS；图片 `image.*` 处理已知未接入 | 对支持规则格式完整跑兼容矩阵并补宿主能力缺口 |
-| IMPORT-01 | 部分实现：Rust TXT/EPUB/CBZ/PDF 本地解析与资源后端；`local_books::tests` 8/8 headless tests 通过 | PDF/CBZ 尚未接入实际 Tauri 文件选择/导入 UI；平台授权、错误提示及 Android/桌面/iOS 文件流程待验收 |
+| SOURCE-04 | 部分实现：保留现有引擎及 QuickJS；Rust ImageOps、C ABI 与真实 JVM/JNI 脚本 fixture 已通过（7/7、1/1、1/1）；iOS NativeJS ImageOps 桥仍未实现/验收 | 完成 iOS NativeJS 图像操作桥接；对现有支持规则格式跑兼容矩阵并逐平台验证宿主能力 |
+| IMPORT-01 | 部分实现：Rust TXT/EPUB/CBZ/PDF 本地解析与资源后端；`local_books::tests` 8/8 headless tests 通过 | PDF/CBZ 文件选择/导入 UI、权限/错误提示和实际浏览器渲染尚待平台验证；Android/桌面/iOS 文件流程待验收 |
 | IMPORT-02 | 未实现：WebDAV/远程书籍导入服务不在当前代码 | 远程浏览/上传下载、凭据、重试/取消和平台测试 |
-| RSS-01 | 部分实现：旧 RSS 走既有 KMP adapter；普通 Atom/RSS 由 `feed-rs` 解析。Rust fixture 验证 sanitizer、稳定 `resource://`、重启读取；当前锁定 Rust headless 全套 55/55 通过 | 订阅 UI、稳定文章已读/未读/收藏状态、过滤、刷新和退订资源清理 |
+| RSS-01 | 部分实现：旧 RSS 走既有 KMP adapter；普通 Atom/RSS 由 `feed-rs` 解析。RSS helper 定向测试通过 4/4，覆盖稳定 article/category ID、read/favorite/filter JSON、HTML 正文资源、正文不重复写入结果 JSON及严格 schema。标准 feed 按完整 feed filter 后分页；KMP RSS 当前只过滤引擎返回页 | Tauri commands 与 Vue 订阅/状态界面、backup restore 集成、刷新/退订端到端；KMP 跨页全局过滤；Android/桌面/iOS 网络和重启验收 |
 | MEDIA-01 | 未实现：资源层有 media proxy，不等同漫画产品流程 | 漫画源、图像目录、缩放/翻页和内存压力验证 |
 | MEDIA-02 | 未实现 | TTS/音频引擎接入、后台和平台媒体控制 |
 | MEDIA-03 | 未实现 | 视频源/选集/画质/播放器集成 |

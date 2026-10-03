@@ -4,6 +4,9 @@
 //! WebView only through opaque category IDs. Public resources contain display
 //! metadata and projected search cards, never source definitions or rules.
 
+#[path = "home_config.rs"]
+pub mod home_config;
+
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -612,8 +615,12 @@ mod tests {
             .expect("fixture request lock")
             .push(page.clone());
         let body = match page.as_str() {
-            "1" => "<div class='item'><h3><a href='/books/one'>第一本</a></h3><span class='author'>甲</span></div>",
-            "2" => "<div class='item'><h3><a href='/books/two'>第二本</a></h3><span class='author'>乙</span></div>",
+            "1" => {
+                "<div class='item'><h3><a href='/books/one'>第一本</a></h3><span class='author'>甲</span></div>"
+            }
+            "2" => {
+                "<div class='item'><h3><a href='/books/two'>第二本</a></h3><span class='author'>乙</span></div>"
+            }
             _ => "",
         };
         Html(body.to_owned())

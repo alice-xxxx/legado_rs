@@ -3,6 +3,7 @@
 package io.legado.sourceengine.bridge
 
 import io.legado.sourceengine.rust.legado_source_host_http
+import io.legado.sourceengine.rust.legado_source_host_image
 import io.legado.sourceengine.rust.legado_source_host_storage
 import io.legado.sourceengine.rust.legado_source_host_string_free
 import kotlinx.cinterop.ByteVar
@@ -84,6 +85,17 @@ class IosRustSourceEngineHost(appDataDirectory: String) : SourceEngineHost {
         } finally {
             legado_source_host_string_free(response)
         }
+    }
+}
+
+/** Synchronous image pixel RPC used from ImageOps while a JS rule is running. */
+internal fun rustImageRequest(requestJson: String): String {
+    val response = legado_source_host_image(requestJson)
+        ?: error("Rust image host returned a null response")
+    return try {
+        response.toKString()
+    } finally {
+        legado_source_host_string_free(response)
     }
 }
 

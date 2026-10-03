@@ -18,6 +18,13 @@ internal fun rustSourceStorageRequest(requestJson: String, appDataDir: String): 
     return nativeStorageRequest(requestJson, appDataDir)
 }
 
+internal fun rustSourceImageRequest(requestJson: String): String {
+    rustSourceEngineLibraryLoaded
+    return nativeImageRequest(requestJson)
+}
+
 private external fun nativeHttpRequest(requestJson: String): String
 
 private external fun nativeStorageRequest(requestJson: String, appDataDir: String): String
+
+private external fun nativeImageRequest(requestJson: String): String

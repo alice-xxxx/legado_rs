@@ -9,6 +9,7 @@ import com.script.jsdispatch.JsValueConverters
 import io.legado.app.data.entities.BookChapterLike
 import io.legado.app.data.entities.BookLike
 import io.legado.app.help.JsExtensionsCommon
+import io.legado.app.help.image.ImageOps
 import io.legado.app.help.source.SourceCacheProvider
 import io.legado.app.help.source.SourceNetworkProvider
 import io.legado.app.napi.quickjs.JSContext
@@ -934,6 +935,12 @@ object NativeJsEngine : JsEngine {
                     ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
                 NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
             }
+            is ImageOps -> {
+                // image.* is a KMP source-engine API. The provider is wrapped inside this
+                // QuickJS scope; image refs remain JS-private PNG byte arrays, not native handles.
+                val currentScope = threadLocalScope.value ?: return null
+                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
+            }
             is BookLike, is BookChapterLike -> {
                 // 复杂对象 (book/chapter) 桥接: 复用 handle 表 + 属性 getter 工厂
                 // (NativeJsPropertyBridge, propertyId 1700+); 放在 JsExtensionsCommon 之后保持原通路顺序
@@ -992,7 +999,7 @@ object NativeJsEngine : JsEngine {
      * 与原版 quickjs JavaObjectBridge 的 byte[] 语义一致 (length/索引可用),
      * 脚本 `result.length==undefined` 判断走主分支, 不会进 Packages 分支。
      */
-    private fun byteArrayToJsUint8Array(
+    internal fun byteArrayToJsUint8Array(
         ctx: CPointer<JSContext>,
         bytes: ByteArray
     ): CValue<JSValue> {
@@ -1011,7 +1018,11 @@ object NativeJsEngine : JsEngine {
      * 再按 `byteOffset`/`byteLength` 偏移拷回 (脚本 slice/subarray 返回的视图也支持)。
      * 非 TypedArray 返回 null (交由后续分支处理)。返回的 ByteArray 由调用方持有。
      */
-    private fun tryGetUint8ArrayBytes(ctx: CPointer<JSContext>, v: CValue<JSValue>): ByteArray? {
+    internal fun tryGetUint8ArrayBytes(
+        ctx: CPointer<JSContext>,
+        v: CValue<JSValue>,
+        maxBytes: Int = Int.MAX_VALUE
+    ): ByteArray? {
         val buf = JS_GetPropertyStr(ctx, v, "buffer")
         if (qjs_IsException(buf) != 0) {
             JS_FreeValue(ctx, buf)
@@ -1026,7 +1037,9 @@ object NativeJsEngine : JsEngine {
                 val byteOffset = jsPropNumber(ctx, v, "byteOffset")?.toInt() ?: 0
                 val byteLength = jsPropNumber(ctx, v, "byteLength")?.toInt()
                     ?: (totalSize - byteOffset).coerceAtLeast(0)
-                if (byteOffset < 0 || byteLength <= 0) return@memScoped null
+                if (byteOffset < 0 || byteLength <= 0 || byteLength > maxBytes) {
+                    return@memScoped null
+                }
                 val len = minOf(byteLength, (totalSize - byteOffset).coerceAtLeast(0))
                 val out = ByteArray(len)
                 if (len > 0) {
@@ -1515,4 +1528,3 @@ class NativeScriptException(message: String) : Exception(message)
  * 独立 evalBytecode 路径转 [NativeScriptException] (对齐 JVM "Eval bytecode failed" 语义)。
  */
 private class NativeBytecodeReadException(message: String) : Exception(message)
-

@@ -5,6 +5,9 @@
 //! returned them. It never sends file contents through Tauri IPC and never
 //! evaluates source rules or scripts.
 
+#[path = "txt_toc_rules.rs"]
+pub mod txt_toc_rules;
+
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::io::{Cursor, Read};
@@ -16,7 +19,7 @@ use image::{ImageFormat, ImageReader, Limits};
 use lopdf::{Dictionary, Document as PdfDocument, LoadOptions, Object};
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
@@ -113,9 +116,21 @@ pub async fn import_local_book(
 ) -> Result<BookDocument, String> {
     let selected_path = selected_path.as_ref().to_path_buf();
     let options = options.clone();
-    let parsed = tokio::task::spawn_blocking(move || parse_selected_file(&selected_path, &options))
-        .await
-        .map_err(|error| format!("Local book import worker failed: {error}"))??;
+    let saved_toc_rules = if selected_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+        && options.toc_regex.is_none()
+    {
+        Some(txt_toc_rules::read_document(store).await?)
+    } else {
+        None
+    };
+    let parsed = tokio::task::spawn_blocking(move || {
+        parse_selected_file(&selected_path, &options, saved_toc_rules.as_ref())
+    })
+    .await
+    .map_err(|error| format!("Local book import worker failed: {error}"))??;
 
     let book_id = format!("local-{}", parsed.identity);
     // Re-importing the same file is idempotent. In particular, do not rewrite
@@ -222,7 +237,11 @@ async fn persist_parsed_book(
     Ok(book)
 }
 
-fn parse_selected_file(path: &Path, options: &LocalImportOptions) -> Result<ParsedBook, String> {
+fn parse_selected_file(
+    path: &Path,
+    options: &LocalImportOptions,
+    saved_toc_rules: Option<&txt_toc_rules::TxtTocRulesDocument>,
+) -> Result<ParsedBook, String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("Cannot resolve selected file: {error}"))?;
     let metadata =
@@ -258,7 +277,7 @@ fn parse_selected_file(path: &Path, options: &LocalImportOptions) -> Result<Pars
         std::fs::read(&path).map_err(|error| format!("Cannot read selected file: {error}"))?;
     let identity = local_identity(&path, &bytes, options);
     let mut parsed = match extension.as_str() {
-        "txt" => parse_text_file(&path, &bytes, options),
+        "txt" => parse_text_file(&path, &bytes, options, saved_toc_rules),
         "epub" => parse_epub_file(&bytes),
         "cbz" => parse_cbz_file(&path, &bytes),
         "pdf" => parse_pdf_file(bytes, &path, options.pdf_password.as_deref()),
@@ -483,66 +502,69 @@ fn parse_text_file(
     path: &Path,
     bytes: &[u8],
     options: &LocalImportOptions,
+    saved_toc_rules: Option<&txt_toc_rules::TxtTocRulesDocument>,
 ) -> Result<ParsedBook, String> {
     let decoded = decode_text(&bytes, options.charset.as_deref())?;
     let text = decoded.replace("\r\n", "\n").replace('\r', "\n");
-    let expression = match options.toc_regex.as_deref() {
+    let headings = match options.toc_regex.as_deref() {
         Some(pattern) => {
             if pattern.len() > 4096 {
                 return Err("TXT TOC expression is too long".to_owned());
             }
-            RegexBuilder::new(pattern)
-                .size_limit(1024 * 1024)
-                .build()
-                .map_err(|error| format!("Invalid TXT TOC expression: {error}"))?
+            let expression = txt_toc_rules::compile_pattern(pattern)?;
+            txt_toc_rules::pattern_headings(&text, &expression)?
         }
-        None => default_toc_regex().clone(),
+        None => {
+            let rules = saved_toc_rules
+                .map(|document| document.rules.as_slice())
+                .unwrap_or_default();
+            let (has_enabled_rules, selected) = txt_toc_rules::best_rule_headings(&text, rules)?;
+            match (has_enabled_rules, selected) {
+                (true, selected) => selected.unwrap_or_default(),
+                (false, _) => txt_toc_rules::pattern_headings(&text, default_toc_regex())?,
+            }
+        }
     };
 
-    let mut titles = Vec::<String>::new();
-    let mut bodies = Vec::<String>::new();
-    let mut current_lines = Vec::<&str>::new();
-    let mut saw_toc = false;
-    for line in text.lines() {
-        let captured_title = expression.captures(line).and_then(|captures| {
-            captures
-                .get(1)
-                .or_else(|| captures.get(0))
-                .map(|capture| capture.as_str().trim().to_owned())
-        });
-        if let Some(title) = captured_title.filter(|title| !title.is_empty()) {
-            if saw_toc {
-                bodies.push(current_lines.join("\n").trim().to_owned());
-                current_lines.clear();
-            } else if current_lines.iter().any(|line| !line.trim().is_empty()) {
-                // Preserve a foreword before the first recognized chapter.
-                titles.push("序章".to_owned());
-                bodies.push(current_lines.join("\n").trim().to_owned());
-                current_lines.clear();
-            }
-            saw_toc = true;
-            titles.push(title);
-        } else {
-            current_lines.push(line);
+    let mut chapters = Vec::new();
+    if let Some(first) = headings.first() {
+        let preface = text[..first.line_start].trim();
+        if !preface.is_empty() {
+            chapters.push(ParsedChapter {
+                title: "序章".to_owned(),
+                html: None,
+                text: Some(preface.to_owned()),
+                pdf_page_index: None,
+            });
         }
-    }
-    if saw_toc {
-        bodies.push(current_lines.join("\n").trim().to_owned());
+        for (index, heading) in headings.iter().enumerate() {
+            let body_end = headings
+                .get(index + 1)
+                .map_or(text.len(), |next| next.line_start);
+            let chapter_text = text[heading.body_start..body_end].trim();
+            if !chapter_text.is_empty() {
+                chapters.push(ParsedChapter {
+                    title: heading.title.clone(),
+                    html: None,
+                    text: Some(chapter_text.to_owned()),
+                    pdf_page_index: None,
+                });
+            }
+        }
     } else {
-        titles.push("正文".to_owned());
-        bodies.push(text.trim().to_owned());
-    }
-    let chapters = titles
-        .into_iter()
-        .zip(bodies)
-        .filter(|(_, body)| !body.trim().is_empty())
-        .map(|(title, text)| ParsedChapter {
-            title,
+        chapters.push(ParsedChapter {
+            title: "正文".to_owned(),
             html: None,
-            text: Some(text),
+            text: Some(text.trim().to_owned()),
             pdf_page_index: None,
-        })
-        .collect::<Vec<_>>();
+        });
+    }
+    if chapters.len() > MAX_EPUB_CHAPTERS {
+        return Err(format!(
+            "TXT contains more than {} chapters",
+            MAX_EPUB_CHAPTERS
+        ));
+    }
     if chapters.is_empty() {
         return Err("The selected TXT file has no readable text".to_owned());
     }
@@ -1403,6 +1425,7 @@ fn inline_style_regex() -> &'static Regex {
 #[cfg(test)]
 mod tests {
     use super::{import_local_book, validate_pdf_page_count, LocalImportOptions};
+    use crate::local_books::txt_toc_rules;
     use crate::models::{ProgressDocument, ReaderDefaults, CURRENT_SCHEMA_VERSION};
     use crate::resources::ResourceStore;
     use base64::Engine;
@@ -1517,6 +1540,12 @@ mod tests {
             zip.write_all(bytes).unwrap();
         }
         zip.finish().unwrap();
+    }
+
+    fn checked_in_fixture(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/local-books")
+            .join(name)
     }
 
     #[tokio::test]
@@ -1789,6 +1818,226 @@ mod tests {
         assert_eq!(reopened.get_pages().len(), 2);
     }
 
+    #[tokio::test]
+    async fn checked_in_pdf_and_cbz_fixtures_survive_resource_server_restart() {
+        let temporary = tempfile::tempdir().unwrap();
+        let data_root = temporary.path().join("app-data");
+        let store = ResourceStore::open(&data_root).unwrap();
+        let defaults = ReaderDefaults::default();
+
+        let pdf_path = checked_in_fixture("two-page-text.pdf");
+        let pdf_book =
+            import_local_book(&store, &pdf_path, &defaults, &LocalImportOptions::default())
+                .await
+                .unwrap();
+        assert_eq!(pdf_book.chapter_count, 2);
+        assert_eq!(pdf_book.chapters[0].title, "Page 1");
+        assert_eq!(pdf_book.chapters[1].title, "Page 2");
+
+        let encrypted_path = checked_in_fixture("two-page-encrypted.pdf");
+        let encrypted_options = LocalImportOptions {
+            pdf_password: Some("fixture-pass".to_owned()),
+            ..LocalImportOptions::default()
+        };
+        let encrypted_book =
+            import_local_book(&store, &encrypted_path, &defaults, &encrypted_options)
+                .await
+                .unwrap();
+        assert_eq!(encrypted_book.chapter_count, 2);
+
+        let cbz_path = checked_in_fixture("three-page-comic.cbz");
+        let comic_book =
+            import_local_book(&store, &cbz_path, &defaults, &LocalImportOptions::default())
+                .await
+                .unwrap();
+        assert_eq!(comic_book.chapter_count, 3);
+        assert_eq!(
+            comic_book
+                .chapters
+                .iter()
+                .map(|chapter| chapter.title.as_str())
+                .collect::<Vec<_>>(),
+            ["page1", "page2", "page10"]
+        );
+
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let pdf_chapter_url =
+            reqwest::Url::parse(&server.url_for(pdf_book.chapters[0].src.as_ref().unwrap()))
+                .unwrap();
+        let pdf_html = reqwest::get(pdf_chapter_url.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(pdf_html.contains("data-legado-document=\"pdf-page\""));
+        assert!(pdf_html.contains("data-page-index=\"0\""));
+        assert!(pdf_html.contains("data-default-zoom=\"page-fit\""));
+        let pdf_relative = pdf_html
+            .split("href=\"../assets/")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let pdf_url = pdf_chapter_url
+            .join(&format!("../assets/{pdf_relative}"))
+            .unwrap();
+        let pdf_response = reqwest::get(pdf_url.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        assert_eq!(
+            pdf_response.headers()[reqwest::header::CONTENT_TYPE],
+            "application/pdf"
+        );
+        let pdf_bytes = pdf_response.bytes().await.unwrap();
+        let parsed_pdf =
+            PdfDocument::load_mem_with_options(&pdf_bytes, LoadOptions::default()).unwrap();
+        assert_eq!(parsed_pdf.get_pages().len(), 2);
+
+        let encrypted_chapter_url =
+            reqwest::Url::parse(&server.url_for(encrypted_book.chapters[0].src.as_ref().unwrap()))
+                .unwrap();
+        let encrypted_html = reqwest::get(encrypted_chapter_url.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let encrypted_relative = encrypted_html
+            .split("href=\"../assets/")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let encrypted_url = encrypted_chapter_url
+            .join(&format!("../assets/{encrypted_relative}"))
+            .unwrap();
+        let encrypted_bytes = reqwest::get(encrypted_url)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let parsed_encrypted = PdfDocument::load_mem_with_options(
+            &encrypted_bytes,
+            LoadOptions::with_password("fixture-pass"),
+        )
+        .unwrap();
+        assert_eq!(parsed_encrypted.get_pages().len(), 2);
+        let password_options = LocalImportOptions {
+            pdf_password: Some("fixture-pass".to_owned()),
+            ..LocalImportOptions::default()
+        };
+        assert!(!format!("{password_options:?}").contains("fixture-pass"));
+        assert!(!serde_json::to_string(&password_options)
+            .unwrap()
+            .contains("pdfPassword"));
+
+        let expected_colors = [[217, 65, 65], [52, 168, 83], [53, 105, 212]];
+        for (index, chapter) in comic_book.chapters.iter().enumerate() {
+            let chapter_url =
+                reqwest::Url::parse(&server.url_for(chapter.src.as_ref().unwrap())).unwrap();
+            let html = reqwest::get(chapter_url.clone())
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            let image_relative = html
+                .split("src=\"../assets/")
+                .nth(1)
+                .unwrap()
+                .split('"')
+                .next()
+                .unwrap();
+            let image_url = chapter_url
+                .join(&format!("../assets/{image_relative}"))
+                .unwrap();
+            let response = reqwest::get(image_url)
+                .await
+                .unwrap()
+                .error_for_status()
+                .unwrap();
+            assert_eq!(
+                response.headers()[reqwest::header::CONTENT_TYPE],
+                "image/png"
+            );
+            let image = image::load_from_memory(&response.bytes().await.unwrap()).unwrap();
+            assert_eq!(image.dimensions(), (640, 900));
+            let center = image.get_pixel(20, 20).0;
+            assert_eq!(&center[..3], &expected_colors[index]);
+        }
+
+        server.shutdown().await.unwrap();
+        drop(store);
+        let reopened_store = ResourceStore::open(&data_root).unwrap();
+        for book in [&pdf_book, &encrypted_book, &comic_book] {
+            let book_ref = reopened_store.book_ref(&book.id).unwrap();
+            let serialized = reopened_store.read_json_ref(&book_ref).await.unwrap();
+            let reopened: crate::models::BookDocument = serde_json::from_value(serialized).unwrap();
+            assert_eq!(reopened.chapter_count, book.chapter_count);
+        }
+
+        let reopened_server = reopened_store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let reopened_cbz = reopened_store
+            .read_json_ref(&reopened_store.book_ref(&comic_book.id).unwrap())
+            .await
+            .unwrap();
+        let first_chapter_ref: crate::resources::ResourceRef =
+            serde_json::from_value(reopened_cbz["chapters"][0]["src"].clone()).unwrap();
+        let first_chapter_url =
+            reqwest::Url::parse(&reopened_server.url_for(&first_chapter_ref)).unwrap();
+        let first_html = reqwest::get(first_chapter_url.clone())
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(first_html.contains("alt=\"page1\""));
+        let first_image = first_html
+            .split("src=\"../assets/")
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
+        let first_image_url = first_chapter_url
+            .join(&format!("../assets/{first_image}"))
+            .unwrap();
+        let image = reqwest::get(first_image_url)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let decoded = image::load_from_memory(&image).unwrap();
+        assert_eq!(decoded.dimensions(), (640, 900));
+        assert_eq!(&decoded.get_pixel(20, 20).0[..3], &expected_colors[0]);
+        reopened_server.shutdown().await.unwrap();
+    }
+
     #[test]
     fn pdf_page_limit_and_damaged_file_are_reported() {
         assert!(validate_pdf_page_count(super::MAX_PDF_PAGES).is_ok());
@@ -1810,11 +2059,9 @@ mod tests {
         let data_root = temporary.path().join("app-data");
         let store = ResourceStore::open(&data_root).unwrap();
         let text_path = temporary.path().join("Fixture.txt");
-        std::fs::write(
-            &text_path,
-            "\u{feff}序言\n欢迎阅读。\n\n第一章 初遇\n第一章正文。\n\n第二章 重逢\n第二章正文。\n",
-        )
-        .unwrap();
+        let fixture_text =
+            "序言\n欢迎阅读。\n\n第一章 初遇\n第一章正文。\n\n第二章 重逢\n第二章正文。\n";
+        std::fs::write(&text_path, format!("\u{feff}{fixture_text}")).unwrap();
 
         let book = import_local_book(
             &store,
@@ -1853,11 +2100,26 @@ mod tests {
         zip.write_all(b"application/epub+zip").unwrap();
         let deflated = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         for (name, content) in [
-            ("META-INF/container.xml", r#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>"#),
-            ("OEBPS/book.opf", r#"<?xml version="1.0"?><package><metadata><dc:title>Fixture EPUB</dc:title><dc:creator>A Writer</dc:creator><meta name="cover" content="cover"/></metadata><manifest><item id="cover" href="Images/cover.png" media-type="image/png"/><item id="style" href="Styles/book.css" media-type="text/css"/><item id="later" href="Text/second.xhtml" media-type="application/xhtml+xml"/><item id="first" href="Text/first.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="later"/><itemref idref="first"/></spine></package>"#),
-            ("OEBPS/Styles/book.css", "body { color: #123456; } .picture { background-image: url('../Images/cover.png'); } @import 'https://invalid.example/x.css';"),
-            ("OEBPS/Text/second.xhtml", r#"<?xml version="1.0"?><html><head><title>Second</title><link rel="stylesheet" href="../Styles/book.css"/></head><body><h1>Second Chapter</h1><img src="../Images/cover.png"/><script>alert('bad')</script></body></html>"#),
-            ("OEBPS/Text/first.xhtml", r#"<html><head><title>First</title></head><body><p>First in spine.</p></body></html>"#),
+            (
+                "META-INF/container.xml",
+                r#"<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/book.opf"/></rootfiles></container>"#,
+            ),
+            (
+                "OEBPS/book.opf",
+                r#"<?xml version="1.0"?><package><metadata><dc:title>Fixture EPUB</dc:title><dc:creator>A Writer</dc:creator><meta name="cover" content="cover"/></metadata><manifest><item id="cover" href="Images/cover.png" media-type="image/png"/><item id="style" href="Styles/book.css" media-type="text/css"/><item id="later" href="Text/second.xhtml" media-type="application/xhtml+xml"/><item id="first" href="Text/first.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="later"/><itemref idref="first"/></spine></package>"#,
+            ),
+            (
+                "OEBPS/Styles/book.css",
+                "body { color: #123456; } .picture { background-image: url('../Images/cover.png'); } @import 'https://invalid.example/x.css';",
+            ),
+            (
+                "OEBPS/Text/second.xhtml",
+                r#"<?xml version="1.0"?><html><head><title>Second</title><link rel="stylesheet" href="../Styles/book.css"/></head><body><h1>Second Chapter</h1><img src="../Images/cover.png"/><script>alert('bad')</script></body></html>"#,
+            ),
+            (
+                "OEBPS/Text/first.xhtml",
+                r#"<html><head><title>First</title></head><body><p>First in spine.</p></body></html>"#,
+            ),
         ] {
             zip.start_file(name, deflated).unwrap();
             zip.write_all(content.as_bytes()).unwrap();
@@ -2008,6 +2270,130 @@ mod tests {
             .unwrap();
         assert_eq!(saved_progress["offset"], 456);
         assert_eq!(saved_progress["updatedAtMs"], 123456);
+    }
+
+    #[tokio::test]
+    async fn persisted_txt_toc_rules_drive_import_after_reopen_and_allow_one_off_override() {
+        let temporary = tempfile::tempdir().unwrap();
+        let data_root = temporary.path().join("app-data");
+        let store = ResourceStore::open(&data_root).unwrap();
+        let rule = txt_toc_rules::TxtTocRule {
+            id: "volume-lines".to_owned(),
+            name: "Volume headings".to_owned(),
+            rule: r"^VOLUME\s+\d+:\s+(.{1,120})$".to_owned(),
+            example: Some("VOLUME 1: The First Dawn".to_owned()),
+            serial_number: 0,
+            enable: true,
+        };
+        txt_toc_rules::upsert_rule(&store, rule).await.unwrap();
+        drop(store);
+
+        let store = ResourceStore::open(&data_root).unwrap();
+        let custom_path = checked_in_fixture("custom-toc.txt");
+        let custom_book = import_local_book(
+            &store,
+            &custom_path,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            custom_book
+                .chapters
+                .iter()
+                .map(|chapter| chapter.title.as_str())
+                .collect::<Vec<_>>(),
+            ["序章", "The First Dawn", "The Last Light"]
+        );
+        assert_eq!(custom_book.chapter_count, 3);
+
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let chapter_url =
+            reqwest::Url::parse(&server.url_for(custom_book.chapters[1].src.as_ref().unwrap()))
+                .unwrap();
+        let chapter_html = reqwest::get(chapter_url)
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(chapter_html.contains("The first chapter body belongs here."));
+        assert!(!chapter_html.contains("VOLUME 1"));
+
+        let override_options = LocalImportOptions {
+            toc_regex: Some(r"^SCENE\s+\d+\s+/\s+(.{1,120})$".to_owned()),
+            ..LocalImportOptions::default()
+        };
+        let override_book = import_local_book(
+            &store,
+            checked_in_fixture("toc-override.txt"),
+            &ReaderDefaults::default(),
+            &override_options,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            override_book
+                .chapters
+                .iter()
+                .map(|chapter| chapter.title.as_str())
+                .collect::<Vec<_>>(),
+            ["The Bridge", "The Crossing"]
+        );
+        assert_eq!(
+            txt_toc_rules::read_document(&store)
+                .await
+                .unwrap()
+                .rules
+                .len(),
+            1
+        );
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalid_persisted_toc_rule_blocks_txt_import_before_creating_book_resources() {
+        let temporary = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(temporary.path().join("app-data")).unwrap();
+        let rules_ref = txt_toc_rules::resource_ref(&store).unwrap();
+        store
+            .write_json_ref(
+                &rules_ref,
+                &serde_json::json!({
+                    "schemaVersion": 1,
+                    "rules": [{
+                        "id": "broken-regex",
+                        "name": "Broken",
+                        "rule": "(",
+                        "serialNumber": 0,
+                        "enable": true,
+                    }],
+                }),
+            )
+            .await
+            .unwrap();
+        let fixture = checked_in_fixture("custom-toc.txt");
+        let bytes = std::fs::read(&fixture).unwrap();
+        let identity = super::local_identity(&fixture, &bytes, &LocalImportOptions::default());
+        let error = import_local_book(
+            &store,
+            &fixture,
+            &ReaderDefaults::default(),
+            &LocalImportOptions::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("Invalid TXT TOC expression"));
+        assert!(!store
+            .root()
+            .join(format!("books/local-{identity}/book.json"))
+            .exists());
     }
 
     #[test]

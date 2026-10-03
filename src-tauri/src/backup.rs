@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -167,7 +168,7 @@ pub fn recover_interrupted_restore(root: impl AsRef<Path>) -> Result<(), String>
             Err(error) => {
                 return Err(format!(
                     "Restore stage is invalid and no previous data exists: {error}"
-                ))
+                ));
             }
         }
     }
@@ -287,7 +288,7 @@ fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
             Err(error) => {
                 return Err(format!(
                     "Cannot inspect optional app data file {required}: {error}"
-                ))
+                ));
             }
         }
     }
@@ -339,7 +340,7 @@ fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
             Err(error) => {
                 return Err(format!(
                     "Cannot inspect source storage {namespace}: {error}"
-                ))
+                ));
             }
         }
     }
@@ -488,6 +489,22 @@ fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
                 let _: crate::reading_tools::ReplacementRuleDocument =
                     serde_json::from_slice(&bytes)
                         .map_err(|error| format!("Invalid replacement rules JSON: {error}"))?;
+            }
+            "reading/txt-toc-rules.json" => {
+                let document: crate::local_books::txt_toc_rules::TxtTocRulesDocument =
+                    serde_json::from_slice(&bytes)
+                        .map_err(|error| format!("Invalid TXT TOC rules JSON: {error}"))?;
+                crate::local_books::txt_toc_rules::validate_document(&document)?;
+            }
+            "reading/home-tabs.json" => {
+                let document: Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid home tabs JSON: {error}"))?;
+                crate::discovery::home_config::validate_home_document(&document)?;
+            }
+            "reading/rss-state.json" => {
+                let document: Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
+                crate::rss::validate_rss_state(&document)?;
             }
             "private-data/sources.json" => {
                 let value: serde_json::Value = serde_json::from_slice(&bytes)
@@ -684,7 +701,7 @@ fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
                 return Err(format!(
                     "Unsupported app data file in backup: {}",
                     file.archive_path
-                ))
+                ));
             }
         }
     }
@@ -990,7 +1007,7 @@ fn copy_runtime_source_engine(source_root: &Path, destination_root: &Path) -> Re
         Err(error) => {
             return Err(format!(
                 "Cannot inspect runtime source-engine data: {error}"
-            ))
+            ));
         }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -1347,6 +1364,65 @@ mod tests {
         )
         .unwrap();
         std::fs::write(
+            root.join("reading/home-tabs.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "tabs": [{
+                    "id": "tab-main",
+                    "title": "Main",
+                    "sortOrder": 0,
+                    "sections": [{
+                        "id": "section-latest",
+                        "title": "Latest",
+                        "sourceId": "source-private",
+                        "sourceName": "Private source",
+                        "categoryId": "category-new",
+                        "categoryName": "Latest",
+                        "style": 0,
+                        "sortOrder": 0,
+                        "coverVideo": false,
+                    }],
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("reading/rss-state.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "subscriptions": [{
+                    "sourceId": "rss-one",
+                    "filter": "unread",
+                }],
+                "articles": [{
+                    "sourceId": "rss-one",
+                    "articleId": "article-0123456789abcdef0123456789abcdef",
+                    "isRead": false,
+                    "isFavorite": true,
+                    "updatedAtMs": 17,
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("reading/txt-toc-rules.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "rules": [{
+                    "id": "backup-toc-rule",
+                    "name": "Saved chapter pattern",
+                    "rule": "^(Chapter [0-9]+)$",
+                    "example": "Chapter 1",
+                    "serialNumber": 3,
+                    "enable": true,
+                }],
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
             root.join("bookmarks.json"),
             br#"{"schemaVersion":1,"bookmarks":[]}"#,
         )
@@ -1465,6 +1541,28 @@ mod tests {
         assert!(private_root.join("media-maps/media-1.json").is_file());
         assert!(root.join("search/search-1.json").is_file());
         assert!(root.join("discovery/source-private.json").is_file());
+        assert_eq!(
+            store
+                .read_json_ref(&store.reading_ref("home-tabs").unwrap())
+                .await
+                .unwrap()["tabs"][0]["sections"][0]["categoryId"],
+            "category-new"
+        );
+        assert_eq!(
+            store
+                .read_json_ref(&store.reading_ref("rss-state").unwrap())
+                .await
+                .unwrap()["articles"][0]["isFavorite"],
+            true
+        );
+        assert_eq!(
+            crate::local_books::txt_toc_rules::read_document(&store)
+                .await
+                .unwrap()
+                .rules[0]
+                .id,
+            "backup-toc-rule"
+        );
         let tasks: Value =
             serde_json::from_slice(&std::fs::read(root.join("reading/tasks.json")).unwrap())
                 .unwrap();

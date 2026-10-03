@@ -16,6 +16,7 @@ import io.legado.app.help.crypto.Sign
 import io.legado.app.help.crypto.SymmetricCrypto
 import io.legado.app.help.crypto.NativeSymmetricCrypto
 import io.legado.app.help.http.StrResponse
+import io.legado.app.help.image.ImageOps
 import io.legado.app.help.source.SourceCacheProvider
 import io.legado.app.help.source.SourceNetworkProvider
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
@@ -43,6 +44,7 @@ import io.legado.app.napi.quickjs.JS_NewArray
 import io.legado.app.napi.quickjs.JS_NewObject
 import io.legado.app.napi.quickjs.JS_SetPropertyStr
 import io.legado.app.napi.quickjs.JS_SetPropertyUint32
+import io.legado.app.napi.quickjs.JS_Throw
 import io.legado.app.napi.quickjs.qjs_IsBool
 import io.legado.app.napi.quickjs.qjs_IsNull
 import io.legado.app.napi.quickjs.qjs_IsNumber
@@ -128,7 +130,8 @@ import kotlinx.atomicfu.locks.synchronized
  * - 2200+: 带参分派 (NativeJsPropertyBridge.dispatchWithArgs): 2300-2399 book 变量/方法面 |
  *   2400-2499 chapter 变量/方法面 | 2500-2599 cookie (SourceNetworkProvider) |
  *   2600-2699 cache (SourceCacheProvider) | 2700-3199 属性写 (setterId = getterId + 1000) |
- *   3200-3299 ksoup Element/Node 方法面 (src binding 逐项循环)
+ *   3200-3299 ksoup Element/Node 方法面 (src binding 逐项循环) |
+ *   3301-3308 ImageOps stateless PNG byte-array bridge (decode/encode/split/stitch/crop/rotate/flip/size)
  * - 5000+: KSP 生成表 (NativeGeneratedDispatch, JsApiProcessor 按 jsapi.nativeTargets 目标类生成;
  *   dispatch 顶部查表优先, JS 闭包按工厂分区注入 `// @@methods:<factory>@@` 标记处)
  *
@@ -141,6 +144,11 @@ import kotlinx.atomicfu.locks.synchronized
  * SourceCacheProvider (NativeJsEngine.native.kt, 需并行修改方生效; 工厂与分派段已在本文件就绪)。
  */
 object NativeJsExtensionsBridge {
+
+    private const val IMAGE_OPS_METHOD_BASE = 3300
+    private const val MAX_IMAGE_BRIDGE_BYTES = 64 * 1024 * 1024
+    private const val MAX_IMAGE_BASE64_CHARS = ((MAX_IMAGE_BRIDGE_BYTES + 2) / 3) * 4 + 1024
+    private const val MAX_IMAGE_STITCH_ITEMS = 32
 
     /**
      * handle → Kotlin 对象映射 (强引用, 防止 GC)。
@@ -200,6 +208,7 @@ object NativeJsExtensionsBridge {
         scope.handles.add(handle)
         // 调用 JS 工厂函数 __createJavaObj(handle) 或 __createCryptoObj(handle)
         val factoryFn = when (ext) {
+            is ImageOps -> "__createImageOpsObj"
             is SymmetricCrypto -> "__createCryptoObj"
             is AsymmetricCrypto -> "__createAsymCryptoObj"
             is Sign -> "__createSignObj"
@@ -261,13 +270,22 @@ object NativeJsExtensionsBridge {
     ): CValue<JSValue> {
         val ctxNotNull = ctx ?: return jsUndefined()
         if (argc < 3 || argv == null) return jsUndefined()
+        var imageOpsDispatch = false
         try {
             val handle = qjs_ValueGetFloat64(argv[0L].readValue()).toLong()
             val methodId = qjs_ValueGetInt(argv[1L].readValue())
             val argsArray = argv[2L].readValue()
             val obj = getObject(handle) ?: return jsUndefined()
+            imageOpsDispatch = obj is ImageOps &&
+                methodId in (IMAGE_OPS_METHOD_BASE + 1)..(IMAGE_OPS_METHOD_BASE + 8)
             return dispatch(ctxNotNull, obj, methodId, argsArray)
         } catch (t: Throwable) {
+            if (imageOpsDispatch) {
+                // Image decode/transform failures must reach the rule's try/catch instead of
+                // becoming `undefined` and failing later at an unrelated operation.
+                val message = t.message?.take(512) ?: "Image operation failed"
+                return JS_Throw(ctxNotNull, qjs_NewString(ctxNotNull, message))
+            }
             // 桥接异常返回 undefined, 避免 JS 引擎崩溃 (与 Android 端 exotic trap 行为一致)
             return jsUndefined()
         }
@@ -290,6 +308,11 @@ object NativeJsExtensionsBridge {
         methodId: Int,
         argsArray: CValue<JSValue>
     ): CValue<JSValue> {
+        // Handle image calls before the generic argument bridge: image data arrives as a
+        // Uint8Array and must not be expanded into a Kotlin List of boxed bytes.
+        if (obj is ImageOps && methodId in (IMAGE_OPS_METHOD_BASE + 1)..(IMAGE_OPS_METHOD_BASE + 8)) {
+            return dispatchImageOps(ctx, obj, methodId, argsArray)
+        }
         // KSP 生成表优先: 未命中 (NONE) 落下方手写分支。生成物为纯 Kotlin (无 cinterop 依赖),
         // 返回值经 [nativeResultToJs] 转 JSValue (与手写分支同层转换语义)。
         // registerHandle: REF 返回白名单方法 (如 Response.parse) 注册对象 handle,
@@ -806,6 +829,160 @@ object NativeJsExtensionsBridge {
         }
     }
 
+    private fun dispatchImageOps(
+        ctx: CPointer<JSContext>,
+        imageOps: ImageOps,
+        methodId: Int,
+        argsArray: CValue<JSValue>
+    ): CValue<JSValue> {
+        fun imageInput(index: Int): io.legado.app.help.image.ImageRef =
+            withArgument(ctx, argsArray, index) { value ->
+                if (qjs_IsString(value) != 0) {
+                    val base64 = jsValueToString(ctx, value)
+                    require(base64.length <= MAX_IMAGE_BASE64_CHARS) {
+                        "Image base64 input exceeds the 64 MiB decoded limit"
+                    }
+                    imageOps.decode(base64)
+                } else {
+                    imageOps.decode(imageBytes(ctx, value))
+                }
+            }
+
+        fun imageArgument(index: Int): io.legado.app.help.image.ImageRef =
+            imageOps.decode(withArgument(ctx, argsArray, index) { imageBytes(ctx, it) })
+
+        fun pngBytes(image: io.legado.app.help.image.ImageRef): ByteArray =
+            imageOps.encode(image, "png", 100)
+
+        fun dimension(index: Int): Int = withArgument(ctx, argsArray, index) { value ->
+            require(qjs_IsNumber(value) != 0) { "Image operation dimension must be a number" }
+            qjs_ValueGetFloat64(value).toInt()
+        }
+
+        fun text(index: Int): String = withArgument(ctx, argsArray, index) { value ->
+            require(qjs_IsString(value) != 0) { "Image operation option must be a string" }
+            jsValueToString(ctx, value)
+        }
+
+        return when (methodId - IMAGE_OPS_METHOD_BASE) {
+            1 -> NativeJsEngine.byteArrayToJsUint8Array(ctx, pngBytes(imageInput(0)))
+            2 -> {
+                val image = imageArgument(0)
+                val format = text(1)
+                val quality = dimension(2)
+                NativeJsEngine.byteArrayToJsUint8Array(
+                    ctx,
+                    imageOps.encode(image, format, quality)
+                )
+            }
+            3 -> {
+                val image = imageArgument(0)
+                val rows = dimension(1)
+                val columns = dimension(2)
+                val pngImages = imageOps.split(image, rows, columns).map(::pngBytes)
+                val result = JS_NewArray(ctx)
+                pngImages.forEachIndexed { index, bytes ->
+                    JS_SetPropertyUint32(
+                        ctx,
+                        result,
+                        index.toUInt(),
+                        NativeJsEngine.byteArrayToJsUint8Array(ctx, bytes)
+                    )
+                }
+                result
+            }
+            4 -> {
+                val inputs = imageList(ctx, imageOps, argsArray, 0)
+                val direction = text(1)
+                NativeJsEngine.byteArrayToJsUint8Array(
+                    ctx,
+                    pngBytes(imageOps.stitch(inputs, direction))
+                )
+            }
+            5 -> {
+                val image = imageArgument(0)
+                val crop = imageOps.crop(image, dimension(1), dimension(2), dimension(3), dimension(4))
+                NativeJsEngine.byteArrayToJsUint8Array(ctx, pngBytes(crop))
+            }
+            6 -> {
+                val image = imageArgument(0)
+                NativeJsEngine.byteArrayToJsUint8Array(
+                    ctx,
+                    pngBytes(imageOps.rotate(image, dimension(1)))
+                )
+            }
+            7 -> {
+                val image = imageArgument(0)
+                NativeJsEngine.byteArrayToJsUint8Array(
+                    ctx,
+                    pngBytes(imageOps.flip(image, text(1)))
+                )
+            }
+            8 -> anyToJs(ctx, imageOps.size(imageArgument(0)))
+            else -> jsUndefined()
+        }
+    }
+
+    private inline fun <T> withArgument(
+        ctx: CPointer<JSContext>,
+        args: CValue<JSValue>,
+        index: Int,
+        block: (CValue<JSValue>) -> T
+    ): T {
+        val value = JS_GetPropertyUint32(ctx, args, index.toUInt())
+        return try {
+            block(value)
+        } finally {
+            JS_FreeValue(ctx, value)
+        }
+    }
+
+    private fun imageBytes(ctx: CPointer<JSContext>, value: CValue<JSValue>): ByteArray {
+        NativeJsEngine.tryGetUint8ArrayBytes(ctx, value, MAX_IMAGE_BRIDGE_BYTES)?.let {
+            return it
+        }
+        require(JS_IsArray(value)) { "Image input must be base64 or a byte array" }
+        val length = arrayLength(ctx, value, MAX_IMAGE_BRIDGE_BYTES)
+        return ByteArray(length) { index ->
+            val item = JS_GetPropertyUint32(ctx, value, index.toUInt())
+            try {
+                require(qjs_IsNumber(item) != 0) { "Image byte array must contain numbers" }
+                qjs_ValueGetFloat64(item).toInt().toByte()
+            } finally {
+                JS_FreeValue(ctx, item)
+            }
+        }
+    }
+
+    private fun imageList(
+        ctx: CPointer<JSContext>,
+        imageOps: ImageOps,
+        args: CValue<JSValue>,
+        index: Int
+    ): List<io.legado.app.help.image.ImageRef> = withArgument(ctx, args, index) { value ->
+        require(JS_IsArray(value)) { "image.stitch expects an array of images" }
+        val count = arrayLength(ctx, value, MAX_IMAGE_STITCH_ITEMS)
+        List(count) { itemIndex ->
+            val item = JS_GetPropertyUint32(ctx, value, itemIndex.toUInt())
+            try {
+                imageOps.decode(imageBytes(ctx, item))
+            } finally {
+                JS_FreeValue(ctx, item)
+            }
+        }
+    }
+
+    private fun arrayLength(
+        ctx: CPointer<JSContext>,
+        array: CValue<JSValue>,
+        maximum: Int
+    ): Int = memScoped {
+        val length = alloc<LongVar>()
+        require(JS_GetLength(ctx, array, length.ptr) == 0) { "Image input has no byte length" }
+        require(length.value in 1..maximum.toLong()) { "Image input exceeds its size limit" }
+        length.value.toInt()
+    }
+
     // ============ JS 工厂代码 (注入 bootstrap) ============
 
     /**
@@ -826,6 +1003,50 @@ object NativeJsExtensionsBridge {
      */
     val JS_FACTORY_CODE: String = """
 // ============ JsExtensions 桥接工厂 (handle → JS 对象) ============
+
+function __createImageOpsObj(handle) {
+    // ImageRef is an opaque QuickJS object. Normalized PNG Uint8Arrays stay in this
+    // scope-local WeakMap and never become Rust/global handles or WebView resources.
+    var refs = new WeakMap();
+    function wrap(bytes) {
+        var ref = {};
+        refs.set(ref, bytes);
+        return ref;
+    }
+    function unwrap(ref) {
+        if (!ref || typeof ref !== 'object' || !refs.has(ref)) {
+            throw new TypeError('image: argument is not an image.* result');
+        }
+        return refs.get(ref);
+    }
+    var obj = {};
+    obj.decode = function(value) {
+        return wrap(__nativeDispatch(handle, 3301, [value]));
+    };
+    obj.encode = function(img, format, quality) {
+        return __nativeDispatch(handle, 3302, [unwrap(img), format, quality]);
+    };
+    obj.split = function(img, rows, cols) {
+        return __nativeDispatch(handle, 3303, [unwrap(img), rows, cols]).map(wrap);
+    };
+    obj.stitch = function(imgs, direction) {
+        if (!Array.isArray(imgs)) throw new TypeError('image.stitch expects an array');
+        return wrap(__nativeDispatch(handle, 3304, [imgs.map(unwrap), direction]));
+    };
+    obj.crop = function(img, x, y, w, h) {
+        return wrap(__nativeDispatch(handle, 3305, [unwrap(img), x, y, w, h]));
+    };
+    obj.rotate = function(img, deg) {
+        return wrap(__nativeDispatch(handle, 3306, [unwrap(img), deg]));
+    };
+    obj.flip = function(img, direction) {
+        return wrap(__nativeDispatch(handle, 3307, [unwrap(img), direction]));
+    };
+    obj.size = function(img) {
+        return __nativeDispatch(handle, 3308, [unwrap(img)]);
+    };
+    return obj;
+}
 
 function __createJavaObj(handle) {
     var obj = {};
@@ -1249,4 +1470,3 @@ function __createJsUrlObj(handle) {
         else -> stringToJsValue(ctx, value.toString())
     }
 }
-

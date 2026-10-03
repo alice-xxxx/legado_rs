@@ -3,11 +3,13 @@
 //! standard feed entries become processed card JSON and sanitized HTML
 //! resources.
 
-use std::{path::Path, time::Duration};
+use std::time::Duration;
 
 use feed_rs::model::{Entry, Feed};
 use feed_rs::parser;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use crate::{
     application::{ApplicationService, SourceRecord},
@@ -18,6 +20,43 @@ use crate::{
 
 const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
 const FEED_PAGE_SIZE: usize = 50;
+const MAX_TRACKED_ARTICLES: usize = 50_000;
+const RSS_STATE_DOCUMENT: &str = "rss-state";
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RssStateDocument {
+    pub schema_version: u32,
+    pub subscriptions: Vec<RssSubscriptionState>,
+    pub articles: Vec<RssArticleState>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RssSubscriptionState {
+    pub source_id: String,
+    pub filter: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RssArticleState {
+    pub source_id: String,
+    pub article_id: String,
+    pub is_read: bool,
+    pub is_favorite: bool,
+    pub updated_at_ms: u64,
+}
+
+impl Default for RssStateDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: crate::models::CURRENT_SCHEMA_VERSION,
+            subscriptions: Vec::new(),
+            articles: Vec::new(),
+        }
+    }
+}
 
 /// Return whether this private source record is an older RSS source schema
 /// that must go through the existing KMP converter.
@@ -73,7 +112,8 @@ pub async fn list_rss_categories(
         return Err("Selected source is disabled".to_owned());
     }
     if is_standard_feed_source(&source.source) {
-        let id = format!("category-{}", uuid::Uuid::new_v4().simple());
+        let feed_url = standard_feed_url(&source.source)?;
+        let id = discovery::stable_category_id(source_id, &feed_url);
         return discovery::publish_categories(
             service,
             source_id,
@@ -104,7 +144,79 @@ pub async fn list_rss_articles(
     category_id: &str,
     page: u32,
 ) -> Result<Value, String> {
-    discovery::list_books(service, source_id, category_id, page, Some(true)).await
+    let mut result =
+        discovery::list_books(service, source_id, category_id, page.max(1), Some(true)).await?;
+    let source = service.source_record(source_id).await?;
+    if is_standard_feed_source(&source.source) {
+        return Ok(result);
+    }
+
+    let resource_id = result
+        .get("resource")
+        .and_then(|resource| resource.get("resourceId"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "RSS results resource is missing its ID".to_owned())?;
+    let result_ref = ResourceRef::new(resource_id).map_err(|error| error.to_string())?;
+    let mut document = service
+        .resource_store()
+        .read_json_ref(&result_ref)
+        .await
+        .map_err(|error| error.to_string())?;
+    let filter = subscription_filter(service, source_id).await?;
+    let cards = document
+        .get_mut("results")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(|| "RSS result document is invalid".to_owned())?;
+    let mut tracked = Vec::with_capacity(cards.len());
+    for card in cards.iter_mut() {
+        let book_url = card
+            .get("bookUrl")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "RSS engine result is missing its article URL".to_owned())?;
+        let article_id = legacy_article_id(source_id, category_id, book_url);
+        card["articleId"] = json!(article_id);
+        tracked.push(article_id);
+    }
+    register_articles(service, source_id, &tracked).await?;
+    let state = read_state(service).await?;
+    for card in cards.iter_mut() {
+        let article_id = card
+            .get("articleId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(article) = state
+            .articles
+            .iter()
+            .find(|article| article.source_id == source_id && article.article_id == article_id)
+        {
+            card["isRead"] = json!(article.is_read);
+            card["isFavorite"] = json!(article.is_favorite);
+        }
+    }
+    cards.retain(|card| {
+        let article_id = card
+            .get("articleId")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let state = state
+            .articles
+            .iter()
+            .find(|article| article.source_id == source_id && article.article_id == article_id);
+        matches_filter(filter.as_str(), state)
+    });
+    let count = cards.len();
+    let filtered = json!(count != tracked.len() || filter != "all");
+    document["rssFilter"] = json!(filter);
+    document["filtered"] = filtered.clone();
+    service
+        .resource_store()
+        .write_json_ref(&result_ref, &document)
+        .await
+        .map_err(|error| error.to_string())?;
+    result["bookCount"] = json!(count);
+    result["filter"] = json!(filter);
+    result["filtered"] = filtered;
+    Ok(result)
 }
 
 /// Execute the parser-backed path for a plain feed URL. Category URLs and feed
@@ -121,83 +233,109 @@ pub(crate) async fn list_standard_feed_articles(
     let feed_url = standard_feed_url(&source.source)?;
     let feed = fetch_feed(&feed_url).await?;
     let page = page.max(1);
-    let start = (page as usize - 1).saturating_mul(FEED_PAGE_SIZE);
-    let end = start.saturating_add(FEED_PAGE_SIZE).min(feed.entries.len());
-    let entries = feed
-        .entries
+    let existing_state = read_state(service).await?;
+    let filter = existing_state
+        .subscriptions
         .iter()
-        .skip(start.min(feed.entries.len()))
-        .take(end.saturating_sub(start))
-        .collect::<Vec<_>>();
-    let has_next_page = end < feed.entries.len();
-    let mut result = service
-        .store_processed_results(
-            &category.title,
-            page,
-            entries
-                .iter()
-                .map(|entry| (source.clone(), entry_card(entry)))
-                .collect(),
-            Vec::new(),
-        )
-        .await?;
-    let search_ref = ResourceRef::new(
-        result["resource"]["resourceId"]
-            .as_str()
-            .ok_or_else(|| "RSS results resource is missing its ID".to_owned())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let mut public_results = service
-        .resource_store()
-        .read_json_ref(&search_ref)
-        .await
-        .map_err(|error| error.to_string())?;
-    let reader_defaults = reader_defaults(service).await;
-    let cards = public_results
-        .get_mut("results")
-        .and_then(Value::as_array_mut)
-        .ok_or_else(|| "RSS results document is invalid".to_owned())?;
-    if cards.len() != entries.len() {
-        return Err("RSS results could not be matched to parsed feed entries".to_owned());
+        .find(|subscription| subscription.source_id == source.id)
+        .map(|subscription| subscription.filter.clone())
+        .unwrap_or_else(|| "all".to_owned());
+    let existing_articles = existing_state
+        .articles
+        .into_iter()
+        .filter(|article| article.source_id == source.id)
+        .map(|article| (article.article_id.clone(), article))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut result = json!({});
+    let mut candidates = Vec::with_capacity(feed.entries.len());
+    let mut identities = Vec::with_capacity(feed.entries.len());
+    for entry in &feed.entries {
+        let article_id = stable_feed_article_id(&feed_url, &entry.id);
+        if matches_filter(&filter, existing_articles.get(&article_id)) {
+            identities.push(article_id);
+            candidates.push(entry);
+        }
     }
-    for (card, entry) in cards.iter_mut().zip(entries.iter()) {
-        let article_id = card["resultId"]
-            .as_str()
-            .ok_or_else(|| "RSS article result ID is missing".to_owned())?
-            .to_owned();
+    let total_count = candidates.len();
+    let start = (page as usize - 1).saturating_mul(FEED_PAGE_SIZE);
+    let end = start.saturating_add(FEED_PAGE_SIZE).min(total_count);
+    let entries = candidates
+        .iter()
+        .skip(start.min(total_count))
+        .take(end.saturating_sub(start))
+        .copied()
+        .collect::<Vec<_>>();
+    let article_ids = identities
+        .iter()
+        .skip(start.min(total_count))
+        .take(end.saturating_sub(start))
+        .cloned()
+        .collect::<Vec<_>>();
+    let has_next_page = end < total_count;
+    register_articles(service, &source.id, &article_ids).await?;
+    let current_articles = read_state(service)
+        .await?
+        .articles
+        .into_iter()
+        .filter(|article| article.source_id == source.id)
+        .map(|article| (article.article_id.clone(), article))
+        .collect::<std::collections::HashMap<_, _>>();
+    let reader_defaults = reader_defaults(service).await;
+    let mut cards = Vec::with_capacity(entries.len());
+    for (entry, article_id) in entries.iter().zip(article_ids.iter()) {
         let content = entry_html(entry);
         let chapter_ref = service
             .resource_store()
-            .write_chapter_html(&source.id, &article_id, &content, &reader_defaults)
+            .write_chapter_html(
+                &rss_resource_book_id(&source.id),
+                article_id,
+                &content,
+                &reader_defaults,
+            )
             .await
             .map_err(|error| error.to_string())?;
-        // Persist a stable resource:// reference. The resource server turns it
-        // into the current loopback URL only while serving this JSON document.
+        let state = current_articles
+            .get(article_id)
+            .cloned()
+            .unwrap_or_else(|| default_article_state(&source.id, article_id));
+        let mut card = entry_card(entry);
+        card["resultId"] = json!(article_id);
+        card["articleId"] = json!(article_id);
+        card["sourceId"] = json!(source.id);
+        card["sourceName"] = json!(source.name);
         card["contentSrc"] = json!(chapter_ref.as_str());
-
-        // The article body has a browser-consumable HTML resource now. Keep
-        // only processed display metadata in the private result JSON.
-        let private_path = Path::new("search-results").join(format!("{article_id}.json"));
-        let mut private_result = service.read_private_json(&private_path).await?;
-        if let Some(book) = private_result
-            .get_mut("book")
-            .and_then(Value::as_object_mut)
-        {
-            book.remove("rssHtml");
-        }
-        service
-            .write_private_json(private_path, &private_result)
-            .await?;
+        card["isRead"] = json!(state.is_read);
+        card["isFavorite"] = json!(state.is_favorite);
+        cards.push(card);
     }
+    let search_ref = service
+        .resource_store()
+        .search_ref(&format!("rss-{}", uuid::Uuid::new_v4().simple()))
+        .map_err(|error| error.to_string())?;
+    let card_count = cards.len();
+    let public_results = json!({
+        "schemaVersion": crate::models::CURRENT_SCHEMA_VERSION,
+        "keyword": category.title,
+        "page": page,
+        "results": cards,
+        "errors": [],
+        "complete": true,
+    });
     service
         .resource_store()
         .write_json_ref(&search_ref, &public_results)
         .await
         .map_err(|error| error.to_string())?;
+    let descriptor = service.resource_descriptor(&search_ref);
     result["sourceId"] = json!(source.id);
     result["categoryId"] = json!(category.category_id);
     result["page"] = json!(page);
     result["hasNextPage"] = json!(has_next_page);
+    result["bookCount"] = json!(card_count);
+    result["totalCount"] = json!(total_count);
+    result["filter"] = json!(filter);
+    result["filtered"] = json!(filter != "all");
+    result["resource"] = descriptor;
     Ok(result)
 }
 
@@ -217,21 +355,368 @@ pub async fn read_standard_feed_article(
                 .to_owned(),
         );
     }
-    let private = service
-        .read_private_json(Path::new("search-results").join(format!("{article_id}.json")))
-        .await?;
-    if private.get("sourceId").and_then(Value::as_str) != Some(source_id) {
+    if !is_rss_source(&source.source) {
+        return Err("Selected source is not an RSS subscription".to_owned());
+    }
+    if lookup_article_state(service, source_id, article_id)
+        .await?
+        .is_none()
+    {
         return Err("RSS article is unavailable; refresh the subscription".to_owned());
     }
     let resource = service
         .resource_store()
-        .chapter_ref(source_id, article_id)
+        .chapter_ref(&rss_resource_book_id(source_id), article_id)
         .map_err(|error| error.to_string())?;
+    set_article_state(service, source_id, article_id, Some(true), None).await?;
     Ok(json!({
         "sourceId": source_id,
         "articleId": article_id,
         "resource": service.resource_descriptor(&resource),
     }))
+}
+
+/// Return the browser-readable RSS state resource, initializing its JSON file
+/// on first use.
+pub async fn rss_state_resource(
+    store: &crate::resources::ResourceStore,
+) -> Result<ResourceRef, String> {
+    let reference = store
+        .reading_ref(RSS_STATE_DOCUMENT)
+        .map_err(|error| error.to_string())?;
+    store
+        .update_json_ref(&reference, |current| {
+            let mut document = match current {
+                Value::Null => RssStateDocument::default(),
+                value => decode_state(value)?,
+            };
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(reference)
+}
+
+/// Set the persistent server-side filter for an RSS source.
+pub async fn set_subscription_filter(
+    service: &ApplicationService,
+    source_id: &str,
+    filter: &str,
+) -> Result<ResourceRef, String> {
+    discovery::validate_source_id(source_id)?;
+    validate_filter(filter)?;
+    let source = service.source_record(source_id).await?;
+    if !is_rss_source(&source.source) {
+        return Err("Selected source is not an RSS subscription".to_owned());
+    }
+    let store = service.resource_store();
+    let reference = rss_state_resource(store).await?;
+    let source_id = source_id.to_owned();
+    let filter = filter.to_owned();
+    store
+        .update_json_ref(&reference, move |current| {
+            let mut document = decode_state(current)?;
+            if let Some(subscription) = document
+                .subscriptions
+                .iter_mut()
+                .find(|subscription| subscription.source_id == source_id)
+            {
+                subscription.filter = filter;
+            } else {
+                document
+                    .subscriptions
+                    .push(RssSubscriptionState { source_id, filter });
+            }
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(reference)
+}
+
+/// Update one article's read/favorite flags. The article must have appeared in
+/// a Rust-produced RSS list first; arbitrary IDs cannot create state records.
+pub async fn set_article_state(
+    service: &ApplicationService,
+    source_id: &str,
+    article_id: &str,
+    is_read: Option<bool>,
+    is_favorite: Option<bool>,
+) -> Result<ResourceRef, String> {
+    discovery::validate_source_id(source_id)?;
+    validate_opaque_id(article_id, "articleId")?;
+    if is_read.is_none() && is_favorite.is_none() {
+        return Err("RSS article state update is empty".to_owned());
+    }
+    let source = service.source_record(source_id).await?;
+    if !is_rss_source(&source.source) {
+        return Err("Selected source is not an RSS subscription".to_owned());
+    }
+    let store = service.resource_store();
+    let reference = rss_state_resource(store).await?;
+    let source_id = source_id.to_owned();
+    let article_id = article_id.to_owned();
+    store
+        .update_json_ref(&reference, move |current| {
+            let mut document = decode_state(current)?;
+            let article = document
+                .articles
+                .iter_mut()
+                .find(|article| article.source_id == source_id && article.article_id == article_id)
+                .ok_or_else(|| "RSS article is unavailable; refresh the subscription".to_owned())?;
+            if let Some(is_read) = is_read {
+                article.is_read = is_read;
+            }
+            if let Some(is_favorite) = is_favorite {
+                article.is_favorite = is_favorite;
+            }
+            article.updated_at_ms = now_ms();
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(reference)
+}
+
+/// Remove a subscription's read/favorite/filter state, discovery category map,
+/// and only its reserved RSS chapter resource namespace. The caller removes
+/// the source record after this succeeds.
+pub async fn remove_subscription_data(
+    service: &ApplicationService,
+    source_id: &str,
+) -> Result<ResourceRef, String> {
+    discovery::validate_source_id(source_id)?;
+    let source = service.source_record(source_id).await?;
+    if !is_rss_source(&source.source) {
+        return Err("Selected source is not an RSS subscription".to_owned());
+    }
+    let store = service.resource_store();
+    let reference = rss_state_resource(store).await?;
+    let removed_id = source_id.to_owned();
+    store
+        .update_json_ref(&reference, move |current| {
+            let mut document = decode_state(current)?;
+            document
+                .subscriptions
+                .retain(|subscription| subscription.source_id != removed_id);
+            document
+                .articles
+                .retain(|article| article.source_id != removed_id);
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    discovery::publish_categories(service, source_id, Vec::new(), Vec::new()).await?;
+    store
+        .remove_rss_chapter_resources(source_id)
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(reference)
+}
+
+async fn subscription_filter(
+    service: &ApplicationService,
+    source_id: &str,
+) -> Result<String, String> {
+    let document = read_state(service).await?;
+    Ok(document
+        .subscriptions
+        .iter()
+        .find(|subscription| subscription.source_id == source_id)
+        .map(|subscription| subscription.filter.clone())
+        .unwrap_or_else(|| "all".to_owned()))
+}
+
+async fn read_state(service: &ApplicationService) -> Result<RssStateDocument, String> {
+    let reference = rss_state_resource(service.resource_store()).await?;
+    let value = service
+        .resource_store()
+        .read_json_ref(&reference)
+        .await
+        .map_err(|error| error.to_string())?;
+    decode_state(value)
+}
+
+async fn lookup_article_state(
+    service: &ApplicationService,
+    source_id: &str,
+    article_id: &str,
+) -> Result<Option<RssArticleState>, String> {
+    let document = read_state(service).await?;
+    Ok(document
+        .articles
+        .into_iter()
+        .find(|article| article.source_id == source_id && article.article_id == article_id))
+}
+
+async fn register_articles(
+    service: &ApplicationService,
+    source_id: &str,
+    article_ids: &[String],
+) -> Result<(), String> {
+    discovery::validate_source_id(source_id)?;
+    for article_id in article_ids {
+        validate_opaque_id(article_id, "articleId")?;
+    }
+    let store = service.resource_store();
+    let reference = rss_state_resource(store).await?;
+    let source_id = source_id.to_owned();
+    let article_ids = article_ids.to_vec();
+    store
+        .update_json_ref(&reference, move |current| {
+            let mut document = decode_state(current)?;
+            for article_id in article_ids {
+                if document.articles.iter().any(|article| {
+                    article.source_id == source_id && article.article_id == article_id
+                }) {
+                    continue;
+                }
+                if document.articles.len() >= MAX_TRACKED_ARTICLES {
+                    return Err(
+                        "RSS article state limit reached; unsubscribe from old feeds".into(),
+                    );
+                }
+                document
+                    .articles
+                    .push(default_article_state(&source_id, &article_id));
+            }
+            normalize_state(&mut document)?;
+            serde_json::to_value(document).map_err(|error| error.to_string())
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn decode_state(value: Value) -> Result<RssStateDocument, String> {
+    let mut document: RssStateDocument = serde_json::from_value(value)
+        .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
+    if document.schema_version != crate::models::CURRENT_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported RSS state schema version {}",
+            document.schema_version
+        ));
+    }
+    normalize_state(&mut document)?;
+    Ok(document)
+}
+
+/// Validate a persisted RSS document using the same limits and schema version
+/// as live reads. Backup validation uses this function as well.
+pub(crate) fn validate_rss_state(value: &Value) -> Result<(), String> {
+    decode_state(value.clone()).map(|_| ())
+}
+
+fn normalize_state(document: &mut RssStateDocument) -> Result<(), String> {
+    if document.schema_version != crate::models::CURRENT_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported RSS state schema version {}",
+            document.schema_version
+        ));
+    }
+    if document.articles.len() > MAX_TRACKED_ARTICLES {
+        return Err("RSS article state exceeds the supported limit".to_owned());
+    }
+    let mut subscriptions = std::collections::HashMap::new();
+    for subscription in document.subscriptions.drain(..) {
+        discovery::validate_source_id(&subscription.source_id)?;
+        validate_filter(&subscription.filter)?;
+        subscriptions.insert(subscription.source_id, subscription.filter);
+    }
+    document.subscriptions = subscriptions
+        .into_iter()
+        .map(|(source_id, filter)| RssSubscriptionState { source_id, filter })
+        .collect();
+    document
+        .subscriptions
+        .sort_by(|left, right| left.source_id.cmp(&right.source_id));
+
+    let mut articles = std::collections::HashMap::new();
+    for article in document.articles.drain(..) {
+        discovery::validate_source_id(&article.source_id)?;
+        validate_opaque_id(&article.article_id, "articleId")?;
+        articles.insert(
+            (article.source_id.clone(), article.article_id.clone()),
+            article,
+        );
+    }
+    document.articles = articles.into_values().collect();
+    document.articles.sort_by(|left, right| {
+        left.source_id
+            .cmp(&right.source_id)
+            .then_with(|| left.article_id.cmp(&right.article_id))
+    });
+    Ok(())
+}
+
+fn default_article_state(source_id: &str, article_id: &str) -> RssArticleState {
+    RssArticleState {
+        source_id: source_id.to_owned(),
+        article_id: article_id.to_owned(),
+        is_read: false,
+        is_favorite: false,
+        updated_at_ms: now_ms(),
+    }
+}
+
+fn matches_filter(filter: &str, article: Option<&RssArticleState>) -> bool {
+    match filter {
+        "all" => true,
+        "unread" => article.is_none_or(|article| !article.is_read),
+        "read" => article.is_some_and(|article| article.is_read),
+        "favorites" => article.is_some_and(|article| article.is_favorite),
+        _ => false,
+    }
+}
+
+fn validate_filter(filter: &str) -> Result<(), String> {
+    if matches!(filter, "all" | "unread" | "read" | "favorites") {
+        Ok(())
+    } else {
+        Err("RSS filter must be all, unread, read, or favorites".to_owned())
+    }
+}
+
+fn stable_feed_article_id(feed_url: &str, entry_id: &str) -> String {
+    let identity = if entry_id.trim().is_empty() {
+        "missing-entry-id"
+    } else {
+        entry_id.trim()
+    };
+    stable_id(&[feed_url.trim(), identity])
+}
+
+fn legacy_article_id(source_id: &str, category_id: &str, article_url: &str) -> String {
+    stable_id(&[source_id, category_id, article_url])
+}
+
+fn stable_id(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.as_bytes());
+        hasher.update([0]);
+    }
+    let digest = hasher.finalize();
+    let token = digest[..16]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("article-{token}")
+}
+
+fn rss_resource_book_id(source_id: &str) -> String {
+    format!("rss-{source_id}")
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
 }
 
 async fn reader_defaults(service: &ApplicationService) -> ReaderDefaults {
@@ -252,25 +737,20 @@ fn entry_card(entry: &Entry) -> Value {
         .map(|title| title.content.trim())
         .filter(|title| !title.is_empty())
         .unwrap_or(entry.id.as_str());
+    let title = ammonia::clean(title);
     let author = entry
         .authors
         .first()
         .map(|person| person.name.trim())
         .filter(|author| !author.is_empty())
         .unwrap_or_default();
-    let intro = entry
-        .summary
-        .as_ref()
-        .map(|summary| summary.content.clone())
-        .unwrap_or_default();
     let published = entry
         .published
         .or(entry.updated)
         .map(|date| date.to_rfc3339());
     json!({
-        "name": truncate(title, 512),
+        "title": truncate(&title, 512),
         "author": truncate(author, 512),
-        "intro": truncate(&intro, 8_192),
         "latestChapter": published,
     })
 }
@@ -339,11 +819,11 @@ fn truncate(value: &str, max_chars: usize) -> String {
 }
 
 fn validate_opaque_id(id: &str, field: &str) -> Result<(), String> {
-    if id.is_empty()
-        || id.len() > 128
-        || !id
+    let token = id.strip_prefix("article-").unwrap_or_default();
+    if token.len() != 32
+        || !token
             .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err(format!("Invalid {field}"));
     }
@@ -355,7 +835,6 @@ mod tests {
     use std::{
         io::{BufRead, BufReader, Write},
         net::{TcpListener, TcpStream},
-        path::Path,
         path::PathBuf,
         sync::{
             atomic::{AtomicBool, Ordering},
@@ -372,7 +851,10 @@ mod tests {
     };
     use serde_json::json;
 
-    use super::{is_legacy_rss_source, is_rss_source, list_rss_articles, list_rss_categories};
+    use super::{
+        is_legacy_rss_source, is_rss_source, list_rss_articles, list_rss_categories,
+        set_article_state, set_subscription_filter,
+    };
 
     struct UnusedExecutor;
 
@@ -530,9 +1012,10 @@ mod tests {
         assert_eq!(category_doc["categories"][0]["title"], "最新文章");
         let category_id = category_doc["categories"][0]["categoryId"]
             .as_str()
-            .expect("opaque category ID");
+            .expect("opaque category ID")
+            .to_owned();
 
-        let page = list_rss_articles(&service, &source_id, category_id, 1)
+        let page = list_rss_articles(&service, &source_id, &category_id, 1)
             .await
             .expect("list parsed articles");
         assert_eq!(page["bookCount"], 2);
@@ -542,9 +1025,21 @@ mod tests {
         assert!(!public_text.contains(&fixture.url()));
         assert!(!public_text.contains("rssHtml"));
         assert!(!public_text.contains("rule"));
-        let article_id = result_doc["results"][0]["resultId"]
+        assert!(!public_text.contains("<script"));
+        assert!(!public_text.contains("alert(1)"));
+        assert!(!public_text.contains("正文中文"));
+        let article_id = result_doc["results"][0]["articleId"]
             .as_str()
-            .expect("article ID");
+            .expect("stable article ID")
+            .to_owned();
+        let second_article_id = result_doc["results"][1]["articleId"]
+            .as_str()
+            .expect("second stable article ID")
+            .to_owned();
+        assert_eq!(result_doc["results"][0]["resultId"], article_id);
+        assert!(article_id.starts_with("article-"));
+        assert_eq!(result_doc["results"][0]["isRead"], false);
+        assert_eq!(result_doc["results"][0]["isFavorite"], false);
         let content_src = result_doc["results"][0]["contentSrc"]
             .as_str()
             .expect("materialized article source");
@@ -561,18 +1056,43 @@ mod tests {
         assert!(html.contains("正文中文"));
         assert!(!html.contains("<script"));
         assert!(!html.contains("alert(1)"));
-        let private = service
-            .read_private_json(Path::new("search-results").join(format!("{article_id}.json")))
+        let mut private_results = tokio::fs::read_dir(root.join("private-data/search-results"))
             .await
-            .expect("private result remains available");
-        assert!(private["book"].get("rssHtml").is_none());
+            .expect("private result directory");
+        assert!(private_results.next_entry().await.unwrap().is_none());
 
-        let opened = super::read_standard_feed_article(&service, &source_id, article_id)
+        set_article_state(&service, &source_id, &article_id, Some(true), Some(true))
+            .await
+            .expect("mark first article read and favorite");
+        set_subscription_filter(&service, &source_id, "favorites")
+            .await
+            .expect("set favorites filter");
+        let favorite_page = list_rss_articles(&service, &source_id, &category_id, 1)
+            .await
+            .expect("list favorite articles");
+        assert_eq!(favorite_page["bookCount"], 1);
+        let favorite_doc = json_get(favorite_page["resource"]["src"].as_str().unwrap()).await;
+        assert_eq!(favorite_doc["results"][0]["articleId"], article_id);
+        assert_eq!(favorite_doc["results"][0]["isRead"], true);
+        assert_eq!(favorite_doc["results"][0]["isFavorite"], true);
+
+        set_subscription_filter(&service, &source_id, "unread")
+            .await
+            .expect("set unread filter");
+        let unread_page = list_rss_articles(&service, &source_id, &category_id, 1)
+            .await
+            .expect("list unread articles");
+        assert_eq!(unread_page["bookCount"], 1);
+        let unread_doc = json_get(unread_page["resource"]["src"].as_str().unwrap()).await;
+        assert_eq!(unread_doc["results"][0]["title"], "第二篇");
+        assert_eq!(unread_doc["results"][0]["isRead"], false);
+
+        let opened = super::read_standard_feed_article(&service, &source_id, &article_id)
             .await
             .expect("resolve cached HTML resource");
         assert_eq!(
             opened["resource"]["resourceId"],
-            format!("resource://books/{source_id}/chapters/{article_id}.html")
+            format!("resource://books/rss-{source_id}/chapters/{article_id}.html")
         );
         let stable_search_ref = ResourceRef::new(page["resource"]["resourceId"].as_str().unwrap())
             .expect("stable search reference");
@@ -583,25 +1103,40 @@ mod tests {
             .expect("public result JSON");
         assert_eq!(
             on_disk_results["results"][0]["contentSrc"],
-            format!("resource://books/{source_id}/chapters/{article_id}.html")
+            format!("resource://books/rss-{source_id}/chapters/{article_id}.html")
         );
 
         drop(service);
         let reopened = ApplicationService::open_with_executor(&root, Arc::new(UnusedExecutor))
             .await
             .expect("reopen app service");
+        let refreshed_categories = list_rss_categories(&reopened, &source_id)
+            .await
+            .expect("refresh feed category");
+        let refreshed_category_doc =
+            json_get(refreshed_categories["resource"]["src"].as_str().unwrap()).await;
+        assert_eq!(
+            refreshed_category_doc["categories"][0]["categoryId"],
+            category_id
+        );
+        let refreshed = list_rss_articles(&reopened, &source_id, &category_id, 1)
+            .await
+            .expect("refresh feed articles");
+        assert_eq!(refreshed["bookCount"], 1);
+        let refreshed_doc = json_get(refreshed["resource"]["src"].as_str().unwrap()).await;
+        assert_eq!(refreshed_doc["results"][0]["articleId"], second_article_id);
         let reopened_search_descriptor = reopened.resource_descriptor(&stable_search_ref);
         let reopened_results = json_get(reopened_search_descriptor["src"].as_str().unwrap()).await;
         let reopened_content_src = reopened_results["results"][0]["contentSrc"]
             .as_str()
             .expect("re-materialized article source");
         assert!(reopened_content_src.starts_with("http://127.0.0.1:"));
-        let persisted = super::read_standard_feed_article(&reopened, &source_id, article_id)
+        let persisted = super::read_standard_feed_article(&reopened, &source_id, &article_id)
             .await
             .expect("resolve persisted HTML after restart");
         assert_eq!(
             persisted["resource"]["resourceId"],
-            format!("resource://books/{source_id}/chapters/{article_id}.html")
+            format!("resource://books/rss-{source_id}/chapters/{article_id}.html")
         );
         let persisted_html = reqwest::get(reopened_content_src)
             .await
@@ -612,6 +1147,101 @@ mod tests {
             .await
             .expect("persisted HTML body");
         assert!(persisted_html.contains("正文中文"));
+
+        let state_ref = super::rss_state_resource(reopened.resource_store())
+            .await
+            .unwrap();
+        let state = reopened
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .unwrap();
+        assert_eq!(state["articles"].as_array().unwrap().len(), 2);
+        assert_eq!(state["subscriptions"][0]["filter"], "unread");
+        assert!(!state.to_string().contains(&fixture.url()));
+        assert_eq!(
+            super::stable_feed_article_id(&fixture.url(), "entry-one"),
+            article_id
+        );
+
+        let public_cache_path = root
+            .join("books")
+            .join(format!("rss-{source_id}"))
+            .join("chapters")
+            .join(format!("{article_id}.html"));
+        assert!(public_cache_path.exists());
+        super::remove_subscription_data(&reopened, &source_id)
+            .await
+            .expect("unsubscribe cache and state cleanup");
+        assert!(!public_cache_path.exists());
+        let cleared = reopened
+            .resource_store()
+            .read_json_ref(&state_ref)
+            .await
+            .unwrap();
+        assert!(cleared["articles"].as_array().unwrap().is_empty());
+        assert!(cleared["subscriptions"].as_array().unwrap().is_empty());
+        assert!(
+            super::read_standard_feed_article(&reopened, &source_id, &article_id)
+                .await
+                .is_err()
+        );
         let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[test]
+    fn article_identity_and_filters_are_stable() {
+        let first = super::stable_feed_article_id("https://example.test/feed", "entry-1");
+        assert_eq!(
+            first,
+            super::stable_feed_article_id("https://example.test/feed", "entry-1")
+        );
+        assert_ne!(
+            first,
+            super::stable_feed_article_id("https://example.test/feed", "entry-2")
+        );
+        assert_ne!(
+            first,
+            super::stable_feed_article_id("https://other.test/feed", "entry-1")
+        );
+        let unread = super::RssArticleState {
+            source_id: "source-a".into(),
+            article_id: first,
+            is_read: false,
+            is_favorite: false,
+            updated_at_ms: 0,
+        };
+        assert!(super::matches_filter("all", Some(&unread)));
+        assert!(super::matches_filter("unread", Some(&unread)));
+        assert!(!super::matches_filter("read", Some(&unread)));
+        assert!(!super::matches_filter("favorites", Some(&unread)));
+    }
+
+    #[test]
+    fn rss_state_rejects_unknown_schema_and_noncanonical_article_ids() {
+        assert!(super::validate_rss_state(&json!({
+            "schemaVersion": 2,
+            "subscriptions": [],
+            "articles": []
+        }))
+        .is_err());
+        assert!(super::validate_rss_state(&json!({
+            "schemaVersion": 1,
+            "subscriptions": [{"sourceId":"source-a","filter":"all"}],
+            "articles": [{
+                "sourceId":"source-a",
+                "articleId":"article-0123456789ABCDEF0123456789ABCDEF",
+                "isRead":false,
+                "isFavorite":false,
+                "updatedAtMs":1
+            }]
+        }))
+        .is_err());
+        assert!(super::validate_rss_state(&json!({
+            "schemaVersion": 1,
+            "subscriptions": [{"sourceId":"source-a","filter":"javascript"}],
+            "articles": []
+        }))
+        .is_err());
     }
 }

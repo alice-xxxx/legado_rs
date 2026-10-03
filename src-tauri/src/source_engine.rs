@@ -364,8 +364,11 @@ fn prepare_source_engine(module_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::{execute, SourceEngineRequest};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
     use serde_json::{json, Value};
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, Cursor, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -463,11 +466,12 @@ mod tests {
             return;
         }
         let request_line = first_line.trim().to_owned();
-        let path = request_line
+        let target = request_line
             .split_whitespace()
             .nth(1)
             .unwrap_or("/")
             .to_owned();
+        let path = target.split('?').next().unwrap_or(&target).to_owned();
         let body = String::from_utf8_lossy(&body).into_owned();
         requests
             .lock()
@@ -475,18 +479,48 @@ mod tests {
             .push((request_line.clone(), headers, body));
 
         let response_body = match path.as_str() {
-            "/search" => "<div class='item'><h3><a href='/book'>Fixture Novel</a></h3><span class='author'>A. Writer</span></div>",
-            "/book" => "<h1>Fixture Novel</h1><span class='author'>A. Writer</span><a class='toc' href='/toc'>TOC</a>",
+            "/search" => {
+                "<div class='item'><h3><a href='/book'>Fixture Novel</a></h3><span class='author'>A. Writer</span></div>"
+            }
+            "/book" => {
+                "<h1>Fixture Novel</h1><span class='author'>A. Writer</span><a class='toc' href='/toc'>TOC</a>"
+            }
+            "/book-redirect" => {
+                "<h1>Redirect Fixture Novel</h1><span class='author'>R. Writer</span><a class='toc' href='/toc-redirect'>TOC</a>"
+            }
             "/author" => "A. Writer",
-            "/toc" => "<ul id='list'><li><a href='/chapter/1'>Chapter One</a></li><li><a href='/chapter/2'>Chapter Two</a></li></ul>",
+            "/toc" => {
+                "<ul id='list'><li><a href='/chapter/1'>Chapter One</a></li><li><a href='/chapter/2'>Chapter Two</a></li></ul>"
+            }
+            "/toc-redirect" if target.ends_with("page=2") => {
+                "<ul id='list'><li><a href='/chapter-pages/3'>Chapter Three</a></li></ul>"
+            }
+            "/toc-redirect" => {
+                "<ul id='list'><li><a href='/chapter-pages/1'>Chapter One</a></li><li><a href='/chapter-pages/2'>Chapter Two</a></li></ul><a class='next' href='/toc-redirect?page=2'>Next</a>"
+            }
             // @textNodes 只取选中节点的直接文本节点；这里保留与待测规则相同的 DOM 形状。
+            "/chapter-pages/1" if target.ends_with("part=2") => {
+                "<div class='content'>Second content page</div>"
+            }
+            "/chapter-pages/1" => {
+                "<div class='content'>First content page</div><a class='next' href='/chapter-pages/1?part=2'>Next</a>"
+            }
+            "/chapter-pages/2" => "<div class='content'>Chapter two content</div>",
+            "/chapter-pages/3" => "<div class='content'>Chapter three content</div>",
             _ if path.starts_with("/chapter/") => "<div class='content'>Fixture chapter body</div>",
             _ => "not found",
         };
-        let status = if path == "/missing" {
+        let status = if path == "/search-redirect" {
+            "303 See Other"
+        } else if path == "/missing" {
             "404 Not Found"
         } else {
             "200 OK"
+        };
+        let location_header = if path == "/search-redirect" {
+            "Location: /book-redirect\r\n"
+        } else {
+            ""
         };
         let cookie_header = if path == "/search" {
             "Set-Cookie: fixture-session=ok; Path=/\r\n"
@@ -494,7 +528,7 @@ mod tests {
             ""
         };
         let response = format!(
-            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n{cookie_header}Content-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
+            "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n{location_header}{cookie_header}Content-Length: {}\r\nConnection: close\r\n\r\n{response_body}",
             response_body.len()
         );
         let _ = stream.write_all(response.as_bytes());
@@ -535,6 +569,17 @@ mod tests {
         let server = FixtureServer::start();
         let base = server.base_url();
         let search_url = format!("{base}/search,") + r#"{"method":"POST","body":"q={{key}}"}"#;
+        let mut image = RgbaImage::new(2, 1);
+        image.put_pixel(0, 0, Rgba([255, 0, 0, 255]));
+        image.put_pixel(1, 0, Rgba([0, 0, 255, 255]));
+        let mut image_png = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut image_png, ImageFormat::Png)
+            .expect("encode source-rule image fixture");
+        let image_base64 = BASE64.encode(image_png.into_inner());
+        let image_rule = format!(
+            "@js:(function(){{var input=image.decode('{image_base64}');var crop=image.crop(input,1,0,1,1);var rotated=image.rotate(crop,90);var encoded=image.encode(rotated,'png',100);var size=image.size(rotated);return size.get('w')+'x'+size.get('h')+':'+encoded.length;}})()"
+        );
         let source = json!({
             "bookSourceName": "Local fixture",
             "bookSourceUrl": base,
@@ -545,7 +590,8 @@ mod tests {
                 "bookList": "@css:.item",
                 "name": "@css:h3 a@text",
                 "author": "@css:.author@text",
-                "bookUrl": "@css:h3 a@href"
+                "bookUrl": "@css:h3 a@href",
+                "intro": image_rule
             },
             "ruleBookInfo": {
                 "name": "@css:h1@text",
@@ -569,6 +615,15 @@ mod tests {
         .await
         .expect("search result");
         assert_eq!(search["books"][0]["name"], "Fixture Novel");
+        let image_result = search["books"][0]["intro"]
+            .as_str()
+            .expect("image.* source-rule result");
+        let encoded_bytes = image_result
+            .strip_prefix("1x1:")
+            .expect("source script decoded, cropped, rotated, encoded, and sized the image")
+            .parse::<usize>()
+            .expect("source script returned encoded byte length");
+        assert!(encoded_bytes > 0);
 
         let book = json!({
             "bookUrl": format!("{base}/book"),
@@ -637,6 +692,132 @@ mod tests {
             .1
             .to_ascii_lowercase()
             .contains("cookie: fixture-session=ok"));
+        drop(requests);
+        let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[tokio::test]
+    async fn post_search_redirect_uses_real_final_url_and_reads_paginated_book_content() {
+        let server = FixtureServer::start();
+        let base = server.base_url();
+        let final_book_url = format!("{base}/book-redirect");
+        let search_url =
+            format!("{base}/search-redirect,") + r#"{"method":"POST","body":"q={{key}}"}"#;
+        let source = json!({
+            "bookSourceName": "Redirect fixture",
+            "bookSourceUrl": base,
+            "bookSourceType": 0,
+            "searchUrl": search_url,
+            "bookUrlPattern": ".*/book-redirect",
+            "ruleSearch": {
+                "bookList": "@css:.item",
+                "name": "@css:h3 a@text",
+                "author": "@css:.author@text",
+                "bookUrl": "@css:h3 a@href"
+            },
+            "ruleBookInfo": {
+                "name": "@css:h1@text",
+                "author": "@css:.author@text",
+                "tocUrl": "@css:a.toc@href"
+            },
+            "ruleToc": {
+                "chapterList": "@css:#list li",
+                "chapterName": "@css:a@text",
+                "chapterUrl": "@css:a@href",
+                "nextTocUrl": "@css:a.next@href"
+            },
+            "ruleContent": {
+                "content": "@css:.content@textNodes",
+                "nextContentUrl": "@css:a.next@href"
+            }
+        });
+
+        let redirect_response = crate::source_http::execute_source_http_request(
+            serde_json::from_value(json!({
+                "url": format!("{base}/search-redirect"),
+                "method": "GET",
+            }))
+            .expect("valid redirect probe request"),
+        )
+        .await
+        .expect("request follows the fixture redirect");
+        assert_eq!(redirect_response.status, 200);
+        assert_eq!(redirect_response.final_url, final_book_url);
+        assert_eq!(redirect_response.redirects.len(), 1);
+        assert_eq!(redirect_response.redirects[0].status, 303);
+        assert_eq!(
+            redirect_response.redirects[0].from_url,
+            format!("{base}/search-redirect")
+        );
+        assert_eq!(redirect_response.redirects[0].to_url, final_book_url);
+
+        let data_dir = temp_data_dir();
+        let search = execute(
+            request("search", &source, Some("fixture"), None, None),
+            data_dir.clone(),
+        )
+        .await
+        .expect("KMP search follows real redirect");
+        assert_eq!(search["books"].as_array().map(Vec::len), Some(1));
+        let search_book = &search["books"][0];
+        assert_eq!(search_book["name"], "Redirect Fixture Novel");
+        assert_eq!(search_book["bookUrl"], final_book_url);
+        assert!(!search_book["bookUrl"].as_str().unwrap().contains("{{key}}"));
+
+        let book = execute(
+            request("bookInfo", &source, None, Some(search_book), None),
+            data_dir.clone(),
+        )
+        .await
+        .expect("book info is parsed from the redirected detail page");
+        assert_eq!(book["bookUrl"], final_book_url);
+        assert_eq!(book["tocUrl"], format!("{base}/toc-redirect"));
+
+        let chapters = execute(
+            request("chapters", &source, None, Some(&book), None),
+            data_dir.clone(),
+        )
+        .await
+        .expect("catalog follows nextTocUrl");
+        assert_eq!(chapters.as_array().map(Vec::len), Some(3));
+        let first_chapter = chapters
+            .as_array()
+            .and_then(|chapters| {
+                chapters.iter().find(|chapter| {
+                    chapter["url"]
+                        .as_str()
+                        .is_some_and(|url| url.ends_with("/chapter-pages/1"))
+                })
+            })
+            .expect("first chapter from first catalog page");
+        let content = execute(
+            request("content", &source, None, Some(&book), Some(first_chapter)),
+            data_dir.clone(),
+        )
+        .await
+        .expect("chapter content follows nextContentUrl");
+        let content = content.as_str().unwrap_or_default();
+        assert!(content.contains("First content page"));
+        assert!(content.contains("Second content page"));
+
+        let requests = server.requests.lock().expect("request capture lock");
+        let post = requests
+            .iter()
+            .find(|(line, _, _)| line.starts_with("POST /search-redirect "))
+            .expect("KMP sent a POST search request");
+        assert!(
+            post.2.contains("q=fixture"),
+            "keyword must be expanded in request body"
+        );
+        assert!(requests
+            .iter()
+            .any(|(line, _, _)| line.starts_with("GET /book-redirect ")));
+        assert!(requests
+            .iter()
+            .any(|(line, _, _)| line.starts_with("GET /toc-redirect?page=2 ")));
+        assert!(requests
+            .iter()
+            .any(|(line, _, _)| line.starts_with("GET /chapter-pages/1?part=2 ")));
         drop(requests);
         let _ = std::fs::remove_dir_all(data_dir);
     }

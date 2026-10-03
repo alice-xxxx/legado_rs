@@ -70,6 +70,7 @@ encoding_rs = "0.8"
 feed-rs = "2"
 http-range-header = "0.4"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+imageproc = { version = "0.27.0", default-features = false }
 lopdf = { version = "0.45", default-features = false }
 natord = "1.0.9"
 percent-encoding = "2"
@@ -77,10 +78,13 @@ quick-xml = "0.42"
 regex = "1"
 sha2 = "0.10"
 tempfile = "3"
+webp = { version = "0.3.1", default-features = false }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 jni = { version = "0.22.4", features = ["invocation"] }
 
+[patch.crates-io]
+swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
 [profile.release]
@@ -89,6 +93,3 @@ lto = true
 opt-level = 3
 panic = "abort"
 strip = true
-
-[patch.crates-io]
-swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }

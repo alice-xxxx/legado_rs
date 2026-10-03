@@ -33,6 +33,10 @@ pub(crate) fn storage_json(input: &str, app_data_dir: &Path) -> String {
     envelope(result)
 }
 
+pub(crate) fn image_json(input: &str) -> String {
+    crate::image_ops_host::execute_json(input)
+}
+
 fn envelope<T: Serialize>(result: Result<T, String>) -> String {
     match result {
         Ok(value) => json!({ "ok": true, "value": value }).to_string(),
@@ -110,11 +114,62 @@ pub unsafe extern "C" fn legado_source_host_storage(
     into_c_string(response)
 }
 
+/// Execute one bounded image pixel operation requested by the KMP ImageOps provider.
+#[no_mangle]
+pub unsafe extern "C" fn legado_source_host_image(request_json: *const c_char) -> *mut c_char {
+    let response = string_from_c(request_json, "request_json")
+        .map(|request| image_json(&request))
+        .unwrap_or_else(|error| envelope::<serde_json::Value>(Err(error)));
+    into_c_string(response)
+}
+
 /// Release a response returned by either C ABI operation.
 #[no_mangle]
 pub unsafe extern "C" fn legado_source_host_string_free(value: *mut c_char) {
     if !value.is_null() {
         // SAFETY: `value` was created by `CString::into_raw` in this library.
         drop(CString::from_raw(value));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{legado_source_host_image, legado_source_host_string_free};
+    use base64::engine::general_purpose::STANDARD as BASE64;
+    use base64::Engine as _;
+    use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};
+    use serde_json::Value;
+    use std::ffi::{CStr, CString};
+    use std::io::Cursor;
+
+    #[test]
+    fn image_c_abi_returns_json_and_response_can_be_freed() {
+        let image = RgbaImage::from_pixel(2, 1, Rgba([31, 91, 151, 255]));
+        let mut png = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut png, ImageFormat::Png)
+            .expect("encode image fixture");
+        let request = CString::new(
+            serde_json::json!({
+                "op": "decode",
+                "bytesBase64": BASE64.encode(png.into_inner()),
+            })
+            .to_string(),
+        )
+        .expect("NUL-free request JSON");
+
+        // SAFETY: request is a live NUL-terminated UTF-8 CString for the call duration.
+        let response = unsafe { legado_source_host_image(request.as_ptr()) };
+        assert!(!response.is_null());
+        // SAFETY: response is an owned CString returned by the function above.
+        let response_text = unsafe { CStr::from_ptr(response) }
+            .to_str()
+            .expect("UTF-8 C ABI response")
+            .to_owned();
+        // SAFETY: response was allocated by `into_c_string` and is freed exactly once.
+        unsafe { legado_source_host_string_free(response) };
+        let decoded: Value = serde_json::from_str(&response_text).unwrap();
+        assert_eq!(decoded["ok"], true);
+        assert!(decoded["value"]["pngBase64"].as_str().is_some());
     }
 }

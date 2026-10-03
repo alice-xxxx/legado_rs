@@ -20,6 +20,7 @@ import okhttp3.Headers
 import okhttp3.Interceptor
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Protocol
+import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
@@ -152,6 +153,20 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
         } else {
             response.body.toResponseBody(responseHeaders["Content-Type"]?.toMediaTypeOrNull())
         }
+        var priorResponse: Response? = null
+        response.redirects.forEach { redirect ->
+            val redirectHeaders = Headers.Builder().add("Location", redirect.toUrl).build()
+            val redirectBuilder = Response.Builder()
+                .request(Request.Builder().url(redirect.fromUrl).build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(redirect.status)
+                // The Rust host reports the actual status and destination; reqwest does not
+                // expose the intermediate reason phrase or response headers.
+                .message("")
+                .headers(redirectHeaders)
+            priorResponse?.let(redirectBuilder::priorResponse)
+            priorResponse = redirectBuilder.build()
+        }
         return Response.Builder()
             .request(request.newBuilder().url(response.finalUrl).build())
             .protocol(Protocol.HTTP_1_1)
@@ -159,6 +174,7 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
             .message(response.reason)
             .headers(responseHeaders)
             .body(responseBody)
+            .apply { priorResponse?.let { this.priorResponse(it) } }
             .build()
     }
 
@@ -215,6 +231,17 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
                 item.getValue("value").jsonPrimitive.contentOrNull.orEmpty(),
             )
         }
+        val redirects = response["redirects"]?.jsonArray.orEmpty().map { item ->
+            val redirect = item.jsonObject
+            io.legado.sourceengine.bridge.HostHttpRedirect(
+                fromUrl = redirect["fromUrl"]?.jsonPrimitive?.contentOrNull
+                    ?: throw IOException("Rust HTTP redirect has no from URL"),
+                toUrl = redirect["toUrl"]?.jsonPrimitive?.contentOrNull
+                    ?: throw IOException("Rust HTTP redirect has no to URL"),
+                status = redirect["status"]?.jsonPrimitive?.int
+                    ?: throw IOException("Rust HTTP redirect has no status"),
+            )
+        }
         return HostHttpResponse(
             requestedUrl = response["requestedUrl"]?.jsonPrimitive?.contentOrNull ?: request.url,
             finalUrl = response["finalUrl"]?.jsonPrimitive?.contentOrNull
@@ -222,6 +249,7 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
             status = response["status"]?.jsonPrimitive?.int
                 ?: throw IOException("Rust HTTP response has no status"),
             reason = response["reason"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+            redirects = redirects,
             headers = headers,
             body = Base64.getDecoder().decode(response["bodyBase64"]?.jsonPrimitive?.contentOrNull.orEmpty()),
         )
