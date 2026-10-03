@@ -1,4 +1,4 @@
-use std::{env, ffi::OsStr};
+use std::{env, ffi::OsStr, path::PathBuf};
 
 const COMMANDS: &[&str] = &["execute"];
 
@@ -21,8 +21,47 @@ fn main() {
         return;
     }
 
+    link_ios_engine_framework();
+
     tauri_plugin::Builder::new(COMMANDS)
         .android_path("android")
         .ios_path("ios")
         .build();
+}
+
+fn link_ios_engine_framework() {
+    let Ok(target) = env::var("TARGET") else {
+        return;
+    };
+    let slice = match target.as_str() {
+        "aarch64-apple-ios" => "ios-arm64",
+        "aarch64-apple-ios-sim" => "ios-arm64-simulator",
+        // The CI package currently contains the Apple Silicon simulator slice only.
+        // Fail clearly for unsupported simulator architectures instead of silently
+        // producing an app with an unresolved Kotlin/Native framework symbol.
+        "x86_64-apple-ios" => {
+            panic!("The LegadoSourceEngine XCFramework is packaged for aarch64-apple-ios-sim only")
+        }
+        _ if target.contains("apple-ios") => {
+            panic!("Unsupported iOS target for LegadoSourceEngine linking: {target}")
+        }
+        _ => return,
+    };
+
+    println!("cargo:rerun-if-env-changed=TARGET");
+    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let slice_dir = manifest_dir
+        .join("ios/Frameworks/LegadoSourceEngine.xcframework")
+        .join(slice);
+    let framework_dir = slice_dir.join("LegadoSourceEngine.framework");
+    if !framework_dir.join("LegadoSourceEngine").is_file() {
+        panic!(
+            "Missing LegadoSourceEngine framework slice for {target} at {}; build and package the Kotlin/Native XCFramework before building the iOS Tauri app",
+            framework_dir.display()
+        );
+    }
+
+    println!("cargo:rerun-if-changed={}", framework_dir.display());
+    println!("cargo:rustc-link-search=framework={}", slice_dir.display());
+    println!("cargo:rustc-link-lib=framework=LegadoSourceEngine");
 }
