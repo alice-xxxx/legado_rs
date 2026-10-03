@@ -14,6 +14,17 @@ val nativeInteropPatterns = listOf(
 )
 val nativeInteropOutput = layout.buildDirectory.dir("generated/nativeInterop/iosLeaf")
 val androidJniLibsOutput = layout.buildDirectory.dir("generated/androidJniLibs")
+
+fun commandOutput(vararg arguments: String): String {
+    val process = ProcessBuilder(arguments.toList()).redirectErrorStream(true).start()
+    val output = process.inputStream.bufferedReader().use { it.readText() }
+    val exitCode = process.waitFor()
+    check(exitCode == 0) {
+        "${arguments.joinToString(" ")} failed with exit code $exitCode: ${output.trim()}"
+    }
+    return output.trim()
+}
+
 val stageNativeInteropForIos = tasks.register<Sync>("stageNativeInteropForIos") {
     from("src/nativeMain/kotlin") { include(*nativeInteropPatterns.toTypedArray()) }
     into(nativeInteropOutput)
@@ -44,46 +55,56 @@ val stageNativeInteropForIos = tasks.register<Sync>("stageNativeInteropForIos") 
     }
 }
 
-val iosRustTargets = mapOf(
-    "buildRustIosArm64" to "aarch64-apple-ios",
-    "buildRustIosSimulatorArm64" to "aarch64-apple-ios-sim",
-)
-iosRustTargets.forEach { (taskName, rustTarget) ->
-    tasks.register<Exec>(taskName) {
-        val rustRoot = projectDir.resolve("../../src-tauri").canonicalFile
-        workingDir(rustRoot)
-        commandLine(
-            "cargo", "build", "--release", "--lib", "--no-default-features",
-            "--features", "source-engine-ios-bootstrap", "--target", rustTarget,
-        )
-        // KMP needs the Rust archive before the iOS XCFramework exists; defer Swift package generation to the later Tauri iOS build.
-        environment("LEGADO_KMP_BOOTSTRAP", "1")
-        inputs.files(rustRoot.resolve("Cargo.toml"), rustRoot.resolve("Cargo.lock"))
-        inputs.dir(rustRoot.resolve("src"))
-        outputs.file(rustRoot.resolve("target/$rustTarget/release/liblegado_lib.a"))
-    }
-}
-
 val buildIosNativeQuickJs = tasks.register<Exec>("buildIosNativeQuickJs") {
     val script = projectDir.resolve("scripts/build-ios-native.sh")
     workingDir(projectDir)
     commandLine("bash", script.absolutePath)
+    inputs.file(script)
     inputs.dir("../src/native/quickjs-ng")
     inputs.dir("src/nativeInterop/cinterop/mbedtls")
+    inputs.property("iosNativeTargets", listOf("ios_arm64", "ios_simulator_arm64"))
+    inputs.property("iosToolchain", providers.provider {
+        val developerDir = System.getenv("DEVELOPER_DIR") ?: commandOutput("xcode-select", "-p")
+        val deviceClang = commandOutput("xcrun", "--sdk", "iphoneos", "--find", "clang")
+        val simulatorClang = commandOutput("xcrun", "--sdk", "iphonesimulator", "--find", "clang")
+        listOf(
+            developerDir,
+            commandOutput("xcodebuild", "-version"),
+            commandOutput("xcrun", "--sdk", "iphoneos", "--show-sdk-version"),
+            commandOutput("xcrun", "--sdk", "iphonesimulator", "--show-sdk-version"),
+            commandOutput("xcrun", "--sdk", "iphoneos", "--show-sdk-path"),
+            commandOutput("xcrun", "--sdk", "iphonesimulator", "--show-sdk-path"),
+            deviceClang,
+            commandOutput(deviceClang, "--version"),
+            simulatorClang,
+            commandOutput(simulatorClang, "--version"),
+            commandOutput("xcrun", "--sdk", "iphoneos", "--find", "libtool"),
+            commandOutput("xcrun", "--sdk", "iphonesimulator", "--find", "libtool"),
+        ).joinToString("\n")
+    })
     outputs.dir(layout.buildDirectory.dir("iosNativeLibs"))
 }
 
-data class AndroidRustTarget(val abi: String, val triple: String, val clangPrefix: String)
-
-val androidRustTargets = listOf(
-    AndroidRustTarget("arm64-v8a", "aarch64-linux-android", "aarch64-linux-android"),
-    AndroidRustTarget("armeabi-v7a", "armv7-linux-androideabi", "armv7a-linux-androideabi"),
-    AndroidRustTarget("x86", "i686-linux-android", "i686-linux-android"),
-    AndroidRustTarget("x86_64", "x86_64-linux-android", "x86_64-linux-android"),
-)
-val rustRoot = projectDir.resolve("../../src-tauri").canonicalFile
+val androidAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
 val quickJsAndroidRoot = projectDir.resolve("../src/native/cpp").canonicalFile
 val quickJsAndroidSources = projectDir.resolve("../src/native/quickjs-ng").canonicalFile
+val androidNdkRoot = providers.provider { locateAndroidNdk().canonicalFile }
+val androidNdkToolchain = androidNdkRoot.map { it.resolve("build/cmake/android.toolchain.cmake") }
+val androidNdkClang = providers.provider {
+    val ndkRoot = locateAndroidNdk()
+    val hostTag = androidNdkHostTag(ndkRoot)
+    val suffix = if (System.getProperty("os.name").startsWith("Windows", true)) ".exe" else ""
+    ndkRoot.resolve("toolchains/llvm/prebuilt/$hostTag/bin/clang$suffix")
+}
+val androidNinja = providers.provider { findNinjaExecutable(locateAndroidNdk()).canonicalFile }
+
+// These are stale outputs from the former AAR Rust tasks. Tauri builds its own Rust app library;
+// deleting only these four generated files keeps the KMP AAR's JNI merge free of duplicate Rust .so.
+val cleanLegacyRustAndroidAarLibraries = tasks.register<Delete>("cleanLegacyRustAndroidAarLibraries") {
+    androidAbis.forEach { abi ->
+        delete(androidJniLibsOutput.map { it.file("$abi/liblegado_lib.so") })
+    }
+}
 
 fun locateAndroidNdk(): File {
     val sdkCandidates = listOfNotNull(
@@ -137,52 +158,31 @@ fun findNinjaExecutable(ndkRoot: File): File {
         ?: error("Ninja is required for Android QuickJS builds; install Android SDK CMake or add ninja to PATH")
 }
 
-val androidRustBuildTasks = androidRustTargets.map { target ->
-    val taskName = "buildRustAndroid${target.abi.split('-').joinToString("") { it.replaceFirstChar(Char::uppercase) }}"
-    tasks.register<Exec>(taskName) {
-        group = "build"
-        description = "Build and stage the Rust source host for Android ABI ${target.abi}"
-        workingDir(rustRoot)
-        commandLine("cargo", "build", "--release", "--lib", "--no-default-features", "--target", target.triple)
-        inputs.files(rustRoot.resolve("Cargo.toml"), rustRoot.resolve("Cargo.lock"))
-        inputs.dir(rustRoot.resolve("src"))
-        outputs.file(androidJniLibsOutput.map { it.file("${target.abi}/liblegado_lib.so") })
-        doFirst {
-            val ndkRoot = locateAndroidNdk()
-            val hostTag = androidNdkHostTag(ndkRoot)
-            val toolchainBin = ndkRoot.resolve("toolchains/llvm/prebuilt/$hostTag/bin")
-            val windowsSuffix = if (System.getProperty("os.name").startsWith("Windows", true)) ".cmd" else ""
-            val clang = toolchainBin.resolve("${target.clangPrefix}24-clang$windowsSuffix")
-            val archiver = toolchainBin.resolve(
-                if (System.getProperty("os.name").startsWith("Windows", true)) "llvm-ar.exe" else "llvm-ar",
-            )
-            check(clang.isFile && archiver.isFile) { "NDK compiler or llvm-ar not found for ${target.triple}" }
-            val targetEnv = target.triple.replace('-', '_').uppercase()
-            environment("CC_${target.triple.replace('-', '_')}", clang.absolutePath)
-            environment("AR_${target.triple.replace('-', '_')}", archiver.absolutePath)
-            environment("CARGO_TARGET_${targetEnv}_LINKER", clang.absolutePath)
-            // 与 QuickJS .so 一致按 16 KiB 页面对齐，覆盖 Android 15+ 的大页设备。
-            environment("RUSTFLAGS", "-C link-arg=-Wl,-z,max-page-size=16384")
-        }
-        doLast {
-            val cargoArtifact = rustRoot.resolve("target/${target.triple}/release/liblegado_lib.so")
-            check(cargoArtifact.isFile) { "Cargo did not create Android Rust library: $cargoArtifact" }
-            val staged = androidJniLibsOutput.get().file("${target.abi}/liblegado_lib.so").asFile
-            staged.parentFile.mkdirs()
-            cargoArtifact.copyTo(staged, overwrite = true)
-        }
-    }
-}
-
-// QuickJS 是 Android 规则执行本身的一部分；Rust JNI 不会替代 JS 引擎，所以与 Rust .so 一起进入 AAR。
-val androidQuickJsBuildTasks = androidRustTargets.map { target ->
-    val taskName = "buildQuickJsAndroid${target.abi.split('-').joinToString("") { it.replaceFirstChar(Char::uppercase) }}"
-    val stagedLibrary = androidJniLibsOutput.map { it.file("${target.abi}/liblegado_quickjs.so") }
+// QuickJS 执行书源规则，必须随 KMP AAR 提供；Rust .so 由 Tauri Android app 构建并打包。
+val androidQuickJsBuildTasks = androidAbis.map { abi ->
+    val taskName = "buildQuickJsAndroid${abi.split('-').joinToString("") { it.replaceFirstChar(Char::uppercase) }}"
+    val stagedLibrary = androidJniLibsOutput.map { it.file("$abi/liblegado_quickjs.so") }
     tasks.register(taskName) {
         group = "build"
-        description = "Build and stage the source-rule QuickJS engine for Android ABI ${target.abi}"
+        description = "Build and stage the source-rule QuickJS engine for Android ABI $abi"
         inputs.dir(quickJsAndroidRoot)
         inputs.dir(quickJsAndroidSources)
+        inputs.property("androidAbi", abi)
+        inputs.property("androidPlatform", "android-24")
+        inputs.property("cmakeGenerator", "Ninja")
+        inputs.property("buildType", "Release")
+        inputs.property("androidNdkRoot", androidNdkRoot.map { it.absolutePath })
+        inputs.file(androidNdkRoot.map { it.resolve("source.properties") })
+        inputs.file(androidNdkToolchain)
+        inputs.file(androidNdkClang)
+        inputs.property("androidNdkClangVersion", androidNdkClang.map {
+            commandOutput(it.absolutePath, "--version")
+        })
+        inputs.file(androidNinja)
+        inputs.property("androidNinjaVersion", androidNinja.map {
+            commandOutput(it.absolutePath, "--version")
+        })
+        inputs.property("cmakeVersion", providers.provider { commandOutput("cmake", "--version") })
         outputs.file(stagedLibrary)
         doLast {
             val ndkRoot = locateAndroidNdk()
@@ -190,7 +190,7 @@ val androidQuickJsBuildTasks = androidRustTargets.map { target ->
             val toolchain = ndkRoot.resolve("build/cmake/android.toolchain.cmake")
             check(toolchain.isFile) { "Android CMake toolchain is missing: $toolchain" }
             val ninja = findNinjaExecutable(ndkRoot)
-            val buildDir = layout.buildDirectory.dir("cmake-quickjs-android/${target.abi}").get().asFile
+            val buildDir = layout.buildDirectory.dir("cmake-quickjs-android/$abi").get().asFile
             val outputDir = stagedLibrary.get().asFile.parentFile
             outputDir.mkdirs()
             fun run(arguments: List<String>) {
@@ -204,7 +204,7 @@ val androidQuickJsBuildTasks = androidRustTargets.map { target ->
                 "-G", "Ninja",
                 "-DCMAKE_MAKE_PROGRAM=${ninja.absolutePath}",
                 "-DCMAKE_TOOLCHAIN_FILE=${toolchain.absolutePath}",
-                "-DANDROID_ABI=${target.abi}",
+                "-DANDROID_ABI=$abi",
                 "-DANDROID_PLATFORM=android-24",
                 "-DCMAKE_BUILD_TYPE=Release",
                 "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${outputDir.absolutePath}",
@@ -270,10 +270,8 @@ kotlin {
             baseName = "LegadoSourceEngine"
             isStatic = true
             val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_arm64").get().asFile
-            val rustLibs = projectDir.resolve("../../src-tauri/target/aarch64-apple-ios/release").canonicalFile
             linkerOpts(
                 "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
-                "-L${rustLibs.absolutePath}", "-llegado_lib",
                 "-framework", "Security", "-framework", "CoreFoundation",
                 "-framework", "SystemConfiguration", "-lz",
             )
@@ -307,10 +305,8 @@ kotlin {
             baseName = "LegadoSourceEngine"
             isStatic = true
             val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_simulator_arm64").get().asFile
-            val rustLibs = projectDir.resolve("../../src-tauri/target/aarch64-apple-ios-sim/release").canonicalFile
             linkerOpts(
                 "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
-                "-L${rustLibs.absolutePath}", "-llegado_lib",
                 "-framework", "Security", "-framework", "CoreFoundation",
                 "-framework", "SystemConfiguration", "-lz",
             )
@@ -390,17 +386,17 @@ kotlin {
 
 androidComponents {
     onVariants { variant ->
-        // 将 Cargo 产物目录接入 Android KMP variant 的 jniLibs 源集合，随 AAR 一起打包。
+        // 将 QuickJS 原生产物目录接入 Android KMP variant 的 jniLibs 源集合，随 AAR 一起打包。
         variant.sources.jniLibs?.addStaticSourceDirectory(androidJniLibsOutput.get().asFile.absolutePath)
     }
 }
 
 tasks.matching { it.name == "bundleAndroidMainAar" }.configureEach {
-    dependsOn(androidRustBuildTasks + androidQuickJsBuildTasks)
+    dependsOn(cleanLegacyRustAndroidAarLibraries, androidQuickJsBuildTasks)
 }
 
 tasks.matching { it.name == "mergeAndroidMainJniLibFolders" }.configureEach {
-    dependsOn(androidRustBuildTasks + androidQuickJsBuildTasks)
+    dependsOn(cleanLegacyRustAndroidAarLibraries, androidQuickJsBuildTasks)
 }
 
 room3 {
@@ -445,11 +441,11 @@ tasks.matching {
 tasks.matching {
     it.name.startsWith("link") && it.name.contains("Framework") && it.name.endsWith("IosArm64")
 }.configureEach {
-    dependsOn("buildRustIosArm64", buildIosNativeQuickJs)
+    dependsOn(buildIosNativeQuickJs)
 }
 
 tasks.matching {
     it.name.startsWith("link") && it.name.contains("Framework") && it.name.endsWith("IosSimulatorArm64")
 }.configureEach {
-    dependsOn("buildRustIosSimulatorArm64", buildIosNativeQuickJs)
+    dependsOn(buildIosNativeQuickJs)
 }

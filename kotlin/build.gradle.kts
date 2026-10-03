@@ -43,7 +43,28 @@ val quickJsNgSources = layout.projectDirectory.dir("src/native/quickjs-ng").asFi
 val java21Launcher = javaToolchains.launcherFor {
     languageVersion.set(JavaLanguageVersion.of(21))
 }
+val java21Installation = java21Launcher.map { it.metadata.installationPath.asFile }
+val java21JlinkName = if (hostOs == "windows") "jlink.exe" else "jlink"
 
+// `jdeps --multi-release base --recursive --class-path 'build/source-engine/runtime/lib/*'
+// --print-module-deps build/source-engine/runtime/lib/*.jar` on the staged engine classpath
+// requires these modules. The additional service modules preserve behavior that static analysis
+// cannot see: extended source charsets, JCA EC providers, full locale data and JNDI DNS lookup.
+val desktopJvmRuntimeModules = listOf(
+    "java.base",
+    "java.compiler",
+    "java.desktop",
+    "java.instrument",
+    "java.logging",
+    "java.management",
+    "java.naming",
+    "java.sql",
+    "jdk.charsets",
+    "jdk.crypto.ec",
+    "jdk.localedata",
+    "jdk.naming.dns",
+    "jdk.unsupported",
+)
 /** Gradle 9 移除了 Project.exec；用参数列表启动工具，避免路径含空格时被 shell 拆分。 */
 fun runNativeBuildTool(arguments: List<String>, environment: Map<String, String> = emptyMap()) {
     val processBuilder = ProcessBuilder(arguments)
@@ -64,6 +85,14 @@ tasks.register("prepareQuickJsNative") {
     description = "Prepare the standalone QuickJS JNI library for the current host"
     inputs.dir(quickJsCppSources)
     inputs.dir(quickJsNgSources)
+    inputs.property("hostPlatform", hostPlatform)
+    inputs.property("javaToolchainHome", java21Installation.map { it.absolutePath })
+    inputs.property("javaToolchainLanguageVersion", java21Launcher.map { it.metadata.languageVersion.toString() })
+    inputs.property("cmakeGenerator", System.getenv("CMAKE_GENERATOR").orEmpty())
+    inputs.property("cCompiler", System.getenv("CC").orEmpty())
+    inputs.property("cxxCompiler", System.getenv("CXX").orEmpty())
+    inputs.file(java21Installation.map { it.resolve("release") })
+    inputs.dir(java21Installation.map { it.resolve("include") })
     outputs.file(preparedQuickJsLibrary)
 
     doLast {
@@ -121,6 +150,14 @@ tasks.register("prepareDesktopJvmRuntime") {
     description = "Stage the embedded desktop JVM, Kotlin classes, dependencies, and QuickJS library"
     dependsOn(tasks.named("classes"), tasks.named("prepareQuickJsNative"), ":kmp-engine:jvmJar")
     inputs.files(sourceEngineRuntimeClasspath)
+    inputs.file(preparedQuickJsLibrary)
+    inputs.property("hostPlatform", hostPlatform)
+    inputs.property("javaToolchainHome", java21Installation.map { it.absolutePath })
+    inputs.property("javaToolchainLanguageVersion", java21Launcher.map { it.metadata.languageVersion.toString() })
+    inputs.property("jlinkModules", desktopJvmRuntimeModules.joinToString(","))
+    inputs.file(java21Installation.map { it.resolve("release") })
+    inputs.file(java21Installation.map { it.resolve("bin/$java21JlinkName") })
+    inputs.dir(java21Installation.map { it.resolve("jmods") })
     outputs.dir(desktopJvmRuntimeDirectory)
 
     doLast {
@@ -169,14 +206,13 @@ tasks.register("prepareDesktopJvmRuntime") {
 
         // The app embeds HotSpot through JNI, so bundle a matching Java runtime instead of
         // requiring a user-installed JDK or relying on machine-specific Gradle toolchains.
-        val javaHome = java21Launcher.get().metadata.installationPath.asFile
-        val jlinkName = if (hostOs == "windows") "jlink.exe" else "jlink"
-        val jlink = javaHome.resolve("bin/$jlinkName")
+        val javaHome = java21Installation.get()
+        val jlink = javaHome.resolve("bin/$java21JlinkName")
         check(jlink.isFile) { "Java 21 jlink executable is missing: ${jlink.absolutePath}" }
         runNativeBuildTool(
             listOf(
                 jlink.absolutePath,
-                "--add-modules", "ALL-MODULE-PATH",
+                "--add-modules", desktopJvmRuntimeModules.joinToString(","),
                 "--strip-debug", "--no-man-pages", "--no-header-files", "--compress=2",
                 "--output", runtimeRoot.resolve("jre").absolutePath,
             ),

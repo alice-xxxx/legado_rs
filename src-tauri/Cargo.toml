@@ -32,11 +32,6 @@ desktop = [
     "tauri/x11",
     "tauri/dbus",
 ]
-# The iOS KMP bootstrap archives the mobile plugin bridge without enabling the desktop runtime.
-source-engine-ios-bootstrap = [
-    "dep:tauri-plugin-source-engine",
-    "tauri-plugin-source-engine/native-mobile",
-]
 mobile-runtime = [
     "dep:tauri-build",
     "dep:tauri",
