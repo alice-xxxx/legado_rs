@@ -2,9 +2,9 @@
 
 The app shares one Vue interface across desktop, Android, and iOS. Rust owns application work and resource preparation. The mobile source-engine bridge hands the request to the existing Kotlin Multiplatform engine; the web frontend receives processed JSON and resource URLs. Tauri and KMP are built per target. The iOS build must run on macOS with Xcode.
 
-## Latest verification record (2026-10-03)
+## Cloud-host verification record (2026-10-03)
 
-These results use the current working-tree snapshot after the application and frontend owners reported their changes frozen. The Linux Chromium run used the real Rust service and JVM source engine; it does not validate the GTK/WebKitGTK Tauri window, Android runtime, or iOS runtime.
+This record captures the earlier 02:18 browser run. It used the real Rust service and JVM source engine, but does not cover later PDF/CBZ changes in the current working tree or validate the GTK/WebKitGTK Tauri window, Android runtime, or iOS runtime.
 
 | Target | Status | Evidence |
 | --- | --- | --- |
@@ -13,7 +13,7 @@ These results use the current working-tree snapshot after the application and fr
 | Android APK | **IN PROGRESS** | `gradlew help` passed after preserving Gradle Plugin Portal in the cloud mirror config; debug APK packaging is being attempted separately. |
 | Android emulator/device runtime | **NOT RUN** | API 36 AOSP x86_64 image and `LegadoApi36Aosp` AVD are installed, but the app was not installed or launched in this run. |
 | Linux native Tauri desktop | **NOT RUN** | The browser harness uses the real service but does not start a Tauri window or WebKitGTK. |
-| iOS build/runtime on this host | **BLOCKED** | This host is Linux and has no Xcode or Apple SDK. The repository macOS CI job builds unsigned iOS artifacts; no simulator/device runtime was exercised here. |
+| iOS build/runtime on this host | **BLOCKED** | This host is Linux and has no Xcode or Apple SDK. A separate macOS CI build result is recorded below; no simulator/device runtime was exercised here. |
 
 The browser run started at `2026-10-03T02:18:04Z` and completed at `02:18:15Z` with `PASS`:
 
@@ -28,6 +28,26 @@ It searched the local source fixture through the KMP/JNI source engine, added a 
 At 360px, measured layout was: catalog heading 15px, chapter title 14px, row height 52px, detail action height 44px, reader title 19px, reader page status 14px, and reader page/chapter controls 44–46px. The reader header and children stayed inside the viewport. The script closed the reading settings popover before validating visible chapter text and capturing the reader screenshot. Four screenshots, `result.json`, and `run.log` are under `/tmp/legado-browser-e2e-results/2026-10-03T02-18-04-040Z`.
 
 The cloud Gradle init script redirects Maven Central to a mirror that lacks the Kotlin DSL plugin marker (`org.gradle.kotlin.kotlin-dsl:6.6.4`). The workspace Gradle mirror config was adjusted to retain Gradle Plugin Portal for plugin resolution; Android `gradlew help` then passed. This change is cloud environment setup, not a repository Gradle-file change.
+
+## GitHub Actions matrix evidence
+
+Run [37095535654](https://github.com/alice-xxxx/legado_rs/actions/runs/37095535654) built commit `2f57b3331c8f00b15742c703f8c3c1416f56786a`:
+
+| Job | Result | Evidence |
+| --- | --- | --- |
+| Android APK and AAR | **PASS** | CI built and uploaded the configured Android APKs and four-ABI AAR. |
+| Linux, macOS, and Windows desktop | **PASS** | Each runner built and uploaded its unsigned desktop installer. This is build evidence, not an interactive runtime test. |
+| iOS unsigned IPA | **FAIL** | Device/simulator KMP frameworks built and were packaged; Swift app compilation then failed at `SourceEnginePlugin.swift`: `no such module 'LegadoSourceEngine'`. |
+
+The iOS failure is a SwiftPM target-selection issue in `swift-rs` 1.0.8. The build passed an iOS compiler target with `-Xswiftc -target` and architecture with `--arch`, but SwiftPM still resolved the binary XCFramework using the macOS host triple, so the iOS-only `LegadoSourceEngine` module was unavailable to the Swift target. Upstream [swift-rs PR #84](https://github.com/Brendonovich/swift-rs/pull/84) fixes cross-compilation by passing the platform triple to SwiftPM and selecting its platform-specific output directory. The repository now pins the upstream fix at `IIK3D/swift-rs` revision `a1bd3b5439aeaacc3bd26624aa611a5e5eee831e`. The locked iOS dependency graph resolves to this exact revision with:
+
+```sh
+cargo tree --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-ios --invert swift-rs
+```
+
+That confirms dependency selection only; a fresh project macOS CI run must compile the Swift package before counting the fix as verified. No source-engine implementation or parsing rules are changed by this build-tool patch.
+
+The Linux cloud host still cannot build or run iOS because it has no Xcode or Apple SDK. The CI result above is from a macOS runner. No iOS simulator or device user flow has been exercised.
 
 ## Current bridge and build facts
 
