@@ -5,12 +5,12 @@
 
 use std::io::Write;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Weak},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -21,8 +21,8 @@ use serde_json::{json, Map, Value};
 
 use crate::{
     models::{
-        BookDocument, ChapterDescriptor, ProgressDocument, ReaderDefaults, ReaderTheme,
-        CURRENT_SCHEMA_VERSION,
+        BookDocument, ChapterDescriptor, ProgressDocument, ProgressSummary, ReaderDefaults,
+        ReaderTheme, CURRENT_SCHEMA_VERSION,
     },
     resources::{ResourceRef, ResourceServer, ResourceStore},
     source_engine::SourceEngineRequest,
@@ -323,6 +323,7 @@ pub struct ApplicationService {
     server: Arc<ResourceServer>,
     executor: Arc<dyn SourceExecutor>,
     book_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    chapter_locks: Arc<tokio::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     sources_lock: Arc<tokio::sync::Mutex<()>>,
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
@@ -488,6 +489,7 @@ impl ApplicationService {
             server,
             executor,
             book_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            chapter_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sources_lock: Arc::new(tokio::sync::Mutex::new(())),
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -1591,167 +1593,349 @@ impl ApplicationService {
 
     async fn refresh_catalog_unlocked(&self, book_id: &str, commit: bool) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
-        let _book_lock = self.book_lock(book_id).await;
         let private_path = Path::new("books").join(format!("{book_id}.json"));
-        let mut private = self.read_private_json(&private_path).await?;
-        let source_id = private["sourceId"]
-            .as_str()
-            .ok_or_else(|| "Private book is missing sourceId".to_owned())?
-            .to_owned();
-        let engine_book = private
-            .get("book")
-            .cloned()
-            .ok_or_else(|| "Private book is missing engine metadata".to_owned())?;
-        let legacy_rss =
-            crate::rss::is_legacy_rss_source(&self.find_source(&source_id).await?.source);
-        let response = self
-            .execute_source_operation(
-                &source_id,
-                if legacy_rss {
-                    "rssChapters"
-                } else {
-                    "chapters"
-                },
-                None,
-                None,
-                Some(engine_book),
-                None,
-                None,
+        let book_ref = self
+            .store
+            .book_ref(book_id)
+            .map_err(|error| error.to_string())?;
+
+        // Capture a coherent source/catalog snapshot while following the
+        // global lock order (source metadata, then book). The source engine
+        // call deliberately happens after both locks are released.
+        let (source, engine_book, old_raw, old_chapters) = {
+            let _sources_lock = self.sources_lock.lock().await;
+            let source_id = {
+                let private = self.read_private_json(&private_path).await?;
+                private["sourceId"]
+                    .as_str()
+                    .ok_or_else(|| "Private book is missing sourceId".to_owned())?
+                    .to_owned()
+            };
+            let source = self
+                .read_sources()
+                .await?
+                .into_iter()
+                .find(|source| source.id == source_id)
+                .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
+            let _book_lock = self.book_lock(book_id).await;
+            let private = self.read_private_json(&private_path).await?;
+            if private["sourceId"].as_str() != Some(source.id.as_str()) {
+                return Err("Book source changed while refreshing its catalog".to_owned());
+            }
+            let engine_book = private
+                .get("book")
+                .cloned()
+                .ok_or_else(|| "Private book is missing engine metadata".to_owned())?;
+            let book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| "Book was removed while refreshing its catalog".to_owned())?;
+            if book.get("id").and_then(Value::as_str) != Some(book_id) {
+                return Err("Book resource ID does not match its catalog path".to_owned());
+            }
+            let raw = private
+                .get("chapters")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "Private book is missing its source chapter catalog".to_owned())?;
+            let chapters = serde_json::from_value::<Vec<ChapterDescriptor>>(
+                book.get("chapters")
+                    .cloned()
+                    .ok_or_else(|| "Book chapter directory is missing".to_owned())?,
             )
+            .map_err(|error| format!("Cannot read processed chapter directory: {error}"))?;
+            if raw.len() != chapters.len() {
+                return Err("Book chapter directory is out of sync; keeping existing data".into());
+            }
+            (source, engine_book, raw, chapters)
+        };
+
+        let operation = if crate::rss::is_legacy_rss_source(&source.source) {
+            "rssChapters"
+        } else {
+            "chapters"
+        };
+        let response = self
+            .executor
+            .execute(engine_request(
+                operation,
+                &source.source,
+                None,
+                None,
+                Some(engine_book.clone()),
+                None,
+                None,
+            ))
             .await?;
         let new_raw = response
             .as_array()
             .cloned()
             .ok_or_else(|| "Source engine returned an invalid chapter list".to_owned())?;
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let mut book_json = self
-            .store
-            .read_json_ref(&book_ref)
-            .await
-            .map_err(|error| error.to_string())?;
-        let old_raw = private
-            .get("chapters")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let old_descriptors = book_json
-            .get("chapters")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let old_by_url: HashMap<String, Value> = old_raw
-            .iter()
-            .enumerate()
-            .filter_map(|(index, raw)| {
-                let url = text_at(raw, &["url", "chapterUrl"])?;
-                Some((url, old_descriptors.get(index)?.clone()))
-            })
-            .collect();
-        let mut added = 0usize;
-        let descriptors = new_raw
-            .iter()
-            .enumerate()
-            .map(|(index, raw)| {
-                let url =
-                    text_at(raw, &["url", "chapterUrl"]).unwrap_or_else(|| format!("@{index}"));
-                let previous = old_by_url.get(&url);
-                let id = previous
-                    .and_then(|entry| entry.get("id").and_then(Value::as_str).map(str::to_owned))
-                    .unwrap_or_else(|| chapter_id(book_id, &url));
-                if previous.is_none() {
-                    added += 1;
-                }
-                let cached = previous
-                    .and_then(|entry| entry.get("src"))
-                    .filter(|src| !src.is_null())
-                    .and_then(|_| self.store.chapter_ref(book_id, &id).ok())
-                    .filter(|_| {
-                        self.root
-                            .join("books")
-                            .join(book_id)
-                            .join("chapters")
-                            .join(format!("{id}.html"))
-                            .is_file()
-                    });
-                ChapterDescriptor {
-                    id,
-                    title: text_at(raw, &["title", "chapterName", "name"])
-                        .unwrap_or_else(|| format!("Chapter {}", index + 1)),
-                    index,
-                    src: cached,
-                }
-            })
-            .collect::<Vec<_>>();
-        let old_progress = book_json
-            .get("progress")
-            .cloned()
-            .unwrap_or_else(|| json!({"chapterIndex":0,"offset":0,"updatedAtMs":0}));
-        let old_progress_index = old_progress
-            .get("chapterIndex")
-            .and_then(Value::as_u64)
-            .unwrap_or_default() as usize;
-        let old_progress_id = old_progress
-            .get("chapterId")
-            .and_then(Value::as_str)
-            .map(str::to_owned);
-        let existing_progress_chapter = old_progress_id
-            .as_ref()
-            .and_then(|id| descriptors.iter().find(|item| &item.id == id));
-        let moved_progress = old_progress_id.is_some() && existing_progress_chapter.is_none();
-        if let Some(existing) = existing_progress_chapter {
-            book_json["progress"]["chapterIndex"] = json!(existing.index);
-        } else if moved_progress && commit {
-            let nearest = if descriptors.is_empty() {
-                None
-            } else {
-                Some(old_progress_index.min(descriptors.len() - 1))
-            };
-            book_json["progress"]["chapterIndex"] = json!(nearest.unwrap_or(0));
-            book_json["progress"]["chapterId"] = nearest
-                .map(|index| json!(descriptors[index].id))
-                .unwrap_or(Value::Null);
-            book_json["progress"]["updatedAtMs"] = json!(now_ms());
+
+        // Reacquire locks in the same order and reject stale responses. A
+        // delete or another refresh may finish while the source engine runs;
+        // neither result is allowed to recreate or overwrite newer data.
+        let (result, removed_ids) = {
+            let _sources_lock = self.sources_lock.lock().await;
+            let current_source = self
+                .read_sources()
+                .await?
+                .into_iter()
+                .find(|candidate| candidate.id == source.id)
+                .ok_or_else(|| "Book source was removed while refreshing its catalog".to_owned())?;
+            if current_source.source != source.source {
+                return Err("Book source changed while refreshing its catalog".to_owned());
+            }
+            let _book_lock = self.book_lock(book_id).await;
+            let current_private = self
+                .read_private_json(&private_path)
+                .await
+                .map_err(|_| "Book was removed while refreshing its catalog".to_owned())?;
+            if current_private["sourceId"].as_str() != Some(source.id.as_str())
+                || current_private.get("book") != Some(&engine_book)
+            {
+                return Err("Book metadata changed while refreshing its catalog".to_owned());
+            }
+            let current_raw = current_private
+                .get("chapters")
+                .and_then(Value::as_array)
+                .cloned()
+                .ok_or_else(|| "Private book is missing its source chapter catalog".to_owned())?;
+            if current_raw != old_raw {
+                return Err(
+                    "A newer chapter catalog was committed; discard this stale refresh".into(),
+                );
+            }
+            let mut current_book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| "Book was removed while refreshing its catalog".to_owned())?;
+            let current_chapters = serde_json::from_value::<Vec<ChapterDescriptor>>(
+                current_book
+                    .get("chapters")
+                    .cloned()
+                    .ok_or_else(|| "Book chapter directory is missing".to_owned())?,
+            )
+            .map_err(|error| format!("Cannot read processed chapter directory: {error}"))?;
+            if current_chapters.len() != old_chapters.len()
+                || current_chapters
+                    .iter()
+                    .zip(&old_chapters)
+                    .any(|(current, old)| {
+                        current.id != old.id
+                            || current.index != old.index
+                            || current.title != old.title
+                    })
+            {
+                return Err(
+                    "A newer chapter directory was committed; discard this stale refresh".into(),
+                );
+            }
+
+            let summary_progress = serde_json::from_value::<ProgressSummary>(
+                current_book
+                    .get("progress")
+                    .cloned()
+                    .unwrap_or_else(|| json!({})),
+            )
+            .map_err(|error| format!("Cannot read saved book progress: {error}"))?;
             let progress_ref = self
                 .store
                 .progress_ref(book_id)
                 .map_err(|error| error.to_string())?;
-            self.store
-                .update_json_ref(&progress_ref, |mut progress| {
-                    progress["chapterIndex"] = json!(nearest.unwrap_or(0));
-                    progress["chapterId"] = nearest
-                        .map(|index| json!(descriptors[index].id))
-                        .unwrap_or(Value::Null);
-                    progress["updatedAtMs"] = json!(now_ms());
-                    Ok(progress)
+            let progress_document = self
+                .store
+                .read_json_ref(&progress_ref)
+                .await
+                .ok()
+                .and_then(|value| serde_json::from_value::<ProgressDocument>(value).ok())
+                .filter(|progress| progress.book_id == book_id);
+            // save_progress writes the book summary before its mirror. On a
+            // timestamp tie the summary therefore wins; a newer mirror wins
+            // when recovering from an interrupted older write.
+            let progress = progress_document
+                .filter(|document| document.updated_at_ms > summary_progress.updated_at_ms)
+                .map(|document| ProgressSummary {
+                    chapter_id: document.chapter_id,
+                    chapter_index: document.chapter_index,
+                    offset: document.offset,
+                    updated_at_ms: document.updated_at_ms,
                 })
+                .unwrap_or(summary_progress);
+            let previous_progress = serde_json::to_value(ProgressDocument {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                book_id: book_id.to_owned(),
+                chapter_id: progress.chapter_id.clone(),
+                chapter_index: progress.chapter_index,
+                offset: progress.offset,
+                updated_at_ms: progress.updated_at_ms,
+            })
+            .map_err(|error| error.to_string())?;
+            let cached_ids = current_chapters
+                .iter()
+                .filter(|chapter| chapter.src.is_some())
+                .filter(|chapter| {
+                    self.root
+                        .join("books")
+                        .join(book_id)
+                        .join("chapters")
+                        .join(format!("{}.html", chapter.id))
+                        .is_file()
+                })
+                .map(|chapter| chapter.id.clone())
+                .collect::<HashSet<_>>();
+            let refreshed_at_ms = now_ms().max(progress.updated_at_ms.saturating_add(1));
+            let plan = crate::catalog::reconcile_catalog(
+                book_id,
+                &old_raw,
+                &current_chapters,
+                &new_raw,
+                &progress,
+                &cached_ids,
+                refreshed_at_ms,
+            )?;
+            if !commit {
+                return Ok(json!({
+                    "bookResourceId": book_ref.as_str(),
+                    "addedCount": plan.added_count,
+                    "matchedCount": plan.matched_count,
+                    "movedProgress": plan.progress_relocated,
+                    "progressRelocated": plan.progress_relocated,
+                    "committed": false,
+                }));
+            }
+
+            let original_book = current_book.clone();
+            let mut next_private = current_private.clone();
+            next_private["chapters"] = json!(new_raw);
+            current_book["chapters"] =
+                serde_json::to_value(&plan.chapters).map_err(|error| error.to_string())?;
+            current_book["chapterCount"] = json!(plan.chapters.len());
+            current_book["latestChapter"] = json!(plan.latest_chapter);
+            current_book["progress"] =
+                serde_json::to_value(&plan.progress).map_err(|error| error.to_string())?;
+            let next_progress = ProgressDocument {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                book_id: book_id.to_owned(),
+                chapter_id: plan.progress.chapter_id.clone(),
+                chapter_index: plan.progress.chapter_index,
+                offset: plan.progress.offset,
+                updated_at_ms: plan.progress.updated_at_ms,
+            };
+            let next_progress =
+                serde_json::to_value(next_progress).map_err(|error| error.to_string())?;
+
+            self.write_private_json(&private_path, &next_private)
+                .await?;
+            if let Err(error) = self.store.write_json_ref(&book_ref, &current_book).await {
+                let rollback = self
+                    .write_private_json(&private_path, &current_private)
+                    .await;
+                return Err(match rollback {
+                    Ok(()) => format!("Cannot commit refreshed book resource: {error}"),
+                    Err(rollback) => format!(
+                        "Cannot commit refreshed book resource: {error}; private catalog rollback failed: {rollback}"
+                    ),
+                });
+            }
+            if let Err(error) = self
+                .store
+                .write_json_ref(&progress_ref, &next_progress)
                 .await
-                .map_err(|error| error.to_string())?;
-        }
-        let title_latest = new_raw
-            .last()
-            .and_then(|raw| text_at(raw, &["title", "chapterName", "name"]));
-        if commit {
-            book_json["chapters"] =
-                serde_json::to_value(&descriptors).map_err(|error| error.to_string())?;
-            book_json["chapterCount"] = json!(descriptors.len());
-            book_json["latestChapter"] = json!(title_latest);
-            self.store
-                .write_json_ref(&book_ref, &book_json)
+            {
+                let book_rollback = self.store.write_json_ref(&book_ref, &original_book).await;
+                let private_rollback = self
+                    .write_private_json(&private_path, &current_private)
+                    .await;
+                return Err(format!(
+                    "Cannot commit refreshed progress mirror: {error}; book rollback: {}; private catalog rollback: {}",
+                    book_rollback
+                        .map(|_| "ok".to_owned())
+                        .unwrap_or_else(|error| error.to_string()),
+                    private_rollback
+                        .map(|_| "ok".to_owned())
+                        .unwrap_or_else(|error| error),
+                ));
+            }
+            if let Err(error) = self.upsert_shelf(book_id).await {
+                let progress_rollback = self
+                    .store
+                    .write_json_ref(&progress_ref, &previous_progress)
+                    .await;
+                let book_rollback = self.store.write_json_ref(&book_ref, &original_book).await;
+                let private_rollback = self
+                    .write_private_json(&private_path, &current_private)
+                    .await;
+                return Err(format!(
+                    "Cannot update shelf after catalog refresh: {error}; progress rollback: {}; book rollback: {}; private catalog rollback: {}",
+                    progress_rollback
+                        .map(|_| "ok".to_owned())
+                        .unwrap_or_else(|error| error.to_string()),
+                    book_rollback
+                        .map(|_| "ok".to_owned())
+                        .unwrap_or_else(|error| error.to_string()),
+                    private_rollback
+                        .map(|_| "ok".to_owned())
+                        .unwrap_or_else(|error| error),
+                ));
+            }
+            let result = json!({
+                "bookResourceId": book_ref.as_str(),
+                "addedCount": plan.added_count,
+                "matchedCount": plan.matched_count,
+                "movedProgress": plan.progress_relocated,
+                "progressRelocated": plan.progress_relocated,
+                "committed": true,
+            });
+            (result, plan.removed_chapter_ids)
+        };
+
+        if !removed_ids.is_empty() {
+            let _book_lock = self.book_lock(book_id).await;
+            let current_ids = self
+                .store
+                .read_json_ref(&book_ref)
                 .await
-                .map_err(|error| error.to_string())?;
-            private["chapters"] = json!(new_raw);
-            self.write_private_json(private_path, &private).await?;
-            self.upsert_shelf(book_id).await?;
+                .ok()
+                .and_then(|book| {
+                    serde_json::from_value::<Vec<ChapterDescriptor>>(book.get("chapters")?.clone())
+                        .ok()
+                })
+                .map(|chapters| {
+                    chapters
+                        .into_iter()
+                        .map(|chapter| chapter.id)
+                        .collect::<HashSet<_>>()
+                });
+            let Some(current_ids) = current_ids else {
+                eprintln!(
+                    "Skipping obsolete chapter cache cleanup for {book_id}: current catalog is unavailable"
+                );
+                return Ok(result);
+            };
+            for chapter_id in removed_ids {
+                // A later refresh can reintroduce an ID before cleanup starts.
+                // Recheck under the book lock so that response cannot lose its
+                // cached HTML to an earlier refresh's delayed cleanup.
+                if current_ids.contains(&chapter_id) {
+                    continue;
+                }
+                let path = self
+                    .root
+                    .join("books")
+                    .join(book_id)
+                    .join("chapters")
+                    .join(format!("{chapter_id}.html"));
+                if let Err(error) = tokio::fs::remove_file(path).await {
+                    if error.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!("Cannot remove obsolete cached chapter {chapter_id}: {error}");
+                    }
+                }
+            }
         }
-        Ok(json!({
-            "bookResourceId": book_ref.as_str(),
-            "addedCount": added,
-            "movedProgress": moved_progress,
-            "committed": commit,
-        }))
+        Ok(result)
     }
 
     pub async fn create_backup(&self, destination: &Path) -> Result<(), String> {
@@ -2008,6 +2192,19 @@ impl ApplicationService {
             ))
             .await?;
         let raw_chapters = chapters.as_array().cloned().unwrap_or_default();
+        // Reject ambiguous first-import catalogs too. The same pure planner
+        // used by refresh catches duplicate canonical URLs and generated IDs
+        // before any public book or private engine data is written.
+        crate::catalog::reconcile_catalog(
+            &book_id,
+            &[],
+            &[],
+            &raw_chapters,
+            &ProgressSummary::default(),
+            &HashSet::new(),
+            now_ms(),
+        )
+        .map_err(|error| format!("Cannot add book with invalid chapter catalog: {error}"))?;
         let title = text_at(&engine_book, &["name", "title"])
             .or_else(|| text_at(&raw_book, &["name", "title"]))
             .unwrap_or_else(|| "Untitled".to_owned());
@@ -2139,83 +2336,134 @@ impl ApplicationService {
         count: usize,
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
-        let _book_lock = self.book_lock(book_id).await;
         let count = count.clamp(1, 50);
-        let private = self
-            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
-            .await?;
-        let source_id = private["sourceId"]
-            .as_str()
-            .ok_or_else(|| "Book source ID is missing".to_owned())?;
-        let engine_book = private
-            .get("book")
-            .cloned()
-            .ok_or_else(|| "Book engine data is missing".to_owned())?;
-        let raw_chapters = private
-            .get("chapters")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let source = self.find_source(source_id).await?;
         let book_ref = self
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        let mut book_json = self
-            .store
-            .read_json_ref(&book_ref)
-            .await
-            .map_err(|error| error.to_string())?;
+        let (source_id, engine_book, target_chapter_ids) = {
+            let _book_lock = self.book_lock(book_id).await;
+            let private = self
+                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .await?;
+            let source_id = private["sourceId"]
+                .as_str()
+                .ok_or_else(|| "Book source ID is missing".to_owned())?
+                .to_owned();
+            let engine_book = private
+                .get("book")
+                .cloned()
+                .ok_or_else(|| "Book engine data is missing".to_owned())?;
+            let public_book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|error| error.to_string())?;
+            let raw_chapters = private
+                .get("chapters")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
+            let descriptors = public_book
+                .get("chapters")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
+            if raw_chapters.len() != descriptors.len() {
+                return Err(
+                    "Book chapter directory is out of sync; refresh it before reading".into(),
+                );
+            }
+            let end = from_index.saturating_add(count).min(raw_chapters.len());
+            let target_chapter_ids = descriptors
+                .iter()
+                .skip(from_index.min(end))
+                .take(end.saturating_sub(from_index.min(end)))
+                .map(|chapter| {
+                    chapter["id"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(|| "Chapter ID missing".to_owned())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            (source_id, engine_book, target_chapter_ids)
+        };
         let mut prepared = 0usize;
-        let end = from_index.saturating_add(count).min(raw_chapters.len());
         let defaults = reader_defaults(
             self.store
                 .read_json_ref(&self.store.settings_ref())
                 .await
                 .ok(),
         );
-        for index in from_index.min(end)..end {
-            let raw_chapter = &raw_chapters[index];
-            let descriptor = book_json
-                .get("chapters")
-                .and_then(Value::as_array)
-                .and_then(|chapters| chapters.get(index))
-                .cloned()
-                .ok_or_else(|| format!("Book chapter metadata missing at index {index}"))?;
-            let chapter_id = descriptor["id"]
-                .as_str()
-                .ok_or_else(|| "Chapter ID missing".to_owned())?;
-            let already_ready = tokio::fs::metadata(
-                self.root
+        for chapter_id in target_chapter_ids {
+            // Requests for the same uncached chapter share this lock. It stays
+            // held over the source call while the book lock remains available
+            // to progress saves and unrelated chapter cache commits.
+            let _chapter_lock = self.chapter_lock(book_id, &chapter_id).await;
+            let (raw_chapter, next_chapter_url, already_ready) = {
+                let _book_lock = self.book_lock(book_id).await;
+                let private = self
+                    .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                    .await?;
+                if private["sourceId"].as_str() != Some(source_id.as_str()) {
+                    return Err("Book source changed while preparing a chapter".to_owned());
+                }
+                if private.get("book") != Some(&engine_book) {
+                    return Err("Book metadata changed while preparing a chapter".to_owned());
+                }
+                let public_book = self
+                    .store
+                    .read_json_ref(&book_ref)
+                    .await
+                    .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
+                let descriptors = public_book
+                    .get("chapters")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
+                let index = descriptors
+                    .iter()
+                    .position(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
+                    .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
+                let raw_chapters = private
+                    .get("chapters")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
+                let raw_chapter = raw_chapters
+                    .get(index)
+                    .cloned()
+                    .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
+                let next_chapter_url = raw_chapters
+                    .get(index + 1)
+                    .and_then(|chapter| text_at(chapter, &["url", "chapterUrl"]));
+                let chapter_path = self
+                    .root
                     .join("books")
                     .join(book_id)
                     .join("chapters")
-                    .join(format!("{chapter_id}.html")),
-            )
-            .await
-            .is_ok();
-            if already_ready {
-                if let Some(chapter) = book_json
-                    .get_mut("chapters")
-                    .and_then(Value::as_array_mut)
-                    .and_then(|chapters| chapters.get_mut(index))
-                {
-                    chapter["src"] = Value::String(
+                    .join(format!("{chapter_id}.html"));
+                let already_ready = tokio::fs::metadata(&chapter_path).await.is_ok();
+                if already_ready {
+                    let chapter_ref = self
+                        .store
+                        .chapter_ref(book_id, &chapter_id)
+                        .map_err(|error| error.to_string())?;
+                    if descriptors[index]["src"].as_str() != Some(chapter_ref.as_str()) {
+                        let mut current = public_book;
+                        current["chapters"][index]["src"] = json!(chapter_ref.as_str());
                         self.store
-                            .chapter_ref(book_id, chapter_id)
-                            .map_err(|error| error.to_string())?
-                            .to_string(),
-                    );
+                            .write_json_ref(&book_ref, &current)
+                            .await
+                            .map_err(|error| error.to_string())?;
+                    }
                 }
-                self.store
-                    .write_json_ref(&book_ref, &book_json)
-                    .await
-                    .map_err(|error| error.to_string())?;
+                (raw_chapter, next_chapter_url, already_ready)
+            };
+            if already_ready {
                 continue;
             }
-            let next_chapter_url = raw_chapters
-                .get(index + 1)
-                .and_then(|chapter| text_at(chapter, &["url", "chapterUrl"]));
+
+            // Clone the current source metadata for this request. Before
+            // publishing the result, verify that the source has not been
+            // replaced while the executor was working.
+            let source = self.find_source(&source_id).await?;
             let content = self
                 .executor
                 .execute(engine_request(
@@ -2235,35 +2483,88 @@ impl ApplicationService {
             let content = content
                 .as_str()
                 .ok_or_else(|| "Source engine returned non-text chapter content".to_owned())?;
-            let reference = if looks_like_html(content) {
+            let _sources_lock = self.sources_lock.lock().await;
+            let current_source = self
+                .read_sources()
+                .await?
+                .into_iter()
+                .find(|candidate| candidate.id == source_id)
+                .ok_or_else(|| "Book source was removed while preparing a chapter".to_owned())?;
+            if current_source.source != source.source {
+                return Err(
+                    "Book source changed while preparing a chapter; retry the request".into(),
+                );
+            }
+
+            let _book_lock = self.book_lock(book_id).await;
+            let current_private = self
+                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .await
+                .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
+            if current_private["sourceId"].as_str() != Some(source_id.as_str()) {
+                return Err("Book source changed while preparing a chapter".to_owned());
+            }
+            if current_private.get("book") != Some(&engine_book) {
+                return Err("Book metadata changed while preparing a chapter".to_owned());
+            }
+            let mut current_book = self
+                .store
+                .read_json_ref(&book_ref)
+                .await
+                .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
+            let descriptors = current_book
+                .get("chapters")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
+            let index = descriptors
+                .iter()
+                .position(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
+                .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
+            let current_raw_chapters = current_private
+                .get("chapters")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
+            let current_raw = current_raw_chapters
+                .get(index)
+                .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
+            if current_raw != &raw_chapter {
+                return Err("Book catalog changed while preparing a chapter".to_owned());
+            }
+
+            let chapter_path = self
+                .root
+                .join("books")
+                .join(book_id)
+                .join("chapters")
+                .join(format!("{chapter_id}.html"));
+            let reference = if tokio::fs::metadata(&chapter_path).await.is_ok() {
                 self.store
-                    .write_chapter_html(book_id, chapter_id, content, &defaults)
+                    .chapter_ref(book_id, &chapter_id)
+                    .map_err(|error| error.to_string())?
+            } else if looks_like_html(content) {
+                self.store
+                    .write_chapter_html(book_id, &chapter_id, content, &defaults)
                     .await
+                    .map_err(|error| error.to_string())?
             } else {
                 self.store
-                    .write_chapter_text(book_id, chapter_id, content, &defaults)
+                    .write_chapter_text(book_id, &chapter_id, content, &defaults)
                     .await
-            }
-            .map_err(|error| error.to_string())?;
-            if let Some(chapter) = book_json
+                    .map_err(|error| error.to_string())?
+            };
+            if let Some(chapter) = current_book
                 .get_mut("chapters")
                 .and_then(Value::as_array_mut)
                 .and_then(|chapters| chapters.get_mut(index))
             {
-                chapter["src"] = Value::String(reference.to_string());
+                chapter["src"] = json!(reference.as_str());
             }
-            prepared += 1;
-            // Publish each completed chapter immediately. A later network failure
-            // must not leave earlier HTML files disconnected from the catalog.
             self.store
-                .write_json_ref(&book_ref, &book_json)
+                .write_json_ref(&book_ref, &current_book)
                 .await
                 .map_err(|error| error.to_string())?;
+            prepared += 1;
         }
-        self.store
-            .write_json_ref(&book_ref, &book_json)
-            .await
-            .map_err(|error| error.to_string())?;
         Ok(
             json!({ "book": self.resource_descriptor(&book_ref), "prepared": prepared, "bookId": book_id, "fromIndex": from_index }),
         )
@@ -2669,6 +2970,30 @@ impl ApplicationService {
                 .entry(book_id.to_owned())
                 .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                 .clone()
+        };
+        lock.lock_owned().await
+    }
+
+    async fn chapter_lock(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+    ) -> tokio::sync::OwnedMutexGuard<()> {
+        let key = format!("{book_id}\0{chapter_id}");
+        let lock = {
+            let mut locks = self.chapter_locks.lock().await;
+            // The map keeps only weak references. Every in-flight waiter or
+            // OwnedMutexGuard owns a strong reference, so duplicate requests
+            // still share the same mutex while completed chapter IDs do not
+            // accumulate for the lifetime of a long reading session.
+            locks.retain(|_, lock| lock.strong_count() > 0);
+            if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
+                lock
+            } else {
+                let lock = Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(key, Arc::downgrade(&lock));
+                lock
+            }
         };
         lock.lock_owned().await
     }
@@ -4595,7 +4920,7 @@ pub use tauri_commands::*;
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::HashMap,
+        collections::{HashMap, HashSet, VecDeque},
         io::{BufRead, BufReader, Read, Write},
         net::{TcpListener, TcpStream},
         path::PathBuf,
@@ -4615,7 +4940,12 @@ mod tests {
     #[derive(Clone)]
     struct ControlledExecutor {
         chapter_count: usize,
+        catalog_responses: Arc<std::sync::Mutex<HashMap<String, VecDeque<Value>>>>,
+        catalog_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        duplicate_catalogs: Arc<std::sync::Mutex<HashSet<String>>>,
         content_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        chapter_content_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
+        content_failures: Arc<std::sync::Mutex<HashSet<String>>>,
         search_gates: Arc<std::sync::Mutex<HashMap<String, Arc<ExecutionGate>>>>,
         content_calls: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     }
@@ -4648,10 +4978,38 @@ mod tests {
         fn new(chapter_count: usize) -> Self {
             Self {
                 chapter_count,
+                catalog_responses: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                catalog_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                duplicate_catalogs: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 content_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                chapter_content_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                content_failures: Arc::new(std::sync::Mutex::new(HashSet::new())),
                 search_gates: Arc::new(std::sync::Mutex::new(HashMap::new())),
                 content_calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+
+        fn queue_catalog_responses(&self, book_url: &str, responses: Vec<Value>) {
+            self.catalog_responses
+                .lock()
+                .expect("catalog response mutex")
+                .insert(book_url.to_owned(), responses.into());
+        }
+
+        fn gate_next_catalog(&self, book_url: &str) -> Arc<ExecutionGate> {
+            let gate = Arc::new(ExecutionGate::new());
+            self.catalog_gates
+                .lock()
+                .expect("catalog gate mutex")
+                .insert(book_url.to_owned(), gate.clone());
+            gate
+        }
+
+        fn duplicate_catalog_for(&self, book_url: &str) {
+            self.duplicate_catalogs
+                .lock()
+                .expect("duplicate catalog mutex")
+                .insert(book_url.to_owned());
         }
 
         fn gate_content(&self, book_url: &str) -> Arc<ExecutionGate> {
@@ -4661,6 +5019,22 @@ mod tests {
                 .expect("content gate mutex")
                 .insert(book_url.to_owned(), gate.clone());
             gate
+        }
+
+        fn gate_chapter_content(&self, chapter_url: &str) -> Arc<ExecutionGate> {
+            let gate = Arc::new(ExecutionGate::new());
+            self.chapter_content_gates
+                .lock()
+                .expect("chapter content gate mutex")
+                .insert(chapter_url.to_owned(), gate.clone());
+            gate
+        }
+
+        fn fail_content_once(&self, chapter_url: &str) {
+            self.content_failures
+                .lock()
+                .expect("content failure mutex")
+                .insert(chapter_url.to_owned());
         }
 
         fn gate_search(&self, keyword: &str) -> Arc<ExecutionGate> {
@@ -4719,7 +5093,42 @@ mod tests {
                             .as_ref()
                             .and_then(|book| book.get("bookUrl"))
                             .and_then(Value::as_str)
-                            .ok_or_else(|| "mock bookUrl missing".to_owned())?;
+                            .ok_or_else(|| "mock bookUrl missing".to_owned())?
+                            .to_owned();
+                        let response = self
+                            .catalog_responses
+                            .lock()
+                            .expect("catalog response mutex")
+                            .get_mut(&book_url)
+                            .and_then(VecDeque::pop_front);
+                        if self
+                            .duplicate_catalogs
+                            .lock()
+                            .expect("duplicate catalog mutex")
+                            .remove(&book_url)
+                        {
+                            return Ok(json!([
+                                { "title": "Repeated A", "url": format!("{book_url}/chapter/repeated") },
+                                { "title": "Repeated B", "url": format!("{book_url}/chapter/repeated") }
+                            ]));
+                        }
+                        let gate = self
+                            .catalog_gates
+                            .lock()
+                            .expect("catalog gate mutex")
+                            .remove(&book_url);
+                        if let Some(gate) = gate {
+                            gate.entered.notify_one();
+                            let permit = gate
+                                .permits
+                                .acquire()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            permit.forget();
+                        }
+                        if let Some(response) = response {
+                            return Ok(response);
+                        }
                         Ok(Value::Array(
                             (0..self.chapter_count)
                                 .map(|index| {
@@ -4746,11 +5155,17 @@ mod tests {
                             .and_then(Value::as_str)
                             .ok_or_else(|| "mock chapter URL missing".to_owned())?
                             .to_owned();
-                        let gate = self
-                            .content_gates
+                        let chapter_gate = self
+                            .chapter_content_gates
                             .lock()
-                            .expect("content gate mutex")
-                            .remove(&book_url);
+                            .expect("chapter content gate mutex")
+                            .remove(&chapter_url);
+                        let gate = chapter_gate.or_else(|| {
+                            self.content_gates
+                                .lock()
+                                .expect("content gate mutex")
+                                .remove(&book_url)
+                        });
                         if let Some(gate) = gate {
                             gate.entered.notify_one();
                             let permit = gate
@@ -4764,6 +5179,14 @@ mod tests {
                             .lock()
                             .expect("content call mutex")
                             .push((book_url, chapter_url.clone()));
+                        if self
+                            .content_failures
+                            .lock()
+                            .expect("content failure mutex")
+                            .remove(&chapter_url)
+                        {
+                            return Err(format!("controlled failure for {chapter_url}"));
+                        }
                         Ok(json!(format!("<p>Cached from {chapter_url}</p>")))
                     }
                     other => Err(format!("unexpected mock operation {other}")),
@@ -5818,6 +6241,547 @@ mod tests {
         drop(service);
         let _ = std::fs::remove_dir_all(root);
         let _ = std::fs::remove_file(archive);
+    }
+
+    #[tokio::test]
+    async fn slow_failing_prefetch_keeps_first_chapter_and_progress_available_during_restore() {
+        let (service, executor, root, source_id) = controlled_service(3).await;
+        let book_id = add_controlled_book(&service, &source_id, "slow-second-chapter").await;
+        let book_ref = service.store.book_ref(&book_id).expect("book resource");
+        let initial_book = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("initial book JSON");
+        let first_chapter_id = initial_book["chapters"][0]["id"]
+            .as_str()
+            .expect("first chapter ID")
+            .to_owned();
+        let first_chapter_url = "mock://book/slow-second-chapter/chapter/0";
+        let second_chapter_url = "mock://book/slow-second-chapter/chapter/1";
+
+        service
+            .prepare_chapters(&book_id, 0, 1)
+            .await
+            .expect("prepare the first chapter");
+        service
+            .save_progress(
+                &book_id,
+                json!({
+                    "chapterId": first_chapter_id,
+                    "chapterIndex": 0,
+                    "offset": 41,
+                    "updatedAtMs": 1000,
+                }),
+            )
+            .await
+            .expect("save baseline progress");
+
+        let archive = root.with_extension("reader-snapshot.zip");
+        service
+            .create_backup(&archive)
+            .await
+            .expect("create restore snapshot");
+
+        let gate = executor.gate_chapter_content(second_chapter_url);
+        executor.fail_content_once(second_chapter_url);
+        let prepare_service = service.clone();
+        let preparing_book_id = book_id.clone();
+        let prepare = tokio::spawn(async move {
+            prepare_service
+                .prepare_chapters(&preparing_book_id, 0, 2)
+                .await
+        });
+        gate.wait_until_entered().await;
+
+        let chapter_ref = service
+            .store
+            .chapter_ref(&book_id, &first_chapter_id)
+            .expect("first chapter ref");
+        let chapter_url = service.resource_server().url_for(&chapter_ref);
+        let chapter_html = reqwest::Client::new()
+            .get(chapter_url)
+            .send()
+            .await
+            .expect("first chapter HTTP request")
+            .error_for_status()
+            .expect("first chapter remains readable while chapter two waits")
+            .text()
+            .await
+            .expect("first chapter HTML");
+        assert!(chapter_html.contains(first_chapter_url));
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            service.save_progress(
+                &book_id,
+                json!({
+                    "chapterId": first_chapter_id,
+                    "chapterIndex": 0,
+                    "offset": 99,
+                    "updatedAtMs": 2000,
+                }),
+            ),
+        )
+        .await
+        .expect("progress persistence must not wait for another chapter's network call")
+        .expect("save progress while next chapter is slow");
+
+        let mut restore_barrier = service.restore_barrier.subscribe();
+        let restore_service = service.clone();
+        let restore_archive = archive.clone();
+        let restore =
+            tokio::spawn(async move { restore_service.restore_backup(&restore_archive).await });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !*restore_barrier.borrow() {
+                restore_barrier
+                    .changed()
+                    .await
+                    .expect("restore barrier channel remains open");
+            }
+        })
+        .await
+        .expect("restore should enter its admission barrier");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert!(
+            !restore.is_finished(),
+            "restore must wait for the in-flight chapter operation"
+        );
+
+        gate.release();
+        let prepare_result = tokio::time::timeout(Duration::from_secs(3), prepare)
+            .await
+            .expect("chapter preparation should finish after releasing its gate")
+            .expect("prepare task join");
+        assert!(prepare_result
+            .expect_err("the controlled second chapter fails")
+            .contains("controlled failure"));
+        tokio::time::timeout(Duration::from_secs(5), restore)
+            .await
+            .expect("restore should proceed after chapter operation exits")
+            .expect("restore task join")
+            .expect("restore snapshot");
+
+        let restored = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("restored book JSON");
+        assert!(restored["chapters"][0]["src"].is_string());
+        assert!(restored["chapters"][1]["src"].is_null());
+        assert_eq!(restored["progress"]["offset"], 41);
+        let restored_chapter_url = service.resource_server().url_for(&chapter_ref);
+        reqwest::Client::new()
+            .get(restored_chapter_url)
+            .send()
+            .await
+            .expect("restored chapter HTTP request")
+            .error_for_status()
+            .expect("snapshot keeps first chapter readable");
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(archive);
+    }
+
+    #[tokio::test]
+    async fn concurrent_prepare_requests_fetch_the_same_chapter_once() {
+        let (service, executor, root, source_id) = controlled_service(3).await;
+        let book_id = add_controlled_book(&service, &source_id, "deduplicate-chapter").await;
+        let chapter_url = "mock://book/deduplicate-chapter/chapter/1";
+        let gate = executor.gate_chapter_content(chapter_url);
+
+        let first_service = service.clone();
+        let first_book_id = book_id.clone();
+        let first =
+            tokio::spawn(async move { first_service.prepare_chapters(&first_book_id, 1, 1).await });
+        gate.wait_until_entered().await;
+
+        let second_service = service.clone();
+        let second_book_id = book_id.clone();
+        let second =
+            tokio::spawn(
+                async move { second_service.prepare_chapters(&second_book_id, 1, 1).await },
+            );
+        tokio::task::yield_now().await;
+        assert!(
+            !second.is_finished(),
+            "duplicate request should wait on the chapter-level in-flight lock"
+        );
+
+        gate.release();
+        first
+            .await
+            .expect("first prepare task")
+            .expect("first prepare");
+        second
+            .await
+            .expect("second prepare task")
+            .expect("second prepare should use the cache");
+        assert_eq!(
+            executor
+                .content_calls()
+                .iter()
+                .filter(|(_, url)| url == chapter_url)
+                .count(),
+            1,
+            "only one source-engine call should fetch this chapter"
+        );
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_book_during_chapter_fetch_does_not_resurrect_it() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "delete-during-fetch").await;
+        let chapter_url = "mock://book/delete-during-fetch/chapter/0";
+        let gate = executor.gate_chapter_content(chapter_url);
+
+        let prepare_service = service.clone();
+        let preparing_book_id = book_id.clone();
+        let prepare = tokio::spawn(async move {
+            prepare_service
+                .prepare_chapters(&preparing_book_id, 0, 1)
+                .await
+        });
+        gate.wait_until_entered().await;
+
+        tokio::time::timeout(Duration::from_secs(2), service.remove_book(&book_id))
+            .await
+            .expect("book deletion must not wait for chapter network work")
+            .expect("delete book during fetch");
+        gate.release();
+        let prepare_error = tokio::time::timeout(Duration::from_secs(3), prepare)
+            .await
+            .expect("prepare should finish after releasing its gate")
+            .expect("prepare task join")
+            .expect_err("removed book must not receive a late chapter write");
+        assert!(prepare_error.contains("removed while preparing"));
+
+        let shelf = service
+            .store
+            .read_json_ref(&service.store.shelf_ref())
+            .await
+            .expect("shelf JSON");
+        assert!(!shelf["books"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|book| book["id"] == book_id));
+        assert!(service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).expect("book ref"))
+            .await
+            .is_err());
+        assert!(tokio::fs::metadata(root.join("books").join(&book_id))
+            .await
+            .is_err());
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn add_book_rejects_duplicate_chapter_urls_before_publishing_resources() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let search = service
+            .search_books(&[source_id.clone()], "duplicate-catalog", 1, |_| {})
+            .await
+            .expect("controlled search");
+        let search_ref = crate::resources::ResourceRef::new(
+            search["resource"]["resourceId"]
+                .as_str()
+                .expect("search resource ID"),
+        )
+        .expect("valid search resource");
+        let search_document = service
+            .store
+            .read_json_ref(&search_ref)
+            .await
+            .expect("search results");
+        let result_id = search_document["results"][0]["resultId"]
+            .as_str()
+            .expect("result ID")
+            .to_owned();
+        let book_url = "mock://book/duplicate-catalog";
+        executor.duplicate_catalog_for(book_url);
+
+        let error = service
+            .add_book(&result_id)
+            .await
+            .expect_err("ambiguous source catalog must be rejected");
+        assert!(error.contains("duplicate"), "unexpected error: {error}");
+        let shelf = service
+            .store
+            .read_json_ref(&service.store.shelf_ref())
+            .await
+            .expect("shelf JSON");
+        assert!(shelf["books"].as_array().unwrap().is_empty());
+        let book_id = format!(
+            "book-{:016x}",
+            super::stable_hash(&format!("{source_id}\0{book_url}"))
+        );
+        assert!(service
+            .read_private_json(std::path::Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .is_err());
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn catalog_refresh_preserves_cached_chapter_progress_and_does_not_lock_over_network() {
+        let (service, executor, root, source_id) = controlled_service(3).await;
+        let book_id = add_controlled_book(&service, &source_id, "catalog-reorder").await;
+        let book_ref = service.store.book_ref(&book_id).expect("book resource");
+        let initial = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("initial book");
+        let chapter_one_id = initial["chapters"][1]["id"]
+            .as_str()
+            .expect("chapter one ID")
+            .to_owned();
+        service
+            .prepare_chapters(&book_id, 1, 1)
+            .await
+            .expect("cache chapter one");
+        service
+            .save_progress(
+                &book_id,
+                json!({
+                    "chapterId": chapter_one_id,
+                    "chapterIndex": 1,
+                    "offset": 30,
+                    "updatedAtMs": 1000,
+                }),
+            )
+            .await
+            .expect("save initial progress");
+
+        let book_url = "mock://book/catalog-reorder";
+        let refreshed = json!([
+            { "title": "Chapter 1", "url": format!("{book_url}/chapter/1") },
+            { "title": "Brand New", "url": format!("{book_url}/chapter/new") },
+            { "title": "Chapter 0", "url": format!("{book_url}/chapter/0") }
+        ]);
+        executor.queue_catalog_responses(book_url, vec![refreshed.clone()]);
+        let gate = executor.gate_next_catalog(book_url);
+        let started = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start catalog refresh");
+        let task_id = task_id_from_start(&started);
+        gate.wait_until_entered().await;
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            service.save_progress(
+                &book_id,
+                json!({
+                    "chapterId": chapter_one_id,
+                    "chapterIndex": 1,
+                    "offset": 88,
+                    "updatedAtMs": 2000,
+                }),
+            ),
+        )
+        .await
+        .expect("progress save must not wait for catalog network work")
+        .expect("save progress while refresh is waiting in source engine");
+        gate.release();
+        let completed = wait_for_task_status(&service, &task_id, "completed").await;
+        assert_eq!(completed.result.as_ref().unwrap()["addedCount"], 1);
+        assert_eq!(completed.result.as_ref().unwrap()["matchedCount"], 2);
+        assert_eq!(completed.result.as_ref().unwrap()["committed"], true);
+
+        let book = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("refreshed book");
+        let chapter_one = &book["chapters"][0];
+        assert_eq!(chapter_one["id"], chapter_one_id);
+        assert_eq!(chapter_one["title"], "Chapter 1");
+        assert!(chapter_one["src"].is_string(), "cached src is retained");
+        assert_eq!(book["progress"]["chapterId"], chapter_one_id);
+        assert_eq!(book["progress"]["chapterIndex"], 0);
+        assert_eq!(book["progress"]["offset"], 88);
+        assert_eq!(book["progress"]["updatedAtMs"], 2000);
+        let progress_ref = service.store.progress_ref(&book_id).expect("progress ref");
+        let progress = service
+            .store
+            .read_json_ref(&progress_ref)
+            .await
+            .expect("progress mirror");
+        assert_eq!(progress["chapterId"], chapter_one_id);
+        assert_eq!(progress["chapterIndex"], 0);
+        assert_eq!(progress["offset"], 88);
+        let private = service
+            .read_private_json(std::path::Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .expect("private engine catalog");
+        assert_eq!(private["chapters"], refreshed);
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn empty_catalog_refresh_fails_without_changing_existing_resources() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "empty-refresh").await;
+        let book_ref = service.store.book_ref(&book_id).expect("book resource");
+        let before_book = service
+            .store
+            .read_json_ref(&book_ref)
+            .await
+            .expect("book before refresh");
+        let private_path = std::path::Path::new("books").join(format!("{book_id}.json"));
+        let before_private = service
+            .read_private_json(&private_path)
+            .await
+            .expect("private catalog before refresh");
+        executor.queue_catalog_responses("mock://book/empty-refresh", vec![json!([])]);
+
+        let started = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start empty refresh");
+        let task_id = task_id_from_start(&started);
+        let failed = wait_for_task_status(&service, &task_id, "failed").await;
+        assert!(failed
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("empty"));
+        assert_eq!(
+            service.store.read_json_ref(&book_ref).await.unwrap(),
+            before_book
+        );
+        assert_eq!(
+            service.read_private_json(&private_path).await.unwrap(),
+            before_private
+        );
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn deleting_book_during_catalog_request_does_not_resurrect_resources() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "delete-catalog-refresh").await;
+        let gate = executor.gate_next_catalog("mock://book/delete-catalog-refresh");
+        let started = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start catalog refresh");
+        let task_id = task_id_from_start(&started);
+        gate.wait_until_entered().await;
+
+        tokio::time::timeout(Duration::from_secs(2), service.remove_book(&book_id))
+            .await
+            .expect("delete must not wait for source engine network call")
+            .expect("remove book");
+        gate.release();
+        let failed = wait_for_task_status(&service, &task_id, "failed").await;
+        assert!(failed
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("removed"));
+        assert!(service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .is_err());
+        let shelf = service
+            .store
+            .read_json_ref(&service.store.shelf_ref())
+            .await
+            .expect("shelf JSON");
+        assert!(!shelf["books"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|book| book["id"] == book_id));
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn stale_concurrent_catalog_refresh_cannot_overwrite_newer_commit() {
+        let (service, executor, root, source_id) = controlled_service(2).await;
+        let book_id = add_controlled_book(&service, &source_id, "concurrent-catalog").await;
+        let book_url = "mock://book/concurrent-catalog";
+        let older = json!([
+            { "title": "Older Catalog", "url": format!("{book_url}/chapter/older") }
+        ]);
+        let newer = json!([
+            { "title": "Newer Catalog", "url": format!("{book_url}/chapter/newer") }
+        ]);
+        executor.queue_catalog_responses(book_url, vec![older, newer.clone()]);
+        let gate = executor.gate_next_catalog(book_url);
+        let first = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start first refresh");
+        let first_id = task_id_from_start(&first);
+        gate.wait_until_entered().await;
+
+        let second = service
+            .refresh_chapters(&book_id)
+            .await
+            .expect("start second refresh");
+        let second_id = task_id_from_start(&second);
+        let committed = wait_for_task_status(&service, &second_id, "completed").await;
+        assert_eq!(committed.result.as_ref().unwrap()["committed"], true);
+        gate.release();
+        let stale = wait_for_task_status(&service, &first_id, "failed").await;
+        assert!(stale
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("stale refresh"));
+
+        let book = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .expect("book after concurrent refreshes");
+        assert_eq!(book["chapters"][0]["title"], "Newer Catalog");
+        let private = service
+            .read_private_json(std::path::Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .expect("private catalog after concurrent refreshes");
+        assert_eq!(private["chapters"], newer);
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn chapter_lock_registry_drops_idle_chapter_keys() {
+        let (service, _executor, root, _source_id) = controlled_service(1).await;
+        for index in 0..1000 {
+            let guard = service
+                .chapter_lock("book", &format!("chapter-{index}"))
+                .await;
+            drop(guard);
+        }
+        let registry_size = service.chapter_locks.lock().await.len();
+        assert!(
+            registry_size <= 1,
+            "idle chapter lock registry should stay bounded, got {registry_size}"
+        );
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[tokio::test]
