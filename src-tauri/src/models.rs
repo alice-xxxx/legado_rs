@@ -238,6 +238,20 @@ pub struct BookDocument {
     pub author: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cover_src: Option<ResourceRef>,
+    /// Rust-projected, plain-text description from processed book details.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub intro: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub word_count: Option<String>,
+    /// Public source labels only; raw source definitions stay private.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub source_group: Option<String>,
     #[serde(default)]
     pub chapter_count: usize,
     #[serde(skip_serializing_if = "Option::is_none", default)]

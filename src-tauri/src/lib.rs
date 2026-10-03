@@ -1,6 +1,7 @@
 pub mod application;
 pub mod backup;
 pub(crate) mod catalog;
+pub(crate) mod book_metadata;
 pub mod discovery;
 mod image_ops_host;
 pub mod local_books;

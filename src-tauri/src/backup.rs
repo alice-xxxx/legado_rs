@@ -1294,6 +1294,12 @@ mod tests {
             author: "Fixture Author".to_owned(),
             can_change_source: false,
             cover_src: Some(cover),
+            intro: None,
+            kind: None,
+            word_count: None,
+            source_id: None,
+            source_name: None,
+            source_group: None,
             chapter_count: 1,
             latest_chapter: Some("Chapter 1".to_owned()),
             progress: ProgressSummary::default(),
@@ -1380,7 +1386,14 @@ mod tests {
         let temporary = tempfile::tempdir().unwrap();
         let root = temporary.path().join("app-data");
         let store = ResourceStore::open(&root).unwrap();
-        let original = add_book(&store, "snapshot-book", "Snapshot Book").await;
+        let mut original = add_book(&store, "snapshot-book", "Snapshot Book").await;
+        original.intro = Some("A plain text description".to_owned());
+        original.kind = Some("Fantasy, Adventure".to_owned());
+        original.word_count = Some("12.3万字".to_owned());
+        original.source_id = Some("source-private".to_owned());
+        original.source_name = Some("Fixture Source".to_owned());
+        original.source_group = Some("Fixture Group".to_owned());
+        store.write_book(&original).await.unwrap();
         store
             .write_progress(
                 &original.id,
@@ -1402,6 +1415,8 @@ mod tests {
             private_root.join("sources.json"),
             serde_json::to_vec(&json!([{
                 "id": "source-private",
+                "name": "Fixture Source",
+                "group": "Fixture Group",
                 "source": { "bookSourceUrl": "https://example.test/source", "ruleBookInfo": { "name": "fixture" } }
             }]))
             .unwrap(),
@@ -1644,6 +1659,12 @@ mod tests {
         let restored: BookDocument =
             serde_json::from_value(store.read_json_ref(&restored_ref).await.unwrap()).unwrap();
         assert_eq!(restored.title, "Snapshot Book");
+        assert_eq!(restored.intro.as_deref(), Some("A plain text description"));
+        assert_eq!(restored.kind.as_deref(), Some("Fantasy, Adventure"));
+        assert_eq!(restored.word_count.as_deref(), Some("12.3万字"));
+        assert_eq!(restored.source_id.as_deref(), Some("source-private"));
+        assert_eq!(restored.source_name.as_deref(), Some("Fixture Source"));
+        assert_eq!(restored.source_group.as_deref(), Some("Fixture Group"));
         assert!(!root.join("books/later-book/book.json").exists());
         assert!(!root.join("progress/later-book.json").exists());
         let progress = store

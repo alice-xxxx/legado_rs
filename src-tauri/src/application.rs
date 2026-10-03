@@ -1313,6 +1313,8 @@ impl ApplicationService {
         // Keep known metadata when the new source omits it; the source rule
         // engine remains the authority when it supplies a new value.
         let target_author = engine_author.unwrap_or(old_author.clone());
+        let display_metadata =
+            crate::book_metadata::project_book_metadata(&engine_book, &new_source);
         let raw_chapters = self
             .executor
             .execute(engine_request(
@@ -1509,13 +1511,27 @@ impl ApplicationService {
         next_private["chapters"] = json!(raw_chapters);
         next_private["catalogGeneration"] = json!(generation);
         let mut next_book = old_book.clone();
-        next_book["title"] = json!(target_title);
-        next_book["author"] = json!(target_author);
-        if let Some(cover) = text_at(&engine_book, &["coverUrl", "cover", "coverSrc"])
-            .and_then(|value| ResourceRef::new(value).ok())
-        {
+        next_book["title"] = json!(display_metadata.title);
+        next_book["author"] = json!(display_metadata.author.unwrap_or(target_author));
+        if let Some(cover) = display_metadata.cover_src {
             next_book["coverSrc"] = json!(cover.as_str());
         }
+        if let Some(intro) = display_metadata.intro {
+            next_book["intro"] = json!(intro);
+        }
+        if let Some(kind) = display_metadata.kind {
+            next_book["kind"] = json!(kind);
+        }
+        if let Some(word_count) = display_metadata.word_count {
+            next_book["wordCount"] = json!(word_count);
+        }
+        next_book["sourceId"] = json!(display_metadata.source_id);
+        next_book["sourceName"] = json!(display_metadata.source_name);
+        set_optional_public_field(
+            &mut next_book,
+            "sourceGroup",
+            display_metadata.source_group.map(|group| json!(group)),
+        );
         next_book["chapterCount"] = json!(new_chapters.len());
         next_book["latestChapter"] = new_chapters
             .last()
@@ -3125,14 +3141,9 @@ impl ApplicationService {
             now_ms(),
         )
         .map_err(|error| format!("Cannot add book with invalid chapter catalog: {error}"))?;
-        let title = text_at(&engine_book, &["name", "title"])
-            .or_else(|| text_at(&raw_book, &["name", "title"]))
-            .unwrap_or_else(|| "Untitled".to_owned());
-        let author = text_at(&engine_book, &["author"])
-            .or_else(|| text_at(&raw_book, &["author"]))
-            .unwrap_or_default();
-        let cover_url = text_at(&engine_book, &["coverUrl", "cover", "coverSrc"])
-            .or_else(|| text_at(&raw_book, &["coverUrl", "cover", "coverSrc"]));
+        let display_metadata = crate::book_metadata::project_book_metadata(&engine_book, &source);
+        let title = display_metadata.title.clone();
+        let author = display_metadata.author.clone().unwrap_or_default();
         let latest = raw_chapters
             .last()
             .and_then(|chapter| text_at(chapter, &["title", "chapterName", "name"]));
@@ -3206,7 +3217,13 @@ impl ApplicationService {
             title,
             can_change_source: true,
             author,
-            cover_src: cover_url.and_then(|cover| ResourceRef::new(cover).ok()),
+            cover_src: display_metadata.cover_src.clone(),
+            intro: display_metadata.intro.clone(),
+            kind: display_metadata.kind.clone(),
+            word_count: display_metadata.word_count.clone(),
+            source_id: Some(display_metadata.source_id.clone()),
+            source_name: Some(display_metadata.source_name.clone()),
+            source_group: display_metadata.source_group.clone(),
             chapter_count: descriptors.len(),
             latest_chapter: latest,
             progress,
@@ -3245,19 +3262,51 @@ impl ApplicationService {
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
+        let _sources = self.sources_lock.lock().await;
+        let sources = self.read_sources().await?;
         let _book = self.book_lock(book_id).await;
         let mut book = self
             .store
             .read_json_ref(&reference)
             .await
             .map_err(|error| error.to_string())?;
+        let original_book = book.clone();
         let private = self
             .read_private_json(Path::new("books").join(format!("{book_id}.json")))
             .await
             .ok();
         let can_change_source = private.as_ref().is_some_and(can_change_source_from_private);
+        if let Some(private) = private.as_ref() {
+            if let (Some(source_id), Some(engine_book)) = (
+                private.get("sourceId").and_then(Value::as_str),
+                private.get("book").filter(|value| value.is_object()),
+            ) {
+                let source = sources.iter().find(|source| source.id == source_id);
+                let fallback_source = SourceRecord {
+                    id: source_id.to_owned(),
+                    name: book
+                        .get("sourceName")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    group: book
+                        .get("sourceGroup")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    enabled: false,
+                    source: Value::Null,
+                };
+                let metadata = crate::book_metadata::project_book_metadata(
+                    engine_book,
+                    source.unwrap_or(&fallback_source),
+                );
+                apply_cached_book_metadata(&mut book, &metadata, source.is_some());
+            }
+        }
         if book.get("canChangeSource").and_then(Value::as_bool) != Some(can_change_source) {
             book["canChangeSource"] = json!(can_change_source);
+        }
+        if book != original_book {
             self.store
                 .write_json_ref(&reference, &book)
                 .await
@@ -4238,6 +4287,56 @@ fn can_change_source_from_private(private: &Value) -> bool {
         .is_some_and(|source_id| !source_id.trim().is_empty())
         && private.get("book").is_some_and(Value::is_object)
         && private.get("chapters").and_then(Value::as_array).is_some()
+}
+
+fn set_optional_public_field(document: &mut Value, key: &str, value: Option<Value>) {
+    if let Some(fields) = document.as_object_mut() {
+        if let Some(value) = value {
+            fields.insert(key.to_owned(), value);
+        } else {
+            fields.remove(key);
+        }
+    }
+}
+
+fn apply_cached_book_metadata(
+    book: &mut Value,
+    metadata: &crate::book_metadata::ProcessedBookMetadata,
+    source_is_imported: bool,
+) {
+    if metadata.title != "Untitled" {
+        book["title"] = json!(metadata.title.as_str());
+    }
+    if let Some(author) = metadata.author.as_deref() {
+        book["author"] = json!(author);
+    }
+    if let Some(cover) = metadata.cover_src.as_ref() {
+        book["coverSrc"] = json!(cover.as_str());
+    }
+    if let Some(intro) = metadata.intro.as_deref() {
+        book["intro"] = json!(intro);
+    }
+    if let Some(kind) = metadata.kind.as_deref() {
+        book["kind"] = json!(kind);
+    }
+    if let Some(word_count) = metadata.word_count.as_deref() {
+        book["wordCount"] = json!(word_count);
+    }
+    if !metadata.source_id.is_empty() {
+        book["sourceId"] = json!(metadata.source_id.as_str());
+    }
+    if !metadata.source_name.is_empty() {
+        book["sourceName"] = json!(metadata.source_name.as_str());
+    }
+    if source_is_imported {
+        set_optional_public_field(
+            book,
+            "sourceGroup",
+            metadata.source_group.as_deref().map(|group| json!(group)),
+        );
+    } else if let Some(group) = metadata.source_group.as_deref() {
+        book["sourceGroup"] = json!(group);
+    }
 }
 
 pub(crate) fn project_search_result(result_id: &str, source: &SourceRecord, book: &Value) -> Value {
@@ -6789,6 +6888,101 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn book_detail_projection_updates_from_cached_engine_book_and_survives_source_removal() {
+        let (service, _executor, root, source_id) = controlled_service(1).await;
+        service
+            .update_source(
+                &source_id,
+                json!({ "name": "Original metadata source", "group": "Fiction" }),
+            )
+            .await
+            .expect("set source display labels");
+
+        let search = service
+            .search_books(&[source_id.clone()], "Metadata story", 1, |_| {})
+            .await
+            .expect("search metadata fixture");
+        let search_ref = crate::resources::ResourceRef::new(
+            search["resource"]["resourceId"]
+                .as_str()
+                .expect("search resource ID"),
+        )
+        .expect("valid search resource");
+        let results = service
+            .store
+            .read_json_ref(&search_ref)
+            .await
+            .expect("search result document");
+        let result_id = results["results"][0]["resultId"]
+            .as_str()
+            .expect("result ID")
+            .to_owned();
+        let candidate_path = Path::new("search-results").join(format!("{result_id}.json"));
+        let mut candidate = service
+            .read_private_json(&candidate_path)
+            .await
+            .expect("private candidate");
+        candidate["book"]["intro"] = json!("<p>A readable summary</p>");
+        candidate["book"]["kind"] = json!(["Fantasy", "Adventure"]);
+        candidate["book"]["wordCount"] = json!(12_000);
+        service
+            .write_private_json(&candidate_path, &candidate)
+            .await
+            .expect("update fixture's processed detail");
+
+        let added = service.add_book(&result_id).await.expect("add metadata book");
+        let book_ref = crate::resources::ResourceRef::new(
+            added["book"]["resourceId"]
+                .as_str()
+                .expect("book resource ID"),
+        )
+        .expect("valid book resource");
+        let book_id = service.store.read_json_ref(&book_ref).await.unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let added_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(added_book["intro"], "A readable summary");
+        assert_eq!(added_book["kind"], "Fantasy, Adventure");
+        assert_eq!(added_book["wordCount"], "12000");
+        assert_eq!(added_book["sourceId"], source_id);
+        assert_eq!(added_book["sourceName"], "Original metadata source");
+        assert_eq!(added_book["sourceGroup"], "Fiction");
+        assert_eq!(added_book["canChangeSource"], true);
+        assert!(added_book.get("bookUrl").is_none());
+
+        service
+            .update_source(
+                &source_id,
+                json!({ "name": "Renamed metadata source", "group": "Drama" }),
+            )
+            .await
+            .expect("rename current source");
+        service.get_book(&book_id).await.expect("refresh book projection");
+        let renamed_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(renamed_book["sourceName"], "Renamed metadata source");
+        assert_eq!(renamed_book["sourceGroup"], "Drama");
+
+        service
+            .remove_sources(&[source_id.clone()])
+            .await
+            .expect("remove source");
+        service
+            .get_book(&book_id)
+            .await
+            .expect("project cached detail after source removal");
+        let detached_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(detached_book["canChangeSource"], true);
+        assert_eq!(detached_book["intro"], "A readable summary");
+        assert_eq!(detached_book["sourceId"], source_id);
+        assert_eq!(detached_book["sourceName"], "Renamed metadata source");
+        assert_eq!(detached_book["sourceGroup"], "Drama");
+
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
     async fn source_change_recovers_after_original_source_removal_and_survives_restart() {
         let (service, executor, root, original_source_id) = controlled_service(2).await;
         let imported = service
@@ -6862,6 +7056,9 @@ mod tests {
         let switched = service.store.read_json_ref(&book_ref).await.unwrap();
         assert_eq!(switched["id"], book_id);
         assert_eq!(switched["canChangeSource"], true);
+        assert_eq!(switched["sourceId"], replacement_source_id);
+        assert_eq!(switched["sourceName"], "Replacement fixture");
+        assert!(switched.get("sourceGroup").is_none());
 
         drop(service);
         let reopened = ApplicationService::open_with_executor(&root, executor)
