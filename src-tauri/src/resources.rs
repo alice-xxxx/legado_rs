@@ -26,7 +26,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, OwnedMutexGuard};
 use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -136,7 +136,7 @@ impl From<std::io::Error> for ResourceError {
 
 struct StoreInner {
     root: PathBuf,
-    update_lock: Mutex<()>,
+    update_lock: Arc<Mutex<()>>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -173,10 +173,11 @@ impl ResourceStore {
         let root = std::fs::canonicalize(root.as_ref()).map_err(|error| {
             ResourceError::new(format!("Cannot resolve resource root: {error}"))
         })?;
+        ensure_resource_writes_recovered(&root)?;
         let store = Self {
             inner: Arc::new(StoreInner {
                 root,
-                update_lock: Mutex::new(()),
+                update_lock: Arc::new(Mutex::new(())),
             }),
         };
 
@@ -205,6 +206,20 @@ impl ResourceStore {
 
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    /// Acquire the same store-wide mutex used by all public resource writers.
+    /// The owned guard can move into a blocking transaction worker without
+    /// releasing the mutex between the caller's reads and the commit.
+    pub(crate) async fn transaction_writer_guard(
+        &self,
+    ) -> Result<ResourceStoreWriterGuard, ResourceError> {
+        let guard = Arc::clone(&self.inner.update_lock).lock_owned().await;
+        ensure_resource_writes_recovered(&self.inner.root)?;
+        Ok(ResourceStoreWriterGuard {
+            store: self.clone(),
+            _guard: guard,
+        })
     }
 
     pub fn shelf_ref(&self) -> ResourceRef {
@@ -275,6 +290,7 @@ impl ResourceStore {
         let bytes = bytes.to_vec();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &write_path, true)?;
             atomic_replace(&write_path, &bytes).map_err(|error| {
                 ResourceError::new(format!("Cannot atomically write resource asset: {error}"))
@@ -314,6 +330,7 @@ impl ResourceStore {
         let root = self.inner.root.clone();
         let write_path = path.clone();
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &write_path, true)?;
             atomic_replace(&write_path, &bytes).map_err(|error| {
                 ResourceError::new(format!("Cannot atomically update JSON resource: {error}"))
@@ -341,6 +358,7 @@ impl ResourceStore {
             ));
         }
         let _guard = self.inner.update_lock.lock().await;
+        ensure_resource_writes_recovered(&self.inner.root)?;
         check_path_no_symlink(&self.inner.root, &path, true)?;
         let current = match tokio::fs::read(&path).await {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|error| {
@@ -361,6 +379,7 @@ impl ResourceStore {
         let root = self.inner.root.clone();
         let write_path = path;
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &write_path, true)?;
             atomic_replace(&write_path, &bytes).map_err(|error| {
                 ResourceError::new(format!("Cannot atomically update JSON resource: {error}"))
@@ -500,6 +519,7 @@ impl ResourceStore {
         let _guard = self.inner.update_lock.lock().await;
         let root = self.inner.root.clone();
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &path, true)?;
             atomic_replace(&path, &bytes).map_err(|error| {
                 ResourceError::new(format!("Cannot atomically cache chapter HTML: {error}"))
@@ -523,6 +543,7 @@ impl ResourceStore {
         let root = self.inner.root.clone();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &book_dir, true)?;
             match std::fs::remove_dir_all(&book_dir) {
                 Ok(()) => {}
@@ -559,6 +580,7 @@ impl ResourceStore {
         let root = self.inner.root.clone();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
+            ensure_resource_writes_recovered(&root)?;
             for directory in directories {
                 check_path_no_symlink(&root, &directory, true)?;
                 match std::fs::remove_dir_all(&directory) {
@@ -696,6 +718,70 @@ impl ResourceStore {
         validate_public_path(reference.path())?;
         Ok(self.inner.root.join(reference.path()))
     }
+}
+
+/// An owned permit for the store-wide writer mutex used by ordinary resource
+/// writes. This is the adapter held for the full file-transaction lifetime.
+pub(crate) struct ResourceStoreWriterGuard {
+    store: ResourceStore,
+    _guard: OwnedMutexGuard<()>,
+}
+
+impl crate::resource_transactions::ResourceWriterGuard for ResourceStoreWriterGuard {
+    fn data_root(&self) -> &Path {
+        self.store.root()
+    }
+}
+
+impl ResourceStoreWriterGuard {
+    pub(crate) fn data_root(&self) -> &Path {
+        self.store.root()
+    }
+
+    /// Read a persisted public document while the caller holds the shared
+    /// writer mutex, without trying to acquire it recursively.
+    pub(crate) fn read_json_ref(&self, reference: &ResourceRef) -> Result<Value, ResourceError> {
+        if !reference.is_local() || !reference.path().ends_with(".json") {
+            return Err(ResourceError::new(
+                "Transaction reads require a local .json resource",
+            ));
+        }
+        let path = self.store.path_for(reference)?;
+        check_path_no_symlink(self.store.root(), &path, false)?;
+        let bytes = std::fs::read(&path).map_err(|error| {
+            ResourceError::new(format!("Cannot read {}: {error}", reference.path()))
+        })?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            ResourceError::new(format!("Cannot decode {}: {error}", reference.path()))
+        })
+    }
+
+    /// Construct a public transaction replacement using the same JSON
+    /// serialization and resource-reference validation as ordinary writes.
+    pub(crate) fn public_json_replacement(
+        &self,
+        reference: &ResourceRef,
+        value: &Value,
+    ) -> Result<crate::resource_transactions::Replacement, ResourceError> {
+        if !reference.is_local() || !reference.path().ends_with(".json") {
+            return Err(ResourceError::new(
+                "Transaction replacements require a local .json resource",
+            ));
+        }
+        self.store.path_for(reference)?;
+        let bytes = serde_json::to_vec_pretty(value)
+            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
+        crate::resource_transactions::Replacement::public_json(reference.clone(), bytes)
+            .map_err(|error| ResourceError::new(error.to_string()))
+    }
+}
+
+fn ensure_resource_writes_recovered(root: &Path) -> Result<(), ResourceError> {
+    crate::resource_transactions::ensure_no_unrecovered_transaction(root).map_err(|error| {
+        ResourceError::new(format!(
+            "Resource writes are blocked until transaction recovery succeeds: {error}"
+        ))
+    })
 }
 
 impl ResourceRef {
@@ -1185,6 +1271,15 @@ fn materialize_json_at(
 
 fn is_resource_url_property(property: &str) -> bool {
     property == "src" || property.ends_with("Src")
+}
+
+/// Validate an encoded public document with the same persistent-reference
+/// rules used by `write_json_ref` and `update_json_ref`.
+pub(crate) fn validate_persistable_json_bytes(bytes: &[u8]) -> Result<(), ResourceError> {
+    let value: Value = serde_json::from_slice(bytes).map_err(|error| {
+        ResourceError::new(format!("Transaction target is not valid JSON: {error}"))
+    })?;
+    validate_embedded_refs(&value)
 }
 
 fn validate_embedded_refs(value: &Value) -> Result<(), ResourceError> {
@@ -1715,10 +1810,11 @@ fn hex_digit(value: u8) -> u8 {
 mod tests {
     use super::{ResourceRef, ResourceStore};
     use crate::models::ReaderDefaults;
+    use crate::resource_transactions::{self, FileTransaction, Replacement};
     use axum::http::header::{CONTENT_RANGE, CONTENT_SECURITY_POLICY, CONTENT_TYPE, RANGE};
     use serde_json::json;
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     fn temp_dir(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -2172,6 +2268,155 @@ mod tests {
             task.await.unwrap();
         }
         assert_eq!(store.read_json_ref(&counter).await.unwrap()["count"], 12);
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn store_transaction_guard_serializes_two_file_commit_with_ordinary_update() {
+        let root = temp_dir("transaction-writer-guard");
+        let store = ResourceStore::open(&root).expect("open store");
+        let counter = store.reading_ref("transaction-counter").unwrap();
+        let companion = store.reading_ref("transaction-companion").unwrap();
+        store
+            .write_json_ref(&counter, &json!({"count": 0}))
+            .await
+            .unwrap();
+        store
+            .write_json_ref(&companion, &json!({"generation": "old"}))
+            .await
+            .unwrap();
+
+        let writer_guard = store.transaction_writer_guard().await.unwrap();
+        let old_counter = writer_guard.read_json_ref(&counter).unwrap();
+        let tx_replacements = vec![
+            writer_guard
+                .public_json_replacement(
+                    &counter,
+                    &json!({"count": old_counter["count"].as_u64().unwrap() + 1}),
+                )
+                .unwrap(),
+            writer_guard
+                .public_json_replacement(&companion, &json!({"generation": "new"}))
+                .unwrap(),
+        ];
+
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let ordinary_store = store.clone();
+        let ordinary_counter = counter.clone();
+        let mut ordinary_update = tokio::spawn(async move {
+            let _ = started_tx.send(());
+            ordinary_store
+                .update_json_ref(&ordinary_counter, |mut value| {
+                    let count = value["count"].as_u64().unwrap_or_default();
+                    value["count"] = json!(count + 1);
+                    Ok(value)
+                })
+                .await
+        });
+        started_rx.await.unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_millis(30), &mut ordinary_update)
+                .await
+                .is_err()
+        );
+
+        let tx_root = writer_guard.data_root().to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let tx = FileTransaction::prepare(
+                &tx_root,
+                "store-two-file-commit",
+                tx_replacements,
+                vec![],
+                &writer_guard,
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        ordinary_update.await.unwrap().unwrap();
+        assert_eq!(store.read_json_ref(&counter).await.unwrap()["count"], 2);
+        assert_eq!(
+            store.read_json_ref(&companion).await.unwrap()["generation"],
+            "new"
+        );
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn pending_transaction_blocks_store_open_and_ordinary_writes_until_recovery() {
+        let root = temp_dir("transaction-write-block");
+        let store = ResourceStore::open(&root).expect("open store");
+        let settings = store.settings_ref();
+        let writer_guard = store.transaction_writer_guard().await.unwrap();
+        let replacement = writer_guard
+            .public_json_replacement(&settings, &json!({"generation": "pending"}))
+            .unwrap();
+        let tx = FileTransaction::prepare(
+            writer_guard.data_root(),
+            "leave-prepared-journal",
+            vec![replacement],
+            vec![],
+            &writer_guard,
+        )
+        .unwrap();
+        drop(tx);
+        drop(writer_guard);
+
+        let json_error = store
+            .write_json_ref(&settings, &json!({"generation": "unsafe"}))
+            .await
+            .unwrap_err();
+        assert!(json_error.to_string().contains("recovery succeeds"));
+        let asset_error = store
+            .write_asset("book-a", "cover.png", b"unsafe")
+            .await
+            .unwrap_err();
+        assert!(asset_error.to_string().contains("recovery succeeds"));
+        let Err(open_error) = ResourceStore::open(&root) else {
+            panic!("opening a store with a pending transaction must fail closed");
+        };
+        assert!(open_error.to_string().contains("recovery succeeds"));
+
+        resource_transactions::recover_all(&root).unwrap();
+        let reopened = ResourceStore::open(&root).expect("open after explicit recovery");
+        reopened
+            .write_json_ref(&settings, &json!({"generation": "safe"}))
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened.read_json_ref(&settings).await.unwrap()["generation"],
+            "safe"
+        );
+        let _ = tokio::fs::remove_dir_all(root).await;
+    }
+
+    #[tokio::test]
+    async fn transaction_replacements_use_public_reference_validation_only_for_public_json() {
+        let root = temp_dir("transaction-json-validation");
+        let store = ResourceStore::open(&root).expect("open store");
+        let writer_guard = store.transaction_writer_guard().await.unwrap();
+        let reference = store.reading_ref("runtime-url").unwrap();
+        let runtime_url = format!(
+            "http://127.0.0.1:41821/r/{}/books/book-1/cover.png",
+            "b".repeat(32)
+        );
+        let error = writer_guard
+            .public_json_replacement(&reference, &json!({"coverSrc": runtime_url}))
+            .unwrap_err();
+        assert!(error.to_string().contains("cannot be persisted"));
+        assert!(writer_guard
+            .public_json_replacement(&reference, &json!({"coverSrc": "javascript:alert(1)"}),)
+            .is_err());
+
+        assert!(Replacement::private_book_json(
+            "book-a",
+            br#"{"src":"engine-rule://source/internal"}"#.to_vec(),
+        )
+        .is_ok());
+        drop(writer_guard);
         let _ = tokio::fs::remove_dir_all(root).await;
     }
 

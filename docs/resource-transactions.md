@@ -5,13 +5,15 @@
 The resource model stores each public document as JSON, while raw engine-owned
 book/catalog data lives under `private-data`. A source replacement or catalog
 refresh changes several files that must describe the same generation after a
-process crash. The `resource_transactions` helper now implements a private JSON
-journal and staged snapshots for those commits. It does not use SQLite,
-involve the WebView, or claim that multiple file renames are one
-filesystem-atomic operation. The helper is not yet wired into
-`ApplicationService` startup or `ResourceStore` writes; current source/catalog
-operations retain their existing runtime rollback behavior until that
-integration is completed.
+process crash. The `resource_transactions` helper implements a private JSON
+journal and staged snapshots for those commits. `ResourceStore` now exposes an
+owned writer guard backed by the same mutex as ordinary JSON, asset, chapter,
+and resource-removal writes; ordinary writes and `ResourceStore::open` fail
+closed when a transaction journal needs recovery. The helper does not use
+SQLite, involve the WebView, or claim that multiple file renames are one
+filesystem-atomic operation. `ApplicationService` startup recovery and its
+source/catalog transaction calls are not wired yet, so those operations still
+use their existing runtime rollback behavior.
 
 Initial integration scope:
 
@@ -103,14 +105,18 @@ The protocol is:
 1. Keep the existing source/book locks and acquire a ResourceStore-wide
    transaction writer guard before reading or staging any public target. This
    guard must also exclude ordinary `write_json_ref` and `update_json_ref`
-   writers, especially updates to the shared `shelf.json` and
-   `bookmarks.json`. All source/book validation and snapshots must be reread
-   under their existing locks.
+   writers, `write_asset`, chapter writes, and resource removal, especially
+   updates to shared `shelf.json` and `bookmarks.json`. `ResourceStore` now
+   provides this guard and lock-held read/replacement methods. All source/book
+   validation and snapshots must be reread under their existing locks.
 2. Validate every target path with the same public allowlist or a dedicated
    private-path validator. Reject symlinks, duplicate targets, traversal,
    and unsupported file kinds before writing a journal. Cache cleanup entries
    must be typed chapter-resource references or pass a strict equivalent
-   validator; never accept arbitrary paths from JSON.
+   validator; never accept arbitrary paths from JSON. Public JSON uses the
+   `ResourceStore` persistent-reference validator both when a replacement is
+   built and when snapshots are replayed. Private book JSON is syntax-checked
+   without treating source-engine `src` fields as public resource refs.
 3. Write and `sync_all` all `before` and `after` payloads. Sync their staging
    directories. Atomically write the journal in `prepared` phase, sync the
    journal file, then sync the journal's parent directory. No target is
@@ -146,6 +152,13 @@ order first resolves any whole-root restore, then resolves file transactions
 inside whichever app-data tree became active. `ResourceStore::open` writes
 default documents when files are absent, so it must not run before either
 recovery step.
+
+Current integration state: `ResourceStore::open` detects a pending transaction
+journal and returns an error directing the caller to recovery; it does not run
+recovery itself. Ordinary write methods check for the same condition while
+holding the store writer mutex and return an error instead of writing past the
+journal. The application startup path must call `recover_all` before opening
+the store in the next integration stage.
 
 Recovery is idempotent:
 
@@ -191,11 +204,14 @@ let tx = FileTransaction::prepare(
 tx.commit()?;
 ```
 
-The caller must acquire the `ResourceStore` global JSON writer guard before
-reading any target snapshot and retain it through `commit`. The helper has no
-private per-file mutex. Its guard trait checks that the protected canonical
-app-data root matches the transaction root; the future application adapter
-must implement the trait for the actual store-wide guard.
+The caller must acquire `ResourceStore::transaction_writer_guard` before
+reading public targets and retain it through `commit`. The owned guard uses the
+same `Arc<tokio::sync::Mutex<()>>` as ordinary ResourceStore writers and can be
+moved with the transaction into `spawn_blocking`. Its synchronous
+`read_json_ref` and `public_json_replacement` methods avoid reacquiring the
+mutex. The helper has no private per-file mutex. The guard's trait
+implementation checks that its canonical app-data root matches the transaction
+root.
 
 `AppDataProcessLock` uses stable `File::try_lock` advisory locking on a sibling
 lock file. Acquire it before backup restore recovery and hold it through the
@@ -211,6 +227,8 @@ Integration must preserve these constraints:
 
 - `ResourceStore` owns one writer guard shared with normal public JSON writes,
   so a transaction cannot commit a stale shelf/bookmarks snapshot.
+- Ordinary writes and `ResourceStore::open` fail closed when a journal exists;
+  callers must invoke `recover_all` before opening or writing.
 - Public targets use validated `ResourceRef`s. Private targets use a
   dedicated validated relative-path type rooted under `private-data`; do not
   pass absolute `PathBuf`s or raw source-controlled paths.

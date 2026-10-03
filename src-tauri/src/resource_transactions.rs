@@ -51,7 +51,7 @@ impl Replacement {
         bytes: Vec<u8>,
     ) -> Result<Self, TransactionError> {
         let target = TransactionTarget::public_json(reference)?;
-        validate_json_bytes(&bytes)?;
+        validate_public_json_bytes(&bytes)?;
         Ok(Self { target, bytes })
     }
 
@@ -60,6 +60,8 @@ impl Replacement {
         bytes: Vec<u8>,
     ) -> Result<Self, TransactionError> {
         let target = TransactionTarget::private_book_json(book_id)?;
+        // Private book data may contain source-engine fields named `src` or
+        // `*Src`; only require valid JSON here, not public resource semantics.
         validate_json_bytes(&bytes)?;
         Ok(Self { target, bytes })
     }
@@ -161,7 +163,7 @@ pub(crate) struct FileTransaction<'guard> {
     root: PathBuf,
     stage_dir: PathBuf,
     journal: Journal,
-    _writer_guard: PhantomData<&'guard dyn ResourceWriterGuard>,
+    _writer_guard: PhantomData<&'guard ()>,
 }
 
 impl<'guard> FileTransaction<'guard> {
@@ -212,6 +214,7 @@ impl<'guard> FileTransaction<'guard> {
                 let before = read_snapshot_bytes(&root, &absolute_path)?;
                 let before_snapshot = match before {
                     Some(bytes) => {
+                        validate_target_json(&target, &bytes)?;
                         add_snapshot_size(&mut total_bytes, bytes.len() as u64)?;
                         write_payload(&stage_dir, "before", index, &bytes)?
                     }
@@ -268,7 +271,8 @@ impl<'guard> FileTransaction<'guard> {
         // prepared journal remains recoverable by restoring its before-images.
         for entry in &self.journal.targets {
             if !entry.after.missing {
-                if let Err(error) = read_payload(&self.stage_dir, &entry.after) {
+                let target = TransactionTarget::from_journal(entry.domain, &entry.path)?;
+                if let Err(error) = read_validated_payload(&self.stage_dir, &target, &entry.after) {
                     return self.abort_prepared(error);
                 }
             }
@@ -421,7 +425,8 @@ pub(crate) fn recover_all(root: &Path) -> Result<(), TransactionError> {
                 // Validate all after-images before replacing its first target.
                 for entry in &journal.targets {
                     if !entry.after.missing {
-                        read_payload(&stage_dir, &entry.after)?;
+                        let target = TransactionTarget::from_journal(entry.domain, &entry.path)?;
+                        read_validated_payload(&stage_dir, &target, &entry.after)?;
                     }
                 }
                 for entry in &journal.targets {
@@ -652,7 +657,8 @@ fn rollback_prepared(
     // leave the journal intact for explicit recovery handling.
     for entry in &journal.targets {
         if !entry.before.missing {
-            read_payload(stage_dir, &entry.before)?;
+            let target = TransactionTarget::from_journal(entry.domain, &entry.path)?;
+            read_validated_payload(stage_dir, &target, &entry.before)?;
         }
     }
     // Attempt every target even after one error. The journal remains intact if
@@ -692,7 +698,7 @@ fn restore_snapshot(
             ))),
         }
     } else {
-        let bytes = read_payload(stage_dir, snapshot)?;
+        let bytes = read_validated_payload(stage_dir, target, snapshot)?;
         atomic_replace(&root, &absolute_path, &bytes)
     }
 }
@@ -749,6 +755,58 @@ fn finish_transaction_directory(root: &Path, stage_dir: &Path) -> Result<(), Tra
         ))
     })?;
     sync_directory(&transactions_dir)
+}
+
+/// Fail closed when ordinary ResourceStore writes encounter an unrecovered
+/// transaction. Orphan staging directories without journals are harmless: no
+/// target may be changed before the prepared journal is durable.
+pub(crate) fn ensure_no_unrecovered_transaction(root: &Path) -> Result<(), TransactionError> {
+    let transactions_dir = root.join(TRANSACTIONS_RELATIVE_DIR);
+    match fs::symlink_metadata(&transactions_dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(TransactionError::new(format!(
+                "Cannot inspect transaction staging directory: {error}"
+            )))
+        }
+        Ok(_) => {}
+    }
+    validate_existing_path_no_symlinks(root, &transactions_dir)?;
+    for entry in fs::read_dir(&transactions_dir).map_err(|error| {
+        TransactionError::new(format!("Cannot inspect existing transactions: {error}"))
+    })? {
+        let entry = entry.map_err(|error| {
+            TransactionError::new(format!("Cannot inspect existing transaction: {error}"))
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            TransactionError::new(format!("Cannot inspect existing transaction: {error}"))
+        })?;
+        if file_type.is_symlink() || !file_type.is_dir() {
+            return Err(TransactionError::new(
+                "Unexpected file type in transaction staging directory",
+            ));
+        }
+        validate_transaction_id(&entry.file_name().to_string_lossy())?;
+        match fs::symlink_metadata(entry.path().join("journal.json")) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err(TransactionError::new(
+                    "Transaction journal is not a regular file",
+                ));
+            }
+            Ok(_) => {
+                return Err(TransactionError::new(
+                    "A previous file transaction needs recovery before resource writes",
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(TransactionError::new(format!(
+                    "Cannot inspect previous transaction journal: {error}"
+                )))
+            }
+        }
+    }
+    Ok(())
 }
 
 fn ensure_no_pending_transaction(root: &Path) -> Result<(), TransactionError> {
@@ -1046,87 +1104,44 @@ fn validate_unique_entries(
 }
 
 fn validate_json_bytes(bytes: &[u8]) -> Result<(), TransactionError> {
+    validate_json_size(bytes)?;
+    serde_json::from_slice::<serde_json::Value>(bytes)
+        .map(|_| ())
+        .map_err(|error| {
+            TransactionError::new(format!("Transaction target is not valid JSON: {error}"))
+        })
+}
+
+fn validate_public_json_bytes(bytes: &[u8]) -> Result<(), TransactionError> {
+    validate_json_size(bytes)?;
+    crate::resources::validate_persistable_json_bytes(bytes)
+        .map_err(|error| TransactionError::new(format!("Invalid public transaction JSON: {error}")))
+}
+
+fn validate_json_size(bytes: &[u8]) -> Result<(), TransactionError> {
     if bytes.len() as u64 > MAX_TARGET_BYTES {
         return Err(TransactionError::new(
             "A transaction JSON document exceeds the 64 MiB safety limit",
         ));
     }
-    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|error| {
-        TransactionError::new(format!("Transaction target is not valid JSON: {error}"))
-    })?;
-    validate_embedded_refs(&value, None)
+    Ok(())
 }
 
-fn validate_embedded_refs(
-    value: &serde_json::Value,
-    property: Option<&str>,
-) -> Result<(), TransactionError> {
-    use serde_json::Value;
-    match value {
-        Value::String(string) if property.is_some_and(is_resource_url_property) => {
-            if is_runtime_capability_url(string) {
-                return Err(TransactionError::new(
-                    "A per-run resource-server URL cannot be persisted; save its stable resource:// reference",
-                ));
-            }
-            if !string.is_empty() {
-                ResourceRef::new(string).map_err(|_| {
-                    TransactionError::new("Invalid URL or resource reference in JSON document")
-                })?;
-            }
-            Ok(())
-        }
-        Value::String(string) if string.starts_with("resource://") => {
-            ResourceRef::new(string).map(|_| ()).map_err(|_| {
-                TransactionError::new("Invalid stable resource reference in JSON document")
-            })
-        }
-        Value::Array(values) => {
-            for child in values {
-                validate_embedded_refs(child, property)?;
-            }
-            Ok(())
-        }
-        Value::Object(values) => {
-            for (key, child) in values {
-                validate_embedded_refs(child, Some(key))?;
-            }
-            Ok(())
-        }
-        _ => Ok(()),
+fn validate_target_json(target: &TransactionTarget, bytes: &[u8]) -> Result<(), TransactionError> {
+    match target {
+        TransactionTarget::PublicJson(_) => validate_public_json_bytes(bytes),
+        TransactionTarget::PrivateBookJson(_) => validate_json_bytes(bytes),
     }
 }
 
-fn is_resource_url_property(property: &str) -> bool {
-    property == "src" || property.ends_with("Src")
-}
-
-fn is_runtime_capability_url(value: &str) -> bool {
-    let Ok(url) = reqwest::Url::parse(value) else {
-        return false;
-    };
-    if !matches!(url.scheme(), "http" | "https") {
-        return false;
-    }
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let host = host.trim_start_matches('[').trim_end_matches(']');
-    let loopback = host
-        .parse::<std::net::IpAddr>()
-        .map(|address| address.is_loopback())
-        .unwrap_or_else(|_| host.eq_ignore_ascii_case("localhost"));
-    if !loopback {
-        return false;
-    }
-    let Some(mut segments) = url.path_segments() else {
-        return false;
-    };
-    segments.next() == Some("r")
-        && segments.next().is_some_and(|token| {
-            token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())
-        })
-        && segments.next().is_some_and(|resource| !resource.is_empty())
+fn read_validated_payload(
+    stage_dir: &Path,
+    target: &TransactionTarget,
+    snapshot: &Snapshot,
+) -> Result<Vec<u8>, TransactionError> {
+    let bytes = read_payload(stage_dir, snapshot)?;
+    validate_target_json(target, &bytes)?;
+    Ok(bytes)
 }
 
 fn validate_operation(operation: &str) -> Result<(), TransactionError> {
@@ -1763,6 +1778,41 @@ mod tests {
     }
 
     #[test]
+    fn recovery_rejects_rechecksummed_runtime_urls_in_public_snapshots() {
+        let (_dir, root, guard) = setup();
+        write_old_state(&root);
+        let transaction = transaction(
+            &root,
+            &guard,
+            vec![public_json(
+                "books/fixture-book/book.json",
+                json!({"generation":"new"}),
+            )],
+            vec![],
+        );
+        let runtime_url =
+            "http://127.0.0.1:34123/r/0123456789abcdef0123456789abcdef/books/a/cover.png";
+        let bytes = format!(r#"{{"coverSrc":"{runtime_url}"}}"#).into_bytes();
+        fs::write(transaction.stage_dir.join("after/000000.bin"), &bytes).unwrap();
+        let mut committed = transaction.journal.clone();
+        committed.phase = TransactionPhase::Committed;
+        committed.targets[0].after = Snapshot {
+            missing: false,
+            blob: Some("after/000000.bin".to_owned()),
+            bytes: bytes.len() as u64,
+            sha256: Some(hex_digest(&bytes)),
+        };
+        write_journal(&transaction.stage_dir, &committed).unwrap();
+        let stage = transaction.stage_dir.clone();
+        drop(transaction);
+
+        let error = recover_all(&root).unwrap_err();
+        assert!(error.to_string().contains("cannot be persisted"));
+        assert!(stage.join("journal.json").is_file());
+        assert_eq!(read_generation(&book_path(&root, "fixture-book")), "old");
+    }
+
+    #[test]
     fn commit_write_failure_rolls_back_and_startup_finishes_recovery() {
         let (_dir, root, guard) = setup();
         write_old_state(&root);
@@ -1897,6 +1947,13 @@ mod tests {
             br#"{"coverSrc":"https://cdn.example/cover.png"}"#.to_vec(),
         )
         .is_ok());
+        let source_private_json = br#"{"src":"engine-rule://source/internal"}"#;
+        assert!(Replacement::private_book_json("book-a", source_private_json.to_vec()).is_ok());
+        assert!(Replacement::public_json(
+            ResourceRef::new("resource://books/book-a/book.json").unwrap(),
+            source_private_json.to_vec(),
+        )
+        .is_err());
     }
 
     #[test]
