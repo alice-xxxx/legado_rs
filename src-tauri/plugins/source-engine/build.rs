@@ -33,9 +33,9 @@ fn link_ios_engine_framework() {
     let Ok(target) = env::var("TARGET") else {
         return;
     };
-    let slice = match target.as_str() {
-        "aarch64-apple-ios" => "ios-arm64",
-        "aarch64-apple-ios-sim" => "ios-arm64-simulator",
+    let (slice, native_lib_target) = match target.as_str() {
+        "aarch64-apple-ios" => ("ios-arm64", "ios_arm64"),
+        "aarch64-apple-ios-sim" => ("ios-arm64-simulator", "ios_simulator_arm64"),
         // The CI package currently contains the Apple Silicon simulator slice only.
         // Fail clearly for unsupported simulator architectures instead of silently
         // producing an app with an unresolved Kotlin/Native framework symbol.
@@ -64,4 +64,26 @@ fn link_ios_engine_framework() {
     println!("cargo:rerun-if-changed={}", framework_dir.display());
     println!("cargo:rustc-link-search=framework={}", slice_dir.display());
     println!("cargo:rustc-link-lib=framework=LegadoSourceEngine");
+
+    // Kotlin/Native packages its static framework separately from its C archives. The
+    // framework's Gradle linker options are not forwarded into Tauri's final Rust link, so
+    // link the generated mbedTLS archive and Apple's system sqlite3 library at the app link.
+    let ios_native_libs = manifest_dir
+        .join("../../../kotlin/kmp-engine/build/iosNativeLibs")
+        .join(native_lib_target);
+    let mbedtls_archive = ios_native_libs.join("libmbedtls.a");
+    if !mbedtls_archive.is_file() {
+        panic!(
+            "Missing Kotlin/Native mbedTLS archive for {target} at {}; build the iOS KMP framework before linking the Tauri app",
+            mbedtls_archive.display()
+        );
+    }
+
+    println!("cargo:rerun-if-changed={}", mbedtls_archive.display());
+    println!(
+        "cargo:rustc-link-search=native={}",
+        ios_native_libs.display()
+    );
+    println!("cargo:rustc-link-lib=static=mbedtls");
+    println!("cargo:rustc-link-lib=sqlite3");
 }

@@ -29,6 +29,36 @@ At 360px, measured layout was: catalog heading 15px, chapter title 14px, row hei
 
 The cloud Gradle init script redirects Maven Central to a mirror that lacks the Kotlin DSL plugin marker (`org.gradle.kotlin.kotlin-dsl:6.6.4`). The workspace Gradle mirror config was adjusted to retain Gradle Plugin Portal for plugin resolution; Android `gradlew help` then passed. This change is cloud environment setup, not a repository Gradle-file change.
 
+### Current-source chapter cache browser check
+
+At `2026-10-03T06:37:11Z`, the current Vite source completed the real Rust/KMP search-to-reader flow in Chromium (`PASS`, 29 Rust IPC calls), including the new one-chapter prepare policy. To avoid competing with concurrent Rust work, it reused the available no-default-features `browser_harness` binary, which predates the latest Rust API edits. The UI, Rust service, JNI/KMP source engine, JSON/HTML resource fetches, and cache/progress assertions were real; only test IPC/events used the same-origin Node route. Browser resource URLs stayed direct. Chromium used `--disable-features=LocalNetworkAccessChecks` for this isolated test context; the app's CORS, CSP, iframe sandboxing, and resource URL path remained active.
+
+The evidence in `/tmp/legado-browser-e2e-results/2026-10-03-count1-source-flow-final/result.json` records three separate prepares: first chapter `(fromIndex=0,count=1,prepared=1)`, normal next-chapter prefetch `(fromIndex=1,count=1,prepared=1)`, and recovery after deleting the cached next chapter and receiving the exact URL's 404 `(fromIndex=1,count=1,prepared=1)`. The flow searched through the real KMP engine, added the result, verified all 36 fixture paragraphs, changed font without rewriting cached HTML, turned to the already-cached second chapter without a Rust retrieval call, saved/restored its position, and verified the missing chapter URL returned 404 then 200. Screenshots and `run.log` are beside `result.json`; the measured 360px headings, rows, action buttons, and reader controls met the UI thresholds.
+
+At `2026-10-03T06:45:51Z`, the same flow passed against the fixed production frontend snapshot `/tmp/legado-reader-safari15-count1-dist-2026-10-03`, served with Vite preview (`PASS`, 29 Rust IPC calls). Evidence is in `/tmp/legado-browser-e2e-results/2026-10-03-count1-dist-source-flow/result.json`. This verifies the built UI against the same real Rust service/JVM source-engine path; it is still a Chromium test and does not prove WebKit/iOS runtime compatibility.
+
+```sh
+source /workspace/.setup/activate.sh
+BROWSER_E2E_DIST=/tmp/legado-reader-safari15-count1-dist-2026-10-03 \
+BROWSER_HARNESS_BINARY=/workspace/legado_rs/src-tauri/target/debug/examples/browser_harness \
+PLAYWRIGHT_OUTPUT_DIR=/tmp/legado-browser-e2e-results/2026-10-03-count1-dist-source-flow \
+node scripts/e2e-browser.mjs
+```
+
+### PDF and CBZ reader browser checks
+
+The later media run used the fixed Safari 15-targeted frontend snapshot `/tmp/legado-reader-safari15-polyfill-dist-2026-10-03`, the real Rust `browser_harness` binary at `src-tauri/target/debug/examples/browser_harness` (built before the latest Rust API edits), and the checked-in local-book fixtures. Chapter, PDF, and image assets were fetched directly from the Rust loopback resource server. Only harness IPC/events were bridged in Playwright. The isolated Chromium process used `--disable-features=LocalNetworkAccessChecks` because its preview-origin Local Network Access policy otherwise blocked the private loopback resource host; Web security, CORS, CSP, and iframe sandboxing remained enabled. This does not validate WebKit or an iOS WebView.
+
+Before loading the app and worker, the harness removed `Promise.withResolvers`, `Promise.try`, `Map.prototype.getOrInsertComputed`, `WeakMap.prototype.getOrInsertComputed`, and `Set.prototype.intersection`. The production PDF main chunk and worker wrapper both restored these APIs through the bundled `core-js` polyfill. The PDF views rendered both pages and restored the saved page; encrypted-PDF challenge, correct-password retry, wrong-password rejection, and non-persistence of the password also completed. This is Chromium evidence for the configured build and polyfills, not Safari/iOS runtime evidence.
+
+| Fixture | Status | Evidence |
+| --- | --- | --- |
+| `three-page-comic.cbz` | **PASS** | `/tmp/legado-media-e2e-results/2026-10-03-safari15-polyfill-comic/comic.json`; natural order `page1`, `page2`, `page10`, all three actual images loaded with expected marker colors, fit/actual-size and horizontal pan checked, saved page/offset restored. |
+| `two-page-text.pdf` | **FAIL — unexplained browser cancellation** | `/tmp/legado-media-e2e-results/2026-10-03-safari15-polyfill-plain-read-trace/plain-pdf/failure-diagnostics.json`; both canvases rendered and the complete 2,087-byte body was read, but Chromium reports `net::ERR_ABORTED` immediately after the 200 response. |
+| `two-page-encrypted.pdf` | **FAIL — unexplained browser cancellation** | `/tmp/legado-media-e2e-results/2026-10-03-safari15-polyfill-encrypted-read-trace/encrypted-pdf/failure-diagnostics.json`; wrong and correct password paths, page rendering, and restore complete; the complete 2,147-byte body was read, but Chromium reports `net::ERR_ABORTED` immediately after the 200 response. |
+
+The PDF failure is not classified as expected cleanup. CDP identifies a main-thread PDF.js `fetch`; stream instrumentation confirms the declared full body length was read and the PDF canvas rendered. An independent direct browser `fetch` of the same resource URL completed with CDP `Network.loadingFinished`, so this trace does not point to a general Rust resource-server or CORS failure. On reader exit, the compiled `PdfReaderPage` unmount then invokes PDF.js `cancelAllRequests` with `AbortException: Worker was terminated`, as designed. That verified teardown occurs after the initial `ERR_ABORTED` (about 0.6 seconds later for plain and encrypted PDFs), so it does not explain the initial request failure. Each flow also starts a new request while reopening the restored reader, and Chromium reports that request canceled without an intervening component unmount or stream/abort call. Keep both PDF browser cases failed until these request failures have a confirmed cause. These media runs are against a fixed frontend snapshot and an older harness binary, not a current full-source build.
+
 ## GitHub Actions matrix evidence
 
 Run [37095535654](https://github.com/alice-xxxx/legado_rs/actions/runs/37095535654) built commit `2f57b3331c8f00b15742c703f8c3c1416f56786a`:
@@ -53,7 +83,11 @@ The Linux cloud host still cannot build or run iOS because it has no Xcode or Ap
 
 Run [37097426245](https://github.com/alice-xxxx/legado_rs/actions/runs/37097426245) built commit `fe654d6`. Android, Linux, macOS, and Windows build jobs passed. On iOS, the SwiftPM target-selection fix was consumed: both KMP device/simulator frameworks were built and packaged, and `SourceEnginePlugin.swift` no longer failed to import `LegadoSourceEngine`. The unsigned IPA then failed at the final Rust link with `Could not find or use auto-linked framework 'LegadoSourceEngine'` and an undefined `_OBJC_CLASS_$_LSEIosSourceEngine` symbol. The Rust link command had the Swift plugin archive search directory but no framework search directory for the XCFramework slice.
 
-Commit `d753fad631aede58ca92046133f3cec58836bbbc` updates `src-tauri/plugins/source-engine/build.rs` to select the packaged XCFramework slice for the active Apple Rust target and emit the framework search/link directives. macOS CI run [37099973156](https://github.com/alice-xxxx/legado_rs/actions/runs/37099973156) is the validation for this change; its result is pending. This is a build fix under test, not iOS runtime evidence.
+Commit `d753fad631aede58ca92046133f3cec58836bbbc` updates `src-tauri/plugins/source-engine/build.rs` to select the packaged XCFramework slice for the active Apple Rust target and emit the framework search/link directives. Run [37099973156](https://github.com/alice-xxxx/legado_rs/actions/runs/37099973156) completed: Android APK/AAR and Linux, macOS, and Windows desktop build jobs passed. The iOS job built and packaged both Kotlin/Native framework slices, then the Tauri plugin compiled with the `LegadoSourceEngine` module available. The earlier `_OBJC_CLASS_$_LSEIosSourceEngine`/missing-framework failure is gone. The final Rust link now fails on unresolved `_mbedtls_*` and `_sqlite3_*` symbols referenced by `LegadoSourceEngine.framework.o`.
+
+The CI build had already produced `libmbedtls.a` at `kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a` (and the simulator equivalent), but the final Rust link command included only the XCFramework search path. Kotlin/Native's static framework does not carry its dependent C archive or Apple's system SQLite link into the later Tauri Rust link. The working-tree follow-up adds the generated mbedTLS archive search/link plus the platform `sqlite3` library in `build.rs`; that candidate still needs a macOS CI build. No iOS simulator or device flow has run.
+
+Run [37100903166](https://github.com/alice-xxxx/legado_rs/actions/runs/37100903166) built commit `34e3e9a`. Android APK/AAR and Linux, macOS, and Windows desktop build jobs passed. The iOS job stopped earlier, during `:kmp-engine:compileKotlinIosArm64`, at `KmpHttpTypes.ios.kt:704`: the new `KmpResponse` call supplied a `redirects` named argument unsupported by the available constructor. The build did not reach Kotlin/Native framework packaging or the Rust final link, so it provides no result for the working-tree mbedTLS/SQLite link candidate. The failing iOS log was saved as `/tmp/legado-ios-34e3e9a-job.zip`.
 
 ## Current bridge and build facts
 
