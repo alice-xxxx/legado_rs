@@ -230,6 +230,10 @@ pub struct BookDocument {
     pub schema_version: u32,
     pub id: String,
     pub title: String,
+    /// Rust-owned source capability projection. Local imports have no private
+    /// engine source and therefore cannot be switched to another source.
+    #[serde(default)]
+    pub can_change_source: bool,
     #[serde(default)]
     pub author: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]

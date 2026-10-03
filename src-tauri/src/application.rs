@@ -973,10 +973,15 @@ impl ApplicationService {
                 .as_str()
                 .ok_or_else(|| "Private book is missing its source ID".to_owned())?
                 .to_owned();
+            if !can_change_source_from_private(&private) {
+                return Err("This book is not linked to a replaceable online source".into());
+            }
             let original_source = records
                 .iter()
-                .find(|source| source.id == original_source_id)
-                .ok_or_else(|| "The current book source is no longer imported".to_owned())?;
+                .find(|source| source.id == original_source_id);
+            let original_source_definition = original_source
+                .map(|source| source.source.clone())
+                .unwrap_or(Value::Null);
             let effective_keyword = keyword
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
@@ -992,7 +997,7 @@ impl ApplicationService {
             }
             let fingerprint = book_source_fingerprint(
                 &original_source_id,
-                &original_source.source,
+                &original_source_definition,
                 &private,
                 &book,
             )?;
@@ -1014,7 +1019,11 @@ impl ApplicationService {
                 "schemaVersion": CURRENT_SCHEMA_VERSION,
                 "targetBookId": book_id,
                 "originalSourceId": original_source_id,
-                "originalSourceFingerprint": source_definition_fingerprint(&original_source.source)?,
+                "originalSourcePresent": original_source.is_some(),
+                "originalSourceFingerprint": original_source
+                    .map(|source| source_definition_fingerprint(&source.source))
+                    .transpose()?,
+                "originalSourceRevision": self.source_revision(&original_source_id).await?,
                 "catalogFingerprint": fingerprint,
                 "catalogGeneration": private.get("catalogGeneration").cloned().unwrap_or(Value::Null),
                 "bookInstanceId": private["bookInstanceId"],
@@ -1158,17 +1167,49 @@ impl ApplicationService {
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        let (old_source, new_source, old_book) = {
+        let (old_source_id, old_source_definition, new_source, old_book) = {
             let _sources = self.sources_lock.lock().await;
             let sources = self.read_sources().await?;
             let old_source_id = context["originalSourceId"]
                 .as_str()
                 .ok_or_else(|| "Replacement candidate has no original source binding".to_owned())?;
-            let old_source = sources
-                .iter()
-                .find(|source| source.id == old_source_id)
-                .cloned()
-                .ok_or_else(|| "The current book source is no longer imported".to_owned())?;
+            let original_source_present = context["originalSourcePresent"]
+                .as_bool()
+                .ok_or_else(|| "Replacement candidate has no source-presence binding".to_owned())?;
+            let old_source = sources.iter().find(|source| source.id == old_source_id);
+            if original_source_present != old_source.is_some() {
+                return Err(
+                    "Current book source availability changed after the search; search again"
+                        .into(),
+                );
+            }
+            let old_source_definition = old_source
+                .map(|source| source.source.clone())
+                .unwrap_or(Value::Null);
+            let original_source_fingerprint = context["originalSourceFingerprint"].as_str();
+            match (
+                original_source_present,
+                old_source,
+                original_source_fingerprint,
+            ) {
+                (true, Some(source), Some(expected))
+                    if source_definition_fingerprint(&source.source)? == expected => {}
+                (true, _, _) => {
+                    return Err("Current book source changed after the search; search again".into());
+                }
+                (false, None, None) => {}
+                (false, _, _) => {
+                    return Err(
+                        "Current book source availability changed after the search; search again"
+                            .into(),
+                    );
+                }
+            }
+            if self.source_revision(old_source_id).await?
+                != context["originalSourceRevision"].as_u64().unwrap_or(0)
+            {
+                return Err("Current book source changed after the search; search again".into());
+            }
             let new_source = sources
                 .iter()
                 .find(|source| source.id == target_source_id)
@@ -1179,7 +1220,7 @@ impl ApplicationService {
             {
                 return Err("Replacement source is disabled or is not a novel source".into());
             }
-            if old_source.id == new_source.id {
+            if old_source_id == new_source.id {
                 return Err("Choose a different source for this book".into());
             }
             if source_definition_fingerprint(&new_source.source)?
@@ -1189,14 +1230,6 @@ impl ApplicationService {
             {
                 return Err("Replacement source changed after the search; search again".into());
             }
-            if source_definition_fingerprint(&old_source.source)?
-                != context["originalSourceFingerprint"]
-                    .as_str()
-                    .unwrap_or_default()
-            {
-                return Err("Current book source changed after the search; search again".into());
-            }
-
             let _book = self.book_lock(book_id).await;
             let old_private = self
                 .read_private_json(Path::new("books").join(format!("{book_id}.json")))
@@ -1208,8 +1241,8 @@ impl ApplicationService {
                 .await
                 .map_err(|_| format!("Book '{book_id}' was removed"))?;
             let actual_fingerprint = book_source_fingerprint(
-                &old_source.id,
-                &old_source.source,
+                old_source_id,
+                &old_source_definition,
                 &old_private,
                 &old_book,
             )?;
@@ -1222,7 +1255,12 @@ impl ApplicationService {
             {
                 return Err("Book catalog changed after the search; search again".into());
             }
-            (old_source, new_source, old_book)
+            (
+                old_source_id.to_owned(),
+                old_source_definition,
+                new_source,
+                old_book,
+            )
         };
 
         let raw_new_book = if candidate_book.is_object() {
@@ -1364,13 +1402,22 @@ impl ApplicationService {
         let latest_sources = self.read_sources().await?;
         let latest_old_source = latest_sources
             .iter()
-            .find(|source| source.id == old_source.id)
-            .ok_or_else(|| "Current source was removed during replacement".to_owned())?;
+            .find(|source| source.id == old_source_id);
         let latest_new_source = latest_sources
             .iter()
             .find(|source| source.id == new_source.id)
             .ok_or_else(|| "Replacement source was removed during replacement".to_owned())?;
-        if latest_old_source.source != old_source.source
+        let original_source_present = context["originalSourcePresent"].as_bool().unwrap_or(false);
+        let source_presence_unchanged = latest_old_source.is_some() == original_source_present;
+        let source_definition_unchanged = match (original_source_present, latest_old_source) {
+            (true, Some(source)) => source.source == old_source_definition,
+            (false, None) => true,
+            _ => false,
+        };
+        if !source_presence_unchanged
+            || !source_definition_unchanged
+            || self.source_revision(&old_source_id).await?
+                != context["originalSourceRevision"].as_u64().unwrap_or(0)
             || latest_new_source.source != new_source.source
             || !latest_new_source.enabled
         {
@@ -1386,10 +1433,10 @@ impl ApplicationService {
             .read_json_ref(&book_ref)
             .await
             .map_err(|_| format!("Book '{book_id}' was removed during replacement"))?;
-        if latest_private.get("sourceId").and_then(Value::as_str) != Some(old_source.id.as_str())
+        if latest_private.get("sourceId").and_then(Value::as_str) != Some(old_source_id.as_str())
             || book_source_fingerprint(
-                &old_source.id,
-                &old_source.source,
+                &old_source_id,
+                &old_source_definition,
                 &latest_private,
                 &latest_book,
             )? != context["catalogFingerprint"].as_str().unwrap_or_default()
@@ -2261,7 +2308,9 @@ impl ApplicationService {
                             "replacementContext": {
                                 "targetBookId": context["targetBookId"],
                                 "originalSourceId": context["originalSourceId"],
+                                "originalSourcePresent": context["originalSourcePresent"],
                                 "originalSourceFingerprint": context["originalSourceFingerprint"],
+                                "originalSourceRevision": context["originalSourceRevision"],
                                 "catalogFingerprint": context["catalogFingerprint"],
                                 "catalogGeneration": context["catalogGeneration"],
                                 "createdAtMs": context["createdAtMs"],
@@ -3155,6 +3204,7 @@ impl ApplicationService {
             schema_version: CURRENT_SCHEMA_VERSION,
             id: book_id.clone(),
             title,
+            can_change_source: true,
             author,
             cover_src: cover_url.and_then(|cover| ResourceRef::new(cover).ok()),
             chapter_count: descriptors.len(),
@@ -3189,15 +3239,30 @@ impl ApplicationService {
     }
 
     pub async fn get_book(&self, book_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;
         let reference = self
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        self.store
+        let _book = self.book_lock(book_id).await;
+        let mut book = self
+            .store
             .read_json_ref(&reference)
             .await
             .map_err(|error| error.to_string())?;
+        let private = self
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .ok();
+        let can_change_source = private.as_ref().is_some_and(can_change_source_from_private);
+        if book.get("canChangeSource").and_then(Value::as_bool) != Some(can_change_source) {
+            book["canChangeSource"] = json!(can_change_source);
+            self.store
+                .write_json_ref(&reference, &book)
+                .await
+                .map_err(|error| error.to_string())?;
+        }
         Ok(self.resource_descriptor(&reference))
     }
 
@@ -3759,9 +3824,85 @@ impl ApplicationService {
         }
     }
 
+    async fn source_revision(&self, source_id: &str) -> Result<u64, String> {
+        let path = self.private_root.join("source-revisions.json");
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(format!("Cannot read source revisions: {error}")),
+        };
+        let document: Value = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Cannot parse source revisions: {error}"))?;
+        let revisions = document
+            .get("revisions")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "Source revision document is invalid".to_owned())?;
+        match revisions.get(source_id) {
+            None => Ok(0),
+            Some(value) => value
+                .as_u64()
+                .ok_or_else(|| "Source revision value is invalid".to_owned()),
+        }
+    }
+
     async fn write_sources(&self, sources: &[SourceRecord]) -> Result<(), String> {
+        let previous = self.read_sources().await?;
+        let previous_by_id = previous
+            .iter()
+            .map(|record| {
+                serde_json::to_value(record)
+                    .map(|value| (record.id.as_str(), value))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let next_by_id = sources
+            .iter()
+            .map(|record| {
+                serde_json::to_value(record)
+                    .map(|value| (record.id.as_str(), value))
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
+        let mut revisions = self.read_source_revisions().await?;
+        let changed = previous_by_id
+            .keys()
+            .chain(next_by_id.keys())
+            .copied()
+            .collect::<HashSet<_>>();
+        for source_id in changed {
+            if previous_by_id.get(source_id) != next_by_id.get(source_id) {
+                let revision = revisions.entry(source_id.to_owned()).or_default();
+                *revision = revision.saturating_add(1);
+            }
+        }
+        self.write_private_json(
+            Path::new("source-revisions.json"),
+            &json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "revisions": revisions }),
+        )
+        .await?;
         self.write_private_json(Path::new("sources.json"), &json!(sources))
             .await
+    }
+
+    async fn read_source_revisions(&self) -> Result<HashMap<String, u64>, String> {
+        let path = self.private_root.join("source-revisions.json");
+        let bytes = match tokio::fs::read(&path).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashMap::new()),
+            Err(error) => return Err(format!("Cannot read source revisions: {error}")),
+        };
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct RevisionsDocument {
+            schema_version: u32,
+            revisions: HashMap<String, u64>,
+        }
+        let document: RevisionsDocument = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("Cannot parse source revisions: {error}"))?;
+        if document.schema_version != CURRENT_SCHEMA_VERSION {
+            return Err("Unsupported source revision schema".into());
+        }
+        Ok(document.revisions)
     }
 
     pub(crate) async fn read_private_json(
@@ -4088,6 +4229,15 @@ fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
             is_rss: crate::source_metadata::is_rss_source_metadata(&record.source),
         })
         .collect()
+}
+
+fn can_change_source_from_private(private: &Value) -> bool {
+    private
+        .get("sourceId")
+        .and_then(Value::as_str)
+        .is_some_and(|source_id| !source_id.trim().is_empty())
+        && private.get("book").is_some_and(Value::is_object)
+        && private.get("chapters").and_then(Value::as_array).is_some()
 }
 
 pub(crate) fn project_search_result(result_id: &str, source: &SourceRecord, book: &Value) -> Value {
@@ -6489,6 +6639,12 @@ mod tests {
 
         let book_id =
             add_controlled_book(&service, &original_source_id, "Cross-source Story").await;
+        let public_book = service
+            .store
+            .read_json_ref(&service.store.book_ref(&book_id).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(public_book["canChangeSource"], true);
         service
             .prepare_chapters(&book_id, 0, 1)
             .await
@@ -6629,6 +6785,182 @@ mod tests {
             .unwrap();
         assert!(html.contains("mock://book/Cross-source Story/chapter/0"));
         drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn source_change_recovers_after_original_source_removal_and_survives_restart() {
+        let (service, executor, root, original_source_id) = controlled_service(2).await;
+        let imported = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Replacement fixture",
+                    "bookSourceUrl": "mock://source/replacement-after-delete",
+                    "bookSourceType": 0
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import replacement source");
+        let replacement_source_id = imported["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Replacement fixture")
+            .and_then(|source| source["id"].as_str())
+            .expect("replacement source ID")
+            .to_owned();
+        let book_id = add_controlled_book(&service, &original_source_id, "Recoverable story").await;
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let mut legacy_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        legacy_book
+            .as_object_mut()
+            .unwrap()
+            .remove("canChangeSource");
+        service
+            .store
+            .write_json_ref(&book_ref, &legacy_book)
+            .await
+            .unwrap();
+        service
+            .remove_sources(&[original_source_id.clone()])
+            .await
+            .unwrap();
+
+        let refreshed_descriptor = service.get_book(&book_id).await.expect("get online book");
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let public_book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(public_book["canChangeSource"], true);
+        assert_eq!(
+            refreshed_descriptor["resourceId"],
+            format!("resource://books/{book_id}/book.json")
+        );
+        let search = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id.clone()], None, 1)
+            .await
+            .expect("search with removed original source");
+        wait_for_task_status(&service, search["taskId"].as_str().unwrap(), "completed").await;
+        let candidates = json_get(
+            &reqwest::Client::new(),
+            search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        let result_id = candidates["results"][0]["resultId"]
+            .as_str()
+            .expect("candidate result ID");
+        let changed = service
+            .change_book_source(&book_id, result_id, false)
+            .await
+            .expect("switch source after original source removal");
+        assert_eq!(changed["book"]["resourceId"], book_ref.as_str());
+
+        let private = service
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .unwrap();
+        assert_eq!(private["sourceId"], replacement_source_id);
+        let switched = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(switched["id"], book_id);
+        assert_eq!(switched["canChangeSource"], true);
+
+        drop(service);
+        let reopened = ApplicationService::open_with_executor(&root, executor)
+            .await
+            .expect("restart after recovered source switch");
+        let reopened_private = reopened
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .unwrap();
+        assert_eq!(reopened_private["sourceId"], replacement_source_id);
+        assert_eq!(
+            reopened
+                .store
+                .read_json_ref(&reopened.store.book_ref(&book_id).unwrap())
+                .await
+                .unwrap()["canChangeSource"],
+            true
+        );
+        drop(reopened);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn reimporting_a_removed_original_source_invalidates_old_replacement_candidates() {
+        let (service, _executor, root, original_source_id) = controlled_service(1).await;
+        let original_definition = json!({
+            "bookSourceName": "Original fixture",
+            "bookSourceUrl": "mock://source/controlled",
+            "bookSourceType": 0,
+            "ruleSearch": { "privateRule": "never expose" }
+        });
+        let replacement_definition = json!({
+            "bookSourceName": "Replacement fixture",
+            "bookSourceUrl": "mock://source/reimport-replacement",
+            "bookSourceType": 0
+        });
+        let imported = service
+            .import_sources(&json!([replacement_definition]).to_string())
+            .await
+            .unwrap();
+        let replacement_source_id = imported["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Replacement fixture")
+            .and_then(|source| source["id"].as_str())
+            .unwrap()
+            .to_owned();
+        let book_id =
+            add_controlled_book(&service, &original_source_id, "Stale absent story").await;
+        service
+            .remove_sources(&[original_source_id.clone()])
+            .await
+            .unwrap();
+        let search = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id], None, 1)
+            .await
+            .expect("candidate search while original source is absent");
+        wait_for_task_status(&service, search["taskId"].as_str().unwrap(), "completed").await;
+        let candidates = json_get(
+            &reqwest::Client::new(),
+            search["resource"]["src"].as_str().unwrap(),
+        )
+        .await;
+        let result_id = candidates["results"][0]["resultId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let book_ref = service.store.book_ref(&book_id).unwrap();
+        let before = service.store.read_json_ref(&book_ref).await.unwrap();
+
+        // The stable source ID is derived from its URL. Reimporting the same
+        // definition restores the old ID but still invalidates the absent
+        // source snapshot.
+        let reimported = service
+            .import_sources(&json!([original_definition]).to_string())
+            .await
+            .unwrap();
+        assert!(reimported["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|source| source["id"] == original_source_id));
+        let error = service
+            .change_book_source(&book_id, &result_id, false)
+            .await
+            .unwrap_err();
+        assert!(error.contains("availability changed"), "{error}");
+        assert_eq!(
+            service.store.read_json_ref(&book_ref).await.unwrap(),
+            before
+        );
+        let private = service
+            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .await
+            .unwrap();
+        assert_eq!(private["sourceId"], original_source_id);
+
+        drop(service);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -223,6 +223,7 @@ async fn persist_parsed_book(
         schema_version: CURRENT_SCHEMA_VERSION,
         id: book_id.to_owned(),
         title: parsed.title,
+        can_change_source: false,
         author: parsed.author,
         cover_src,
         chapter_count: chapters.len(),
@@ -1574,6 +1575,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(book.title, "Comic");
+        assert!(!book.can_change_source);
         assert_eq!(book.chapter_count, 3);
         assert_eq!(
             book.chapters

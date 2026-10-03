@@ -309,6 +309,21 @@ fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(format!("Cannot inspect private sources file: {error}")),
     }
+    let source_revisions = private_root.join("source-revisions.json");
+    match fs::symlink_metadata(&source_revisions) {
+        Ok(_) => add_snapshot_file(
+            &mut files,
+            root,
+            &source_revisions,
+            "private-data/source-revisions.json".to_owned(),
+        )?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Cannot inspect private source revisions file: {error}"
+            ))
+        }
+    }
     for directory in [
         "books",
         "search-results",
@@ -517,6 +532,25 @@ fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
                     .map_err(|error| format!("Invalid private source JSON: {error}"))?;
                 if !value.is_array() {
                     return Err("Private source JSON must contain a list".to_owned());
+                }
+            }
+            "private-data/source-revisions.json" => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase", deny_unknown_fields)]
+                struct SourceRevisions {
+                    schema_version: u32,
+                    revisions: HashMap<String, u64>,
+                }
+                let revisions: SourceRevisions = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid private source revisions JSON: {error}"))?;
+                if revisions.schema_version != 1
+                    || revisions.revisions.len() > 100_000
+                    || revisions
+                        .revisions
+                        .keys()
+                        .any(|id| !valid_source_record_id(id))
+                {
+                    return Err("Private source revisions have invalid fields".to_owned());
                 }
             }
             path if path.starts_with("books/") && path.ends_with("/book.json") => {
@@ -1062,6 +1096,7 @@ fn is_allowed_snapshot_path(path: &str) -> bool {
             | "reading-history.json"
             | "replacement-rules.json"
             | "private-data/sources.json"
+            | "private-data/source-revisions.json"
     ) {
         return true;
     }
@@ -1120,6 +1155,15 @@ fn valid_resource_id(id: &str) -> bool {
                     '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
                 )
         })
+}
+
+fn valid_source_record_id(id: &str) -> bool {
+    id.strip_prefix("source-").is_some_and(|suffix| {
+        suffix.len() == 16
+            && suffix
+                .bytes()
+                .all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
+    })
 }
 
 fn valid_asset_file(filename: &str) -> bool {
@@ -1248,6 +1292,7 @@ mod tests {
             id: id.to_owned(),
             title: title.to_owned(),
             author: "Fixture Author".to_owned(),
+            can_change_source: false,
             cover_src: Some(cover),
             chapter_count: 1,
             latest_chapter: Some("Chapter 1".to_owned()),
@@ -1276,9 +1321,10 @@ mod tests {
         book
     }
 
-    fn rewrite_search_history_entry(
+    fn rewrite_backup_entry(
         source_archive: &Path,
         destination_archive: &Path,
+        entry_path: &str,
         replacement: &[u8],
     ) {
         let source = std::fs::File::open(source_archive).unwrap();
@@ -1292,24 +1338,24 @@ mod tests {
             std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
             if path == MANIFEST_PATH {
                 manifest = Some(serde_json::from_slice::<BackupManifest>(&bytes).unwrap());
-            } else if path == "reading/search-history.json" {
+            } else if path == entry_path {
                 bytes = replacement.to_vec();
             }
             files.push((path, bytes));
         }
 
         let mut manifest = manifest.expect("source backup has a manifest");
-        let history = files
+        let replaced = files
             .iter()
-            .find(|(path, _)| path == "reading/search-history.json")
-            .expect("source backup has search history");
+            .find(|(path, _)| path == entry_path)
+            .expect("source backup has requested entry");
         let entry = manifest
             .files
             .iter_mut()
-            .find(|entry| entry.path == "reading/search-history.json")
-            .expect("manifest lists search history");
-        entry.size = history.1.len() as u64;
-        entry.sha256 = super::hex_digest(&Sha256::digest(&history.1));
+            .find(|entry| entry.path == entry_path)
+            .expect("manifest lists requested entry");
+        entry.size = replaced.1.len() as u64;
+        entry.sha256 = super::hex_digest(&Sha256::digest(&replaced.1));
         files
             .iter_mut()
             .find(|(path, _)| path == MANIFEST_PATH)
@@ -1358,6 +1404,18 @@ mod tests {
                 "id": "source-private",
                 "source": { "bookSourceUrl": "https://example.test/source", "ruleBookInfo": { "name": "fixture" } }
             }]))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            private_root.join("source-revisions.json"),
+            serde_json::to_vec(&json!({
+                "schemaVersion": 1,
+                "revisions": {
+                    "source-0123456789abcdef": 2,
+                    "source-fedcba9876543210": 9,
+                },
+            }))
             .unwrap(),
         )
         .unwrap();
@@ -1597,6 +1655,12 @@ mod tests {
             serde_json::from_slice(&std::fs::read(private_root.join("sources.json")).unwrap())
                 .unwrap();
         assert_eq!(sources[0]["id"], "source-private");
+        let source_revisions: Value = serde_json::from_slice(
+            &std::fs::read(private_root.join("source-revisions.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(source_revisions["revisions"]["source-0123456789abcdef"], 2);
+        assert_eq!(source_revisions["revisions"]["source-fedcba9876543210"], 9);
         assert!(private_root.join("books/snapshot-book.json").is_file());
         assert!(private_root.join("search-results/search-1.json").is_file());
         assert!(private_root
@@ -1745,37 +1809,62 @@ mod tests {
         crate::search_history::record_search(&store, "existing-search", "Existing query", 42)
             .await
             .unwrap();
+        std::fs::create_dir_all(root.join("private-data")).unwrap();
+        let valid_source_revisions =
+            br#"{"schemaVersion":1,"revisions":{"source-0123456789abcdef":1}}"#;
+        std::fs::write(
+            root.join("private-data/source-revisions.json"),
+            valid_source_revisions,
+        )
+        .unwrap();
 
         let archive = temporary.path().join("valid-source.zip");
         create_backup(&store, &archive).await.unwrap();
         let before_shelf = std::fs::read(root.join("shelf.json")).unwrap();
         let before_book = std::fs::read(root.join("books/keep-book/book.json")).unwrap();
         let before_history = std::fs::read(root.join("reading/search-history.json")).unwrap();
+        let before_source_revisions =
+            std::fs::read(root.join("private-data/source-revisions.json")).unwrap();
 
         let invalid_documents = [
-            json!({
-                "schemaVersion": 2,
-                "entries": [],
-                "processedSearchIds": [],
-            }),
-            json!({
-                "schemaVersion": 1,
-                "entries": [{
-                    "query": "Visible query",
-                    "normalizedQuery": "different query",
-                    "usage": 1,
-                    "firstUseTimeMs": 1,
-                    "lastUseTimeMs": 1,
-                }],
-                "processedSearchIds": [],
-            }),
+            (
+                "reading/search-history.json",
+                json!({
+                    "schemaVersion": 2,
+                    "entries": [],
+                    "processedSearchIds": [],
+                }),
+            ),
+            (
+                "reading/search-history.json",
+                json!({
+                    "schemaVersion": 1,
+                    "entries": [{
+                        "query": "Visible query",
+                        "normalizedQuery": "different query",
+                        "usage": 1,
+                        "firstUseTimeMs": 1,
+                        "lastUseTimeMs": 1,
+                    }],
+                    "processedSearchIds": [],
+                }),
+            ),
+            (
+                "private-data/source-revisions.json",
+                json!({ "schemaVersion": 2, "revisions": { "source-0123456789abcdef": 1 } }),
+            ),
+            (
+                "private-data/source-revisions.json",
+                json!({ "schemaVersion": 1, "revisions": { "source-bad": 2 } }),
+            ),
         ];
 
-        for (index, invalid) in invalid_documents.iter().enumerate() {
+        for (index, (entry_path, invalid)) in invalid_documents.iter().enumerate() {
             let malformed_archive = temporary.path().join(format!("invalid-{index}.zip"));
-            rewrite_search_history_entry(
+            rewrite_backup_entry(
                 &archive,
                 &malformed_archive,
+                entry_path,
                 &serde_json::to_vec(invalid).unwrap(),
             );
 
@@ -1791,6 +1880,10 @@ mod tests {
             assert_eq!(
                 std::fs::read(root.join("reading/search-history.json")).unwrap(),
                 before_history
+            );
+            assert_eq!(
+                std::fs::read(root.join("private-data/source-revisions.json")).unwrap(),
+                before_source_revisions
             );
             let history = crate::search_history::load(&store).await.unwrap();
             assert_eq!(history.entries[0].query, "Existing query");
