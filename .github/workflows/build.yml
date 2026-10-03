@@ -333,10 +333,10 @@ jobs:
             kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a \
             kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libquickjs.a \
             kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libmbedtls.a; do
-            xcrun lipo -verify_arch arm64 "$archive"
+            xcrun lipo "$archive" -verify_arch arm64
           done
           for slice in ios-arm64 ios-arm64-simulator; do
-            xcrun lipo -verify_arch arm64 "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework/$slice/LegadoSourceEngine.framework/LegadoSourceEngine"
+            xcrun lipo "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework/$slice/LegadoSourceEngine.framework/LegadoSourceEngine" -verify_arch arm64
           done
       - name: Save iOS framework and native archive cache
         if: steps.ios-framework-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
