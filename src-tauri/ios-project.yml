@@ -97,6 +97,11 @@ targets:
     dependencies:
       - framework: {{ lib-output-file-name }}
         embed: false
+      # Link the local XCFramework as a project dependency so XcodeGen chooses its
+      # device/simulator binary correctly. The SDK-specific search paths above also
+      # satisfy SwiftPM's framework autolink from the Rust static library.
+      - framework: ../../plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+        embed: false
       {{~#each ios-libraries}}
       - framework: {{this}}
         embed: false{{/each}}{{#if ios-vendor-frameworks}}{{~#each ios-vendor-frameworks}}

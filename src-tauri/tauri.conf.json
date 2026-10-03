@@ -27,8 +27,7 @@
     "active": true,
     "targets": "all",
     "iOS": {
-      "template": "ios-project.yml",
-      "frameworks": ["LegadoSourceEngine"]
+      "template": "ios-project.yml"
     },
     "resources": {
       "../kotlin/build/source-engine/runtime/": "source-engine/"
