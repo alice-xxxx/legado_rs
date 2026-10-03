@@ -6,6 +6,7 @@ mod image_ops_host;
 pub mod local_books;
 pub mod models;
 pub mod reading_tools;
+pub(crate) mod resource_transactions;
 pub mod resources;
 pub mod rss;
 pub(crate) mod search_history;
