@@ -1,70 +1,96 @@
+pub mod application;
+pub mod backup;
+pub mod discovery;
+pub mod local_books;
+pub mod models;
+pub mod reading_tools;
+pub mod resources;
+pub mod rss;
 pub mod source_engine;
 mod source_host_ffi;
 mod source_http;
 mod source_jni;
 mod source_storage;
 
-// 桌面测试界面将书源操作交给 Rust source_engine；Rust 通过 JNI 调用嵌入式 KMP 解析器。
-// HTTP 与存储由 Rust 宿主处理，此 command 只负责接收界面请求和返回结果。
-#[cfg(feature = "desktop")]
-#[tauri::command]
-async fn execute_source_engine(
-    app: tauri::AppHandle,
-    request: source_engine::SourceEngineRequest,
-) -> Result<serde_json::Value, String> {
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    {
-        use tauri_plugin_source_engine::{SourceEngineCall, SourceEngineExt};
-
-        // Mobile platforms enter their KMP-native parser through the Tauri plugin. Keep the
-        // existing request shape intact; the platform adapter decodes it with the shared codec.
-        let request_json = serde_json::json!({
-            "operation": request.operation,
-            "source": request.source,
-            "keyword": request.keyword,
-            "page": request.page,
-            "book": request.book,
-            "chapter": request.chapter,
-            "nextChapterUrl": request.next_chapter_url,
-        })
-        .to_string();
-        let response = app
-            .source_engine()
-            .execute(SourceEngineCall { request_json })
-            .map_err(|error| error.to_string())?;
-        let result: serde_json::Value = serde_json::from_str(&response.result_json)
-            .map_err(|error| format!("Kotlin source engine returned invalid JSON: {error}"))?;
-        if let Some(error) = result
-            .get("__sourceEngineError")
-            .and_then(serde_json::Value::as_str)
-        {
-            return Err(format!("Kotlin source engine failed:\n{error}"));
-        }
-        Ok(result)
-    }
-
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    {
-        use tauri::Manager;
-
-        // Keep mobile data access native; desktop state remains under Tauri's app-data directory.
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| format!("Cannot locate application data directory: {error}"))?
-            .join("source-engine");
-        let resource_dir = app.path().resource_dir().ok();
-        source_engine::execute_with_resource_dir(request, data_dir, resource_dir).await
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub fn run() {
-    tauri::Builder::default()
+    use tauri::{Emitter, Manager};
+
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_source_engine::init())
-        .invoke_handler(tauri::generate_handler![execute_source_engine])
+        .setup(|app| {
+            let app_handle = app.handle().clone();
+            let data_dir = app.path().app_data_dir()?;
+            let source_engine_dir = data_dir.join("source-engine");
+            let resource_dir = app.path().resource_dir().ok();
+            let executor = std::sync::Arc::new(application::TauriSourceExecutor::new(
+                app_handle,
+                source_engine_dir,
+                resource_dir,
+            ));
+            let service = tauri::async_runtime::block_on(
+                application::ApplicationService::open_with_executor(data_dir, executor),
+            )
+            .map_err(std::io::Error::other)?;
+            let task_app = app.handle().clone();
+            service.set_task_notifier(std::sync::Arc::new(move |payload| {
+                let _ = task_app.emit("task-updated", payload);
+            }));
+            app.manage(service);
+            Ok(())
+        });
+    builder
+        .invoke_handler(tauri::generate_handler![
+            application::app_bootstrap,
+            application::list_sources,
+            application::import_sources,
+            application::import_sources_from_picker,
+            application::remove_sources,
+            application::update_source,
+            application::search_books,
+            application::start_search,
+            application::tasks_resource,
+            application::start_chapter_download,
+            application::refresh_chapters,
+            application::check_new_chapters,
+            application::pause_task,
+            application::resume_task,
+            application::cancel_task,
+            application::add_book,
+            application::import_book_from_picker,
+            application::get_book,
+            application::prepare_chapters,
+            application::remove_book,
+            application::save_progress,
+            application::save_settings,
+            application::list_bookmarks,
+            application::upsert_bookmark,
+            application::delete_bookmark,
+            application::reading_history_resource,
+            application::record_reading_session,
+            application::delete_reading_history_for_book,
+            application::clear_reading_history,
+            application::list_replacement_rules,
+            application::upsert_replacement_rule,
+            application::delete_replacement_rule,
+            application::set_book_groups,
+            application::create_shelf_group,
+            application::rename_shelf_group,
+            application::delete_shelf_group,
+            application::set_shelf_sort,
+            application::set_shelf_order,
+            application::create_backup_from_picker,
+            application::restore_backup_from_picker,
+            application::list_discovery_categories,
+            application::list_discovery_books,
+            application::list_rss_categories,
+            application::list_rss_articles,
+            application::open_rss_article,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

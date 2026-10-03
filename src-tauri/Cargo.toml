@@ -19,8 +19,12 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 # 原生依赖链接进测试进程，从而让本地 HTTP fixture 能在无窗口环境中直接运行。
 default = ["desktop"]
 desktop = [
+    "dep:tauri-build",
     "dep:tauri",
     "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-source-engine",
     "tauri/wry",
     "tauri/compression",
     "tauri/common-controls-v6",
@@ -28,20 +32,50 @@ desktop = [
     "tauri/x11",
     "tauri/dbus",
 ]
-source-engine-ios-bootstrap = ["tauri-plugin-source-engine/native-mobile"]
+# The iOS KMP bootstrap archives the mobile plugin bridge without enabling the desktop runtime.
+source-engine-ios-bootstrap = [
+    "dep:tauri-plugin-source-engine",
+    "tauri-plugin-source-engine/native-mobile",
+]
+mobile-runtime = [
+    "dep:tauri-build",
+    "dep:tauri",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-source-engine",
+    "tauri-plugin-source-engine/native-mobile",
+]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
 tauri = { version = "2", default-features = false, features = [], optional = true }
 tauri-plugin-opener = { version = "2", default-features = false, optional = true }
-tauri-plugin-source-engine = { path = "plugins/source-engine" }
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"], optional = true }
+tauri-plugin-fs = { version = "2", default-features = false, optional = true }
+tauri-plugin-source-engine = { path = "plugins/source-engine", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 base64 = "0.23"
-reqwest = { version = "0.13", features = ["cookies", "multipart", "socks"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs"] }
+reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stream"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "io-util", "sync", "time"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+axum = "0.8"
+ammonia = "4"
+atomicwrites = "0.4.4"
+encoding_rs = "0.8"
+feed-rs = "2"
+http-range-header = "0.4"
+percent-encoding = "2"
+quick-xml = "0.42"
+regex = "1"
+sha2 = "0.10"
+tempfile = "3"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
 jni = { version = "0.22.4", features = ["invocation"] }
 
 
