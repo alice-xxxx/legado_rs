@@ -61,3 +61,21 @@ Android KMP 强制重新编译通过（1m24s）；最终 AAR stage 通过（19 s
 最终 staged JRE 为 **74,061,673 bytes**（约71 MiB），完整 runtime 为 **95,541,686 bytes**（约91 MiB）；相比原 JRE 约99 MiB减少约28 MiB。模块集来自完整 classpath 的 jdeps，并保留动态发现所需字符集、EC provider、locale、JNDI DNS 和 Unsafe 等模块。
 
 最终 staged runtime 上 `source_engine::tests` **2/2 通过**，实际执行 Rust→JNI→KMP 搜索、详情、目录、正文分页、HTTP/Cookie/重定向、QuickJS ajax 和 image.* 像素处理。运行时探针另验证 GB18030、EC keypair、BufferedImage、zh-CN locale、JNDI DNS、Unsafe、java.sql。Gradle 输入增加模块清单、JDK release/jlink/jmods 与 QuickJS native 文件，避免恢复过时 runtime。跨平台 jlink 与最终安装包仍由新 CI 验证。
+
+## 新 CI 首次实测（run 37112338802）
+
+commit `a9168dd` 的 Linux job 已通过，总耗时 **662 s**（基线748 s）。KMP runtime 192 s、最终 Tauri 打包336 s、上传9 s；缓存与 Gradle inputs 均有变化，该单次差异不能当作稳定加速比例。Linux artifact ZIP 为 **315,799,031 bytes**，较基线792,199,818 bytes减少 **60.14%**；此数值是上传归档大小，包含 JVM 裁剪与上传范围收窄的共同效果，不等于单个安装包大小减少60%。其余平台尚在执行。
+
+新 Linux 安装包已下载并核对实际文件大小：AppImage **160,926,200 B**、deb **77,956,192 B**、rpm **77,936,568 B**。与本机保留的 commit `fe654d6` 包比较（并非同一基线run）：AppImage减少11.89%、deb减少21.96%、rpm减少21.99%。中间存在业务代码变更，因此该对比用于报告实际产物差异，不孤立归因到某一个选项。优化包原生启动/阅读检查进行中。
+
+新 Android artifact ZIP 为 **67,742,465 B**（旧327,229,200 B，减少79.30%）。下载后的通用 debug APK 为 **180,399,822 B**（旧 `2f57b33` APK 1,249,314,614 B，减少85.56%），四种 ABI 均包含 Rust app 和 QuickJS `.so`。新 Rust 库大小分别为 arm64-v8a 41,132,496 B、armeabi-v7a 23,544,548 B、x86 49,296,364 B、x86_64 49,058,808 B；实际导出与签名检查进行中。
+
+新 APK 验证通过 V2 签名，四 ABI ELF 架构均与目录一致。旧 Rust JNI 导出全部保留，新增 `nativeImageRequest`；QuickJS 导出集与旧包一致。两次 CI debug 证书不同：已有旧 debug APK 的设备可能需要卸载旧包再安装，不能把签名不匹配误判为新包损坏；持久数据应先备份。新 iOS device/simulator framework 与 XCFramework 已通过（framework阶段963 s），现进行 unsigned IPA 最终链接。
+
+### 当前结果与速度限制
+
+桌面三平台与 Android job 均成功；iOS framework/XCFramework 成功，最终 IPA 链接失败，缺少 QuickJS `JS_*` 符号。现有最终 Rust link 已带 mbedTLS/sqlite，需同样加入生成的 libquickjs.a；不恢复冗余 Rust bootstrap。
+
+macOS job 1,068 s、Windows job 1,145 s，均比旧基线长；本轮不能宣称整体 CI 已提速。完整日志显示新 Gradle key 未命中、`work` 分支 cache 为 read-only，缓存摘要0 restored/0 saved；这会导致后续相同分支也不能保存新 Gradle 缓存。Cargo manifest 修改也使 Rust cache 部分恢复、重新编译。后续修复 trusted push 的 Gradle 缓存写入，并让 Android debug profile 对 Rust cache action 可见。Basic Caching 升级提示本身只提供服务选择，不要求切换商业增强缓存。
+
+新 macOS artifact ZIP为71,929,169 B（旧189,752,074 B，减少62.09%）；Windows为139,444,787 B（旧183,969,164 B，减少24.20%）。Linux新AppImage实际原生流程通过：GTK picker导入TXT、第二章翻到第2/2页、退出重启后恢复相同章节和页；无FUSE环境使用内置extract启动。

@@ -51,10 +51,19 @@ fn link_ios_engine_framework() {
 
     // Kotlin/Native packages its static framework separately from its C archives. The
     // framework's Gradle linker options are not forwarded into Tauri's final Rust link, so
-    // link the generated mbedTLS archive and Apple's system sqlite3 library at the app link.
+    // link the generated QuickJS and mbedTLS archives and Apple's system sqlite3 library
+    // at the app link.
     let ios_native_libs = manifest_dir
         .join("../../../kotlin/kmp-engine/build/iosNativeLibs")
         .join(native_lib_target);
+    let quickjs_archive = ios_native_libs.join("libquickjs.a");
+    if !quickjs_archive.is_file() {
+        panic!(
+            "Missing Kotlin/Native QuickJS archive for {target} at {}; build the iOS KMP framework before linking the Tauri app",
+            quickjs_archive.display()
+        );
+    }
+
     let mbedtls_archive = ios_native_libs.join("libmbedtls.a");
     if !mbedtls_archive.is_file() {
         panic!(
@@ -63,11 +72,13 @@ fn link_ios_engine_framework() {
         );
     }
 
+    println!("cargo:rerun-if-changed={}", quickjs_archive.display());
     println!("cargo:rerun-if-changed={}", mbedtls_archive.display());
     println!(
         "cargo:rustc-link-search=native={}",
         ios_native_libs.display()
     );
+    println!("cargo:rustc-link-lib=static=quickjs");
     println!("cargo:rustc-link-lib=static=mbedtls");
     println!("cargo:rustc-link-lib=sqlite3");
 }

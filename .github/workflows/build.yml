@@ -90,6 +90,7 @@ jobs:
         with:
           # Keep the CI cache on GitHub's open-source cache service.
           cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Install Linux Tauri build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -132,6 +133,8 @@ jobs:
   android:
     name: Android APK and AAR
     runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
     needs: changes
     if: >-
       always() &&
@@ -152,6 +155,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;30.0.14904198 cmake;3.31.1'
@@ -175,8 +179,6 @@ jobs:
         run: node scripts/configure-tauri-android.mjs
       # The debug variant uses Gradle's default debug key so testers can install it without a release key.
       - name: Build test APKs
-        env:
-          CARGO_PROFILE_DEV_DEBUG: '0'
         run: npm run tauri -- android build --debug --apk --ci
       - name: Report APK and native ABI payload
         shell: bash
@@ -237,6 +239,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
       - name: Install Rust Apple targets
         run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
       - uses: Swatinem/rust-cache@v2
