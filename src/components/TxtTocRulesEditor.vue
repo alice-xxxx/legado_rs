@@ -44,7 +44,7 @@ const canSave = computed(() =>
 onMounted(() => void reload(props.resource));
 watch(() => props.resource, (resource) => {
   if (resource && !saving.value) void reload(resource);
-}, { deep: true });
+}, { deep: true, flush: "sync" });
 
 function emptyDraft(): RuleDraft {
   return { name: "", rule: "", example: "", enable: true };

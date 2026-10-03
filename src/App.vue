@@ -49,6 +49,7 @@ import {
   renameShelfGroup,
   removeBook,
   removeSources,
+  refreshBookInfo,
   refreshChapters,
   restoreBackupFromPicker,
   resumeTask,
@@ -214,6 +215,7 @@ const searchWasRun = ref(false);
 const selectedResult = ref<SearchBookResult | null>(null);
 const openedBook = ref<BookResource | null>(null);
 const bookPanelBusy = ref(false);
+const bookInfoRefreshBusy = ref(false);
 const addBusyResult = ref<string | null>(null);
 const pendingRemoval = ref<{ id: string; title: string } | null>(null);
 const pendingSourceRemoval = ref<string[]>([]);
@@ -305,6 +307,12 @@ const enabledSources = computed(() => sources.value.filter((source) => source.en
 const bookSourceCandidates = computed(() => enabledSources.value.filter((source) => source.isRss !== true));
 const bookSourceNeedsIdentityConfirmation = computed(() =>
   bookSourceIdentityConfirmationNeeded.value || selectedBookSourceCandidate.value?.requiresIdentityConfirmation === true);
+const canRefreshOpenedBookInfo = computed(() => {
+  const book = openedBook.value;
+  return book?.canChangeSource === true
+    && Boolean(book.sourceId)
+    && sources.value.some((source) => source.id === book.sourceId && source.enabled === true);
+});
 const rssSources = computed(() => enabledSources.value.filter((source) => source.isRss === true));
 const discoverySources = computed(() => discoverMode.value === "rss" ? rssSources.value : bookSourceCandidates.value);
 const hasCurrentRssSubscription = computed(() => rssState.value.subscriptions.some((entry) => entry.sourceId === discoverySourceId.value));
@@ -1641,6 +1649,36 @@ async function openShelfBook(bookId: string): Promise<void> {
   }
 }
 
+async function refreshOpenedBookInfo(): Promise<void> {
+  const book = openedBook.value;
+  if (!book || !canRefreshOpenedBookInfo.value || bookInfoRefreshBusy.value) return;
+  const bookAtStart = book;
+  const bookId = book.id;
+  bookInfoRefreshBusy.value = true;
+  try {
+    const response = await refreshBookInfo(bookId);
+    let refreshedBook = await readResource<BookResource>(response.book);
+    await refreshShelfFromDescriptor(response.shelf);
+    if (refreshedBook.id !== bookId) throw new Error("刷新的书籍与当前详情不匹配。");
+    const current = openedBook.value;
+    if (current?.id !== bookId) return;
+    if (current !== bookAtStart) {
+      // A source/catalog/progress event landed while the command was in flight.
+      // Re-read Rust's current resource instead of restoring stale UI fields.
+      const latest = await getBook(bookId);
+      refreshedBook = await readResource<BookResource>(latest);
+      if (openedBook.value !== current) return;
+      if (refreshedBook.id !== bookId) throw new Error("刷新的书籍与当前详情不匹配。");
+    }
+    openedBook.value = refreshedBook;
+    notify("书籍信息已刷新。");
+  } catch (error) {
+    notify(`刷新书籍信息失败：${errorText(error)}`, "error");
+  } finally {
+    bookInfoRefreshBusy.value = false;
+  }
+}
+
 async function refreshOpenedBook(descriptor?: ResourceDescriptor): Promise<void> {
   const id = readingBook.value?.id ?? openedBook.value?.id;
   if (!id && !descriptor) return;
@@ -2923,6 +2961,7 @@ watch(readerSettings, () => {
         <p v-if="openedBook.intro?.trim()" class="book-detail-intro">{{ openedBook.intro }}</p>
         <div class="detail-actions">
           <button class="button primary" :disabled="bookPanelBusy || !openedBook.chapterCount" @click="startReading(openedBook)">{{ openedBook.progress?.chapterIndex != null ? '继续阅读' : '开始阅读' }} <span>→</span></button>
+          <button v-if="canRefreshOpenedBookInfo" data-testid="book-refresh-info" class="button secondary" :disabled="bookInfoRefreshBusy || bookPanelBusy" @click="refreshOpenedBookInfo">{{ bookInfoRefreshBusy ? '正在刷新…' : '刷新书籍信息' }}</button>
           <button v-if="openedBook.canChangeSource === true" data-testid="book-change-source" class="button secondary" :disabled="bookPanelBusy" @click="openBookSourceSwitch(false)">更换书源</button>
           <button class="button secondary" @click="pendingRemoval = { id: openedBook.id, title: openedBook.title }">从书架移除</button>
         </div>

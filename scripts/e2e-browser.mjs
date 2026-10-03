@@ -81,6 +81,8 @@ async function startFixtureServer() {
   let feedRequests = 0;
   let discoveryRequests = 0;
   let reverseCatalog = false;
+  let replacementBookInfoMode = "initial";
+  const replacementBookInfoRequests = [];
   const catalogResponseOrders = [];
   let releaseFirstChapterTwo;
   let firstChapterTwoReleased = false;
@@ -119,7 +121,18 @@ async function startFixtureServer() {
     } else if (pathname === "/replacement/search") {
       html("<div class='item'><h3><a href='/replacement/book'>Browser E2E Novel</a></h3></div>");
     } else if (pathname === "/replacement/book") {
-      html("<h1>Browser E2E Novel</h1><a class='toc' href='/replacement/toc'>目录</a>");
+      replacementBookInfoRequests.push({ mode: replacementBookInfoMode, method: request.method });
+      if (replacementBookInfoMode === "failure") {
+        request.socket.destroy();
+        return;
+      } else if (replacementBookInfoMode === "refreshed") {
+        html(`<h1>Browser E2E Novel Updated</h1><span class='author'>Refreshed Fixture Author</span>
+          <p class='intro'>Metadata refreshed from the real KMP book-info operation.</p>
+          <span class='kind'>Historical Mystery</span><span class='word-count'>987654</span>
+          <a class='toc' href='/replacement/toc'>目录</a>`);
+      } else {
+        html("<h1>Browser E2E Novel</h1><a class='toc' href='/replacement/toc'>目录</a>");
+      }
     } else if (pathname === "/replacement/toc") {
       html(`<ul id='list'>
         <li><a href='/replacement/chapter/opening'>Replacement Opening</a></li>
@@ -203,6 +216,8 @@ async function startFixtureServer() {
     catalogResponseOrders,
     feedRequestCount() { return feedRequests; },
     discoveryRequestCount() { return discoveryRequests; },
+    replacementBookInfoRequests() { return [...replacementBookInfoRequests]; },
+    setReplacementBookInfoMode(mode) { replacementBookInfoMode = mode; },
     reverseCatalog() { reverseCatalog = true; },
     async waitForChapterTwoAttempt(attempt, timeoutMs = 45_000) {
       const deadline = Date.now() + timeoutMs;
@@ -334,6 +349,36 @@ async function restartRustHarness() {
   await startRustHarness();
 }
 
+async function verifyApplicationStartupProcessLock() {
+  const binary = process.env.BROWSER_HARNESS_BINARY ? resolve(process.env.BROWSER_HARNESS_BINARY) : null;
+  const command = binary || "cargo";
+  const args = binary ? [] : ["run", "--manifest-path", "src-tauri/Cargo.toml", "--no-default-features", "--example", "browser_harness"];
+  const contender = startProcess(command, args, {
+    env: {
+      ...process.env,
+      LEGADO_BROWSER_HARNESS_DATA: dataDir,
+      LEGADO_BROWSER_HARNESS_BOOK_FILE: txtFixturePath,
+    },
+  });
+  rustHarnessProcesses.add(contender);
+  const exited = await waitForChildExit(contender, 45_000);
+  if (!exited) {
+    signalProcessGroup(contender, "SIGTERM");
+    await waitForChildExit(contender, 5_000);
+  }
+  rustHarnessProcesses.delete(contender);
+  const tail = contender.tail.join("");
+  assert(exited && contender.exitCode !== 0 &&
+    tail.includes("App-data root is already in use by another process"),
+  `A second real ApplicationService startup did not fail on the active data root: exit=${contender.exitCode}, signal=${contender.signalCode}, output=${tail}`);
+  verificationEvidence.appDataStartupLock = {
+    contenderExitCode: contender.exitCode,
+    rejectedSameActiveDataRoot: true,
+    error: "App-data root is already in use by another process",
+  };
+  report("PASS: a second real browser_harness ApplicationService startup was rejected while the first service held the app-data process lock.");
+}
+
 async function startVite() {
   const args = builtFrontendDist
     ? ["run", "preview", "--", "--outDir", builtFrontendDist, "--host", "127.0.0.1", "--port", "1420", "--strictPort"]
@@ -416,6 +461,9 @@ async function importReplacementFixtureSources() {
     ruleBookInfo: {
       name: "@css:h1@text",
       author: "@css:.author@text",
+      intro: "@css:.intro@text",
+      kind: "@css:.kind@text",
+      wordCount: "@css:.word-count@text",
       tocUrl: "@css:a.toc@href",
     },
     ruleToc: {
@@ -1952,6 +2000,11 @@ async function testSearchHistoryFlow() {
 
   await page.getByTestId("nav-settings-mobile").click();
   await page.getByTestId("search-history").waitFor();
+  await page.waitForFunction(() => {
+    const rows = [...document.querySelectorAll('[data-testid^="search-history-entry-"]')];
+    return rows[0]?.getAttribute("data-query") === "History Gamma" &&
+      rows.find((row) => row.getAttribute("data-query") === "History Alpha")?.innerText.includes("2 次搜索");
+  }, undefined, { timeout: 10_000 });
   const recentRows = await page.locator('[data-testid^="search-history-entry-"]').evaluateAll((rows) =>
     rows.map((row) => ({ query: row.getAttribute("data-query"), text: row.innerText })),
   );
@@ -2436,6 +2489,208 @@ async function testBookSourceChangeFlow(bookId, sources, contentFixture) {
   await context.close();
 }
 
+async function testBookMetadataRefreshFlow(bookId, contentFixture) {
+  const { context, diagnostics } = await openFeatureFlowPage();
+  await page.getByTestId("nav-shelf-mobile").click();
+  const shelfCard = page.getByTestId(`shelf-book-${bookId}`);
+  await shelfCard.waitFor({ timeout: 15_000 });
+  await shelfCard.locator("button.cover-button").click();
+  const detail = page.locator(".book-detail-panel");
+  await detail.waitFor();
+  const refreshButton = page.getByTestId("book-refresh-info");
+  await refreshButton.waitFor({ timeout: 10_000 });
+
+  const before = (await getBookDocument(bookId)).document;
+  assert(before.id === bookId && before.sourceId && before.canChangeSource === true,
+    `The online book was not refreshable before metadata refresh: ${JSON.stringify(before)}.`);
+  assert(before.chapters.length > 0 && before.progress,
+    `The metadata refresh fixture needs a saved chapter catalog and progress: ${JSON.stringify(before)}.`);
+  const beforePrivatePath = join(dataDir, "private-data", "books", `${bookId}.json`);
+  const bookDiskPath = join(dataDir, "books", bookId, "book.json");
+  const privateBefore = JSON.parse(await readFile(beforePrivatePath, "utf8"));
+  const cacheBefore = [];
+  for (const chapter of before.chapters.filter((entry) => entry.src)) {
+    const cachePath = join(dataDir, "books", bookId, "chapters", `${chapter.id}.html`);
+    const cacheBytes = await readFile(cachePath);
+    const response = await fetch(chapter.src);
+    assert(response.ok, `Cached chapter '${chapter.title}' returned HTTP ${response.status} before metadata refresh.`);
+    const resourceBytes = Buffer.from(await response.arrayBuffer());
+    assert(createHash("sha256").update(resourceBytes).digest("hex") === createHash("sha256").update(cacheBytes).digest("hex"),
+      `Cached chapter '${chapter.title}' resource did not match its persisted HTML before metadata refresh.`);
+    cacheBefore.push({
+      id: chapter.id,
+      title: chapter.title,
+      cachePath,
+      sha256: createHash("sha256").update(cacheBytes).digest("hex"),
+    });
+  }
+  assert(cacheBefore.length > 0, "The metadata refresh test requires at least one already cached chapter.");
+  const bookJsonBefore = await readFile(bookDiskPath, "utf8");
+  const progressBefore = JSON.stringify(before.progress);
+  const chaptersBefore = JSON.stringify(before.chapters);
+
+  contentFixture.setReplacementBookInfoMode("refreshed");
+  const successCount = await completedCommandCount("refresh_book_info");
+  const successEventStart = await harnessEventCount();
+  await refreshButton.click();
+  const successCall = await waitForCompletedCommand("refresh_book_info", successCount, 30_000);
+  assert(successCall.args.bookId === bookId && successCall.result.book?.src && successCall.result.shelf?.src,
+    `The UI did not invoke Rust refresh_book_info or receive both processed resources: ${JSON.stringify(successCall)}.`);
+  const [refreshed, refreshedShelf] = await Promise.all([
+    readResourceJson(successCall.result.book),
+    readResourceJson(successCall.result.shelf),
+  ]);
+  const bookUpdatedEvent = await waitForHarnessEvent("resource-updated", "book", successEventStart, 10_000);
+  const shelfUpdatedEvent = await waitForHarnessEvent("shelf-updated", null, successEventStart, 10_000);
+  assert(bookUpdatedEvent.payload?.resource?.resourceId === successCall.result.book.resourceId &&
+    shelfUpdatedEvent.payload?.resourceId === successCall.result.shelf.resourceId,
+  "The refresh command did not emit its processed book and shelf resource updates.");
+  assert(refreshed.title === "Browser E2E Novel" && refreshed.author === "Refreshed Fixture Author" &&
+    refreshed.intro === "Metadata refreshed from the real KMP book-info operation." &&
+    refreshed.kind === "Historical Mystery" && refreshed.wordCount === "98.8万字",
+  `Rust did not project refreshed KMP details while preserving the source's rename policy: ${JSON.stringify(refreshed)}.`);
+  const shelfBook = refreshedShelf.books?.find((entry) => entry.id === bookId);
+  assert(shelfBook?.title === refreshed.title && shelfBook.author === refreshed.author,
+    `The shelf resource did not receive its refreshed title and author projection: ${JSON.stringify(shelfBook)}.`);
+  assert(JSON.stringify(refreshed.progress) === progressBefore && JSON.stringify(refreshed.chapters) === chaptersBefore,
+    `Refreshing book details changed catalog or progress: before progress=${progressBefore}, after=${JSON.stringify(refreshed.progress)}.`);
+  assert(await detail.locator("h2").innerText() === refreshed.title &&
+    await detail.locator(".detail-author").innerText() === refreshed.author &&
+    await detail.locator(".book-detail-intro").innerText() === refreshed.intro &&
+    (await detail.locator(".book-detail-facts").innerText()).includes(refreshed.kind) &&
+    (await detail.locator(".book-detail-facts").innerText()).includes(refreshed.wordCount),
+  "The open detail panel did not display the processed intro, kind, and word-count fields returned by Rust.");
+  await page.screenshot({ path: join(outputDir, "book-info-refreshed.png"), fullPage: true });
+  const privateAfterSuccess = JSON.parse(await readFile(beforePrivatePath, "utf8"));
+  assert(privateAfterSuccess.book?.name === "Browser E2E Novel" &&
+    privateAfterSuccess.book?.intro === refreshed.intro && privateAfterSuccess.book?.wordCount === refreshed.wordCount,
+  "The refreshed, processed KMP details were not persisted in private Rust source state.");
+  const bookJsonAfterSuccess = await readFile(bookDiskPath, "utf8");
+  assert(bookJsonAfterSuccess !== bookJsonBefore,
+    "The public book JSON was not updated when refreshed metadata changed.");
+  for (const cached of cacheBefore) {
+    const cacheBytes = await readFile(cached.cachePath);
+    assert(createHash("sha256").update(cacheBytes).digest("hex") === cached.sha256,
+      `Metadata refresh rewrote cached chapter '${cached.title}'.`);
+    const chapter = refreshed.chapters.find((entry) => entry.id === cached.id);
+    assert(chapter?.src, `Metadata refresh dropped the cached chapter URL for '${cached.title}'.`);
+    const response = await fetch(chapter.src);
+    assert(response.ok && createHash("sha256").update(Buffer.from(await response.arrayBuffer())).digest("hex") === cached.sha256,
+      `The cached chapter resource changed after refreshing book metadata for '${cached.title}'.`);
+  }
+
+  const detailsAfterSuccess = {
+    title: refreshed.title,
+    author: refreshed.author,
+    intro: refreshed.intro,
+    kind: refreshed.kind,
+    wordCount: refreshed.wordCount,
+  };
+  contentFixture.setReplacementBookInfoMode("failure");
+  const failureCount = await completedCommandCount("refresh_book_info");
+  const failureEventStart = await harnessEventCount();
+  await page.getByTestId("book-refresh-info").click();
+  await page.waitForFunction(() => {
+    const button = document.querySelector('[data-testid="book-refresh-info"]');
+    return button && !button.disabled && button.textContent.includes("刷新书籍信息");
+  }, undefined, { timeout: 20_000 });
+  const failedCall = (await commandLog()).filter((call) => call.command === "refresh_book_info")[failureCount];
+  assert(failedCall?.error && failedCall.args.bookId === bookId,
+    `The failed metadata request did not return a Rust command error: ${JSON.stringify(failedCall)}.`);
+  await page.locator(".toast-message.error").filter({ hasText: "刷新书籍信息失败" }).waitFor({ timeout: 10_000 });
+  const failureEvents = await page.evaluate((offset) => window.__LEGADO_BROWSER_HARNESS__.events.slice(offset)
+    .filter((event) => event.event === "resource-updated" && event.payload?.kind === "book" || event.event === "shelf-updated"),
+  failureEventStart);
+  assert(failureEvents.length === 0,
+    `A failed metadata refresh emitted success resource events: ${JSON.stringify(failureEvents)}.`);
+  const afterFailure = (await getBookDocument(bookId)).document;
+  const afterFailureMetadata = {
+    title: afterFailure.title,
+    author: afterFailure.author,
+    intro: afterFailure.intro,
+    kind: afterFailure.kind,
+    wordCount: afterFailure.wordCount,
+  };
+  assert(JSON.stringify(afterFailureMetadata) === JSON.stringify(detailsAfterSuccess),
+    `A failed refresh changed persisted book metadata: ${JSON.stringify(afterFailureMetadata)}.`);
+  assert(await detail.locator("h2").innerText() === detailsAfterSuccess.title &&
+    await detail.locator(".detail-author").innerText() === detailsAfterSuccess.author &&
+    await detail.locator(".book-detail-intro").innerText() === detailsAfterSuccess.intro,
+  "A failed refresh replaced the details currently displayed in the open panel.");
+  assert(JSON.stringify(afterFailure.progress) === progressBefore && JSON.stringify(afterFailure.chapters) === chaptersBefore,
+    "A failed refresh changed chapter catalog or reading progress.");
+  const privateAfterFailure = JSON.parse(await readFile(beforePrivatePath, "utf8"));
+  assert(JSON.stringify(privateAfterFailure.book) === JSON.stringify(privateAfterSuccess.book),
+    "A failed refresh changed the previously persisted private source metadata.");
+  assert(await readFile(bookDiskPath, "utf8") === bookJsonAfterSuccess,
+    "A failed refresh changed the previously persisted public book details.");
+  for (const cached of cacheBefore) {
+    assert(createHash("sha256").update(await readFile(cached.cachePath)).digest("hex") === cached.sha256,
+      `A failed metadata refresh changed cached chapter '${cached.title}'.`);
+  }
+  await page.screenshot({ path: join(outputDir, "book-info-failure-preserved.png"), fullPage: true });
+
+  const restartCommandCalls = await commandLog();
+  await page.goto("about:blank");
+  await restartRustHarness();
+  await page.goto(origin, { waitUntil: "domcontentloaded" });
+  await page.getByTestId("nav-shelf-mobile").waitFor();
+  const bootstrap = await waitForCompletedCommand("app_bootstrap", 0);
+  const shelfAfterRestart = await readResourceJson(bootstrap.result.shelf);
+  const restartedShelfBook = shelfAfterRestart.books?.find((entry) => entry.id === bookId);
+  assert(restartedShelfBook?.title === detailsAfterSuccess.title && restartedShelfBook.author === detailsAfterSuccess.author &&
+    restartedShelfBook.chapterCount === before.chapters.length,
+  `The refreshed shelf projection or catalog count did not survive the Rust service restart: ${JSON.stringify(restartedShelfBook)}.`);
+  await page.getByTestId("nav-shelf-mobile").click();
+  await page.getByTestId(`shelf-book-${bookId}`).locator("button.cover-button").click();
+  await detail.waitFor();
+  const restarted = (await getBookDocument(bookId)).document;
+  assert(JSON.stringify({
+    title: restarted.title,
+    author: restarted.author,
+    intro: restarted.intro,
+    kind: restarted.kind,
+    wordCount: restarted.wordCount,
+  }) === JSON.stringify(detailsAfterSuccess),
+  `Processed per-book metadata did not survive the Rust service restart: ${JSON.stringify(restarted)}.`);
+  assert(JSON.stringify(restarted.progress) === progressBefore &&
+    JSON.stringify(restarted.chapters.map(({ id, title, index, src }) => ({ id, title, index, cached: Boolean(src) }))) ===
+      JSON.stringify(before.chapters.map(({ id, title, index, src }) => ({ id, title, index, cached: Boolean(src) }))),
+  "Chapter identities, cached state, or reading progress changed after refresh and Rust restart.");
+  for (const cached of cacheBefore) {
+    const chapter = restarted.chapters.find((entry) => entry.id === cached.id);
+    assert(chapter?.src && (await fetch(chapter.src)).ok,
+      `The cached chapter '${cached.title}' did not remain readable after the Rust restart.`);
+    assert(createHash("sha256").update(await readFile(cached.cachePath)).digest("hex") === cached.sha256,
+      `Restarting Rust after metadata refresh changed cached chapter '${cached.title}'.`);
+  }
+  assert(await detail.locator("h2").innerText() === detailsAfterSuccess.title &&
+    await detail.locator(".book-detail-intro").innerText() === detailsAfterSuccess.intro,
+  "The detail panel did not restore refreshed metadata after Rust service restart.");
+  await page.screenshot({ path: join(outputDir, "book-info-after-restart.png"), fullPage: true });
+
+  const fixtureModes = contentFixture.replacementBookInfoRequests().map((request) => request.mode);
+  assert(fixtureModes.includes("refreshed") && fixtureModes.includes("failure"),
+    `Real KMP book-info did not fetch both refreshed and failing fixture variants: ${JSON.stringify(fixtureModes)}.`);
+  verificationEvidence.bookInfoRefresh = {
+    bookId,
+    command: "refresh_book_info",
+    requestModes: fixtureModes,
+    refreshed: detailsAfterSuccess,
+    failedRefreshPreservedDetails: true,
+    chapterCount: before.chapters.length,
+    cachedChapters: cacheBefore.map(({ id, title, sha256 }) => ({ id, title, sha256 })),
+    progressPreserved: true,
+    metadataAndCachesSurvivedRustRestart: true,
+    commands: (await commandLog()).map((call) => call.command),
+    previousSessionCommands: restartCommandCalls.map((call) => call.command),
+  };
+  report("PASS: real refresh_book_info fetched updated metadata through KMP, changed only public/private book details, and preserved cached HTML/catalog/progress.");
+  report("PASS: an upstream refresh failure preserved the previously displayed and persisted details; successful metadata, cache resources, and progress survived Rust service restart.");
+  diagnostics.assertClean("Book metadata refresh");
+  await context.close();
+}
+
 async function main() {
   assert(process.platform === "linux", "The browser harness currently targets the configured Linux Chromium environment.");
   await requireFile(chromiumPath, "Chromium", constants.X_OK);
@@ -2449,6 +2704,7 @@ async function main() {
     args: ["--no-sandbox", "--disable-dev-shm-usage", "--disable-features=LocalNetworkAccessChecks"],
   });
   await startRustHarness();
+  await verifyApplicationStartupProcessLock();
   const fixtureSources = await importFixtureSource();
   await startVite();
   const readerFixture = await testReaderFlow(fixtureSources.book, contentFixture);
@@ -2458,6 +2714,7 @@ async function main() {
   await testSearchHistoryFlow();
   const replacementSources = await importReplacementFixtureSources();
   await testBookSourceChangeFlow(readerFixture.bookId, replacementSources, contentFixture);
+  await testBookMetadataRefreshFlow(readerFixture.bookId, contentFixture);
 }
 
 async function cleanup() {

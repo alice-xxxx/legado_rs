@@ -427,6 +427,8 @@ export const cancelTask = (taskId: string) => command<{ task: AppTask; resource:
 export const addBook = (resultId: string) =>
   command<BookMutationResponse>("add_book", { resultId });
 export const getBook = (bookId: string) => command<ResourceDescriptor>("get_book", { bookId });
+export const refreshBookInfo = (bookId: string) =>
+  command<BookMutationResponse>("refresh_book_info", { bookId });
 export const prepareChapters = (bookId: string, fromIndex: number, count: number) =>
   command<{ book: ResourceDescriptor; prepared: number }>("prepare_chapters", {
     bookId,

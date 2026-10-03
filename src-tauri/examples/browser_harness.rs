@@ -402,6 +402,19 @@ async fn invoke(
             .get_book(string_arg(&args, "bookId")?)
             .await
             .map_err(internal_error),
+        "refresh_book_info" => {
+            let result = state
+                .app
+                .refresh_book_info(string_arg(&args, "bookId")?)
+                .await
+                .map_err(internal_error)?;
+            state.emit(
+                "resource-updated",
+                json!({ "kind": "book", "resource": result["book"] }),
+            );
+            state.emit("shelf-updated", result["shelf"].clone());
+            Ok(result)
+        }
         "prepare_chapters" => {
             let book_id = string_arg(&args, "bookId")?;
             let from_index = args.get("fromIndex").and_then(Value::as_u64).unwrap_or(0) as usize;
