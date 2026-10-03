@@ -8,6 +8,7 @@ pub mod models;
 pub mod reading_tools;
 pub mod resources;
 pub mod rss;
+pub(crate) mod search_history;
 pub mod source_engine;
 mod source_host_ffi;
 mod source_http;
@@ -50,6 +51,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             application::app_bootstrap,
             application::list_sources,
+            application::get_search_history,
+            application::delete_search_history,
+            application::clear_search_history,
             application::import_sources,
             application::import_sources_from_picker,
             application::remove_sources,

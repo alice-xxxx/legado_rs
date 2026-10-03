@@ -506,6 +506,12 @@ fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
                     .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
                 crate::rss::validate_rss_state(&document)?;
             }
+            "reading/search-history.json" => {
+                let document: Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid search history JSON: {error}"))?;
+                crate::search_history::validate_document(&document)
+                    .map_err(|error| format!("Invalid search history JSON: {error}"))?;
+            }
             "private-data/sources.json" => {
                 let value: serde_json::Value = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid private source JSON: {error}"))?;
@@ -1176,7 +1182,7 @@ fn hex_digest(bytes: &[u8]) -> String {
 mod tests {
     use super::{
         create_backup, extract_and_validate, recover_interrupted_restore, restore_backup,
-        RestoreJournal,
+        BackupManifest, RestoreJournal, MANIFEST_PATH,
     };
     use crate::models::{
         BookDocument, ChapterDescriptor, ProgressDocument, ProgressSummary, ReaderDefaults,
@@ -1185,11 +1191,13 @@ mod tests {
     use crate::resources::ResourceStore;
     use base64::Engine;
     use serde_json::{json, Value};
+    use sha2::{Digest, Sha256};
     use std::io::Write;
     use std::net::SocketAddr;
+    use std::path::Path;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use zip::write::SimpleFileOptions;
-    use zip::{CompressionMethod, ZipWriter};
+    use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
     async fn start_media_upstream() -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1266,6 +1274,59 @@ mod tests {
         }));
         store.write_json_ref(&shelf_ref, &shelf).await.unwrap();
         book
+    }
+
+    fn rewrite_search_history_entry(
+        source_archive: &Path,
+        destination_archive: &Path,
+        replacement: &[u8],
+    ) {
+        let source = std::fs::File::open(source_archive).unwrap();
+        let mut archive = ZipArchive::new(source).unwrap();
+        let mut files = Vec::new();
+        let mut manifest = None;
+        for index in 0..archive.len() {
+            let mut entry = archive.by_index(index).unwrap();
+            let path = entry.name().to_owned();
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut entry, &mut bytes).unwrap();
+            if path == MANIFEST_PATH {
+                manifest = Some(serde_json::from_slice::<BackupManifest>(&bytes).unwrap());
+            } else if path == "reading/search-history.json" {
+                bytes = replacement.to_vec();
+            }
+            files.push((path, bytes));
+        }
+
+        let mut manifest = manifest.expect("source backup has a manifest");
+        let history = files
+            .iter()
+            .find(|(path, _)| path == "reading/search-history.json")
+            .expect("source backup has search history");
+        let entry = manifest
+            .files
+            .iter_mut()
+            .find(|entry| entry.path == "reading/search-history.json")
+            .expect("manifest lists search history");
+        entry.size = history.1.len() as u64;
+        entry.sha256 = super::hex_digest(&Sha256::digest(&history.1));
+        files
+            .iter_mut()
+            .find(|(path, _)| path == MANIFEST_PATH)
+            .unwrap()
+            .1 = serde_json::to_vec_pretty(&manifest).unwrap();
+
+        let output = std::fs::File::create(destination_archive).unwrap();
+        let mut writer = ZipWriter::new(output);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .large_file(true)
+            .unix_permissions(0o600);
+        for (path, bytes) in files {
+            writer.start_file(path, options).unwrap();
+            writer.write_all(&bytes).unwrap();
+        }
+        writer.finish().unwrap();
     }
 
     #[tokio::test]
@@ -1437,6 +1498,9 @@ mod tests {
             br#"{"schemaVersion":1,"rules":[]}"#,
         )
         .unwrap();
+        crate::search_history::record_search(&store, "backup-search-1", "没钱修什么仙", 123)
+            .await
+            .unwrap();
 
         let storage = root.join("source-engine/storage");
         std::fs::create_dir_all(&storage).unwrap();
@@ -1586,6 +1650,11 @@ mod tests {
             std::fs::read(storage.join("source-cache.json")).unwrap(),
             br#"{"entries":{"cache-key":{"value":"new-device-cache"}}}"#
         );
+        let reopened = ResourceStore::open(&root).unwrap();
+        let restored_search_history = crate::search_history::load(&reopened).await.unwrap();
+        assert_eq!(restored_search_history.entries.len(), 1);
+        assert_eq!(restored_search_history.entries[0].query, "没钱修什么仙");
+        assert_eq!(restored_search_history.entries[0].usage, 1);
 
         // The still-running resource server resolves the restored chapter and
         // image using its original root path.
@@ -1665,6 +1734,67 @@ mod tests {
         );
         assert_eq!(book.id, "keep-book");
         assert!(!temporary.path().join("escaped.json").exists());
+    }
+
+    #[tokio::test]
+    async fn invalid_search_history_backup_does_not_change_existing_app_data() {
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path().join("app-data");
+        let store = ResourceStore::open(&root).unwrap();
+        add_book(&store, "keep-book", "Keep Book").await;
+        crate::search_history::record_search(&store, "existing-search", "Existing query", 42)
+            .await
+            .unwrap();
+
+        let archive = temporary.path().join("valid-source.zip");
+        create_backup(&store, &archive).await.unwrap();
+        let before_shelf = std::fs::read(root.join("shelf.json")).unwrap();
+        let before_book = std::fs::read(root.join("books/keep-book/book.json")).unwrap();
+        let before_history = std::fs::read(root.join("reading/search-history.json")).unwrap();
+
+        let invalid_documents = [
+            json!({
+                "schemaVersion": 2,
+                "entries": [],
+                "processedSearchIds": [],
+            }),
+            json!({
+                "schemaVersion": 1,
+                "entries": [{
+                    "query": "Visible query",
+                    "normalizedQuery": "different query",
+                    "usage": 1,
+                    "firstUseTimeMs": 1,
+                    "lastUseTimeMs": 1,
+                }],
+                "processedSearchIds": [],
+            }),
+        ];
+
+        for (index, invalid) in invalid_documents.iter().enumerate() {
+            let malformed_archive = temporary.path().join(format!("invalid-{index}.zip"));
+            rewrite_search_history_entry(
+                &archive,
+                &malformed_archive,
+                &serde_json::to_vec(invalid).unwrap(),
+            );
+
+            assert!(restore_backup(&store, &malformed_archive).await.is_err());
+            assert_eq!(
+                std::fs::read(root.join("shelf.json")).unwrap(),
+                before_shelf
+            );
+            assert_eq!(
+                std::fs::read(root.join("books/keep-book/book.json")).unwrap(),
+                before_book
+            );
+            assert_eq!(
+                std::fs::read(root.join("reading/search-history.json")).unwrap(),
+                before_history
+            );
+            let history = crate::search_history::load(&store).await.unwrap();
+            assert_eq!(history.entries[0].query, "Existing query");
+        }
     }
 
     #[tokio::test]

@@ -645,11 +645,33 @@ impl ApplicationService {
     }
 
     pub async fn bootstrap(&self) -> Result<Value, String> {
+        crate::search_history::load(&self.store).await?;
+        let search_history = crate::search_history::resource_ref(&self.store)?;
         Ok(json!({
             "shelf": self.resource_descriptor(&self.store.shelf_ref()),
             "settings": self.resource_descriptor(&self.store.settings_ref()),
             "sources": self.source_metadata().await?,
+            "searchHistory": self.resource_descriptor(&search_history),
         }))
+    }
+
+    pub async fn get_search_history(&self) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        crate::search_history::load(&self.store).await?;
+        let resource = crate::search_history::resource_ref(&self.store)?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn delete_search_history(&self, query: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource = crate::search_history::delete_query(&self.store, query).await?;
+        Ok(self.resource_descriptor(&resource))
+    }
+
+    pub async fn clear_search_history(&self) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let resource = crate::search_history::clear(&self.store).await?;
+        Ok(self.resource_descriptor(&resource))
     }
 
     pub async fn list_sources(&self) -> Result<Value, String> {
@@ -767,12 +789,16 @@ impl ApplicationService {
         let selected = all_sources
             .into_iter()
             .filter(|source| {
-                source.enabled && (source_ids.is_empty() || source_ids.contains(&source.id))
+                source.enabled
+                    && !crate::source_metadata::is_rss_source_metadata(&source.source)
+                    && (source_ids.is_empty() || source_ids.contains(&source.id))
             })
             .collect::<Vec<_>>();
         if selected.is_empty() {
             return Err("No enabled book sources are selected".into());
         }
+        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
+        crate::search_history::record_search(&self.store, &search_id, keyword, now_ms()).await?;
 
         let mut source_results = Vec::new();
         let mut errors = Vec::new();
@@ -814,8 +840,14 @@ impl ApplicationService {
                 "resultCount": source_results.len(),
             }));
         }
-        self.store_processed_results(keyword, page, source_results, errors)
-            .await
+        self.store_processed_results_with_search_id(
+            &search_id,
+            keyword,
+            page,
+            source_results,
+            errors,
+        )
+        .await
     }
 
     pub async fn start_search(
@@ -835,7 +867,9 @@ impl ApplicationService {
             .await?
             .into_iter()
             .filter(|source| {
-                source.enabled && (source_ids.is_empty() || source_ids.contains(&source.id))
+                source.enabled
+                    && !crate::source_metadata::is_rss_source_metadata(&source.source)
+                    && (source_ids.is_empty() || source_ids.contains(&source.id))
             })
             .collect::<Vec<_>>();
         if selected.is_empty() {
@@ -860,6 +894,7 @@ impl ApplicationService {
             )
             .await
             .map_err(|error| error.to_string())?;
+        crate::search_history::record_search(&self.store, &search_id, keyword, now_ms()).await?;
         let now = now_ms();
         let task = AppTask {
             id: format!("task-{}", uuid::Uuid::new_v4().simple()),
@@ -2854,6 +2889,25 @@ impl ApplicationService {
         source_results: Vec<(SourceRecord, Value)>,
         errors: Vec<Value>,
     ) -> Result<Value, String> {
+        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
+        self.store_processed_results_with_search_id(
+            &search_id,
+            keyword,
+            page,
+            source_results,
+            errors,
+        )
+        .await
+    }
+
+    pub(crate) async fn store_processed_results_with_search_id(
+        &self,
+        search_id: &str,
+        keyword: &str,
+        page: u32,
+        source_results: Vec<(SourceRecord, Value)>,
+        errors: Vec<Value>,
+    ) -> Result<Value, String> {
         let mut public_results = Vec::with_capacity(source_results.len());
         for (source, book) in source_results {
             let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
@@ -2864,10 +2918,9 @@ impl ApplicationService {
             .await?;
             public_results.push(project_search_result(&result_id, &source, &book));
         }
-        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
         let resource = self
             .store
-            .search_ref(&search_id)
+            .search_ref(search_id)
             .map_err(|error| error.to_string())?;
         let document = json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
@@ -5056,12 +5109,47 @@ mod tauri_commands {
 
     #[tauri::command]
     pub async fn app_bootstrap(service: State<'_, ApplicationService>) -> Result<Value, String> {
+        let _operation = service.operation_read().await;
         service.bootstrap().await
     }
 
     #[tauri::command]
     pub async fn list_sources(service: State<'_, ApplicationService>) -> Result<Value, String> {
         service.list_sources().await
+    }
+
+    #[tauri::command]
+    pub async fn get_search_history(
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        service.get_search_history().await
+    }
+
+    #[tauri::command]
+    pub async fn delete_search_history(
+        app: tauri::AppHandle,
+        query: String,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.delete_search_history(&query).await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "searchHistory", "resource": resource }),
+        );
+        Ok(resource)
+    }
+
+    #[tauri::command]
+    pub async fn clear_search_history(
+        app: tauri::AppHandle,
+        service: State<'_, ApplicationService>,
+    ) -> Result<Value, String> {
+        let resource = service.clear_search_history().await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "searchHistory", "resource": resource }),
+        );
+        Ok(resource)
     }
 
     #[tauri::command]
@@ -5130,6 +5218,11 @@ mod tauri_commands {
                 let _ = app.emit("search-progress", progress);
             })
             .await?;
+        let history = service.get_search_history().await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "searchHistory", "resource": history }),
+        );
         let _ = app.emit(
             "search-complete",
             json!({
@@ -5154,6 +5247,11 @@ mod tauri_commands {
             .start_search(&source_ids, &keyword, page.unwrap_or(1))
             .await?;
         let _ = app.emit("search-started", result.clone());
+        let history = service.get_search_history().await?;
+        let _ = app.emit(
+            "resource-updated",
+            json!({ "kind": "searchHistory", "resource": history }),
+        );
         Ok(result)
     }
 
@@ -6645,6 +6743,145 @@ mod tests {
             .await
             .unwrap_err()
             .contains("Book catalog changed after the search"));
+        drop(service);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn search_history_tracks_user_searches_but_not_replacement_searches() {
+        let (service, _executor, root, source_id) = controlled_service(2).await;
+        let bootstrap = service.bootstrap().await.expect("bootstrap resources");
+        assert_eq!(
+            bootstrap["searchHistory"]["resourceId"],
+            "resource://reading/search-history.json"
+        );
+        let client = reqwest::Client::new();
+        let initial = json_get(&client, bootstrap["searchHistory"]["src"].as_str().unwrap()).await;
+        assert_eq!(initial["entries"], json!([]));
+
+        let feed = service
+            .import_sources(
+                &json!([{
+                    "sourceName": "Search history feed fixture",
+                    "sourceUrl": "https://feed.example.test/search-history.xml",
+                    "bookSourceType": 5
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import RSS source");
+        let rss_source_id = feed["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Search history feed fixture")
+            .and_then(|source| source["id"].as_str())
+            .expect("RSS source ID")
+            .to_owned();
+        assert!(service
+            .start_search(&[rss_source_id.clone()], "RSS must not search", 1)
+            .await
+            .unwrap_err()
+            .contains("No enabled book sources"));
+        assert!(service
+            .search_books(&[rss_source_id], "RSS must not search", 1, |_| {})
+            .await
+            .unwrap_err()
+            .contains("No enabled book sources"));
+        assert!(crate::search_history::load(&service.store)
+            .await
+            .expect("history stays empty after rejected RSS searches")
+            .entries
+            .is_empty());
+
+        let started = service
+            .start_search(&[], "  Alpha   Beta  ", 1)
+            .await
+            .expect("start user search");
+        wait_for_task_status(&service, started["taskId"].as_str().unwrap(), "completed").await;
+        let search_ref =
+            crate::resources::ResourceRef::new(started["resource"]["resourceId"].as_str().unwrap())
+                .expect("search resource ref");
+        let search_document = service
+            .store
+            .read_json_ref(&search_ref)
+            .await
+            .expect("completed user search resource");
+        assert!(search_document["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|result| { result["sourceId"].as_str() == Some(source_id.as_str()) }));
+        let after_async = crate::search_history::load(&service.store)
+            .await
+            .expect("history after task search");
+        assert_eq!(after_async.entries.len(), 1);
+        assert_eq!(after_async.entries[0].query, "Alpha   Beta");
+        assert_eq!(after_async.entries[0].usage, 1);
+
+        service
+            .search_books(&[], "ALPHA BETA", 1, |_| {})
+            .await
+            .expect("run synchronous user search");
+        let after_sync = crate::search_history::load(&service.store)
+            .await
+            .expect("history after synchronous search");
+        assert_eq!(after_sync.entries.len(), 1);
+        assert_eq!(after_sync.entries[0].query, "ALPHA BETA");
+        assert_eq!(after_sync.entries[0].usage, 2);
+        assert_eq!(after_sync.processed_search_ids.len(), 2);
+
+        let replacement_source = service
+            .import_sources(
+                &json!([{
+                    "bookSourceName": "Replacement fixture",
+                    "bookSourceUrl": "mock://source/replacement",
+                    "bookSourceType": 0
+                }])
+                .to_string(),
+            )
+            .await
+            .expect("import replacement source");
+        let replacement_source_id = replacement_source["sources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|source| source["name"] == "Replacement fixture")
+            .and_then(|source| source["id"].as_str())
+            .expect("replacement source ID")
+            .to_owned();
+        let book_id = add_controlled_book(&service, &source_id, "Bound story").await;
+        let before_internal_search = crate::search_history::load(&service.store)
+            .await
+            .expect("history before replacement search");
+        let candidates = service
+            .search_book_source_candidates(&book_id, &[replacement_source_id], None, 1)
+            .await
+            .expect("search source replacement candidates");
+        wait_for_task_status(
+            &service,
+            candidates["taskId"].as_str().unwrap(),
+            "completed",
+        )
+        .await;
+        let after_internal_search = crate::search_history::load(&service.store)
+            .await
+            .expect("history after replacement search");
+        assert_eq!(after_internal_search, before_internal_search);
+
+        let deleted = service
+            .delete_search_history("alpha\t beta")
+            .await
+            .expect("delete query history");
+        let deleted_doc = json_get(&client, deleted["src"].as_str().unwrap()).await;
+        assert_eq!(deleted_doc["entries"].as_array().unwrap().len(), 1);
+        let cleared = service
+            .clear_search_history()
+            .await
+            .expect("clear search history");
+        let cleared_doc = json_get(&client, cleared["src"].as_str().unwrap()).await;
+        assert_eq!(cleared_doc["entries"], json!([]));
+
         drop(service);
         let _ = std::fs::remove_dir_all(root);
     }
