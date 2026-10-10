@@ -1,0 +1,303 @@
+name: Build all platforms
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            installer_paths: |
+              src-tauri/target/release/bundle/appimage/*.AppImage
+              src-tauri/target/release/bundle/deb/*.deb
+              src-tauri/target/release/bundle/rpm/*.rpm
+          - os: macos-latest
+            installer_paths: src-tauri/target/release/bundle/dmg/*.dmg
+          - os: windows-latest
+            installer_paths: |
+              src-tauri/target/release/bundle/msi/*.msi
+              src-tauri/target/release/bundle/nsis/*.exe
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          # Keep the CI cache on GitHub's open-source cache service.
+          cache-provider: basic
+          cache-read-only: false
+      - name: Install Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes \
+            build-essential curl file libayatana-appindicator3-dev libssl-dev \
+            librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build KMP JVM and QuickJS from repository sources
+        if: runner.os != 'Windows'
+        working-directory: kotlin
+        run: ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
+      - name: Build KMP JVM and QuickJS from repository sources
+        if: runner.os == 'Windows'
+        working-directory: kotlin
+        # Windows' inherited CMake generator may select NMake outside a VS developer shell.
+        # Pin the available Ninja + GCC toolchain so QuickJS configures consistently in CI.
+        env:
+          CMAKE_GENERATOR: Ninja
+          CC: gcc
+          CXX: g++
+        run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
+      # linuxdeploy inspects bundled JNI libraries and needs the JRE's nested shared-library paths.
+      - name: Add bundled JVM libraries to the Linux linker search path
+        if: runner.os == 'Linux'
+        run: |
+          echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib/server:$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib:$GITHUB_WORKSPACE/kotlin/build/source-engine/runtime/jre/lib/jli${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
+      - name: Build unsigned desktop installers
+        # Preserve linuxdeploy's detailed failure output in CI instead of only the generic exit error.
+        run: npm run tauri -- build --no-sign --verbose
+      - name: Upload desktop installers
+        uses: actions/upload-artifact@v7
+        with:
+          name: desktop-installers-${{ matrix.os }}
+          path: ${{ matrix.installer_paths }}
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    name: Android APK and AAR
+    runs-on: ubuntu-latest
+    env:
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: false
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0 ndk;30.0.14904198 cmake;3.31.1'
+      - name: Install Android API 37 preview platform
+        run: sdkmanager --install 'platforms;android-37.0' --channel=3
+      - name: Install Rust Android targets
+        run: rustup target add aarch64-linux-android armv7-linux-androideabi i686-linux-android x86_64-linux-android
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      - name: Build KMP Android AAR and native libraries
+        working-directory: kotlin
+        run: ./gradlew --no-daemon --console=plain stageTauriAndroidAar
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Generate Android project
+        run: npm run tauri -- android init --ci
+      - name: Configure Android resource packaging
+        env:
+          LEGADO_ANDROID_STRIP_DEBUG_SYMBOLS: '1'
+        run: node scripts/configure-tauri-android.mjs
+      # The debug variant uses Gradle's default debug key, so local installation needs no release key.
+      - name: Build debug APKs
+        run: npm run tauri -- android build --debug --apk --ci
+      - name: Report APK and native ABI payload
+        shell: bash
+        run: |
+          output_dir=src-tauri/gen/android/app/build/outputs/apk
+          mapfile -d '' apks < <(find "$output_dir" -type f -name '*.apk' -print0)
+          if (( ${#apks[@]} == 0 )); then
+            echo "No APKs were produced under $output_dir" >&2
+            exit 1
+          fi
+          declare -A packaged_libraries
+          for apk in "${apks[@]}"; do
+            echo "APK $(basename "$apk"): $(stat -c '%s' "$apk") bytes"
+            unzip -l "$apk" | awk '$4 ~ /^lib\/[^/]+\/[^/]+\.so$/ { printf "  %10s %s\n", $1, $4 }'
+            while IFS= read -r entry; do
+              if [[ "$entry" =~ ^lib/([^/]+)/([^/]+\.so)$ ]]; then
+                packaged_libraries["${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"]=1
+              fi
+            done < <(unzip -Z1 "$apk")
+          done
+          for abi in arm64-v8a armeabi-v7a x86 x86_64; do
+            for library in liblegado_lib.so liblegado_quickjs.so; do
+              if [[ -z "${packaged_libraries["$abi/$library"]+present}" ]]; then
+                echo "Missing lib/$abi/$library from all produced APKs" >&2
+                exit 1
+              fi
+            done
+          done
+          echo "All four Android ABIs contain the Rust app and QuickJS libraries."
+      - name: Upload Android APKs
+        uses: actions/upload-artifact@v7
+        with:
+          name: android-apks
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  ios:
+    name: iOS unsigned IPA and frameworks
+    runs-on: macos-latest
+    env:
+      IPHONEOS_DEPLOYMENT_TARGET: '15.0'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+          cache-read-only: false
+      - name: Install Rust Apple targets
+        run: rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+      # Kotlin/Native keeps its compiler and platform dependencies outside Gradle User Home.
+      - name: Cache Kotlin/Native toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.konan
+          key: konan-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('kotlin/build.gradle.kts', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            konan-${{ runner.os }}-${{ runner.arch }}-
+      - name: Resolve iOS framework cache key
+        id: ios-framework-key
+        shell: bash
+        run: |
+          toolchain_hash="$(./scripts/build-ios-frameworks.sh cache-key)"
+          echo "toolchain=$toolchain_hash" >> "$GITHUB_OUTPUT"
+      - name: Restore exact iOS frameworks and native archive cache
+        id: ios-framework-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: |
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64
+            src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+          key: ios-framework-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-framework-key.outputs.toolchain }}-${{ hashFiles('scripts/build-ios-frameworks.sh', 'kotlin/*.gradle.kts', 'kotlin/gradle.properties', 'kotlin/gradle/**', 'kotlin/gradlew', 'kotlin/gradlew.bat', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/kmp-engine/src/**', 'kotlin/kmp-engine/scripts/**', 'kotlin/kmp-engine/schemas/**', 'kotlin/src/native/quickjs-ng/**', 'kotlin/quickjs-processor/build.gradle.kts', 'kotlin/quickjs-processor/src/**', 'src-tauri/include/**') }}
+      - name: Build device and simulator frameworks
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-ios-frameworks.sh build-frameworks
+      - name: Package Kotlin/Native framework for the iOS Tauri plugin
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true'
+        run: ./scripts/build-ios-frameworks.sh package-xcframework
+      - name: Verify iOS framework cache outputs
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          root = Path.cwd()
+          outputs = [
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libquickjs.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libquickjs.a",
+              root / "kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libmbedtls.a",
+          ]
+          missing = [str(path.relative_to(root)) for path in outputs if not path.is_file()]
+          if missing:
+              raise SystemExit("Missing cached iOS build outputs: " + ", ".join(missing))
+
+          xcframework = root / "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework"
+          info = xcframework / "Info.plist"
+          if not info.is_file():
+              raise SystemExit(f"Missing XCFramework metadata: {info}")
+          with info.open("rb") as handle:
+              libraries = plistlib.load(handle)["AvailableLibraries"]
+          identifiers = {item["LibraryIdentifier"] for item in libraries}
+          required = {"ios-arm64", "ios-arm64-simulator"}
+          if not required.issubset(identifiers):
+              raise SystemExit(f"XCFramework slices {sorted(identifiers)} do not include {sorted(required)}")
+          for library in libraries:
+              identifier = library["LibraryIdentifier"]
+              library_path = library["LibraryPath"]
+              binary = xcframework / identifier / library_path / "LegadoSourceEngine"
+              if identifier in required and not binary.is_file():
+                  raise SystemExit(f"Missing XCFramework slice binary: {binary}")
+              if identifier == "ios-arm64" and library.get("SupportedPlatform") != "ios":
+                  raise SystemExit(f"Unexpected platform for device slice: {library}")
+              if identifier == "ios-arm64-simulator" and library.get("SupportedPlatformVariant") != "simulator":
+                  raise SystemExit(f"Unexpected platform for simulator slice: {library}")
+          print("Verified iOS device/simulator framework binaries, QuickJS/mbedTLS archives, and XCFramework slices.")
+          PY
+          for archive in \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libquickjs.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64/libmbedtls.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libquickjs.a \
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64/libmbedtls.a; do
+            xcrun lipo "$archive" -verify_arch arm64
+          done
+          for slice in ios-arm64 ios-arm64-simulator; do
+            xcrun lipo "src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework/$slice/LegadoSourceEngine.framework/LegadoSourceEngine" -verify_arch arm64
+          done
+      - name: Save iOS framework and native archive cache
+        if: steps.ios-framework-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            kotlin/kmp-engine/build/iosNativeLibs/ios_arm64
+            kotlin/kmp-engine/build/iosNativeLibs/ios_simulator_arm64
+            src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+          key: ${{ steps.ios-framework-cache.outputs.cache-primary-key }}
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Generate iOS project
+        run: npm run tauri -- ios init --ci
+      - name: Verify generated iOS framework search paths
+        run: |
+          project=src-tauri/gen/apple/project.yml
+          grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]' "$project"
+          grep -Fq 'FRAMEWORK_SEARCH_PATHS[sdk=iphonesimulator*]' "$project"
+          grep -Fq 'LegadoSourceEngine.xcframework' "$project"
+          grep -Fq 'libsqlite3.tbd' "$project"
+      # Deliberately omit Apple signing credentials; the IPA must be re-signed before device installation.
+      - name: Build unsigned device IPA
+        run: npm run tauri -- ios build --no-sign --ci
+      - name: Upload iOS IPA
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-unsigned-ipa
+          path: src-tauri/gen/apple/build/**/*.ipa
+          if-no-files-found: error
+          retention-days: 14

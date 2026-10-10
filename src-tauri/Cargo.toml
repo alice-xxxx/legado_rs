@@ -1,0 +1,95 @@
+[package]
+name = "legado"
+version = "0.1.0"
+description = "A Tauri App"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "legado_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[features]
+# Keep desktop as the default runtime; mobile builds opt into `mobile-runtime`.
+default = ["desktop"]
+desktop = [
+    "dep:tauri-build",
+    "dep:tauri",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-source-engine",
+    "dep:tauri-plugin-deep-link",
+    "dep:tauri-plugin-single-instance",
+    "tauri-plugin-single-instance/deep-link",
+    "tauri/wry",
+    "tauri/compression",
+    "tauri/common-controls-v6",
+    "tauri/dynamic-acl",
+    "tauri/x11",
+    "tauri/dbus",
+]
+mobile-runtime = [
+    "dep:tauri-build",
+    "dep:tauri",
+    "dep:tauri-plugin-opener",
+    "dep:tauri-plugin-dialog",
+    "dep:tauri-plugin-fs",
+    "dep:tauri-plugin-source-engine",
+    "dep:tauri-plugin-deep-link",
+    "tauri-plugin-source-engine/native-mobile",
+]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [], optional = true }
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = [], optional = true }
+tauri-plugin-opener = { version = "2", default-features = false, optional = true }
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"], optional = true }
+tauri-plugin-fs = { version = "2", default-features = false, optional = true }
+tauri-plugin-source-engine = { path = "plugins/source-engine", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.23"
+reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stream"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "io-util", "sync", "time"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+axum = "0.8"
+ammonia = "4"
+atomicwrites = "0.4.4"
+encoding_rs = "0.8"
+feed-rs = "2"
+http-range-header = "0.4"
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
+imageproc = { version = "0.27.0", default-features = false }
+lopdf = { version = "0.45", default-features = false }
+natord = "1.0.9"
+percent-encoding = "2"
+quick-xml = "0.42"
+regex = "1"
+sha2 = "0.10"
+tempfile = "3"
+webp = { version = "0.3.1", default-features = false }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+jni = { version = "0.22.4", features = ["invocation"] }
+tauri-plugin-deep-link = { version = "2", optional = true }
+tauri-plugin-single-instance = { version = "2", optional = true }
+
+[patch.crates-io]
+swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true

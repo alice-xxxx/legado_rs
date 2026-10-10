@@ -1,0 +1,35 @@
+{
+  "bundle": {
+    "resources": null,
+    "fileAssociations": [
+      {
+        "ext": ["txt"],
+        "name": "TXT Book",
+        "description": "Legado text book",
+        "mimeType": "text/plain",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["epub"],
+        "name": "EPUB Book",
+        "description": "Legado EPUB book",
+        "mimeType": "application/epub+zip",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["cbz"],
+        "name": "CBZ Comic Book",
+        "description": "Legado CBZ comic book",
+        "mimeType": "application/vnd.comicbook+zip",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["pdf"],
+        "name": "PDF Book",
+        "description": "Legado PDF book",
+        "mimeType": "application/pdf",
+        "role": "Viewer"
+      }
+    ]
+  }
+}
