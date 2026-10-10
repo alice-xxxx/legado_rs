@@ -1,7 +1,7 @@
 import { createApp, type Component } from "vue";
 import { emit } from "@tauri-apps/api/event";
-import { RouterView } from "vue-router";
 import router from "./router";
+import RoutesRoot from "./app/RoutesRoot.vue";
 import ExternalImportHost from "./features/import/ExternalImportHost.vue";
 import ReaderHost from "./features/reader/ReaderHost.vue";
 import GlobalNoticeHost from "./app/GlobalNoticeHost.vue";
@@ -66,7 +66,7 @@ mountRoot(RecoveryRuntime, "#recovery-runtime", "recovery");
 mountRoot(ExternalImportHost, "#external-import-host", "external-import");
 mountRoot(ReaderHost, "#reader-host", "reader", true);
 mountRoot(GlobalNoticeHost, "#notice-host", "notices");
-mountRoot(RouterView, "#app", "routes", true);
+mountRoot(RoutesRoot, "#app", "routes", true);
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {

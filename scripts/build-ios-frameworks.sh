@@ -32,7 +32,7 @@ case "$mode" in
     (
       cd "$repo_root/kotlin"
       IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
-        ./gradlew --no-daemon --console=plain \
+        bash ./gradlew --no-daemon --console=plain \
           :kmp-engine:linkReleaseFrameworkIosArm64 \
           :kmp-engine:linkReleaseFrameworkIosSimulatorArm64
     )

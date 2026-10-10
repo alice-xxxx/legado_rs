@@ -1,8 +1,15 @@
 <script setup lang="ts">
+defineOptions({ name: "HomePage" });
+
+/*
+ * 首页负责读取栏目配置、加载栏目内容，并显示搜索入口和内容卡片。
+ * 内容来自“管理栏目”里配置的书源和分类
+ * ref 保存会变化的状态，computed 根据这些状态自动计算页面数据。
+ */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { addBook } from "../../api/books";
-import { getHomeConfig, listDiscoveryBooks, listDiscoveryCategories } from "../../api/discovery";
+import { getHomeConfig, listDiscoveryBooks } from "../../api/discovery";
 import { readResource } from "../../api/resources";
 import { appBootstrap } from "../../api/core";
 import { shelfBatchRecoveryMessage, shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -10,7 +17,6 @@ import { notify } from "../../app/notifications";
 import type {
   AppBootstrap,
   BookResource,
-  DiscoveryCategoriesResource,
   HomeConfigDocument,
   ResourceDescriptor,
   SearchBookResult,
@@ -25,6 +31,7 @@ import router, { routeNames, settingsRouteNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
 
+// 顶部两个入口分别跳到搜索页和首页栏目配置页。
 function openSearch(): void {
   void router.push({ name: routeNames.search });
 }
@@ -33,46 +40,45 @@ function manageHome(): void {
   void router.push({ name: settingsRouteNames["home-config"] });
 }
 
+// homeConfig 保存标签页/栏目的设置；sectionResources 按栏目 ID 缓存加载结果。
+// sources 只用于判断内容类型，不用于自动生成推荐内容。
 const homeConfig = ref<HomeConfigDocument>({
   schemaVersion: 1,
-  tabs: [{ id: "tab-home", title: "\u4E3B\u9875", sortOrder: 0, sections: [] }],
+  tabs: [{ id: "tab-home", title: "主页", sortOrder: 0, sections: [] }],
 });
 const sectionResources = ref<Record<string, SearchResource>>({});
 const loadingSectionIds = ref<string[]>([]);
-const recommendations = ref<SearchBookResult[]>([]);
 const sources = ref<SourceMetadata[]>([]);
-const recommendationLoading = ref(false);
-const recommendationError = ref("");
 const configLoading = ref(true);
 const loadError = ref("");
 const restoreRevision = ref(0);
+// 请求版本号用于忽略过期的页面、配置或书源响应。
 let pageRevision = 0;
 let configRequestRevision = 0;
 let sourceRequestRevision = 0;
-let recommendationRevision = 0;
 let unlisteners: UnlistenFn[] = [];
+// 记录每个栏目当前正在执行的请求，避免重复加载。
 const sectionRequests = new Map<string, { sourceId: string; categoryId: string; token: symbol }>();
 
-const enabledSources = computed(() => sources.value.filter((source) => source.enabled));
+// busy 表示首页配置正在读取；其余状态决定当前标签、内容类型和展示视图。
 const busy = computed(() => configLoading.value);
 const activeTabId = ref("");
 const activeType = ref<"all" | "novel" | "comic" | "video" | "audio">("all");
-const showSectionLayout = ref(false);
 const typeFilters = [
-  { id: "all", title: "\u5168\u90E8" },
-  { id: "novel", title: "\u5C0F\u8BF4" },
-  { id: "comic", title: "\u6F2B\u753B" },
-  { id: "video", title: "\u89C6\u9891" },
-  { id: "audio", title: "\u97F3\u9891" },
+  { id: "all", title: "全部" },
+  { id: "novel", title: "小说" },
+  { id: "comic", title: "漫画" },
+  { id: "video", title: "视频" },
+  { id: "audio", title: "音频" },
 ] as const;
+// 以下计算值按排序后的配置找到当前标签页和它的栏目。
 const orderedTabs = computed(() => [...homeConfig.value.tabs].sort((left, right) => left.sortOrder - right.sortOrder));
 const activeTab = computed(() => orderedTabs.value.find((tab) => tab.id === activeTabId.value) ?? orderedTabs.value[0]);
 const orderedSections = computed(() => [...(activeTab.value?.sections ?? [])].sort((left, right) => left.sortOrder - right.sortOrder));
+// 合并当前标签页各栏目已加载的书目，按书源和书籍地址去重，最多显示 60 条。
 const gridResults = computed(() => {
   const seen = new Set<string>();
-  const items = orderedSections.value.length
-    ? orderedSections.value.flatMap((section) => sectionResources.value[section.id]?.results ?? [])
-    : recommendations.value;
+  const items = orderedSections.value.flatMap((section) => sectionResources.value[section.id]?.results ?? []);
   return items.filter((item) => {
     const key = item.sourceId + ":" + (item.bookUrl ?? item.resultId);
     if (seen.has(key)) return false;
@@ -81,14 +87,17 @@ const gridResults = computed(() => {
   }).slice(0, 60);
 });
 
+// 把 JavaScript 异常统一转换成可显示的文本。
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+// 打开书籍详情时会用到当前书架和搜索结果操作状态。
 const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [] });
 const detailSearchResults = ref<SearchBookResult[]>([]);
 let shelfReadRevision = 0;
 async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
+  // 多次读取时只接受最后一次结果，避免较慢的旧请求覆盖新书架。
   const requestRevision = ++shelfReadRevision;
   const currentRestoreRevision = restoreRevision.value;
   const nextShelf = await readResource<ShelfResource>(descriptor);
@@ -96,6 +105,7 @@ async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
   shelf.value = { ...nextShelf, books: nextShelf.books ?? [] };
 }
 
+// 复用搜索页的书目操作状态和“加入书架”动作，并把它们交给详情页。
 const homeSearchResultActions = useSearchResultActions({
   searchResults: detailSearchResults,
   shelf,
@@ -114,6 +124,7 @@ const homeDetailActions: BookDetailSearchResultActions = {
   addSearchResult: homeSearchResultActions.addSearchResult,
 };
 
+// 暂存被点击的书目并打开详情页；导航失败时清除暂存请求。
 async function openSearchResult(result: SearchBookResult): Promise<void> {
   if (homeSearchResultActions.searchResultBatchBusy.value || shelfBatchRecoveryRequired.value) return;
   detailSearchResults.value = [result];
@@ -127,77 +138,38 @@ async function openSearchResult(result: SearchBookResult): Promise<void> {
   }
 }
 
+// 优先采用结果自带的类型；没有时根据书源的媒体类型或分组推断。
 function contentType(result: SearchBookResult): "novel" | "comic" | "video" | "audio" {
   const declared = [result.contentType, result.mediaType, result.type]
     .find((value) => typeof value === "string");
   if (typeof declared === "string") {
-    if (/^(comic|manga|\u6F2B\u753B)$/i.test(declared)) return "comic";
-    if (/^(video|\u89C6\u9891)$/i.test(declared)) return "video";
-    if (/^(audio|\u97F3\u9891)$/i.test(declared)) return "audio";
-    if (/^(novel|text|\u5C0F\u8BF4)$/i.test(declared)) return "novel";
+    if (/^(comic|manga|漫画)$/i.test(declared)) return "comic";
+    if (/^(video|视频)$/i.test(declared)) return "video";
+    if (/^(audio|音频)$/i.test(declared)) return "audio";
+    if (/^(novel|text|小说)$/i.test(declared)) return "novel";
   }
   const source = sources.value.find((item) => item.id === result.sourceId);
   if (source?.mediaType === "video" || source?.mediaType === "audio") return source.mediaType;
-  if (/\u6F2B\u753B|comic|manga/i.test(source?.group ?? "")) return "comic";
+  if (/漫画|comic|manga/i.test(source?.group ?? "")) return "comic";
   return "novel";
 }
 
 const visibleResults = computed(() => gridResults.value.filter(
   (item) => activeType.value === "all" || contentType(item) === activeType.value,
 ));
-const gridLoading = computed(() => busy.value || (orderedSections.value.length
-  ? orderedSections.value.some((section) => loadingSectionIds.value.includes(section.id))
-  : recommendationLoading.value));
+const gridLoading = computed(() => busy.value
+  || orderedSections.value.some((section) => loadingSectionIds.value.includes(section.id)));
+const pullRefreshThreshold = 72;
+const pullDistance = ref(0);
+const pullRefreshing = ref(false);
+const pullReady = computed(() => pullDistance.value >= pullRefreshThreshold);
+const pullSource = ref<"touch" | "wheel" | null>(null);
+let pullStartY: number | null = null;
+let pullStartX: number | null = null;
+let wheelPullResetTimer: ReturnType<typeof setTimeout> | null = null;
 
-async function refreshRecommendations(): Promise<void> {
-  const revision = ++recommendationRevision;
-  const restoredAtStart = restoreRevision.value;
-  const availableSources = enabledSources.value
-    .filter((source) => source.isRss !== true)
-    .slice(0, 8);
-  const isCurrent = () => revision === recommendationRevision && restoredAtStart === restoreRevision.value;
-  recommendations.value = [];
-  recommendationError.value = "";
-  recommendationLoading.value = availableSources.length > 0;
-  if (!availableSources.length) return;
-
-  const books: SearchBookResult[] = [];
-  const seen = new Set<string>();
-  const failures: string[] = [];
-  let successfulSources = 0;
-  for (const source of availableSources) {
-    if (!isCurrent()) return;
-    try {
-      const categoriesResponse = await listDiscoveryCategories(source.id);
-      const categories = await readResource<DiscoveryCategoriesResource>(categoriesResponse.resource);
-      if (!isCurrent()) return;
-      const category = categories.categories.find((item) => Boolean(item.categoryId));
-      if (!category?.categoryId) continue;
-      const response = await listDiscoveryBooks(source.id, category.categoryId, 1);
-      const document = await readResource<SearchResource>(response.resource);
-      if (!isCurrent()) return;
-      for (const result of document.results.slice(0, 15)) {
-        const key = result.sourceId + ":" + (result.bookUrl ?? result.resultId);
-        if (seen.has(key)) continue;
-        seen.add(key);
-        books.push(result);
-      }
-      if (document.results.length) successfulSources += 1;
-      if (document.errors.length) {
-        failures.push(source.name + "\uFF1A" + document.errors.map((item) => item.message).join("\uFF1B"));
-      }
-      recommendations.value = books.slice(0, 40);
-    } catch (error) {
-      if (!isCurrent()) return;
-      failures.push(source.name + "\uFF1A" + errorText(error));
-    }
-    if (books.length >= 40 || successfulSources >= 4) break;
-  }
-  if (!isCurrent()) return;
-  recommendationLoading.value = false;
-  recommendationError.value = failures.join("\uFF1B");
-}
-
+// 加载一个栏目：先确认它仍属于当前配置，再避免重复请求。
+// 请求返回时检查配置和版本，防止过期响应覆盖切换配置/恢复数据后的状态。
 async function loadSection(sectionId: string, sourceId: string, categoryId: string): Promise<void> {
   const belongsToCurrentConfig = () => homeConfig.value.tabs.some((tab) => tab.sections.some(
     (section) => section.id === sectionId && section.sourceId === sourceId && section.categoryId === categoryId,
@@ -237,6 +209,8 @@ async function loadSection(sectionId: string, sourceId: string, categoryId: stri
   }
 }
 
+// 读取并应用首页配置。栏目未变时保留缓存，变化时清除旧结果；随后顺序加载
+// 第一个标签页中的全部栏目。
 async function refreshHomeConfig(descriptor?: ResourceDescriptor): Promise<void> {
   const restoredAtStart = restoreRevision.value;
   const requestRevision = ++configRequestRevision;
@@ -262,36 +236,26 @@ async function refreshHomeConfig(descriptor?: ResourceDescriptor): Promise<void>
   }
   loadingSectionIds.value = loadingSectionIds.value.filter((id) => sectionRequests.has(id));
 
-  if (tabs[0]?.sections.length) {
-    recommendationRevision += 1;
-    recommendations.value = [];
-    recommendationLoading.value = false;
-    recommendationError.value = "";
-    void (async () => {
-      for (const section of tabs[0].sections.slice(0, 4)) {
-        if (!isCurrent()) return;
-        await loadSection(section.id, section.sourceId, section.categoryId);
-      }
-    })();
-  } else {
-    void refreshRecommendations();
-  }
+  void (async () => {
+    for (const section of tabs[0]?.sections ?? []) {
+      if (!isCurrent()) return;
+      await loadSection(section.id, section.sourceId, section.categoryId);
+    }
+  })();
 }
 
+// 应用恢复备份或页面销毁时，让未完成的旧请求失效并清空页面缓存。
 function resetForRestore(): void {
   pageRevision += 1;
   configRequestRevision += 1;
   sourceRequestRevision += 1;
-  recommendationRevision += 1;
-  recommendations.value = [];
-  recommendationLoading.value = false;
-  recommendationError.value = "";
   homeConfig.value = { schemaVersion: 1, tabs: [] };
   sectionRequests.clear();
   sectionResources.value = {};
   loadingSectionIds.value = [];
 }
 
+// 后端通知应用状态已恢复后，重新读取书源、栏目配置和书架。
 async function handleAppStateUpdated(bootstrap: AppBootstrap): Promise<void> {
   resetForRestore();
   restoreRevision.value += 1;
@@ -299,49 +263,144 @@ async function handleAppStateUpdated(bootstrap: AppBootstrap): Promise<void> {
   detailSearchResults.value = [];
   await Promise.all([refreshSources(bootstrap.sources), refreshConfig(), refreshShelf(bootstrap.shelf)]);
 }
+// 切换标签页时加载其中尚未缓存的栏目。
 function selectTab(id: string): void {
   activeTabId.value = id;
   const tab = orderedTabs.value.find((item) => item.id === id);
-  if (!tab?.sections.length && !(recommendations.value.length || recommendationLoading.value)) {
-    void refreshRecommendations();
-  }
-  for (const section of tab?.sections.slice(0, 4) ?? []) {
+  for (const section of tab?.sections ?? []) {
     if (!Object.prototype.hasOwnProperty.call(sectionResources.value, section.id)) {
       void loadSection(section.id, section.sourceId, section.categoryId);
     }
   }
 }
 
-function refreshGrid(): void {
-  if (!orderedSections.value.length) {
-    void refreshRecommendations();
-  } else {
-    for (const section of orderedSections.value.slice(0, 4)) {
-      void loadSection(section.id, section.sourceId, section.categoryId);
+// 下拉刷新后并发重新加载当前标签页的全部栏目；当前没有栏目时重新读取栏目配置。
+async function refreshGrid(): Promise<void> {
+  if (!orderedSections.value.length) await refreshConfig();
+  await Promise.all(orderedSections.value.map((section) =>
+    loadSection(section.id, section.sourceId, section.categoryId)));
+}
+
+function clearWheelPullResetTimer(): void {
+  if (wheelPullResetTimer !== null) clearTimeout(wheelPullResetTimer);
+  wheelPullResetTimer = null;
+}
+
+// 页面位于顶部、没有加载任务且单指触摸时开始识别下拉手势；空页面也允许刷新。
+function handlePullStart(event: TouchEvent): void {
+  clearWheelPullResetTimer();
+  pullStartY = null;
+  pullStartX = null;
+  pullDistance.value = 0;
+  pullSource.value = null;
+  if (pullRefreshing.value || gridLoading.value || event.touches.length !== 1) return;
+  const scroller = event.currentTarget as HTMLElement;
+  if (scroller.scrollTop > 0) return;
+  pullStartY = event.touches[0].clientY;
+  pullStartX = event.touches[0].clientX;
+  pullSource.value = "touch";
+}
+
+// 只响应向下的纵向拖动；横向滑动不触发刷新，提示距离最多为 104px。
+function handlePullMove(event: TouchEvent): void {
+  if (pullStartY === null || pullStartX === null || event.touches.length !== 1) return;
+  const scroller = event.currentTarget as HTMLElement;
+  if (scroller.scrollTop > 0) {
+    pullStartY = null;
+    pullStartX = null;
+    pullDistance.value = 0;
+    return;
+  }
+  const touch = event.touches[0];
+  const deltaY = touch.clientY - pullStartY;
+  if (Math.abs(touch.clientX - pullStartX) > Math.abs(deltaY)) {
+    pullStartY = null;
+    pullStartX = null;
+    pullDistance.value = 0;
+    return;
+  }
+  pullDistance.value = Math.min(Math.max(deltaY, 0), 104);
+}
+
+// PC 没有触摸拖动：在页面顶部继续向上滚动，累计滚轮/触控板位移来触发同一刷新。
+function handleWheelPull(event: WheelEvent): void {
+  const scroller = event.currentTarget as HTMLElement;
+  if (pullRefreshing.value) return;
+  if (event.deltaY >= 0 || scroller.scrollTop > 0 || gridLoading.value) {
+    clearWheelPullResetTimer();
+    if (pullSource.value === "wheel") {
+      pullDistance.value = 0;
+      pullSource.value = null;
     }
+    return;
+  }
+
+  const multiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? scroller.clientHeight : 1;
+  const distance = Math.abs(event.deltaY * multiplier);
+  pullSource.value = "wheel";
+  pullDistance.value = Math.min(pullDistance.value + distance, 104);
+  clearWheelPullResetTimer();
+  // PC 没有触摸松手事件，用滚轮/触控板停止输入一小段时间作为“松手”。
+  wheelPullResetTimer = setTimeout(() => {
+    wheelPullResetTimer = null;
+    if (pullDistance.value >= pullRefreshThreshold && pullSource.value === "wheel") {
+      void startGridRefresh();
+    } else {
+      pullDistance.value = 0;
+      pullSource.value = null;
+    }
+  }, 260);
+}
+
+// 两种输入共用同一刷新动作；触摸松手或滚轮停止输入后，达到阈值才刷新。
+async function startGridRefresh(): Promise<void> {
+  if (pullRefreshing.value || gridLoading.value) {
+    pullDistance.value = 0;
+    pullSource.value = null;
+    return;
+  }
+  clearWheelPullResetTimer();
+  pullRefreshing.value = true;
+  pullDistance.value = pullRefreshThreshold;
+  try {
+    await refreshGrid();
+  } finally {
+    pullRefreshing.value = false;
+    pullDistance.value = 0;
+    pullSource.value = null;
   }
 }
 
-watch(sources, () => {
-  if (!configLoading.value && !orderedSections.value.length) void refreshRecommendations();
-}, { deep: true });
+// 触摸松手超过 72px 才刷新；没达到阈值就收起提示条。
+async function handlePullEnd(): Promise<void> {
+  pullStartY = null;
+  pullStartX = null;
+  if (pullDistance.value < pullRefreshThreshold) {
+    pullDistance.value = 0;
+    pullSource.value = null;
+    return;
+  }
+  await startGridRefresh();
+}
+
+// 系统取消触摸手势时，复位提示条和手势坐标。
+function handlePullCancel(): void {
+  pullStartY = null;
+  pullStartX = null;
+  if (!pullRefreshing.value) {
+    pullDistance.value = 0;
+    pullSource.value = null;
+  }
+}
+
+// 配置更新后，如果当前选中的标签被删除，就自动选中第一个标签。
 watch(orderedTabs, (tabs) => {
   if (!tabs.some((tab) => tab.id === activeTabId.value)) activeTabId.value = tabs[0]?.id ?? "";
 }, { immediate: true });
 
-function sectionResults(sectionId: string): SearchBookResult[] {
-  return sectionResources.value[sectionId]?.results ?? [];
-}
-function sectionIsLoading(sectionId: string): boolean {
-  return loadingSectionIds.value.includes(sectionId);
-}
-function sectionHasPartialError(sectionId: string): boolean {
-  return (sectionResources.value[sectionId]?.errors.length ?? 0) > 0;
-}
-function sectionHasLoaded(sectionId: string): boolean {
-  return Object.prototype.hasOwnProperty.call(sectionResources.value, sectionId);
-}
-
+// 读取栏目配置时显示加载状态；出错时保留错误信息供页面展示。
 async function refreshConfig(descriptor?: ResourceDescriptor): Promise<void> {
   const revision = pageRevision;
   configLoading.value = true;
@@ -355,6 +414,7 @@ async function refreshConfig(descriptor?: ResourceDescriptor): Promise<void> {
   }
 }
 
+// 读取书源的轻量元数据，并移除不需要放在页面状态里的完整规则 JSON。
 async function refreshSources(descriptor: ResourceDescriptor): Promise<void> {
   const requestRevision = ++sourceRequestRevision;
   const restoredAtStart = restoreRevision.value;
@@ -367,6 +427,7 @@ async function refreshSources(descriptor: ResourceDescriptor): Promise<void> {
   });
 }
 
+// 页面创建后订阅配置/书源/书架/恢复事件，然后读取当前应用数据。
 onMounted(async () => {
   try {
     unlisteners.push(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
@@ -393,7 +454,9 @@ onMounted(async () => {
   }
 });
 
+// 页面销毁时取消事件订阅，并使未完成的异步请求失效。
 onBeforeUnmount(() => {
+  clearWheelPullResetTimer();
   pageRevision += 1;
   restoreRevision.value += 1;
   resetForRestore();
@@ -403,17 +466,22 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- 模板语法：v-if 控制显示，v-for 循环生成列表，: 绑定动态属性，@ 绑定事件。 -->
+  <!-- 页面由全局导航和可滚动的首页内容区组成；下拉手势监听在滚动区上。 -->
   <div class="home-page-layout">
     <PrimaryNavigation />
-    <main class="home-page-main">
+  <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
+      @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
       <section class="home-page">
+    <!-- 搜索入口：点击后进入完整搜索页面。 -->
     <div class="discover-command">
       <button class="discover-search-launch" type="button" @click="openSearch">
         <span class="discover-search-icon"><PrototypeIcon name="search"/></span>
-        <span>搜索书名、作者、关键词或来源</span>
+        <span>搜索</span>
       </button>
     </div>
     <section class="home-discovery">
+      <!-- 类型筛选和栏目配置入口。 -->
       <div class="discover-filter-bar">
         <div class="discover-type-filters">
           <button v-for="filter in typeFilters" :key="filter.id" type="button"
@@ -421,20 +489,25 @@ onBeforeUnmount(() => {
             @click="activeType = filter.id">{{ filter.title }}</button>
         </div>
         <div class="discover-grid-actions">
-          <button type="button" class="discover-utility-button" :disabled="busy || gridLoading"
-title="刷新发现内容" @click="refreshGrid"><PrototypeIcon name="refresh"/></button>
-          <button v-if="orderedSections.length" type="button" class="discover-utility-button"
-@click="showSectionLayout = !showSectionLayout">{{ showSectionLayout ? '封面流' : '栏目' }}</button>
           <button type="button" class="discover-utility-button"
             :disabled="busy" @click="manageHome">管理</button>
         </div>
+      </div>
+      <!-- 下拉提示紧跟类型筛选行；拖动时显示距离，松手刷新时显示进度。 -->
+      <div v-if="pullDistance > 0 || pullRefreshing" class="home-pull-refresh"
+        :style="{ height: `${pullRefreshing ? pullRefreshThreshold : pullDistance}px` }"
+        role="status" aria-live="polite">
+        <span class="home-pull-refresh-icon" :class="{ ready: pullReady, refreshing: pullRefreshing }">
+          <PrototypeIcon name="refresh" />
+        </span>
+        <span>{{ pullRefreshing ? '正在刷新…' : pullReady ? '松开刷新' : pullSource === 'wheel' ? '继续向上滚动下拉刷新' : '下拉刷新' }}</span>
       </div>
       <div v-if="orderedTabs.length > 1" class="home-tabs">
         <button v-for="tab in orderedTabs" :key="tab.id"
 
           :class="{ active: activeTab?.id === tab.id }" @click="selectTab(tab.id)">{{ tab.title }}</button>
       </div>
-      <template v-if="!showSectionLayout">
+      <!-- 封面流：展示合并后的栏目内容，或加载中、空内容和错误状态。 -->
       <div v-if="visibleResults.length" class="discovery-content-grid">
         <article v-for="(result, index) in visibleResults" :key="`${result.sourceId}:${result.resultId}`"
           class="discovery-cover-card">
@@ -453,45 +526,12 @@ title="刷新发现内容" @click="refreshGrid"><PrototypeIcon name="refresh"/><
         </article>
       </div>
       <div v-else-if="gridLoading" class="discover-grid-state">
-        <span class="mini-loader"></span><span>正在从书源加载发现内容…</span>
+        <span class="mini-loader"></span><span>正在从源加载发现内容…</span>
       </div>
       <div v-else class="discover-grid-state discover-grid-empty">
-        <span class="discover-state-symbol"><PrototypeIcon name="compass"/></span>
         <strong>{{ activeType !== 'all' && gridResults.length ? '当前类型还没有内容' : '暂无可显示的发现内容' }}</strong>
-        <p>{{ activeType !== 'all' && gridResults.length ? '选择“全部”可以查看其他类型。' : !enabledSources.length ? '还没有启用的书源，可以先导入或启用书源。' : '可以刷新书源，或管理栏目选择其他分类。' }}</p>
-        <button type="button" class="home-button home-button-secondary" @click="manageHome">管理栏目</button>
       </div>
-      <p v-if="(recommendationError || loadError) && !orderedSections.length" class="discover-grid-warning">{{ loadError || recommendationError }}</p>
-      </template>
-      <p v-if="loadError && orderedSections.length" class="discover-grid-warning">{{ loadError }}</p>
-      <div v-if="showSectionLayout && orderedSections.length" class="home-section-list">
-        <article v-for="section in orderedSections" :key="section.id" class="home-section-card" :class="`home-section-style-${section.style}`">
-          <header class="home-section-heading">
-            <div><p class="home-eyebrow">{{ section.sourceName }} · {{ section.categoryName }}</p><h4>{{ section.title }}</h4></div>
-            <button class="home-text-button" :disabled="busy || sectionIsLoading(section.id)" @click="loadSection(section.id, section.sourceId, section.categoryId)">{{ sectionIsLoading(section.id) ? '加载中…' : '更多' }} <span>→</span></button>
-          </header>
-          <div v-if="sectionIsLoading(section.id) && !sectionResults(section.id).length" class="section-resource-state"><span class="mini-loader"></span>正在加载分类内容…</div>
-          <div v-else-if="!sectionResults(section.id).length" class="section-resource-state">
-            <span>{{ sectionHasPartialError(section.id) ? '部分内容暂时不可用。' : sectionHasLoaded(section.id) ? '这个分类暂无内容。' : '这个分类还没有加载内容。' }}</span>
-            <button class="home-text-button" :disabled="busy || sectionIsLoading(section.id)" @click="loadSection(section.id, section.sourceId, section.categoryId)">加载分类 <span>→</span></button>
-          </div>
-          <template v-else>
-            <p v-if="sectionHasPartialError(section.id)" class="section-partial-error">部分来源未能加载，以下为当前可用内容。</p>
-            <ol v-if="section.style === 1" class="section-rank-list">
-              <li v-for="(result, index) in sectionResults(section.id).slice(0, 5)" :key="result.resultId">
-                <span class="rank-number">{{ String(index + 1).padStart(2, "0") }}</span>
-                <button class="rank-result" @click="openSearchResult(result)"><img v-if="result.coverSrc" :src="result.coverSrc" loading="lazy" /><span v-else class="section-cover-fallback">{{ result.title.slice(0, 1) }}</span><span class="result-copy"><strong>{{ result.title }}</strong><small>{{ result.author || result.latestChapter || '打开书籍详情' }}</small></span></button>
-              </li>
-            </ol>
-            <div v-else class="section-cover-row" :class="{ 'section-cover-video': section.coverVideo, 'section-four-row': section.style === 3, 'section-infinite-grid': section.style === 2 }">
-              <button v-for="result in sectionResults(section.id).slice(0, section.style === 2 ? 8 : 6)" :key="result.resultId" class="section-book-card" @click="openSearchResult(result)">
-                <img v-if="result.coverSrc" :src="result.coverSrc" loading="lazy" /><span v-else class="section-cover-fallback">{{ result.title.slice(0, 1) }}</span>
-                <span class="section-book-copy"><strong>{{ result.title }}</strong><small>{{ result.author || result.latestChapter || '打开书籍详情' }}</small></span>
-              </button>
-            </div>
-          </template>
-        </article>
-      </div>
+      <p v-if="loadError" class="discover-grid-warning">{{ loadError }}</p>
     </section>
       </section>
     </main>
@@ -499,9 +539,17 @@ title="刷新发现内容" @click="refreshGrid"><PrototypeIcon name="refresh"/><
 </template>
 
 <style scoped>
-/* 发现主视图按原型采用直接的封面流，个性化栏目保留为按需视图。 */
+/* 首页内容区按原型展示为封面流。 */
+/* 页面滚动容器；触顶时限制浏览器自己的回弹，由页面处理下拉刷新。 */
 .home-page-layout { display:flex; width:100%; height:100dvh; min-height:0; overflow:hidden; padding-top:var(--safe-top); background:var(--app-background); }
-.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; padding:0 clamp(20px,3.6vw,56px) var(--safe-bottom); }
+.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 clamp(20px,3.6vw,56px) var(--safe-bottom); }
+/* 下拉时显示的提示条和图标状态。 */
+.home-pull-refresh { display:flex; align-items:center; justify-content:center; gap:8px; overflow:hidden; color:var(--app-muted); font-size:12px; transition:height .12s ease; }
+.home-pull-refresh-icon { display:grid; width:16px; height:16px; place-items:center; }
+.home-pull-refresh-icon svg { width:16px; height:16px; transition:transform .15s ease; }
+.home-pull-refresh-icon.ready svg { transform:rotate(180deg); }
+.home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
+/* 搜索框和发现页工具栏。 */
 .home-page { display:flex; max-width:1180px; flex-direction:column; gap:22px; margin:0 auto; padding:10px 0 26px; }
 .discover-command { display:flex; justify-content:center; align-items:center; gap:8px; }
 .discover-search-launch { display:flex; align-items:center; gap:8px; width:min(680px,100%); height:44px; padding:0 9px 0 12px; border:1px solid var(--app-line); border-radius:12px; background:var(--app-surface); color:var(--app-muted); cursor:pointer; text-align:left; }
@@ -533,46 +581,22 @@ title="刷新发现内容" @click="refreshGrid"><PrototypeIcon name="refresh"/><
 .cover-tone-2 { background:linear-gradient(145deg,#77999b,#31534f); }
 .cover-tone-3 { background:linear-gradient(145deg,#374b6a,#151e2d); }
 .cover-tone-4 { background:linear-gradient(145deg,#8b657d,#342232); }
+/* 封面卡片文字、加载/空状态和错误提示。 */
 .discovery-cover-copy { display:flex; flex-direction:column; min-width:0; padding:8px 1px 0; gap:3px; }
 .discovery-cover-copy strong { overflow:hidden; color:#24252d; font-size:13px; white-space:nowrap; text-overflow:ellipsis; }
 .discovery-cover-copy small { overflow:hidden; color:#838896; font-size:11px; white-space:nowrap; text-overflow:ellipsis; }
 .discovery-cover-copy>span { overflow:hidden; color:#959aa5; font-size:10px; white-space:nowrap; text-overflow:ellipsis; }
 .discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; border:1px dashed #e2e4eb; border-radius:15px; color:#828896; background:#ffffff7a; }
-.discover-grid-empty { flex-direction:column; text-align:center; gap:8px; }
+.discover-grid-empty { min-height:0; padding:24px 0; border:0; background:transparent; }
 .discover-grid-empty strong { font-size:15px; color:#40444f; }
-.discover-grid-empty p { margin:0; font-size:12px; line-height:1.6; }
-.discover-state-symbol { display:grid; place-items:center; width:42px; height:42px; border-radius:50%; background:var(--app-accent-soft); color:var(--app-accent); }
-.discover-grid-empty > .home-button { margin-top:6px; }
 .discover-grid-warning { font-size:11px; color:#af6555; overflow-wrap:anywhere; }
+/* 多个标签页时显示的切换栏。 */
 .home-tabs { display:flex; justify-content:center; gap:5px; margin:0 0 20px; overflow-x:auto; }
 .home-tabs button { padding:8px 14px; border:0; border-radius:999px; background:transparent; color:#787e89; cursor:pointer; }
 .home-tabs button.active { background:var(--app-accent-soft); color:var(--app-accent); font-weight:700; }
-.home-eyebrow { margin:0 0 4px; color:#999da7; font-size:11px; }
-.home-section-list { display:grid; gap:18px; margin-top:23px; }
-.home-section-card { padding:14px; border:1px solid #e4e6ec; border-radius:14px; background:white; }
-.home-section-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:13px; }
-.home-section-heading h4 { margin:0; font-size:15px; }
-.home-text-button { padding:7px; border:0; background:transparent; color:var(--app-accent); cursor:pointer; }
-.section-resource-state { display:flex; gap:8px; align-items:center; justify-content:center; min-height:70px; color:#828896; font-size:12px; }
 .mini-loader { display:inline-block; width:16px; height:16px; border:2px solid #ddd8fb; border-top-color:var(--app-accent); border-radius:50%; animation:home-spin .8s linear infinite; }
 @keyframes home-spin { to {transform:rotate(360deg)} }
-.section-cover-row { display:flex; gap:12px; overflow-x:auto; }
-.section-book-card { display:flex; flex-direction:column; flex:0 0 120px; min-width:0; border:0; padding:0; background:transparent; text-align:left; cursor:pointer; }
-.section-book-card img,.section-book-card .section-cover-fallback { width:100%; aspect-ratio:4/5; object-fit:cover; border-radius:9px; }
-.section-cover-fallback { display:grid; place-items:center; background:#e6e1fa; color:var(--app-accent); font-weight:700; }
-.section-book-copy { display:grid; gap:4px; padding-top:7px; }
-.section-book-copy strong,.section-book-copy small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.section-book-copy strong { font-size:12px; }
-.section-book-copy small { font-size:10px; color:#838896; }
-.section-four-row,.section-infinite-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); }
-.section-four-row .section-book-card,.section-infinite-grid .section-book-card { width:100%; }
-.section-rank-list { padding:0; list-style:none; }
-.section-rank-list li { display:flex; gap:14px; align-items:center; border-bottom:1px solid #eeeef2; padding:10px 0; }
-.rank-result { display:flex; align-items:center; gap:10px; border:0; background:transparent; text-align:left; cursor:pointer; }
-.rank-result img,.rank-result .section-cover-fallback { width:42px; height:56px; border-radius:6px; object-fit:cover; }
-.rank-number { color:#969aa6; }
-.result-copy { display:grid; gap:5px; }
-.result-copy small { color:#858b94; }
+/* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(4,minmax(0,1fr)); gap:24px 18px; } }
 @media(max-width:860px) {
   .home-page-main { padding:0 14px calc(67px + var(--safe-bottom)); }
@@ -587,6 +611,5 @@ title="刷新发现内容" @click="refreshGrid"><PrototypeIcon name="refresh"/><
   .discover-type-filters { width:100%; gap:0; }
   .discover-type-filters button { padding:0 10px; }
   .discover-grid-actions { position:static; width:100%; justify-content:flex-end; }
-  .section-four-row,.section-infinite-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 </style>

@@ -60,7 +60,7 @@ jobs:
       - name: Build KMP JVM and QuickJS from repository sources
         if: runner.os != 'Windows'
         working-directory: kotlin
-        run: ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
+        run: bash ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
       - name: Build KMP JVM and QuickJS from repository sources
         if: runner.os == 'Windows'
         working-directory: kotlin
@@ -119,7 +119,7 @@ jobs:
           workspaces: src-tauri -> target
       - name: Build KMP Android AAR and native libraries
         working-directory: kotlin
-        run: ./gradlew --no-daemon --console=plain stageTauriAndroidAar
+        run: bash ./gradlew --no-daemon --console=plain stageTauriAndroidAar
       - name: Install frontend dependencies
         run: npm ci
       - name: Generate Android project
@@ -204,7 +204,7 @@ jobs:
         id: ios-framework-key
         shell: bash
         run: |
-          toolchain_hash="$(./scripts/build-ios-frameworks.sh cache-key)"
+          toolchain_hash="$(bash ./scripts/build-ios-frameworks.sh cache-key)"
           echo "toolchain=$toolchain_hash" >> "$GITHUB_OUTPUT"
       - name: Restore exact iOS frameworks and native archive cache
         id: ios-framework-cache
@@ -217,10 +217,10 @@ jobs:
           key: ios-framework-${{ runner.os }}-${{ runner.arch }}-${{ steps.ios-framework-key.outputs.toolchain }}-${{ hashFiles('scripts/build-ios-frameworks.sh', 'kotlin/*.gradle.kts', 'kotlin/gradle.properties', 'kotlin/gradle/**', 'kotlin/gradlew', 'kotlin/gradlew.bat', 'kotlin/kmp-engine/build.gradle.kts', 'kotlin/kmp-engine/src/**', 'kotlin/kmp-engine/scripts/**', 'kotlin/kmp-engine/schemas/**', 'kotlin/src/native/quickjs-ng/**', 'kotlin/quickjs-processor/build.gradle.kts', 'kotlin/quickjs-processor/src/**', 'src-tauri/include/**') }}
       - name: Build device and simulator frameworks
         if: steps.ios-framework-cache.outputs.cache-hit != 'true'
-        run: ./scripts/build-ios-frameworks.sh build-frameworks
+        run: bash ./scripts/build-ios-frameworks.sh build-frameworks
       - name: Package Kotlin/Native framework for the iOS Tauri plugin
         if: steps.ios-framework-cache.outputs.cache-hit != 'true'
-        run: ./scripts/build-ios-frameworks.sh package-xcframework
+        run: bash ./scripts/build-ios-frameworks.sh package-xcframework
       - name: Verify iOS framework cache outputs
         shell: bash
         run: |
