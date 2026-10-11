@@ -98,7 +98,6 @@ struct ParsedBook {
 /// exclusively. The managed original is persisted with the parsed book.
 pub(crate) struct LocalBookImportOutcome {
     pub(crate) book: BookDocument,
-    pub(crate) created: bool,
 }
 
 pub async fn import_local_book(
@@ -169,7 +168,6 @@ pub(crate) async fn import_local_book_with_outcome(
             .map_err(|error| format!("Existing local book document is invalid: {error}"))?;
         return Ok(LocalBookImportOutcome {
             book,
-            created: false,
         });
     }
     let result = persist_parsed_book(store, &book_id, parsed, &original_extension).await;
@@ -184,7 +182,6 @@ pub(crate) async fn import_local_book_with_outcome(
             }
             Ok(LocalBookImportOutcome {
                 book,
-                created: true,
             })
         }
         Err(error) => {
@@ -289,6 +286,7 @@ async fn persist_parsed_book(
         source_id: None,
         source_name: None,
         source_group: None,
+        source_book_ids: Vec::new(),
         display_base: Some(display_base),
         display_overrides: None,
         chapter_count: chapters.len(),

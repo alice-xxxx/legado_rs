@@ -54,7 +54,7 @@ pub struct ResourceServer {
     local_addr: SocketAddr,
     base_url: String,
     media_proxy: MediaProxyRegistry,
-    private_media_dir: PathBuf,
+    root: PathBuf,
     media_update_lock: Mutex<()>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
@@ -78,14 +78,15 @@ impl ResourceServer {
 
     /// Register a private upstream media request. The returned stable resource
     /// ref can be stored in a public descriptor; the URL and headers remain in
-    /// this process and are never serialized to JSON.
+    /// the owner book's internal cache and are never exposed to the browser.
     pub async fn register_media(
         &self,
+        book_id: &str,
         upstream_url: &str,
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
         let opaque_id = Uuid::new_v4().simple().to_string();
-        self.register_media_with_id(&opaque_id, upstream_url, private_headers)
+        self.register_media_with_id(book_id, &opaque_id, upstream_url, private_headers)
             .await
     }
 
@@ -93,10 +94,12 @@ impl ResourceServer {
     /// protected storage. `opaque_id` must be safe and is validated as a ref.
     pub async fn register_media_with_id(
         &self,
+        book_id: &str,
         opaque_id: &str,
         upstream_url: &str,
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
+        if !valid_id(book_id) { return Err(ResourceError::new("Invalid media owner book ID")); }
         let _guard = self.media_update_lock.lock().await;
         let reference =
             MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)?;
@@ -112,7 +115,7 @@ impl ResourceServer {
                 })
                 .collect(),
         };
-        self.write_private_media_mapping(mapping).await?;
+        self.write_private_media_mapping(book_id, mapping).await?;
         self.media_proxy
             .register(opaque_id, upstream_url, private_headers)
             .await?;
@@ -131,10 +134,11 @@ impl ResourceServer {
         MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)
     }
 
-    pub async fn unregister_media(&self, opaque_id: &str) -> Result<(), ResourceError> {
+    pub async fn unregister_media(&self, book_id: &str, opaque_id: &str) -> Result<(), ResourceError> {
+        if !valid_id(book_id) { return Err(ResourceError::new("Invalid media owner book ID")); }
         ResourceRef::new(format!("resource://media/{opaque_id}"))?;
         let _guard = self.media_update_lock.lock().await;
-        self.delete_private_media_mapping(opaque_id).await?;
+        self.delete_private_media_mapping(book_id, opaque_id).await?;
         self.media_proxy.unregister(opaque_id).await;
         Ok(())
     }
@@ -145,36 +149,10 @@ impl ResourceServer {
     /// to the restored private URLs and headers.
     pub async fn reload_private_media_mappings(&self) -> Result<(), ResourceError> {
         let _guard = self.media_update_lock.lock().await;
-        let root = self
-            .private_media_dir
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
-            .to_path_buf();
-        let directory = self.private_media_dir.clone();
-        let create_root = root.clone();
-        let create_dir = directory.clone();
-        tokio::task::spawn_blocking(move || {
-            check_path_no_symlink(&create_root, &create_dir, true)?;
-            std::fs::create_dir_all(&create_dir).map_err(|error| {
-                ResourceError::new(format!(
-                    "Cannot create private media mapping directory: {error}"
-                ))
-            })?;
-            check_path_no_symlink(&create_root, &create_dir, false)
-        })
-        .await
-        .map_err(|error| {
-            ResourceError::new(format!("Private media directory worker failed: {error}"))
-        })??;
-
-        let mappings_dir = directory;
-        let mappings_root = root;
+        let root = self.root.clone();
         let mappings = tokio::task::spawn_blocking(move || {
-            read_private_media_mappings(&mappings_root, &mappings_dir, true)
-        })
-        .await
-        .map_err(|error| {
+            read_book_media_mappings(&root, true)
+        }).await.map_err(|error| {
             ResourceError::new(format!("Private media mapping worker failed: {error}"))
         })??;
         let mappings = mappings
@@ -196,15 +174,11 @@ impl ResourceServer {
 
     async fn write_private_media_mapping(
         &self,
+        book_id: &str,
         mapping: PrivateMediaMapping,
     ) -> Result<(), ResourceError> {
-        let root = self
-            .private_media_dir
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
-            .to_path_buf();
-        let path = self.private_media_dir.join(format!("{}.json", mapping.id));
+        let root = self.root.clone();
+        let path = root.join("books").join(book_id).join("media-maps").join(format!("{}.json", mapping.id));
         let bytes = serde_json::to_vec_pretty(&mapping).map_err(|error| {
             ResourceError::new(format!("Cannot encode private media mapping: {error}"))
         })?;
@@ -224,14 +198,9 @@ impl ResourceServer {
         Ok(())
     }
 
-    async fn delete_private_media_mapping(&self, opaque_id: &str) -> Result<(), ResourceError> {
-        let root = self
-            .private_media_dir
-            .parent()
-            .and_then(Path::parent)
-            .ok_or_else(|| ResourceError::new("Private media root is invalid"))?
-            .to_path_buf();
-        let path = self.private_media_dir.join(format!("{opaque_id}.json"));
+    async fn delete_private_media_mapping(&self, book_id: &str, opaque_id: &str) -> Result<(), ResourceError> {
+        let root = self.root.clone();
+        let path = root.join("books").join(book_id).join("media-maps").join(format!("{opaque_id}.json"));
         tokio::task::spawn_blocking(move || {
             check_path_no_symlink(&root, &path, true)?;
             match std::fs::remove_file(&path) {
@@ -345,11 +314,6 @@ async fn get_resource(
             Ok(json) => json,
             Err(_) => return empty_response(StatusCode::NOT_FOUND),
         };
-        if reference.path() == "shelf.json"
-            && materialize_shelf_book_sources(&mut json, &state.base_url).is_err()
-        {
-            return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
-        }
         if materialize_json(&mut json, &state.base_url).is_err() {
             return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -403,25 +367,6 @@ async fn get_resource(
         state.base_url.split("/r/").next().unwrap_or_default(),
     )
     .await
-}
-
-fn materialize_shelf_book_sources(shelf: &mut Value, base_url: &str) -> Result<(), ResourceError> {
-    let Some(books) = shelf.get_mut("books").and_then(Value::as_array_mut) else {
-        return Ok(());
-    };
-    for book in books {
-        let book_id = book
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| ResourceError::new("Shelf entry has no book ID"))?;
-        let reference = ResourceRef::new(format!("resource://books/{book_id}/book.json"))?;
-        book["bookSrc"] = Value::String(format!(
-            "{}{}",
-            base_url,
-            percent_encode_path(reference.path())
-        ));
-    }
-    Ok(())
 }
 
 fn set_cors_headers(headers: &mut HeaderMap) {
@@ -599,41 +544,10 @@ impl ResourceStore {
                 "Resource server must bind to a loopback address",
             ));
         }
-        let private_media_dir = self.root().join("private-data").join("media-maps");
-        let media_dir_root = self.root().to_path_buf();
-        let create_media_dir = private_media_dir.clone();
-        tokio::task::spawn_blocking(move || {
-            check_path_no_symlink(&media_dir_root, &create_media_dir, true)?;
-            std::fs::create_dir_all(&create_media_dir).map_err(|error| {
-                ResourceError::new(format!(
-                    "Cannot create private media mapping directory: {error}"
-                ))
-            })?;
-            check_path_no_symlink(&media_dir_root, &create_media_dir, false)?;
-            let metadata = std::fs::metadata(&create_media_dir).map_err(|error| {
-                ResourceError::new(format!(
-                    "Cannot inspect private media mapping directory: {error}"
-                ))
-            })?;
-            if !metadata.is_dir() {
-                return Err(ResourceError::new(
-                    "Private media mapping path is not a directory",
-                ));
-            }
-            Ok(())
-        })
-        .await
-        .map_err(|error| {
-            ResourceError::new(format!("Private media directory worker failed: {error}"))
-        })??;
-
         let mappings_root = self.root().to_path_buf();
-        let mappings_dir = private_media_dir.clone();
         let mappings = tokio::task::spawn_blocking(move || {
-            read_private_media_mappings(&mappings_root, &mappings_dir, false)
-        })
-        .await
-        .map_err(|error| {
+            read_book_media_mappings(&mappings_root, false)
+        }).await.map_err(|error| {
             ResourceError::new(format!("Private media mapping worker failed: {error}"))
         })??;
         let media_proxy = MediaProxyRegistry::new()?;
@@ -690,13 +604,50 @@ impl ResourceStore {
             local_addr,
             base_url,
             media_proxy,
-            private_media_dir,
+            root: self.root().to_path_buf(),
             media_update_lock: Mutex::new(()),
             shutdown_sender: Some(shutdown_sender),
             task: Some(task),
         })
     }
 }
+fn read_book_media_mappings(
+    root: &Path,
+    strict: bool,
+) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
+    let books = root.join("books");
+    check_path_no_symlink(root, &books, true)?;
+    let entries = match std::fs::read_dir(&books) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(ResourceError::new(format!("Cannot list cached books: {error}"))),
+    };
+    let mut mappings = Vec::new();
+    let mut seen_ids = std::collections::HashSet::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| ResourceError::new(error.to_string()))?;
+        let book_id = entry.file_name().to_string_lossy().into_owned();
+        if !valid_id(&book_id) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            continue;
+        }
+        let directory = entry.path().join("media-maps");
+        check_path_no_symlink(root, &directory, true)?;
+        match std::fs::symlink_metadata(&directory) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(ResourceError::new(error.to_string())),
+            Ok(metadata) if metadata.is_dir() => {},
+            Ok(_) => return Err(ResourceError::new("Media mapping path is not a directory")),
+        }
+        for mapping in read_private_media_mappings(root, &directory, strict)? {
+            if !seen_ids.insert(mapping.id.clone()) {
+                return Err(ResourceError::new("Media mapping ID occurs in multiple cached books"));
+            }
+            mappings.push(mapping);
+        }
+    }
+    Ok(mappings)
+}
+
 fn read_private_media_mappings(
     root: &Path,
     directory: &Path,

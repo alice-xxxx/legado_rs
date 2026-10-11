@@ -2,7 +2,6 @@ export * from "./types";
 export * from "./resources";
 export * from "./core";
 export * from "./books";
-export * from "./shelf";
 export * from "./sources";
 export * from "./search";
 export * from "./tasks";

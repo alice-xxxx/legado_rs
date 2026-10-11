@@ -33,7 +33,10 @@ pub async fn create_backup_from_picker(
     let mut response = json!({ "backup": true, "created": true });
     match service.record_backup_success().await {
         Ok(settings) => {
-            let _ = app.emit("settings-updated", settings.clone());
+            let _ = app.emit(
+                "settings-updated",
+                json!({ "requestId": 0, "resource": settings.clone() }),
+            );
             response["settings"] = settings;
         }
         Err(error) => {
@@ -44,43 +47,16 @@ pub async fn create_backup_from_picker(
 }
 
 #[tauri::command]
-pub async fn get_webdav_backup_config(
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    service.get_webdav_backup_config().await
-}
-
-#[tauri::command]
-pub async fn save_webdav_backup_config(
-    url: String,
-    username: String,
-    password: String,
-    clear_password: bool,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    service
-        .save_webdav_backup_config(url, username, password, clear_password)
-        .await
-}
-
-#[tauri::command]
-pub async fn save_webdav_auto_backup_interval(
-    interval_hours: Option<u32>,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    service
-        .save_webdav_auto_backup_interval(interval_hours)
-        .await
-}
-
-#[tauri::command]
 pub async fn upload_webdav_backup(
     app: tauri::AppHandle,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let result = service.upload_webdav_backup().await?;
     if let Some(settings) = result.get("settings") {
-        let _ = app.emit("settings-updated", settings.clone());
+        let _ = app.emit(
+            "settings-updated",
+            json!({ "requestId": 0, "resource": settings.clone() }),
+        );
     }
     Ok(result)
 }
@@ -95,8 +71,15 @@ pub async fn restore_webdav_backup(
     {
         let bootstrap = result["bootstrap"].clone();
         let _ = app.emit("app-state-updated", bootstrap.clone());
+        let _ = app.emit(
+            "history-updated",
+            json!({ "requestId": 0, "resource": bootstrap["history"].clone() }),
+        );
         let _ = app.emit("shelf-updated", bootstrap["shelf"].clone());
-        let _ = app.emit("settings-updated", bootstrap["settings"].clone());
+        let _ = app.emit(
+            "settings-updated",
+            json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
+        );
         let _ = app.emit("sources-updated", bootstrap["sources"].clone());
     }
     Ok(result)
@@ -126,8 +109,15 @@ pub async fn restore_backup_from_picker(
         .as_object_mut()
         .and_then(|object| object.remove("webdavBackupWarning"));
     let _ = app.emit("app-state-updated", bootstrap.clone());
+    let _ = app.emit(
+        "history-updated",
+        json!({ "requestId": 0, "resource": bootstrap["history"].clone() }),
+    );
     let _ = app.emit("shelf-updated", bootstrap["shelf"].clone());
-    let _ = app.emit("settings-updated", bootstrap["settings"].clone());
+    let _ = app.emit(
+        "settings-updated",
+        json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
+    );
     let _ = app.emit("sources-updated", bootstrap["sources"].clone());
     Ok(json!({
         "restored": true,

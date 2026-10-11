@@ -21,7 +21,7 @@ pub struct ShelfDocument {
     pub sort_order: String,
     #[serde(default)]
     pub groups: Vec<String>,
-    pub books: Vec<BookSummary>,
+    pub books: Vec<ShelfBookPosition>,
 }
 
 impl Default for ShelfDocument {
@@ -38,26 +38,11 @@ impl Default for ShelfDocument {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct BookSummary {
+/// Shelf placement only; book details and progress live in each `book.json`.
+pub struct ShelfBookPosition {
     pub id: String,
-    pub title: String,
-    /// Optional typed display classification, projected from the stored book.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub media_type: Option<BookMediaType>,
-    #[serde(default)]
-    pub author: String,
     #[serde(default)]
     pub groups: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub cover_src: Option<ResourceRef>,
-    #[serde(default)]
-    pub chapter_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub latest_chapter: Option<String>,
-    #[serde(default)]
-    pub progress: ProgressSummary,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -73,13 +58,35 @@ pub struct ProgressSummary {
     pub updated_at_ms: u64,
 }
 
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WebDavBackupConfig {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub username: String,
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default)]
+    pub auto_interval_hours: Option<u32>,
+    #[serde(default)]
+    pub last_webdav_backup_at_ms: Option<u64>,
+    #[serde(default)]
+    pub auto_backup_scheduled_at_ms: Option<u64>,
+    #[serde(default)]
+    pub last_auto_attempt_at_ms: Option<u64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDocument {
+    #[serde(default)]
+    pub webdav_backup: WebDavBackupConfig,
     pub schema_version: u32,
     #[serde(default = "default_source_http_timeout_seconds")]
     pub source_http_timeout_seconds: u64,
     pub reader: ReaderDefaults,
+    pub home: HomeConfigDocument,
 }
 
 impl Default for SettingsDocument {
@@ -87,7 +94,50 @@ impl Default for SettingsDocument {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             source_http_timeout_seconds: default_source_http_timeout_seconds(),
+            webdav_backup: WebDavBackupConfig::default(),
             reader: ReaderDefaults::default(),
+            home: HomeConfigDocument::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeConfigDocument {
+    pub tabs: Vec<HomeTab>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeTab {
+    pub id: String,
+    pub title: String,
+    pub sort_order: u32,
+    pub sections: Vec<HomeSection>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeSection {
+    pub id: String,
+    pub title: String,
+    pub source_id: String,
+    pub category_id: String,
+    pub style: u8,
+    pub sort_order: u32,
+    #[serde(default)]
+    pub cover_video: bool,
+}
+
+impl Default for HomeConfigDocument {
+    fn default() -> Self {
+        Self {
+            tabs: vec![HomeTab {
+                id: "tab-home".to_owned(),
+                title: "主页".to_owned(),
+                sort_order: 0,
+                sections: Vec::new(),
+            }],
         }
     }
 }
@@ -121,9 +171,6 @@ pub struct ReaderDefaults {
     pub theme: ReaderTheme,
     #[serde(default = "default_preload_count")]
     pub preload_count: usize,
-    /// Display-only replacements run by the WebView and never mutate cached chapter data.
-    #[serde(default)]
-    pub replacements: Vec<serde_json::Value>,
 }
 
 /// Themes supported by the Vue reader.
@@ -149,7 +196,6 @@ impl Default for ReaderDefaults {
             text_align: default_text_align(),
             theme: ReaderTheme::Paper,
             preload_count: default_preload_count(),
-            replacements: Vec::new(),
         }
     }
 }
@@ -188,21 +234,6 @@ fn default_shelf_sort_order() -> String {
 
 fn default_preload_count() -> usize {
     5
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProgressDocument {
-    pub schema_version: u32,
-    pub book_id: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chapter_id: Option<String>,
-    #[serde(default)]
-    pub chapter_index: usize,
-    #[serde(default)]
-    pub offset: u64,
-    #[serde(default)]
-    pub updated_at_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -253,6 +284,9 @@ pub struct BookDocument {
     pub source_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_group: Option<String>,
+    /// IDs of prepared books in books/ that can be reused as source candidates.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_book_ids: Vec<String>,
     /// Rust-owned processed base values and user display-only overrides.
     /// Neither field contains a source definition or KMP engine book.
     #[serde(skip_serializing_if = "Option::is_none", default)]

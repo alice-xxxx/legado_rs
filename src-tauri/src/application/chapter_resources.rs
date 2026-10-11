@@ -226,7 +226,7 @@ impl ApplicationService {
         let (source_id, engine_book, target_chapter_ids) = {
             let _book_lock = self.book_lock(book_id).await;
             let private = self
-                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
                 .await?;
             let source_id = private["sourceId"]
                 .as_str()
@@ -280,7 +280,7 @@ impl ApplicationService {
             let (raw_chapter, next_chapter_url, already_ready, saved_media_type) = {
                 let _book_lock = self.book_lock(book_id).await;
                 let private = self
-                    .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                    .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
                     .await?;
                 if private["sourceId"].as_str() != Some(source_id.as_str()) {
                     return Err("Book source changed while preparing a chapter".to_owned());
@@ -524,7 +524,7 @@ impl ApplicationService {
 
             let _book_lock = self.book_lock(book_id).await;
             let current_private = self
-                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
                 .await
                 .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
             if current_private["sourceId"].as_str() != Some(source_id.as_str()) {
@@ -578,7 +578,7 @@ impl ApplicationService {
                         let media_id = chapter_media_id(book_id, &chapter_id, &url, &headers);
                         let media_ref = self
                             .server
-                            .register_media_with_id(&media_id, &url, &headers)
+                            .register_media_with_id(book_id, &media_id, &url, &headers)
                             .await
                             .map_err(|error| error.to_string())?;
                         self.store
@@ -617,7 +617,7 @@ impl ApplicationService {
                                 );
                                 let media_ref = self
                                     .server
-                                    .register_media_with_id(&media_id, &url, &option.headers)
+                                    .register_media_with_id(book_id, &media_id, &url, &option.headers)
                                     .await
                                     .map_err(|error| error.to_string())?;
                                 let selected = option_index == selected_index;

@@ -1,27 +1,23 @@
 import type { ComputedRef, Ref } from "vue";
-import { getBook, refreshBookInfo, resetBookProgress } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { type BookResource, type ReadingProgress, type ResourceDescriptor, type ResetBookProgressResponse, type ShelfResource } from "../../api/types";
+import { refreshBookInfo, resetBookProgress } from "../../api/books";
+import { type BookResource, type ResetBookProgressResponse } from "../../api/types";
+import { replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
 
 type PendingProgressReset = { id: string; title: string };
 
 export interface BookDetailActionsOptions {
   openedBook: Ref<BookResource | null>;
   readingBook: Ref<BookResource | null>;
-  shelf: Ref<ShelfResource>;
   panelBusy: Ref<boolean>;
   infoRefreshBusy: Ref<boolean>;
   canRefreshInfo: ComputedRef<boolean>;
   progressResetBusy: Ref<boolean>;
-  displaySaveBusy: Ref<boolean>;
-  singleRemovalBusy: Ref<boolean>;
   recoveryRequired: Ref<boolean>;
   recoveryTitle: Ref<string>;
   recoveryMessage: Ref<string>;
   pendingProgressReset: Ref<PendingProgressReset | null>;
   progressResetError: Ref<string>;
   readerProgressDirty: Ref<boolean>;
-  refreshShelfFromDescriptor: (descriptor: ResourceDescriptor) => Promise<void>;
   saveCurrentProgress: () => Promise<void>;
   finishReadingSession: () => Promise<void>;
   closeReader: (discardProgress?: boolean) => Promise<void>;
@@ -35,20 +31,16 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
   const {
     openedBook,
     readingBook,
-    shelf,
     panelBusy,
     infoRefreshBusy,
     canRefreshInfo,
     progressResetBusy,
-    displaySaveBusy,
-    singleRemovalBusy,
     recoveryRequired,
     recoveryTitle,
     recoveryMessage,
     pendingProgressReset,
     progressResetError,
     readerProgressDirty,
-    refreshShelfFromDescriptor,
     saveCurrentProgress,
     finishReadingSession,
     closeReader,
@@ -61,7 +53,6 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
     const book = openedBook.value;
     if (!book || !canRefreshInfo.value || infoRefreshBusy.value || recoveryRequired.value) return;
     const revision = getRestoreRevision();
-    const bookAtStart = book;
     const bookId = book.id;
     infoRefreshBusy.value = true;
     try {
@@ -87,42 +78,11 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
         return;
       }
 
-      let refreshedBook: BookResource | null = null;
       let bookReadError = "";
       try {
-        refreshedBook = await readResource<BookResource>(response.book);
-        if (refreshedBook.id !== bookId) throw new Error("刷新的书籍与当前详情不匹配。");
+        await refreshOpenedBook(response.book);
       } catch (error) {
-        const responseReadError = errorText(error);
-        try {
-          refreshedBook = await readResource<BookResource>(await getBook(bookId));
-          if (refreshedBook.id !== bookId) throw new Error("重读后返回的书籍与当前详情不匹配。");
-        } catch (reloadError) {
-          bookReadError = `${responseReadError}；重读失败：${errorText(reloadError)}`;
-        }
-      }
-
-      let shelfReadError = "";
-      if (revision === getRestoreRevision()) {
-        try {
-          await refreshShelfFromDescriptor(response.shelf);
-        } catch (error) {
-          shelfReadError = errorText(error);
-        }
-      }
-
-      const current = openedBook.value;
-      if (revision === getRestoreRevision() && refreshedBook && current?.id === bookId) {
-        if (current !== bookAtStart) {
-          try {
-            refreshedBook = await readResource<BookResource>(await getBook(bookId));
-            if (refreshedBook.id !== bookId) throw new Error("重读后返回的书籍与当前详情不匹配。");
-          } catch (error) {
-            bookReadError = `并发更新后重读失败：${errorText(error)}`;
-            refreshedBook = null;
-          }
-        }
-        if (revision === getRestoreRevision() && refreshedBook && openedBook.value === current) openedBook.value = refreshedBook;
+        bookReadError = errorText(error);
       }
 
       if (response.recoveryRequired && revision === getRestoreRevision()) {
@@ -132,8 +92,8 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
       }
 
       if (revision !== getRestoreRevision()) return;
-      if (bookReadError || shelfReadError) {
-        const details = [bookReadError && `详情未能重新载入：${bookReadError}`, shelfReadError && `书架未能更新：${shelfReadError}`].filter(Boolean).join("；");
+      if (bookReadError) {
+        const details = `详情未能重新载入：${bookReadError}`;
         notify(`书籍信息已刷新，但${details}。`, "error");
       } else if (response.recoveryRequired) {
         notify("书籍信息已刷新，但恢复待完成；请重启应用。", "error");
@@ -149,8 +109,8 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
 
   async function resetOpenedBookProgress(): Promise<void> {
     const pending = pendingProgressReset.value;
-    if (!pending || progressResetBusy.value || panelBusy.value || displaySaveBusy.value || infoRefreshBusy.value
-      || singleRemovalBusy.value || recoveryRequired.value) return;
+    if (!pending || progressResetBusy.value || panelBusy.value || infoRefreshBusy.value
+      || recoveryRequired.value) return;
     const { id: bookId, title } = pending;
     const restoreRevision = getRestoreRevision();
     const isCurrentRestore = () => restoreRevision === getRestoreRevision();
@@ -172,13 +132,7 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
           return;
         }
         if (openedBook.value?.id === bookId && readerBook.progress) {
-          openedBook.value = { ...openedBook.value, progress: { ...readerBook.progress } };
-        }
-        if (readerBook.progress) {
-          shelf.value = {
-            ...shelf.value,
-            books: shelf.value.books.map((book) => book.id === bookId ? { ...book, progress: { ...readerBook.progress! } } : book),
-          };
+          replaceOpenedBook({ ...openedBook.value, progress: { ...readerBook.progress } });
         }
         await finishReadingSession();
         if (!isCurrentRestore()) return;
@@ -225,39 +179,12 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
       }
 
       pendingProgressReset.value = null;
-      const resetProgress: ReadingProgress = { chapterId: null, chapterIndex: 0, offset: 0, updatedAtMs: 0 };
-      if (openedBook.value?.id === bookId) openedBook.value = { ...openedBook.value, progress: resetProgress };
-      shelf.value = {
-        ...shelf.value,
-        books: shelf.value.books.map((book) => book.id === bookId ? { ...book, progress: resetProgress } : book),
-      };
-
       let bookReadError = "";
       try {
-        const updatedBook = await readResource<BookResource>(response.book);
-        if (!isCurrentRestore()) return;
-        if (updatedBook.id !== bookId) throw new Error("重置后返回的书籍与当前操作不匹配。");
-        if (openedBook.value?.id === bookId) openedBook.value = updatedBook;
-      } catch (error) {
-        const responseReadError = errorText(error);
-        try {
-          const updatedBook = await readResource<BookResource>(await getBook(bookId));
-          if (!isCurrentRestore()) return;
-          if (updatedBook.id !== bookId) throw new Error("重读后返回的书籍与当前操作不匹配。");
-          if (openedBook.value?.id === bookId) openedBook.value = updatedBook;
-        } catch (reloadError) {
-          if (!isCurrentRestore()) return;
-          bookReadError = `${responseReadError}；重读失败：${errorText(reloadError)}`;
-        }
-      }
-
-      if (!isCurrentRestore()) return;
-      let shelfReadError = "";
-      try {
-        await refreshShelfFromDescriptor(response.shelf);
+        await refreshOpenedBook(response.book);
       } catch (error) {
         if (!isCurrentRestore()) return;
-        shelfReadError = errorText(error);
+        bookReadError = errorText(error);
       }
 
       if (!isCurrentRestore()) return;
@@ -267,8 +194,8 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
         recoveryMessage.value = `《${title}》的阅读进度已重置，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`;
       }
 
-      if (bookReadError || shelfReadError) {
-        const details = [bookReadError && `详情未能重新载入：${bookReadError}`, shelfReadError && `书架未能更新：${shelfReadError}`].filter(Boolean).join("；");
+      if (bookReadError) {
+        const details = `详情未能重新载入：${bookReadError}`;
         notify(`《${title}》的阅读进度已重置；${details}。`, "error");
       } else if (response.recoveryRequired) {
         notify("阅读进度已重置，但恢复待完成；请重启应用。", "error");

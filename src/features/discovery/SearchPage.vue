@@ -2,20 +2,18 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { appBootstrap } from "../../api/core";
-import { addBook } from "../../api/books";
 import { cancelTask } from "../../api/tasks";
 import { startSearch } from "../../api/search";
 import { readResource } from "../../api/resources";
 import { notify } from "../../app/notifications";
-import { shelfBatchRecoveryMessage, shelfBatchRecoveryRequired } from "../../app/recoveryState";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { clearSearchSnapshot, publishSearchSnapshot, searchSnapshot } from "./searchSnapshotState";
 import { loadBookSourceCandidates } from "../sources/sourceCandidates";
-import type { AppBootstrap, BookResource, ResourceDescriptor, SearchBookResult, ShelfResource, SourceMetadata } from "../../api/types";
+import type { AppBootstrap, ResourceDescriptor, SearchBookResult,  SourceMetadata } from "../../api/types";
 import SearchHistory from "./SearchHistory.vue";
 import { useSearchHistory } from "./useSearchHistory";
-import { useSearchResultActions } from "./useSearchResultActions";
 import { useSearchWorkflow } from "./useSearchWorkflow";
-import { discardBookDetailOpenRequest, requestBookDetailOpen, type BookDetailSearchResultActions } from "../books/bookDetailOpenRequest";
+import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
@@ -45,9 +43,7 @@ const errorText = (error: unknown): string => error instanceof Error ? error.mes
 const restoreRevision = ref(0);
 const pageDataLoading = ref(true);
 const pageDataError = ref("");
-const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [] });
 const bookSourceCandidates = ref<SourceMetadata[]>([]);
-let shelfReadRevision = 0;
 let sourceCandidatesReadRevision = 0;
 let bootstrapReadRevision = 0;
 let disposed = false;
@@ -62,27 +58,14 @@ async function refreshBookSourceCandidates(descriptor?: ResourceDescriptor): Pro
   bookSourceCandidates.value = candidates;
 }
 
-async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++shelfReadRevision;
-  const currentRestoreRevision = restoreRevision.value;
-  const nextShelf = await readResource<ShelfResource>(descriptor);
-  if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== shelfReadRevision) return;
-  shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
-  pageDataError.value = "";
-}
 
 async function applyBootstrap(snapshot: AppBootstrap): Promise<void> {
   const requestRevision = bootstrapReadRevision;
   const currentRestoreRevision = restoreRevision.value;
   pageDataLoading.value = true;
   pageDataError.value = "";
-  const historyRead = refreshSearchHistory(snapshot.searchHistory).then(() => {
-    if (!disposed && currentRestoreRevision === restoreRevision.value) searchHistoryError.value = "";
-  }).catch((error) => {
-    if (!disposed && currentRestoreRevision === restoreRevision.value) searchHistoryError.value = errorText(error);
-  });
   try {
-    await Promise.all([refreshShelf(snapshot.shelf), refreshBookSourceCandidates(snapshot.sources), historyRead]);
+    await Promise.all([refreshBookSourceCandidates(snapshot.sources)]);
     if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== bootstrapReadRevision) return;
   } catch (error) {
     if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== bootstrapReadRevision) return;
@@ -142,19 +125,6 @@ async function setupEvents(): Promise<void> {
     register(await listen<ResourceDescriptor>("sources-updated", (event) => {
       void refreshBookSourceCandidates(event.payload).catch((error) => notify(errorText(error), "error"));
     }));
-    register(await listen<ResourceDescriptor>("shelf-updated", (event) => {
-      void refreshShelf(event.payload).catch((error) => notify(`书架刷新失败：${errorText(error)}`, "error"));
-    }));
-    register(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-      if (event.payload.kind === "searchHistory") {
-        const currentRestoreRevision = restoreRevision.value;
-        void refreshSearchHistory(event.payload.resource).then(() => {
-          if (currentRestoreRevision === restoreRevision.value) searchHistoryError.value = "";
-        }).catch((error) => {
-          if (currentRestoreRevision === restoreRevision.value) searchHistoryError.value = errorText(error);
-        });
-      }
-    }));
     register(await listen<AppBootstrap>("app-state-updated", (event) => {
       restoreRevision.value += 1;
       bootstrapReadRevision += 1;
@@ -180,7 +150,6 @@ onBeforeUnmount(() => {
   disposed = true;
   restoreRevision.value += 1;
   bootstrapReadRevision += 1;
-  shelfReadRevision += 1;
   sourceCandidatesReadRevision += 1;
   for (const unlisten of eventUnlisteners.splice(0)) unlisten();
 });
@@ -210,42 +179,6 @@ const searchResponseErrors = ref<Array<{ sourceId?: string; message: string }>>(
 const searchResults = ref<SearchBookResult[]>([]);
 const searchResourceErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
 const searchWasRun = ref(false);
-const searchResultActions = useSearchResultActions({
-  searchResults,
-  shelf,
-  shelfBatchRecoveryRequired,
-  shelfBatchRecoveryMessage,
-  getRestoreRevision: () => restoreRevision.value,
-  addBook,
-  readBookResource: (descriptor) => readResource<BookResource>(descriptor),
-  readShelfResource: (descriptor) => readResource<ShelfResource>(descriptor),
-  errorText,
-  notify,
-});
-const {
-  selectedSearchResultIds,
-  selectedSearchResults,
-  searchResultBatchBusy,
-  searchResultBatchSummary,
-  searchResultAddErrors,
-  busySearchResultKeys,
-  searchResultSelectionKey,
-  searchResultIsBusy,
-  searchResultIsAdded,
-  resetSearchResultState,
-  pruneSelectionToResults,
-  toggleSearchResultSelection,
-  toggleVisibleSearchResultSelection,
-  clearSearchResultSelection,
-  addSelectedSearchResults,
-} = searchResultActions;
-const busySearchResultCount = computed(() => busySearchResultKeys.value.length);
-const searchResultDetailActions: BookDetailSearchResultActions = {
-  searchResultBatchBusy,
-  searchResultIsBusy,
-  addSearchResult: searchResultActions.addSearchResult,
-};
-
 const searchWorkflow = useSearchWorkflow({
   bookSourceCandidates,
   selectedSourceIds,
@@ -257,10 +190,7 @@ const searchWorkflow = useSearchWorkflow({
   searchResults,
   searchResourceErrors,
   searchWasRun,
-  searchResultBatchBusy,
   shelfBatchRecoveryRequired,
-  resetSearchResultState,
-  pruneSelectionToResults,
   notify,
   errorText,
   getRestoreRevision: () => restoreRevision.value,
@@ -274,9 +204,7 @@ const {
   runSearch,
   cancelActiveSearch,
 } = searchWorkflow;
-const searchHistory = useSearchHistory(errorText, () => restoreRevision.value);
-const { searchHistoryEntries, searchHistoryBusy, searchHistoryError, refreshSearchHistory,
-  removeSearchHistoryEntry, clearSearchHistoryEntries } = searchHistory;
+const { searchHistoryEntries, removeSearchHistoryEntry, clearSearchHistoryEntries } = useSearchHistory();
 
 watch(searchSnapshot, (descriptor) => {
   if (descriptor) void consumeSearchSnapshot(descriptor);
@@ -292,11 +220,8 @@ watch(() => restoreRevision.value, () => {
 });
 
 function startNewSearch(): void {
-  if (pageDataLoading.value || pageDataError.value || searchResultBatchBusy.value || shelfBatchRecoveryRequired.value) return;
+  if (pageDataLoading.value || pageDataError.value || shelfBatchRecoveryRequired.value) return;
   clearSearchSnapshot();
-  clearSearchResultSelection();
-  searchResultAddErrors.value = {};
-  searchResultBatchSummary.value = "";
   void runSearch();
 }
 
@@ -316,12 +241,12 @@ function reuseSearchQuery(query: string): void {
 }
 
 function setAllSearchSources(enabled: boolean): void {
-  if (pageDataLoading.value || pageDataError.value || searchResultBatchBusy.value || shelfBatchRecoveryRequired.value) return;
+  if (pageDataLoading.value || pageDataError.value || shelfBatchRecoveryRequired.value) return;
   selectedSourceIds.value = enabled ? bookSourceCandidates.value.map((source) => source.id) : [];
 }
 
 function toggleSearchSource(sourceId: string): void {
-  if (pageDataLoading.value || pageDataError.value || searchResultBatchBusy.value || shelfBatchRecoveryRequired.value
+  if (pageDataLoading.value || pageDataError.value || shelfBatchRecoveryRequired.value
     || !bookSourceCandidates.value.some((source) => source.id === sourceId)) return;
   selectedSourceIds.value = selectedSourceIds.value.includes(sourceId)
     ? selectedSourceIds.value.filter((id) => id !== sourceId)
@@ -329,8 +254,8 @@ function toggleSearchSource(sourceId: string): void {
 }
 
 async function openSearchResultDetails(result: SearchBookResult): Promise<void> {
-  if (searchResultBatchBusy.value || shelfBatchRecoveryRequired.value) return;
-  const requestId = requestBookDetailOpen({ kind: "search-result", result, actions: searchResultDetailActions });
+  if (shelfBatchRecoveryRequired.value) return;
+  const requestId = requestBookDetailOpen({ kind: "search-result", result });
   try {
     const failure = await router.push({ name: routeNames.bookDetail });
     if (failure) discardBookDetailOpenRequest(requestId);
@@ -347,7 +272,6 @@ const sourceFilter = ref("");
 const sortMode = ref<SearchSortMode>("relevance");
 const searchOptionsOpen = ref(false);
 const resultFiltersOpen = ref(false);
-const batchActionsOpen = ref(false);
 const selectedContentType = ref<SearchContentType>("all");
 const resultCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 
@@ -425,10 +349,6 @@ const resultSources = computed(() => {
 const hasResultFilters = computed(() => Boolean(titleFilter.value.trim()
   || authorFilter.value.trim() || sourceFilter.value
   || matchMode.value !== "contains" || sortMode.value !== "relevance"));
-const addableVisibleResults = computed(() => visibleSearchResults.value.filter((result) => !searchResultIsAdded(result)));
-const allVisibleAddableResultsSelected = computed(() => addableVisibleResults.value.length > 0
-  && addableVisibleResults.value.every((result) => selectedSearchResultIds.value.includes(searchResultSelectionKey(result))));
-
 function clearResultFilters(): void {
   titleFilter.value = "";
   authorFilter.value = "";
@@ -441,7 +361,7 @@ function clearResultFilters(): void {
 
 <template>
   <section class="search-view search-page-prototype">
-    <header class="search-prototype-topbar">
+    <header class="search-prototype-topbar safe-area-top">
       <BackButton label="返回" @click="returnFromSearch" />
       <form class="search-form search-prototype-top-input" @submit.prevent="submitSearch">
         <span class="search-large-icon"><PrototypeIcon name="search"/></span>
@@ -449,11 +369,11 @@ function clearResultFilters(): void {
           :value="searchKeyword"
           autofocus
           placeholder="书名、作者、关键词或来源"
-          :disabled="pageDataLoading || !!pageDataError || searchResultBatchBusy || shelfBatchRecoveryRequired"
+          :disabled="pageDataLoading || !!pageDataError || shelfBatchRecoveryRequired"
           @input="updateKeyword"
         />
         <button v-if="searchKeyword" type="button" class="clear-search"
-          :disabled="pageDataLoading || !!pageDataError || searchResultBatchBusy || shelfBatchRecoveryRequired"
+          :disabled="pageDataLoading || !!pageDataError || shelfBatchRecoveryRequired"
           @click="searchKeyword = ''"><PrototypeIcon name="close"/></button>
       </form>
       <span class="search-prototype-topbar-spacer"></span>
@@ -477,7 +397,7 @@ function clearResultFilters(): void {
         </section>
         <section class="search-sidebar-section">
           <div class="search-sidebar-source-heading"><h3 class="search-prototype-sidebar-title">来源范围</h3>
-            <button type="button" :disabled="pageDataLoading || !!pageDataError || searchResultBatchBusy || shelfBatchRecoveryRequired || !bookSourceCandidates.length"
+            <button type="button" :disabled="pageDataLoading || !!pageDataError || shelfBatchRecoveryRequired || !bookSourceCandidates.length"
               @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</button></div>
           <span class="search-sidebar-count">已选 {{ selectedSourceIds.length }} / {{ bookSourceCandidates.length }}</span>
           <p v-if="pageDataLoading" class="search-sidebar-no-source">正在加载书源…</p>
@@ -488,7 +408,7 @@ function clearResultFilters(): void {
             <label v-for="source in bookSourceCandidates" :key="source.id" class="source-chip"
               :class="{ checked: selectedSourceIds.includes(source.id) }">
               <input type="checkbox" :checked="selectedSourceIds.includes(source.id)"
-                :disabled="pageDataLoading || !!pageDataError || searchResultBatchBusy || shelfBatchRecoveryRequired"
+                :disabled="pageDataLoading || !!pageDataError || shelfBatchRecoveryRequired"
                 @change="toggleSearchSource(source.id)"/>
               <span class="chip-label">{{ source.name }}</span>
             </label>
@@ -504,8 +424,7 @@ function clearResultFilters(): void {
           <p>搜索数据加载失败：{{ pageDataError }}</p>
           <button class="button secondary small" type="button" @click="loadSearchPageData">重试</button>
         </div>
-        <SearchHistory v-if="!searchWasRun && (searchHistoryEntries.length || searchHistoryError)" :entries="searchHistoryEntries"
-          :busy="searchHistoryBusy" :error="searchHistoryError"
+        <SearchHistory v-if="!searchWasRun && searchHistoryEntries.length" :entries="searchHistoryEntries"
           @use-query="reuseSearchQuery"
           @delete-query="removeSearchHistoryEntry"
           @clear-all="clearSearchHistoryEntries"/>
@@ -521,15 +440,12 @@ function clearResultFilters(): void {
                 :disabled="activeSearchCancellationPending" @click="cancelActiveSearch">
                 {{ activeSearchCancellationPending ? '取消中…' : '取消搜索' }}</button>
               <label v-if="searchWasRun && searchResults.length" class="search-list-sort">排序
-                <select v-model="sortMode" :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired">
+                <select v-model="sortMode" :disabled="shelfBatchRecoveryRequired">
                   <option value="relevance">相关度</option><option value="title">书名</option><option value="author">作者</option>
                 </select>
               </label>
               <button v-if="searchWasRun && searchResults.length" class="search-list-utility" type="button"
                 @click="resultFiltersOpen = !resultFiltersOpen"><PrototypeIcon name="tune"/> {{ resultFiltersOpen ? '收起筛选' : '筛选' }}</button>
-              <button v-if="searchWasRun && searchResults.length" class="search-list-utility" type="button"
-                @click="batchActionsOpen = !batchActionsOpen">
-                {{ batchActionsOpen ? '完成整理' : '批量加入' }}</button>
             </div>
           </div>
           <div v-if="!searchWasRun" class="search-start-inline">
@@ -541,52 +457,37 @@ function clearResultFilters(): void {
           <div v-if="searchBusy && !searchResults.length" class="search-loading"><span class="loader-ring"></span><strong>正在查找相关书籍</strong><p>正在从所选书源寻找匹配的书。</p></div>
       <template v-else-if="searchResults.length">
         <div v-if="resultFiltersOpen" class="source-toolbar advanced-search-toolbar">
-          <label class="source-search"><PrototypeIcon name="search"/><input v-model="titleFilter" placeholder="输入书名" :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired" /></label>
-          <label class="source-search"><PrototypeIcon name="search"/><input v-model="authorFilter" placeholder="输入作者" :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired" /></label>
-          <select v-model="sourceFilter" :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired">
+          <label class="source-search"><PrototypeIcon name="search"/><input v-model="titleFilter" placeholder="输入书名" :disabled="shelfBatchRecoveryRequired" /></label>
+          <label class="source-search"><PrototypeIcon name="search"/><input v-model="authorFilter" placeholder="输入作者" :disabled="shelfBatchRecoveryRequired" /></label>
+          <select v-model="sourceFilter" :disabled="shelfBatchRecoveryRequired">
             <option value="">全部书源</option>
             <option v-for="[sourceId, name] in resultSources" :key="sourceId" :value="sourceId">{{ name }}</option>
           </select>
           <span class="search-status">匹配 {{ visibleSearchResults.length }} / {{ searchResults.length }} 本</span>
           <button v-if="hasResultFilters" class="text-button" type="button" @click="clearResultFilters">清空筛选</button>
         </div>
-        <div v-if="batchActionsOpen || selectedSearchResults.length" class="source-toolbar search-batch-toolbar">
-          <span class="search-status">已选 {{ selectedSearchResults.length }} 本 · 当前页</span>
-          <button class="button secondary small" type="button" :disabled="!addableVisibleResults.length || searchResultBatchBusy || shelfBatchRecoveryRequired" @click="toggleVisibleSearchResultSelection(addableVisibleResults)">{{ allVisibleAddableResultsSelected ? '取消选中筛选结果' : '选中筛选结果' }}</button>
-          <button class="button secondary small" type="button" :disabled="!selectedSearchResultIds.length || searchResultBatchBusy" @click="clearSearchResultSelection">清空选择</button>
-          <button class="button primary small" type="button" :disabled="!selectedSearchResults.length || busySearchResultCount > 0 || searchResultBatchBusy || shelfBatchRecoveryRequired" @click="addSelectedSearchResults">{{ searchResultBatchBusy ? '正在加入…' : `加入书架 · ${selectedSearchResults.length}` }}</button>
-        </div>
-        <p v-if="searchResultBatchSummary" class="search-status">{{ searchResultBatchSummary }}</p>
         <div v-if="visibleSearchResults.length" class="search-results-grid search-prototype-result-list">
-          <article v-for="result in visibleSearchResults" :key="searchResultSelectionKey(result)"
+          <article v-for="result in visibleSearchResults" :key="`${result.sourceId}:${result.bookUrl || result.resultId}`"
             class="result-card">
             <button class="result-cover" type="button"
-              :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired || searchResultIsBusy(result)"
+              :disabled="shelfBatchRecoveryRequired"
               @click="openSearchResultDetails(result)">
               <img v-if="result.coverSrc" :src="result.coverSrc" loading="lazy" decoding="async"/>
               <span v-else class="search-abstract-cover" :class="`search-tone-${result.title.length % 5}`"></span>
             </button>
             <div class="result-details">
               <button class="result-title" type="button"
-                :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired || searchResultIsBusy(result)"
+                :disabled="shelfBatchRecoveryRequired"
                 @click="openSearchResultDetails(result)">{{ result.title }}</button>
               <p class="result-author">{{ result.author || '作者未知' }} · {{ contentTypes.find((item) => item.id === resultContentType(result))?.label }}</p>
               <p v-if="result.intro" class="search-result-intro">{{ String(result.intro) }}</p>
               <p v-else-if="result.latestChapter" class="search-result-intro">{{ result.latestChapter }}</p>
-              <p v-if="searchResultAddErrors[searchResultSelectionKey(result)]" class="result-latest">
-                加入失败：{{ searchResultAddErrors[searchResultSelectionKey(result)] }}</p>
             </div>
             <div class="search-result-side">
               <small class="source-label">{{ resultSourceLabel(result) }}</small>
               <button class="search-result-open" type="button"
-                :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired || searchResultIsBusy(result)"
+                :disabled="shelfBatchRecoveryRequired"
                 @click="openSearchResultDetails(result)">打开</button>
-              <button v-if="batchActionsOpen || selectedSearchResultIds.includes(searchResultSelectionKey(result))"
-                class="result-select-action" type="button"
-                :disabled="searchResultBatchBusy || shelfBatchRecoveryRequired || searchResultIsBusy(result) || searchResultIsAdded(result)"
-                @click="toggleSearchResultSelection(result)">
-                {{ searchResultIsAdded(result) ? '已在书架' : selectedSearchResultIds.includes(searchResultSelectionKey(result)) ? '已选中 ✓' : '选择加入 +' }}
-              </button>
             </div>
           </article>
         </div>
@@ -604,9 +505,9 @@ function clearResultFilters(): void {
         <ul><li v-for="(error, index) in [...searchResponseErrors, ...searchResourceErrors]" :key="`${error.sourceId}-${index}`"><b>{{ error.sourceId ? sourceNameForId(error.sourceId) : '书源' }}</b>：{{ error.message }}</li></ul>
       </div>
       <div v-if="searchResults.length" class="search-pagination">
-        <button class="button secondary small" :disabled="pageDataLoading || !!pageDataError || searchPage <= 1 || searchBusy || searchResultBatchBusy || shelfBatchRecoveryRequired" @click="runSearch(searchPage - 1)">← 上一页</button>
+        <button class="button secondary small" :disabled="pageDataLoading || !!pageDataError || searchPage <= 1 || searchBusy || shelfBatchRecoveryRequired" @click="runSearch(searchPage - 1)">← 上一页</button>
         <span>第 {{ searchPage }} 页</span>
-        <button class="button secondary small" :disabled="pageDataLoading || !!pageDataError || searchBusy || searchResultBatchBusy || shelfBatchRecoveryRequired" @click="runSearch(searchPage + 1)">下一页 →</button>
+        <button class="button secondary small" :disabled="pageDataLoading || !!pageDataError || searchBusy || shelfBatchRecoveryRequired" @click="runSearch(searchPage + 1)">下一页 →</button>
       </div>
       </template>
       </div>
@@ -629,7 +530,7 @@ function clearResultFilters(): void {
   justify-content: center;
   gap: 8px;
   min-height: 54px;
-  padding: 0 12px;
+  padding-inline: 12px;
   border-bottom: 1px solid var(--app-line);
   background: var(--app-background);
 }
@@ -690,7 +591,7 @@ function clearResultFilters(): void {
 }
 .search-prototype-layout > .source-scope-card {
   position: sticky;
-  top: 66px;
+  top: calc(66px + var(--safe-top));
   display: grid;
   align-content: start;
   gap: 12px;

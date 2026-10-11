@@ -1,19 +1,15 @@
-import { onBeforeUnmount, ref, type ComputedRef, type Ref } from "vue";
-import { createShelfGroup, deleteShelfGroup, renameShelfGroup } from "../../api/shelf";
-import { type ResourceDescriptor } from "../../api/types";
+import { onBeforeUnmount, type ComputedRef, type Ref } from "vue";
+import { shelf } from "./shelfStore";
 
 interface ShelfGroupActionsOptions {
   groups: ComputedRef<string[]>;
   activeGroup: Ref<string>;
   selectionMode: Readonly<Ref<boolean>>;
   batchBusy: Readonly<Ref<boolean>>;
-  refreshShelfFromDescriptor: (descriptor: ResourceDescriptor) => Promise<void>;
-  getRestoreRevision: () => number;
   toggleBookSelection: (bookId: string) => void;
   openBookInfo: (bookId: string) => void;
   continueReading: (bookId: string) => void;
   notify: (message: string, kind?: "success" | "error") => void;
-  errorText: (error: unknown) => string;
 }
 
 /** 管理书架分组和封面长按交互。 */
@@ -23,76 +19,44 @@ export function useShelfGroupActions(options: ShelfGroupActionsOptions) {
     activeGroup,
     selectionMode,
     batchBusy,
-    refreshShelfFromDescriptor,
-    getRestoreRevision,
     toggleBookSelection,
     openBookInfo,
     continueReading,
     notify,
-    errorText,
   } = options;
-  const groupMutationBusy = ref(false);
   let longPressTimer: ReturnType<typeof setTimeout> | null = null;
   let longPressPointer: { bookId: string; pointerId: number; x: number; y: number } | null = null;
   let suppressedClickBookId: string | null = null;
   let suppressedClickTimer: ReturnType<typeof setTimeout> | null = null;
 
-  async function createGroup(groupName: string): Promise<void> {
+  function createGroup(groupName: string): void {
     const normalized = groupName.trim();
-    if (!normalized || groupMutationBusy.value) return;
+    if (!normalized || batchBusy.value) return;
     if (groups.value.includes(normalized)) {
       notify("这个分组已经存在。", "error");
       return;
     }
-    const restoreRevision = getRestoreRevision();
-    groupMutationBusy.value = true;
-    try {
-      const resource = await createShelfGroup(normalized);
-      if (restoreRevision !== getRestoreRevision()) return;
-      await refreshShelfFromDescriptor(resource);
-      if (restoreRevision === getRestoreRevision()) notify("书架分组已创建，空分组也会保留。");
-    } catch (error) {
-      if (restoreRevision === getRestoreRevision()) notify(`创建分组失败：${errorText(error)}`, "error");
-    } finally {
-      groupMutationBusy.value = false;
-    }
+    shelf.value.groups = [...(shelf.value.groups ?? []), normalized];
+    notify("书架分组已创建，空分组也会保留。");
   }
 
-  async function renameGroup(oldName: string, newName: string): Promise<void> {
+  function renameGroup(oldName: string, newName: string): void {
     const normalized = newName.trim();
-    if (!normalized || groupMutationBusy.value) return;
-    const restoreRevision = getRestoreRevision();
-    groupMutationBusy.value = true;
-    try {
-      const resource = await renameShelfGroup(oldName, normalized);
-      if (restoreRevision !== getRestoreRevision()) return;
-      await refreshShelfFromDescriptor(resource);
-      if (restoreRevision !== getRestoreRevision()) return;
-      if (activeGroup.value === oldName) activeGroup.value = normalized;
-      notify("分组名称已更新。");
-    } catch (error) {
-      if (restoreRevision === getRestoreRevision()) notify(`分组重命名失败：${errorText(error)}`, "error");
-    } finally {
-      groupMutationBusy.value = false;
+    if (!normalized || batchBusy.value) return;
+    shelf.value.groups = [...new Set((shelf.value.groups ?? []).map((name) => name === oldName ? normalized : name))];
+    for (const book of shelf.value.books) {
+      book.groups = [...new Set((book.groups ?? []).map((name) => name === oldName ? normalized : name))];
     }
+    if (activeGroup.value === oldName) activeGroup.value = normalized;
+    notify("分组名称已更新。");
   }
 
-  async function removeShelfGroup(groupName: string): Promise<void> {
-    if (groupMutationBusy.value) return;
-    const restoreRevision = getRestoreRevision();
-    groupMutationBusy.value = true;
-    try {
-      const resource = await deleteShelfGroup(groupName);
-      if (restoreRevision !== getRestoreRevision()) return;
-      await refreshShelfFromDescriptor(resource);
-      if (restoreRevision !== getRestoreRevision()) return;
-      if (activeGroup.value === groupName) activeGroup.value = "";
-      notify("分组已删除，书籍仍保留在书架。");
-    } catch (error) {
-      if (restoreRevision === getRestoreRevision()) notify(`删除分组失败：${errorText(error)}`, "error");
-    } finally {
-      groupMutationBusy.value = false;
-    }
+  function removeShelfGroup(groupName: string): void {
+    if (batchBusy.value) return;
+    shelf.value.groups = (shelf.value.groups ?? []).filter((name) => name !== groupName);
+    for (const book of shelf.value.books) book.groups = (book.groups ?? []).filter((name) => name !== groupName);
+    if (activeGroup.value === groupName) activeGroup.value = "";
+    notify("分组已删除，书籍仍保留在书架。");
   }
 
   function clearSuppressedClick(): void {
@@ -155,7 +119,6 @@ export function useShelfGroupActions(options: ShelfGroupActionsOptions) {
   onBeforeUnmount(dispose);
 
   return {
-    groupMutationBusy,
     createGroup,
     renameGroup,
     removeShelfGroup,

@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// 首页栏目编辑器负责自己的配置读取、表单草稿与保存。
+// 首页栏目直接编辑全局设置中的 home 配置。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { onBeforeRouteLeave } from "vue-router";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { appBootstrap } from "../../api/core";
 import { readResource } from "../../api/resources";
@@ -15,7 +14,6 @@ function returnToHome(): void {
   void router.push({ name: routeNames.home });
 }
 
-const draft = ref<HomeConfigDocument>({ schemaVersion: 1, tabs: [] });
 const sources = ref<SourceMetadata[]>([]);
 const sourcesLoading = ref(true);
 const sourcesError = ref("");
@@ -25,18 +23,12 @@ const expandedSectionId = ref<string | null>(null);
 const draggingSectionId = ref<string | null>(null);
 const dropSectionId = ref<string | null>(null);
 const addingSection = ref(false);
-const initialSnapshot = ref("");
-const externalConfigChanged = ref(false);
-const discardPromptOpen = ref(false);
-let resolveNavigation: ((allow: boolean) => void) | null = null;
 const newSectionSourceId = ref("");
 const newSectionCategoryId = ref("");
 const newSectionTitle = ref("");
-let unlistenResourceUpdated: UnlistenFn | undefined;
 let unlistenSourcesUpdated: UnlistenFn | undefined;
 let unlistenAppStateUpdated: UnlistenFn | undefined;
 let isUnmounted = false;
-let acceptIncomingConfig = false;
 let sourcesRequestRevision = 0;
 
 const enabledNovelSources = computed(() => sources.value
@@ -49,63 +41,27 @@ const homeConfigFeature = useHomeConfig({
 });
 const {
   homeConfig,
-  homeConfigLoading,
-  homeConfigLoaded,
-  homeConfigSaving,
-  homeConfigError,
   homeEditorCategories,
   homeEditorLoadingSourceIds,
   homeEditorCategoryErrors,
-  refreshHomeConfig,
   loadHomeEditorCategories,
-  saveHomeConfigDraft,
   resetForRestore,
 } = homeConfigFeature;
-const busy = computed(() => sourcesLoading.value || homeConfigLoading.value || homeConfigSaving.value);
+const draft = homeConfig;
+const busy = computed(() => sourcesLoading.value);
 const categoryErrors = homeEditorCategoryErrors;
 const orderedTabs = computed(() => [...draft.value.tabs].sort((left, right) => left.sortOrder - right.sortOrder));
 const activeTab = computed(() => orderedTabs.value.find((tab) => tab.id === activeTabId.value) ?? orderedTabs.value[0]);
 const orderedSections = computed(() => [...(activeTab.value?.sections ?? [])].sort((left, right) => left.sortOrder - right.sortOrder));
 const categoriesForNewSection = computed(() => selectableCategories(newSectionSourceId.value));
-const isDirty = computed(() => JSON.stringify(normalizeDraft(draft.value)) !== initialSnapshot.value);
-onBeforeRouteLeave(() => {
-  if (homeConfigSaving.value) return false;
-  if (!isDirty.value) return true;
-  return new Promise<boolean>((resolve) => {
-    resolveNavigation?.(false);
-    resolveNavigation = resolve;
-    discardPromptOpen.value = true;
-  });
-});
 onBeforeUnmount(() => {
   isUnmounted = true;
   restoreRevision.value += 1;
   sourcesRequestRevision += 1;
   resetForRestore();
-  unlistenResourceUpdated?.();
   unlistenSourcesUpdated?.();
   unlistenAppStateUpdated?.();
-  resolveNavigation?.(false);
 });
-function keepDraft(): void {
-  discardPromptOpen.value = false;
-  const resume = resolveNavigation;
-  resolveNavigation = null;
-  resume?.(false);
-}
-function discardDraft(): void {
-  if (busy.value) return;
-  discardPromptOpen.value = false;
-  const resume = resolveNavigation;
-  resolveNavigation = null;
-  if (resume) resume(true);
-  else reloadLatestConfig();
-}
-function requestDiscard(): void {
-  if (busy.value) return;
-  if (isDirty.value) discardPromptOpen.value = true;
-  else reloadLatestConfig();
-}
 
 const validationErrors = computed(() => {
   const errors: string[] = [];
@@ -133,7 +89,7 @@ const validationErrors = computed(() => {
       if (sectionIds.has(section.id)) errors.push("栏目标识重复，请重新创建栏目。");
       sectionIds.add(section.id);
       const source = sources.value.find((entry) => entry.id === section.sourceId);
-      if (!source || !source.enabled || source.isRss === true) errors.push(`栏目“${sectionTitle || section.categoryName}”需要选择已启用的书籍来源。`);
+      if (!source || !source.enabled || source.isRss === true) errors.push(`栏目“${sectionTitle || section.categoryId}”需要选择已启用的书籍来源。`);
       if (!section.categoryId.trim()) errors.push(`栏目“${sectionTitle || "未命名"}”需要选择一个分类。`);
       if (section.style < 0 || section.style > 3) errors.push(`栏目“${sectionTitle || "未命名"}”的展示样式无效。`);
     }
@@ -141,29 +97,15 @@ const validationErrors = computed(() => {
   return [...new Set(errors)];
 });
 
-const canSave = computed(() => isDirty.value
-  && homeConfigLoaded.value
-  && !sourcesError.value
-  && !externalConfigChanged.value
-  && validationErrors.value.length === 0
-  && !busy.value);
-
 watch(
-  homeConfig,
-  (value) => {
-    const copy = normalizeDraft(cloneDocument(value));
-    const incomingSnapshot = JSON.stringify(copy);
-    if (initialSnapshot.value && isDirty.value && !homeConfigSaving.value && !acceptIncomingConfig) {
-      if (incomingSnapshot !== initialSnapshot.value) externalConfigChanged.value = true;
-      return;
-    }
-    acceptIncomingConfig = false;
-    draft.value = copy;
-    initialSnapshot.value = incomingSnapshot;
-    externalConfigChanged.value = false;
+  () => homeConfig.value.tabs,
+  (tabs) => {
     if (!draft.value.tabs.some((tab) => tab.id === activeTabId.value)) activeTabId.value = draft.value.tabs[0]?.id ?? "";
+    for (const sourceId of new Set(tabs.flatMap((tab) => tab.sections.map((section) => section.sourceId)))) {
+      if (enabledNovelSources.value.some((source) => source.id === sourceId)) void loadHomeEditorCategories(sourceId);
+    }
   },
-  { immediate: true, flush: "sync" },
+  { immediate: true, deep: true, flush: "sync" },
 );
 
 watch(enabledNovelSources, (sources) => {
@@ -172,6 +114,9 @@ watch(enabledNovelSources, (sources) => {
     newSectionCategoryId.value = "";
     newSectionTitle.value = "";
   }
+  for (const sourceId of new Set(homeConfig.value.tabs.flatMap((tab) => tab.sections.map((section) => section.sourceId)))) {
+    if (sources.some((source) => source.id === sourceId)) void loadHomeEditorCategories(sourceId);
+  }
 }, { immediate: true });
 
 watch(() => newSectionSourceId.value, (sourceId) => {
@@ -179,13 +124,6 @@ watch(() => newSectionSourceId.value, (sourceId) => {
   newSectionTitle.value = "";
   if (sourceId) void loadHomeEditorCategories(sourceId);
 });
-
-async function reloadLatestConfig(): Promise<void> {
-  if (busy.value) return;
-  acceptIncomingConfig = true;
-  const loaded = await refreshHomeConfig();
-  if (!loaded) acceptIncomingConfig = false;
-}
 
 async function refreshSources(descriptor?: ResourceDescriptor, expectedRestoreRevision = restoreRevision.value): Promise<void> {
   const requestRevision = ++sourcesRequestRevision;
@@ -210,12 +148,8 @@ function handleAppStateUpdated(snapshot: AppBootstrap): void {
   sources.value = [];
   sourcesLoading.value = true;
   sourcesError.value = "";
-  acceptIncomingConfig = true;
   resetForRestore();
   void refreshSources(snapshot.sources, restoreRevision.value);
-  void refreshHomeConfig().then((loaded) => {
-    if (!loaded) acceptIncomingConfig = false;
-  });
 }
 
 onMounted(async () => {
@@ -224,13 +158,6 @@ onMounted(async () => {
     if (isUnmounted) unlisten();
     return unlisten;
   };
-  try {
-    unlistenResourceUpdated = await register<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (payload) => {
-      if (payload.kind === "homeConfig" && !homeConfigSaving.value) return refreshHomeConfig(payload.resource).then(() => undefined);
-    });
-  } catch (error) {
-    homeConfigError.value = `无法监听发现页配置更新：${error instanceof Error ? error.message : String(error)}`;
-  }
   try {
     unlistenSourcesUpdated = await register<ResourceDescriptor>("sources-updated", (descriptor) => refreshSources(descriptor));
   } catch (error) {
@@ -242,12 +169,8 @@ onMounted(async () => {
     sourcesError.value = error instanceof Error ? error.message : String(error);
   }
   if (isUnmounted) return;
-  await Promise.all([refreshSources(), refreshHomeConfig()]);
+  await refreshSources();
 });
-
-function cloneDocument(value: HomeConfigDocument): HomeConfigDocument {
-  return JSON.parse(JSON.stringify(value)) as HomeConfigDocument;
-}
 
 function normalizeDraft(value: HomeConfigDocument): HomeConfigDocument {
   const tabs = [...(value.tabs ?? [])]
@@ -259,7 +182,7 @@ function normalizeDraft(value: HomeConfigDocument): HomeConfigDocument {
         .sort((left, right) => left.sortOrder - right.sortOrder)
         .map((section, sectionIndex) => ({ ...section, sortOrder: sectionIndex })),
     }));
-  return { schemaVersion: value.schemaVersion || 1, tabs };
+  return { tabs };
 }
 
 function nextId(prefix: "tab" | "section"): string {
@@ -324,10 +247,14 @@ function sourceName(sourceId: string): string {
   return sources.value.find((source) => source.id === sourceId)?.name ?? "已保存来源";
 }
 
+function categoryName(section: HomeSection): string {
+  return selectedCategory(section.sourceId, section.categoryId)?.title ?? section.categoryId;
+}
+
 function categoryChoices(section: HomeSection): DiscoveryCategory[] {
   const choices = selectableCategories(section.sourceId);
   if (section.categoryId && !choices.some((category) => category.categoryId === section.categoryId)) {
-    return [{ categoryId: section.categoryId, title: `${section.categoryName}（已保存）` }, ...choices];
+    return [{ categoryId: section.categoryId, title: `${section.categoryId}（已保存）` }, ...choices];
   }
   return choices;
 }
@@ -335,15 +262,12 @@ function categoryChoices(section: HomeSection): DiscoveryCategory[] {
 function changeSectionSource(section: HomeSection, sourceId: string): void {
   if (busy.value) return;
   section.sourceId = sourceId;
-  section.sourceName = sourceName(sourceId);
   section.categoryId = "";
-  section.categoryName = "";
   void loadHomeEditorCategories(sourceId);
 }
 
 function changeSectionCategory(section: HomeSection, categoryId: string): void {
   section.categoryId = categoryId;
-  section.categoryName = selectedCategory(section.sourceId, categoryId)?.title ?? section.categoryName;
 }
 
 function updateSectionStyle(section: HomeSection, event: Event): void {
@@ -360,9 +284,7 @@ function addSection(): void {
     id: nextId("section"),
     title: name,
     sourceId: newSectionSourceId.value,
-    sourceName: sourceName(newSectionSourceId.value),
     categoryId: category.categoryId,
-    categoryName: category.title,
     style: 0,
     sortOrder: tab.sections.length,
     coverVideo: false,
@@ -424,42 +346,21 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   finishSectionDrag();
 }
 
-async function submit(): Promise<void> {
-  if (!canSave.value) return;
-  const currentSnapshot = JSON.stringify(normalizeDraft(cloneDocument(homeConfig.value)));
-  if (currentSnapshot !== initialSnapshot.value) {
-    externalConfigChanged.value = true;
-    return;
-  }
-  const saved = await saveHomeConfigDraft(normalizeDraft(cloneDocument(draft.value)));
-  if (!saved) return;
-  const accepted = normalizeDraft(cloneDocument(homeConfig.value));
-  draft.value = accepted;
-  initialSnapshot.value = JSON.stringify(accepted);
-  externalConfigChanged.value = false;
-  if (!draft.value.tabs.some((tab) => tab.id === activeTabId.value)) activeTabId.value = draft.value.tabs[0]?.id ?? "";
-}
 </script>
 
 <template>
   <section class="home-config-editor my-settings-subpage">
-    <header class="home-config-editor__topbar">
+    <header class="home-config-editor__topbar safe-area-top">
       <BackButton label="返回发现" @click="returnToHome" />
       <div class="home-config-editor__top-title">
         <strong>发现页配置</strong>
       </div>
-      <button type="button" class="home-config-editor__button home-config-editor__button--primary home-config-editor__top-save"
-        :disabled="!canSave" @click="submit">{{ homeConfigSaving ? '保存中…' : '保存' }}</button>
+      <span class="home-config-editor__save-hint">修改会自动保存</span>
     </header>
     <div class="home-config-editor__body">
-      <p v-if="homeConfigLoading" class="home-config-editor__load-state">正在读取发现页配置…</p>
       <div v-if="sourcesError" class="home-config-editor__validation" role="alert">
         读取书源失败：{{ sourcesError }}
         <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="sourcesLoading" @click="refreshSources()">重新读取书源</button>
-      </div>
-      <div v-if="homeConfigError" class="home-config-editor__validation" role="alert">
-        {{ homeConfigError }}
-        <button v-if="!homeConfigLoaded" type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="busy" @click="reloadLatestConfig">重新读取配置</button>
       </div>
       <div class="home-config-editor__tabs-row">
         <div class="home-config-editor__tabs">
@@ -507,7 +408,7 @@ async function submit(): Promise<void> {
             <label class="home-config-editor__field home-config-editor__section-title">
               <input v-model="section.title" maxlength="128" :disabled="busy"
                 />
-              <small :title="section.sourceName + ' · ' + section.categoryName">{{ section.sourceName }} · {{ section.categoryName }}</small>
+              <small :title="sourceName(section.sourceId) + ' · ' + categoryName(section)">{{ sourceName(section.sourceId) }} · {{ categoryName(section) }}</small>
             </label>
             <label class="home-config-editor__compact-style">
               <select :value="section.style" :disabled="busy"
@@ -588,29 +489,12 @@ async function submit(): Promise<void> {
         </section>
       </section>
 
-      <div v-if="externalConfigChanged" class="home-config-editor__validation">
-        发现页配置已在其他操作中更新。当前草稿仍保留，为防止覆盖最新配置，已禁止保存。请放弃草稿并重新读取后再编辑。
-        <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="busy" @click="reloadLatestConfig">放弃草稿并读取最新配置</button>
-      </div>
       <div v-if="validationErrors.length" class="home-config-editor__validation">
         <strong>保存前请处理以下问题</strong>
         <ul><li v-for="error in validationErrors" :key="error">{{ error }}</li></ul>
       </div>
     </div>
 
-    <footer class="home-config-editor__footer">
-      <span class="home-config-editor__save-hint">{{ externalConfigChanged ? '配置已更新，需要重新读取' : isDirty ? '有尚未保存的修改' : '所有修改已保存' }}</span>
-      <button type="button" class="home-config-editor__button home-config-editor__button--secondary"
-        :disabled="busy || !isDirty" @click="requestDiscard">放弃修改</button>
-    </footer>
-    <div v-if="discardPromptOpen" class="home-config-editor__discard-mask">
-      <section class="home-config-editor__discard-dialog">
-        <h3 id="home-config-discard-title">放弃发现页配置修改？</h3>
-        <p>标签、栏目、排序和展示样式的未保存修改都会丢失。</p>
-        <footer><button type="button" class="home-config-editor__button home-config-editor__button--secondary" @click="keepDraft">继续编辑</button>
-          <button type="button" class="home-config-editor__button home-config-editor__button--danger" @click="discardDraft">放弃修改</button></footer>
-      </section>
-    </div>
   </section>
 </template>
 
@@ -635,8 +519,8 @@ async function submit(): Promise<void> {
   grid-template-columns:44px minmax(0,1fr) auto;
   align-items:center;
   gap:10px;
-  height:64px;
-  padding:0 max(18px,calc((100% - 1180px)/2));
+  min-height:64px;
+  padding-inline:max(18px,calc((100% - 1180px)/2));
   border-bottom:1px solid var(--hc-line);
   background:#f6f7f9ee;
   backdrop-filter:blur(18px);
@@ -653,7 +537,6 @@ async function submit(): Promise<void> {
 .home-config-editor__button--primary{background:var(--hc-accent);color:#fff}
 .home-config-editor__button--secondary{border-color:var(--hc-line);background:#fff;color:#606571}
 .home-config-editor__button--danger{background:#fff0f1;color:#ae535b}
-.home-config-editor__top-save{min-width:60px}
 .home-config-editor__body{
   box-sizing:border-box;width:min(820px,calc(100% - 36px));
   margin:0 auto;padding:24px 0 26px;
@@ -795,19 +678,13 @@ async function submit(): Promise<void> {
   border:1px solid var(--hc-line);border-radius:10px;background:#fff;
 }
 .home-config-editor__hint{margin:9px 0;color:var(--hc-muted);font-size:10px}
-.home-config-editor__load-state{margin:0 0 12px;color:var(--hc-muted);font-size:10px}
 .home-config-editor__validation{
   margin-top:14px;padding:11px 12px;border:1px solid #edcfc9;
   border-radius:9px;background:#fff4f3;color:#89564d;
   font-size:10px;line-height:1.6;
 }
 .home-config-editor__validation ul{margin:7px 0 0;padding-left:17px}
-.home-config-editor__footer{
-  display:flex;align-items:center;gap:10px;
-  box-sizing:border-box;width:min(820px,calc(100% - 36px));
-  margin:0 auto;padding:11px 0 20px;border-top:1px solid var(--hc-line);
-}
-.home-config-editor__save-hint{flex:1;color:var(--hc-muted);font-size:9px}
+.home-config-editor__save-hint{color:var(--hc-muted);font-size:9px;white-space:nowrap}
 .home-config-editor__discard-mask{
   position:fixed;inset:0;z-index:120;
   display:grid;place-items:center;padding:16px;background:#191b2b88;
@@ -821,7 +698,7 @@ async function submit(): Promise<void> {
 .home-config-editor__discard-dialog p{margin:10px 0;color:#888c97;font-size:11px;line-height:1.65}
 .home-config-editor__discard-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}
 @media(max-width:860px){
-  .home-config-editor__topbar{padding:0 14px}
+  .home-config-editor__topbar{padding-inline:14px}
   .home-config-editor__body{padding:18px 0 22px}
   .home-config-editor__section-title-row{grid-template-columns:18px minmax(0,1fr) 100px 32px;gap:8px}
   .home-config-editor__expand{width:32px}
@@ -829,8 +706,8 @@ async function submit(): Promise<void> {
   .home-config-editor__checkbox-field{grid-column:1/-1}
 }
 @media(max-width:560px){
-  .home-config-editor__body,.home-config-editor__footer{width:calc(100% - 28px)}
-  .home-config-editor__topbar{padding:0 12px}
+  .home-config-editor__body{width:calc(100% - 28px)}
+  .home-config-editor__topbar{padding-inline:12px}
   .home-config-editor__section-title-row{grid-template-columns:18px minmax(0,1fr) 32px}
   .home-config-editor__compact-style{grid-column:2;grid-row:2}
   .home-config-editor__expand{grid-column:3;grid-row:1/3}

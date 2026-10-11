@@ -71,76 +71,16 @@ pub async fn replacement_rules_resource(store: &ResourceStore) -> Result<Resourc
     Ok(reference)
 }
 
-/// Import user-authored display rules without replacing existing rules or
-/// accepting their IDs. The complete batch is validated before one atomic JSON
-/// update, and repeated imports skip rules with the same behavior.
-pub async fn import_replacement_rules_json(
-    store: &ResourceStore,
-    source_json: &str,
-) -> Result<(ResourceRef, usize), String> {
-    let imported = parse_replacement_rules_json(source_json)?;
-    let imported_ids = imported
-        .iter()
-        .map(|_| format!("replacement-{}", uuid::Uuid::new_v4().simple()))
-        .collect::<Vec<_>>();
-    let count_ids = imported_ids.clone();
-    let updated = store
-        .update_json_ref_or_default(
-            &replacements_ref(),
-            empty_replacement_document(),
-            move |mut value| {
-                let mut document = replacement_document(&mut value)?;
-                let rules = document
-                    .get_mut("rules")
-                    .and_then(Value::as_array_mut)
-                    .expect("replacement document has an array");
-                for (input, id) in imported.into_iter().zip(imported_ids.iter()) {
-                    let already_present = rules.iter().any(|candidate| {
-                        candidate.get("pattern").and_then(Value::as_str)
-                            == Some(input.pattern.as_str())
-                            && candidate.get("replacement").and_then(Value::as_str)
-                                == Some(input.replacement.as_str())
-                            && candidate.get("enabled").and_then(Value::as_bool)
-                                == Some(input.enabled)
-                            && candidate.get("isRegex").and_then(Value::as_bool)
-                                == Some(input.is_regex)
-                            && candidate.get("scope").and_then(Value::as_str)
-                                == Some(input.scope.as_str())
-                    });
-                    if already_present {
-                        continue;
-                    }
-                    rules.push(json!({
-                        "id": id,
-                        "name": input.name,
-                        "pattern": input.pattern,
-                        "replacement": input.replacement,
-                        "enabled": input.enabled,
-                        "isRegex": input.is_regex,
-                        "scope": input.scope,
-                    }));
-                }
-                document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
-                Ok(document)
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    let imported_count = updated
-        .get("rules")
-        .and_then(Value::as_array)
-        .map(|rules| {
-            count_ids
-                .iter()
-                .filter(|id| {
-                    rules
-                        .iter()
-                        .any(|rule| rule.get("id").and_then(Value::as_str) == Some(id.as_str()))
-                })
-                .count()
+/// Parse import data without changing the saved configuration.
+pub fn parse_replacement_import(source_json: &str) -> Result<Value, String> {
+    let rules = parse_replacement_rules_json(source_json)?.into_iter().map(|input| {
+        json!({
+            "id": format!("replacement-{}", uuid::Uuid::new_v4().simple()),
+            "name": input.name, "pattern": input.pattern, "replacement": input.replacement,
+            "enabled": input.enabled, "isRegex": input.is_regex, "scope": input.scope,
         })
-        .unwrap_or_default();
-    Ok((replacements_ref(), imported_count))
+    }).collect::<Vec<_>>();
+    Ok(json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "rules": rules }))
 }
 
 /// Parse and validate a complete display-rule document before importing it.
@@ -197,59 +137,6 @@ fn parse_replacement_rules_json(source_json: &str) -> Result<Vec<DisplayReplacem
     Ok(imported)
 }
 
-/// Save rule configuration only. The frontend applies enabled rules to its
-/// rendered, engine-processed chapter; this module does not transform content.
-pub async fn upsert_replacement_rule(
-    store: &ResourceStore,
-    input: DisplayReplacementRuleInput,
-) -> Result<(ResourceRef, String), String> {
-    let (name, scope) = validate_replacement_rule_input(&input)?;
-    let updating = input.id.is_some();
-    let id = match input.id {
-        Some(id) => {
-            validate_id(&id, "replacementRuleId")?;
-            id
-        }
-        None => format!("replacement-{}", uuid::Uuid::new_v4().simple()),
-    };
-    let saved_id = id.clone();
-    store
-        .update_json_ref_or_default(
-            &replacements_ref(),
-            empty_replacement_document(),
-            move |mut value| {
-                let mut document = replacement_document(&mut value)?;
-                let rules = document
-                    .get_mut("rules")
-                    .and_then(Value::as_array_mut)
-                    .expect("default replacement document has an array");
-                let rule = json!({
-                    "id": id,
-                    "name": name,
-                    "pattern": input.pattern,
-                    "replacement": input.replacement,
-                    "enabled": input.enabled,
-                    "isRegex": input.is_regex,
-                    "scope": scope,
-                });
-                if let Some(position) = rules.iter().position(|candidate| {
-                    candidate.get("id").and_then(Value::as_str) == Some(id.as_str())
-                }) {
-                    rules[position] = rule;
-                } else if updating {
-                    return Err("Replacement rule to update was not found".to_owned());
-                } else {
-                    rules.push(rule);
-                }
-                document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
-                Ok(document)
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok((replacements_ref(), saved_id))
-}
-
 fn validate_replacement_rule_input(
     input: &DisplayReplacementRuleInput,
 ) -> Result<(String, String), String> {
@@ -276,88 +163,27 @@ fn validate_replacement_rule_input(
     Ok((name, scope))
 }
 
-pub async fn delete_replacement_rules(
-    store: &ResourceStore,
-    rule_ids: Vec<String>,
-) -> Result<ResourceRef, String> {
-    if rule_ids.is_empty() {
-        return Err("Replacement rule delete selection is empty".to_owned());
+pub fn validate_replacement_document(value: &Value) -> Result<(), String> {
+    let document: ReplacementRuleDocument = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid replacement rules JSON: {error}"))?;
+    if document.schema_version != CURRENT_SCHEMA_VERSION {
+        return Err("Unsupported replacement rules schema".into());
     }
-    let targets = rule_ids.into_iter().collect::<HashSet<_>>();
-    for id in &targets {
-        validate_id(id, "replacementRuleId")?;
+    let mut ids = HashSet::new();
+    for rule in document.rules {
+        validate_id(&rule.id, "replacementRuleId")?;
+        if !ids.insert(rule.id.clone()) { return Err("Duplicate replacement rule ID".into()); }
+        validate_replacement_rule_input(&DisplayReplacementRuleInput {
+            id: Some(rule.id), name: rule.name, pattern: rule.pattern,
+            replacement: rule.replacement, enabled: rule.enabled,
+            is_regex: rule.is_regex, scope: rule.scope,
+        })?;
     }
-    store
-        .update_json_ref_or_default(
-            &replacements_ref(),
-            empty_replacement_document(),
-            move |mut value| {
-                let mut document = replacement_document(&mut value)?;
-                let rules = document
-                    .get_mut("rules")
-                    .and_then(Value::as_array_mut)
-                    .expect("default replacement document has an array");
-                let original_len = rules.len();
-                rules.retain(|rule| {
-                    !rule
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .is_some_and(|id| targets.contains(id))
-                });
-                if rules.len() == original_len {
-                    return Err("显示替换规则不存在".to_owned());
-                }
-                document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
-                Ok(document)
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(replacements_ref())
+    Ok(())
 }
 
 fn replacement_document(value: &mut Value) -> Result<Value, String> {
-    let Some(object) = value.as_object_mut() else {
-        *value = empty_replacement_document();
-        return Ok(value.clone());
-    };
-    object
-        .entry("schemaVersion")
-        .or_insert_with(|| json!(CURRENT_SCHEMA_VERSION));
-    object.entry("rules").or_insert_with(|| json!([]));
-    if value["schemaVersion"].as_u64() != Some(u64::from(CURRENT_SCHEMA_VERSION)) {
-        *value = empty_replacement_document();
-        return Ok(value.clone());
-    }
-    let Ok(document) = serde_json::from_value::<ReplacementRuleDocument>(value.clone()) else {
-        *value = empty_replacement_document();
-        return Ok(value.clone());
-    };
-    let mut ids = HashSet::with_capacity(document.rules.len());
-    for rule in document.rules {
-        if !ids.insert(rule.id.clone()) {
-            *value = empty_replacement_document();
-            return Ok(value.clone());
-        }
-        let input = DisplayReplacementRuleInput {
-            id: Some(rule.id),
-            name: rule.name,
-            pattern: rule.pattern,
-            replacement: rule.replacement,
-            enabled: rule.enabled,
-            is_regex: rule.is_regex,
-            scope: rule.scope,
-        };
-        if input
-            .id
-            .as_deref()
-            .map_or(true, |id| validate_id(id, "replacementRuleId").is_err())
-            || validate_replacement_rule_input(&input).is_err()
-        {
-            *value = empty_replacement_document();
-            return Ok(value.clone());
-        }
-    }
+    validate_replacement_document(value)?;
     Ok(value.clone())
 }
 

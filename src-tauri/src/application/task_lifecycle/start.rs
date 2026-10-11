@@ -197,7 +197,7 @@ impl ApplicationService {
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
         let _ = self
-            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
             .await?;
         let now = now_ms();
         let task = AppTask {

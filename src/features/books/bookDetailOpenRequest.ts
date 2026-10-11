@@ -1,22 +1,14 @@
-import type { Ref } from "vue";
 import type { SearchBookResult } from "../../api/types";
 
 export type BookDetailTab = "catalog" | "info" | "sources";
-
-export interface BookDetailSearchResultActions {
-  searchResultBatchBusy: Readonly<Ref<boolean>>;
-  searchResultIsBusy: (result: SearchBookResult) => boolean;
-  addSearchResult: (result: SearchBookResult) => Promise<void>;
-}
 
 type BookDetailOpenRequestInput =
   | {
     kind: "search-result";
     result: SearchBookResult;
-    actions: BookDetailSearchResultActions;
   }
   | {
-    kind: "shelf-book";
+    kind: "shelf-book" | "cached-book";
     bookId: string;
     initialTab?: BookDetailTab;
   };

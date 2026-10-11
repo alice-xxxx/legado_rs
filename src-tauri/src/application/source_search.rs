@@ -130,9 +130,9 @@ impl ApplicationService {
             let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
-            let private_path = Path::new("books").join(format!("{book_id}.json"));
+            let private_path = Path::new("books").join(book_id).join("source-state.json");
             let mut private = self
-                .read_private_json(&private_path)
+                .read_internal_json(&private_path)
                 .await
                 .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
             let book_ref = self
@@ -150,7 +150,7 @@ impl ApplicationService {
                 .is_none_or(str::is_empty)
             {
                 private["bookInstanceId"] = json!(uuid::Uuid::new_v4().simple().to_string());
-                self.write_private_json(&private_path, &private).await?;
+                self.write_internal_json(&private_path, &private).await?;
             }
             let original_source_id = private["sourceId"]
                 .as_str()

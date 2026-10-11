@@ -3,31 +3,6 @@
 use super::*;
 
 impl ApplicationService {
-    /// Return the browser-readable, processed home configuration resource.
-    pub async fn get_home_config(&self) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let resource = crate::discovery::home_config::home_config_resource(&self.store).await?;
-        Ok(self.resource_descriptor(&resource))
-    }
-
-    pub async fn get_reading_statistics(&self, from_ms: u64, to_ms: u64) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        crate::reading_tools::reading_statistics(&self.store, from_ms, to_ms).await
-    }
-
-    /// Validate and save the home layout. Source/category IDs are resolved by
-    /// Rust; the public document contains no source URLs or source rules.
-    pub async fn save_home_config(
-        &self,
-        config: crate::discovery::home_config::HomeConfigDocument,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let input = serde_json::to_value(config)
-            .map_err(|error| format!("Cannot encode home configuration: {error}"))?;
-        let resource = crate::discovery::home_config::save_home_config(self, input).await?;
-        Ok(self.resource_descriptor(&resource))
-    }
-
     /// Return the RSS read/favorite/filter state resource.
     pub async fn get_rss_state(&self) -> Result<Value, String> {
         let _operation = self.operation_read().await;
@@ -113,59 +88,25 @@ impl ApplicationService {
         }))
     }
 
-    /// Import a TXT rule JSON document and return the published JSON resource.
-    pub async fn import_txt_toc_rules_json(&self, source_json: &str) -> Result<Value, String> {
+    /// Prepare an import resource. Only Vue's shared store commits imported rules.
+    pub async fn prepare_configuration_import(&self, kind: &str, source_json: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let source_json = source_json.strip_prefix('\u{feff}').unwrap_or(source_json);
-        let (document, imported_count) =
-            crate::local_books::txt_toc_rules::import_rules_json(&self.store, source_json).await?;
-        let resource =
-            crate::local_books::txt_toc_rules::publish_snapshot(&self.store, &document).await?;
-        Ok(json!({
-            "resource": self.resource_descriptor(&resource),
-            "importedCount": imported_count,
-        }))
-    }
-
-    /// Download and import remote TXT rules as one user operation.
-    pub async fn import_txt_toc_rules_from_url(&self, url: &str) -> Result<Value, String> {
-        let source_json = self.fetch_txt_toc_rule_json(url).await?;
-        self.import_txt_toc_rules_json(&source_json).await
-    }
-
-    /// Apply one validated TXT rule edit and return its committed JSON resource.
-    pub async fn mutate_txt_toc_rules(
-        &self,
-        mutation: crate::local_books::txt_toc_rules::TxtTocRulesEdit,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let (document, saved_id) = match mutation {
-            crate::local_books::txt_toc_rules::TxtTocRulesEdit::Save { id, rule } => {
-                let (document, saved_id) =
-                    crate::local_books::txt_toc_rules::save_rule(&self.store, id, rule).await?;
-                (document, Some(saved_id))
+        let document = match kind {
+            "replacementRules" => crate::reading_tools::parse_replacement_import(source_json)?,
+            "txtTocRules" => serde_json::to_value(crate::local_books::txt_toc_rules::parse_import(source_json)?)
+                .map_err(|error| error.to_string())?,
+            "httpTtsConfigs" => {
+                let configs = crate::http_tts_config::import_configs(source_json)?
+                    .into_iter().map(|(_, entry)| entry).collect::<Vec<_>>();
+                json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "configs": configs })
             }
-            crate::local_books::txt_toc_rules::TxtTocRulesEdit::Reorder { ordered_ids } => {
-                (
-                    crate::local_books::txt_toc_rules::reorder_rules(&self.store, ordered_ids)
-                        .await?,
-                    None,
-                )
-            }
-            crate::local_books::txt_toc_rules::TxtTocRulesEdit::Delete { rule_ids } => {
-                (
-                    crate::local_books::txt_toc_rules::delete_rules(&self.store, rule_ids).await?,
-                    None,
-                )
-            }
+            _ => return Err("Unknown configuration kind".into()),
         };
-        let resource =
-            crate::local_books::txt_toc_rules::publish_snapshot(&self.store, &document).await?;
-        let mut response = json!({ "resource": self.resource_descriptor(&resource) });
-        if let Some(id) = saved_id {
-            response["savedId"] = json!(id);
-        }
-        Ok(response)
+        let reference = self.store.search_ref(&format!("configuration-import-{}", uuid::Uuid::new_v4().simple()))
+            .map_err(|error| error.to_string())?;
+        self.store.write_json_ref(&reference, &document).await.map_err(|error| error.to_string())?;
+        Ok(json!({ "resource": self.resource_descriptor(&reference) }))
     }
 
     pub async fn bootstrap(&self) -> Result<Value, String> {
@@ -178,7 +119,7 @@ impl ApplicationService {
         crate::source_http::set_network_timeout_seconds(configured_source_http_timeout_seconds(
             Some(&settings),
         ));
-        let search_history = crate::search_history::resource_ref(&self.store)?;
+        let history = crate::reading_tools::history_resource(&self.store).await?;
         let replacement_rules =
             crate::reading_tools::replacement_rules_resource(&self.store).await?;
         let txt_toc_document =
@@ -194,28 +135,92 @@ impl ApplicationService {
             "sources": self.resource_descriptor(&sources),
             "txtTocRules": self.resource_descriptor(&txt_toc_rules),
             "replacementRules": self.resource_descriptor(&replacement_rules),
-            "searchHistory": self.resource_descriptor(&search_history),
+            "history": self.resource_descriptor(&history),
         }))
     }
 
-    pub async fn get_search_history(&self) -> Result<Value, String> {
+    pub async fn history_resource(&self) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        crate::search_history::load(&self.store).await?;
-        let resource = crate::search_history::resource_ref(&self.store)?;
+        let resource = crate::reading_tools::history_resource(&self.store).await?;
         Ok(self.resource_descriptor(&resource))
     }
 
-    pub async fn delete_search_history(&self, query: &str) -> Result<Value, String> {
+    pub async fn save_configuration_rule(&self, kind: &str, rule_id: &str, rule: Value) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        let resource = crate::search_history::delete_query(&self.store, query).await?;
+        validate_id(rule_id, "ruleId")?;
+        if !rule.is_null() && rule.get("id").and_then(Value::as_str) != Some(rule_id) {
+            return Err("Rule ID does not match its payload".into());
+        }
+        let (reference, field) = match kind {
+            "replacementRules" => (self.store.document_ref("replacement-rules").map_err(|error| error.to_string())?, "rules"),
+            "txtTocRules" => (self.store.document_ref("txt-toc-rules").map_err(|error| error.to_string())?, "rules"),
+            "httpTtsConfigs" => (self.store.http_tts_configs_ref(), "configs"),
+            _ => return Err("Unknown configuration kind".into()),
+        };
+        self.store.update_json_ref(&reference, |mut document| {
+            let rules = document.get_mut(field).and_then(Value::as_array_mut)
+                .ok_or_else(|| "Configuration must contain a rule array".to_owned())?;
+            let index = rules.iter().position(|entry| entry.get("id").and_then(Value::as_str) == Some(rule_id));
+            match (index, rule.is_null()) {
+                (Some(index), true) => { rules.remove(index); }
+                (Some(index), false) => rules[index] = rule,
+                (None, false) => rules.push(rule),
+                (None, true) => {}
+            }
+            match kind {
+                "replacementRules" => crate::reading_tools::validate_replacement_document(&document)?,
+                "txtTocRules" => {
+                    let rules = serde_json::from_value(document.clone()).map_err(|error| error.to_string())?;
+                    crate::local_books::txt_toc_rules::validate_document(&rules)?;
+                }
+                "httpTtsConfigs" => crate::http_tts_config::validate_document(&document)?,
+                _ => unreachable!(),
+            }
+            Ok(document)
+        }).await.map_err(|error| error.to_string())?;
+        Ok(self.resource_descriptor(&reference))
+    }
+
+    pub async fn save_shelf(&self, mut shelf: Value) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        crate::reading_tools::normalize_shelf_groups(&mut shelf)?;
+        if let Some(sort) = shelf.get("sort") {
+            serde_json::from_value::<crate::reading_tools::ShelfSortKey>(sort.clone())
+                .map_err(|error| format!("Invalid shelf sort: {error}"))?;
+        }
+        if let Some(order) = shelf.get("sortOrder") {
+            serde_json::from_value::<crate::reading_tools::ShelfSortOrder>(order.clone())
+                .map_err(|error| format!("Invalid shelf sort order: {error}"))?;
+        }
+        let shelf: ShelfDocument = serde_json::from_value(shelf)
+            .map_err(|error| format!("Invalid shelf JSON: {error}"))?;
+        if shelf.schema_version != CURRENT_SCHEMA_VERSION { return Err("Unsupported shelf schema version".into()); }
+        let mut seen = HashSet::new();
+        for book in &shelf.books {
+            validate_id(&book.id, "bookId")?;
+            if !seen.insert(&book.id) {
+                return Err("Shelf contains duplicate book IDs".into());
+            }
+            let reference = self.store.book_ref(&book.id).map_err(|error| error.to_string())?;
+            self.store.read_json_ref(&reference).await.map_err(|error| error.to_string())?;
+        }
+        let reference = self.store.shelf_ref();
+        self.store.write_json_ref(&reference, &serde_json::to_value(shelf).map_err(|error| error.to_string())?)
+            .await.map_err(|error| error.to_string())?;
+        Ok(self.resource_descriptor(&reference))
+    }
+
+    pub async fn save_history(&self, history: Value) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let history = crate::reading_tools::normalize_history_document(&history)?;
+        let resource = self.store.history_ref();
+        self.store
+            .write_json_ref(&resource, &history)
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(self.resource_descriptor(&resource))
     }
 
-    pub async fn clear_search_history(&self) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let resource = crate::search_history::clear(&self.store).await?;
-        Ok(self.resource_descriptor(&resource))
-    }
 }
 
 pub(super) fn sha256_hex(bytes: &[u8]) -> String {

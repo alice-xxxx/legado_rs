@@ -28,14 +28,12 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
         | ["sources.json"]
         | ["settings.json"]
         | ["http-tts.json"]
-        | ["bookmarks.json"]
-        | ["reading-history.json"]
+        | ["history.json"]
         | ["replacement-rules.json"]
-        | ["discovery-favorites.json"] => true,
-        ["progress", name] => filename_id(name, ".json").is_some(),
+        | ["txt-toc-rules.json"]
+        | ["tasks.json"]
+        | ["rss-state.json"] => true,
         ["search", name] => filename_id(name, ".json").is_some(),
-        ["reading", name] => filename_id(name, ".json").is_some(),
-        ["discovery", name] => filename_id(name, ".json").is_some(),
         ["dictionary", name] => filename_id(name, ".html").is_some(),
         ["media", id] => valid_id(id),
         ["books", book_id, "book.json"] => valid_id(book_id),
@@ -184,7 +182,7 @@ pub(super) fn mime_type(path: &str) -> &'static str {
     }
 }
 
-pub(super) fn check_path_no_symlink(
+pub(crate) fn check_path_no_symlink(
     root: &Path,
     path: &Path,
     allow_missing_tail: bool,
@@ -197,6 +195,9 @@ pub(super) fn check_path_no_symlink(
         .map_err(|_| ResourceError::new("Resource path escaped its storage root"))?;
     let mut current = root.to_path_buf();
     let components: Vec<_> = relative.components().collect();
+    if components.iter().any(|component| !matches!(component, Component::Normal(_))) {
+        return Err(ResourceError::new("Resource path contains an invalid component"));
+    }
     for (index, component) in components.iter().enumerate() {
         let Component::Normal(component) = component else {
             return Err(ResourceError::new(

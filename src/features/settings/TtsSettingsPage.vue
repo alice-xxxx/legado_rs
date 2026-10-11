@@ -2,11 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { onBeforeRouteLeave } from "vue-router";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
-import type { AppBootstrap, AppSettingsResource, HttpTtsConfigEditorFields, HttpTtsConfigMetadata, ResourceDescriptor } from "../../api/types";
+import { httpTtsConfigs } from "./configurationStores";
+import type { AppBootstrap, HttpTtsConfigEditorFields } from "../../api/types";
 import { useHttpTtsConfigActions } from "./useHttpTtsConfigActions";
-import { defaultSettings, normalizeSettings } from "./settingsDefaults";
+import { settings } from "./settingsStore";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -18,25 +17,13 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { selectReaderHttpTtsConfig } from "../reader/readerTtsConfigService";
 
-const settings = ref<AppSettingsResource>(structuredClone(defaultSettings));
-const configs = ref<HttpTtsConfigMetadata[]>([]);
-const configResource = ref<ResourceDescriptor | null>(null);
-const listBusy = ref(true);
+const configs = httpTtsConfigs;
 const importBusy = ref(false);
-const editBusy = ref(false);
-const deleteBusyId = ref<string | null>(null);
 const error = ref("");
-const settingsLoading = ref(true);
-const settingsReady = ref(false);
-const blocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRequired.value
-  || settingsLoading.value || !settingsReady.value);
+const blocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRequired.value);
 const selectedConfigId = computed(() => settings.value.reader.httpTtsConfigId ?? "");
 let disposed = false;
 let restoreRevision = 0;
-let stateReadRevision = 0;
-let settingsUpdateRevision = 0;
-let configResourceRevision = 0;
-let settingsChangeRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 
 function errorText(reason: unknown): string {
@@ -44,22 +31,13 @@ function errorText(reason: unknown): string {
 }
 
 function selectConfig(id: string): void {
-  settingsChangeRevision += 1;
-  settings.value = {
-    ...settings.value,
-    reader: { ...settings.value.reader, httpTtsConfigId: id || null },
-  };
   selectReaderHttpTtsConfig(id);
 }
 
 const httpTtsConfigActions = useHttpTtsConfigActions({
   configs,
-  busy: listBusy,
   error,
   importBusy,
-  editBusy,
-  deleteBusyId,
-  resource: configResource,
   settings,
   selectConfig,
   getRestoreRevision: () => restoreRevision,
@@ -67,72 +45,13 @@ const httpTtsConfigActions = useHttpTtsConfigActions({
   errorText,
 });
 
-async function loadSettingsDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const revision = ++settingsUpdateRevision;
-  const restoreAtStart = restoreRevision;
-  const selectionAtStart = settingsChangeRevision;
-  try {
-    const next = normalizeSettings(await readResource<AppSettingsResource>(descriptor));
-    if (disposed || revision !== settingsUpdateRevision || restoreAtStart !== restoreRevision) return;
-    if (selectionAtStart === settingsChangeRevision) settings.value = next;
-    settingsReady.value = true;
-  } catch (reason) {
-    if (!disposed && revision === settingsUpdateRevision && restoreAtStart === restoreRevision) {
-      error.value = "Settings resource read failed: " + errorText(reason);
-    }
-  }
-}
-
-async function loadPageData(snapshot?: AppBootstrap): Promise<void> {
-  const revision = ++stateReadRevision;
-  const restoreAtStart = restoreRevision;
-  const settingsRevisionAtStart = settingsUpdateRevision;
-  const configRevisionAtStart = configResourceRevision;
-  const selectionAtStart = settingsChangeRevision;
-  settingsLoading.value = true;
-  error.value = "";
-  try {
-    const current = snapshot ?? await appBootstrap();
-    const nextSettings = normalizeSettings(await readResource<AppSettingsResource>(current.settings));
-    if (disposed || revision !== stateReadRevision || restoreAtStart !== restoreRevision) return;
-    if (settingsRevisionAtStart === settingsUpdateRevision && selectionAtStart === settingsChangeRevision) {
-      settings.value = nextSettings;
-      settingsReady.value = true;
-    }
-    if (configRevisionAtStart === configResourceRevision) {
-      configResource.value = current.httpTtsConfigs;
-      await httpTtsConfigActions.refreshHttpTtsConfigs(current.httpTtsConfigs);
-    }
-  } catch (reason) {
-    if (!disposed && revision === stateReadRevision && restoreAtStart === restoreRevision) {
-      error.value = "HTTP TTS settings read failed: " + errorText(reason);
-      listBusy.value = false;
-    }
-  } finally {
-    if (!disposed && revision === stateReadRevision && restoreAtStart === restoreRevision) settingsLoading.value = false;
-  }
-}
-
-async function refreshPageData(): Promise<void> {
-  await loadPageData();
-}
-
-function handleResourceUpdated(payload: { kind: string; resource: ResourceDescriptor }): void {
-  if (payload.kind !== "httpTtsConfigs" || disposed) return;
-  configResourceRevision += 1;
-  configResource.value = payload.resource;
-  void httpTtsConfigActions.refreshHttpTtsConfigs(payload.resource);
-}
-
-function handleRestore(snapshot: AppBootstrap): void {
-  restoreRevision += 1;
-  stateReadRevision += 1;
-  settingsUpdateRevision += 1;
-  configResourceRevision += 1;
-  settingsChangeRevision += 1;
-  settingsReady.value = false;
+function handleRestore(): void {
+  restoreRevision++;
   httpTtsConfigActions.resetForRestore();
-  void loadPageData(snapshot);
+  editorOpen.value = false;
+  editingConfigId.value = "";
+  selectedConfigIds.value = [];
+  pendingDeleteIds.value = [];
 }
 
 function returnToAdvancedSettings(): void {
@@ -183,14 +102,12 @@ const importUrlBusy = ref(false);
 const editorOpen = ref(false);
 const initialEditorFields = ref("");
 const discardPromptOpen = ref(false);
-const editorLoading = ref(false);
 const editingConfigId = ref("");
 const fields = reactive<HttpTtsConfigEditorFields>(emptyFields());
 const editorDirty = computed(() => editorOpen.value && JSON.stringify(fields) !== initialEditorFields.value);
 let pendingNavigation: ((allow: boolean) => void) | null = null;
 onBeforeRouteLeave(() => {
   if (!editorOpen.value) return true;
-  if (editBusy.value || editorLoading.value) return false;
   if (!editorDirty.value) return true;
   return new Promise<boolean>((resolve) => {
     pendingNavigation?.(false);
@@ -201,8 +118,6 @@ onBeforeRouteLeave(() => {
 onBeforeUnmount(() => {
   disposed = true;
   restoreRevision += 1;
-  stateReadRevision += 1;
-  settingsUpdateRevision += 1;
   pendingNavigation?.(false);
   for (const unlisten of unlisteners) unlisten();
 });
@@ -243,7 +158,7 @@ function emptyFields(): HttpTtsConfigEditorFields {
   };
 }
 
-const actionsBlocked = computed(() => blocked.value || listBusy.value || importBusy.value || editBusy.value);
+const actionsBlocked = computed(() => blocked.value || importBusy.value);
 
 function toggleConfigMenu(configId: string, event: MouseEvent): void {
   filterMenuOpen.value = false;
@@ -318,7 +233,7 @@ function toggleBatchManagement(): void {
 }
 
 function toggleConfigSelection(configId: string): void {
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   const selected = new Set(selectedConfigIds.value);
   if (selected.has(configId)) selected.delete(configId);
   else selected.add(configId);
@@ -326,7 +241,7 @@ function toggleConfigSelection(configId: string): void {
 }
 
 function selectVisibleConfigs(invert = false): void {
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   const selected = new Set(selectedConfigIds.value);
   for (const config of filteredConfigs.value) {
     if (invert) {
@@ -342,12 +257,12 @@ function selectVisibleConfigs(invert = false): void {
 }
 
 function requestBulkExport(): void {
-  if (actionsBlocked.value || deleteBusyId.value || !selectedConfigIds.value.length) return;
+  if (actionsBlocked.value || !selectedConfigIds.value.length) return;
   httpTtsConfigActions.exportHttpTtsConfig(selectedConfigIds.value);
 }
 
-async function openEditor(configId: string = selectedConfigId.value): Promise<void> {
-  if (!configId || actionsBlocked.value || deleteBusyId.value || editorLoading.value || blocked.value) return;
+function openEditor(configId: string = selectedConfigId.value): void {
+  if (!configId || actionsBlocked.value || blocked.value) return;
   openConfigMenuId.value = null;
   actionsMenuOpen.value = false;
   editorError.value = "";
@@ -359,9 +274,8 @@ async function openEditor(configId: string = selectedConfigId.value): Promise<vo
   }
   editingConfigId.value = configId;
   editorOpen.value = true;
-  editorLoading.value = true;
   try {
-    const loaded = await httpTtsConfigActions.loadHttpTtsConfigEditorFields(configId);
+    const loaded = httpTtsConfigActions.loadHttpTtsConfigEditorFields(configId);
     if (!loaded) {
       editorOpen.value = false;
       editorError.value = "读取朗读源配置失败，请重新选择引擎。";
@@ -372,13 +286,11 @@ async function openEditor(configId: string = selectedConfigId.value): Promise<vo
   } catch (error) {
     editorOpen.value = false;
     editorError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    editorLoading.value = false;
   }
 }
 
 function openNewEditor(): void {
-  if (actionsBlocked.value || deleteBusyId.value || editorLoading.value) return;
+  if (actionsBlocked.value) return;
   if (editorOpen.value) {
     if (editorDirty.value) { pendingCreate.value = true; discardPromptOpen.value = true; return; }
     editorOpen.value = false;
@@ -393,13 +305,13 @@ function openNewEditor(): void {
 
 function addConfigAction(action: "new" | "file" | "url"): void {
   addMenuOpen.value = false;
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   if (action === "new") openNewEditor();
   else if (action === "file") void importFromLocal();
   else openUrlImport();
 }
 function openUrlImport(): void {
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   importUrl.value = "";
   importUrlError.value = "";
   importUrlOpen.value = true;
@@ -410,8 +322,8 @@ function closeUrlImport(): void {
   importUrl.value = "";
   importUrlError.value = "";
 }
-async function restoreEditorFields(): Promise<void> {
-  if (!editorOpen.value || actionsBlocked.value || deleteBusyId.value || editorLoading.value) return;
+function restoreEditorFields(): void {
+  if (!editorOpen.value || actionsBlocked.value) return;
   editorError.value = "";
   editorSuccess.value = "";
   const id = editingConfigId.value;
@@ -420,9 +332,8 @@ async function restoreEditorFields(): Promise<void> {
     initialEditorFields.value = JSON.stringify(fields);
     return;
   }
-  editorLoading.value = true;
   try {
-    const restored = await httpTtsConfigActions.loadHttpTtsConfigEditorFields(id);
+    const restored = httpTtsConfigActions.loadHttpTtsConfigEditorFields(id);
     if (!restored) {
       editorError.value = "无法重新读取已保存配置，草稿已保留。";
       return;
@@ -430,15 +341,12 @@ async function restoreEditorFields(): Promise<void> {
     if (!editorOpen.value || editingConfigId.value !== id) return;
     Object.assign(fields, emptyFields(), restored);
     initialEditorFields.value = JSON.stringify(fields);
-    editorSuccess.value = "已从持久化配置重新读取。";
+    editorSuccess.value = "已还原为当前配置。";
   } catch (error) {
     editorError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    editorLoading.value = false;
   }
 }
 function closeEditor(): void {
-  if (editBusy.value || editorLoading.value) return;
   if (editorDirty.value) {
     discardPromptOpen.value = true;
     return;
@@ -447,7 +355,7 @@ function closeEditor(): void {
 }
 function requestDeleteConfig(configId: string): void {
   openConfigMenuId.value = null;
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   if (editorDirty.value && editingConfigId.value === configId) {
     editorError.value = "请先保存或放弃当前配置修改，再删除此引擎。";
     return;
@@ -456,7 +364,7 @@ function requestDeleteConfig(configId: string): void {
   pendingDeleteIds.value = [configId];
 }
 function requestBulkDelete(): void {
-  if (actionsBlocked.value || deleteBusyId.value || !selectedConfigIds.value.length) return;
+  if (actionsBlocked.value || !selectedConfigIds.value.length) return;
   if (editorDirty.value && selectedConfigIds.value.includes(editingConfigId.value)) {
     editorError.value = "请先保存或放弃当前配置修改，再删除所选配置。";
     return;
@@ -464,12 +372,11 @@ function requestBulkDelete(): void {
   pendingDeleteIds.value = [...selectedConfigIds.value];
 }
 function cancelDeleteConfig(): void {
-  if (deleteBusyId.value) return;
   pendingDeleteIds.value = [];
 }
 function confirmDeleteConfig(): void {
   const ids = [...pendingDeleteIds.value];
-  if (!ids.length || actionsBlocked.value || deleteBusyId.value) return;
+  if (!ids.length || actionsBlocked.value) return;
   pendingDeleteIds.value = [];
   selectedConfigIds.value = selectedConfigIds.value.filter((id) => !ids.includes(id));
   httpTtsConfigActions.removeSelectedHttpTtsConfig(ids);
@@ -478,7 +385,7 @@ function confirmDeleteConfig(): void {
 function selectPlaybackConfig(configId: string): void {
   openConfigMenuId.value = null;
   actionsMenuOpen.value = false;
-  if (actionsBlocked.value || deleteBusyId.value || configId === selectedConfigId.value) return;
+  if (actionsBlocked.value || configId === selectedConfigId.value) return;
   if (editorDirty.value) {
     pendingSelectionId.value = configId;
     discardPromptOpen.value = true;
@@ -487,7 +394,6 @@ function selectPlaybackConfig(configId: string): void {
   selectConfig(configId);
 }
 function discardEditor(): void {
-  if (editBusy.value || editorLoading.value) return;
   const nextId = pendingConfigId.value;
   const selected = pendingSelectionId.value;
   const creating = pendingCreate.value;
@@ -504,8 +410,8 @@ function discardEditor(): void {
   else if (selected !== null) selectConfig(selected);
 }
 
-async function saveEditor(): Promise<void> {
-  if (editorLoading.value || editBusy.value || blocked.value || !fields.name.trim() || !fields.url.trim()) return;
+function saveEditor(): void {
+  if (blocked.value || !fields.name.trim() || !fields.url.trim()) return;
   if (editingConfigId.value && !editingConfig.value) {
     editorError.value = "当前引擎已被移除，不能从过期草稿保存。请返回列表重新选择。";
     return;
@@ -530,7 +436,7 @@ async function saveEditor(): Promise<void> {
   editorError.value = "";
   editorSuccess.value = "";
   try {
-    const saved = await httpTtsConfigActions.saveHttpTtsConfigFromEditor(creating ? null : editingConfigId.value, editorFields);
+    const saved = httpTtsConfigActions.saveHttpTtsConfigFromEditor(creating ? null : editingConfigId.value, editorFields);
     if (!saved) {
       editorError.value = "保存没有完成。当前修改仍在编辑器中，请检查配置后重试。";
       return;
@@ -540,7 +446,7 @@ async function saveEditor(): Promise<void> {
       // A successful create must not leave the editor in "new" mode: the next save would create a duplicate.
       editorOpen.value = false;
     } else {
-      editorSuccess.value = "配置已保存。";
+      editorSuccess.value = "配置已更新。";
     }
   } catch (error) {
     editorError.value = error instanceof Error ? error.message : String(error);
@@ -553,12 +459,12 @@ function cleanOptional(value: string | null): string | null {
 }
 
 async function importFromLocal(): Promise<void> {
-  if (actionsBlocked.value || deleteBusyId.value) return;
+  if (actionsBlocked.value) return;
   await httpTtsConfigActions.importHttpTtsConfigFromLocal();
 }
 
 async function importFromLink(): Promise<void> {
-  if (!importUrl.value.trim() || actionsBlocked.value || deleteBusyId.value) return;
+  if (!importUrl.value.trim() || actionsBlocked.value) return;
   importUrlError.value = "";
   importUrlBusy.value = true;
   try {
@@ -576,33 +482,22 @@ async function importFromLink(): Promise<void> {
   }
 }
 function openInitialDesktopEditor(): void {
-  if (!isMounted.value || initialDesktopOpened.value || editorOpen.value || listBusy.value || actionsBlocked.value || !configs.value.length || !window.matchMedia("(min-width: 861px)").matches) return;
+  if (!isMounted.value || initialDesktopOpened.value || editorOpen.value || actionsBlocked.value || !configs.value.length || !window.matchMedia("(min-width: 861px)").matches) return;
   initialDesktopOpened.value = true;
   const candidate = configs.value.find((config) => config.id === selectedConfigId.value) ?? configs.value[0];
   void openEditor(candidate.id);
 }
 onMounted(async () => {
   isMounted.value = true;
-  const unlistenSettings = await listen<ResourceDescriptor>("settings-updated", (event) => {
-    void loadSettingsDescriptor(event.payload);
-  });
-  if (disposed) { unlistenSettings(); return; }
-  unlisteners.push(unlistenSettings);
-  const unlistenResources = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-    handleResourceUpdated(event.payload);
-  });
-  if (disposed) { unlistenResources(); return; }
-  unlisteners.push(unlistenResources);
-  const unlistenRestore = await listen<AppBootstrap>("app-state-updated", (event) => {
-    handleRestore(event.payload);
+  const unlistenRestore = await listen<AppBootstrap>("app-state-updated", () => {
+    handleRestore();
   });
   if (disposed) { unlistenRestore(); return; }
   unlisteners.push(unlistenRestore);
-  await loadPageData();
   openInitialDesktopEditor();
 });
 watch(() => configs.value.map(config => config.id), ids => {
-  // A successful removal refreshes the authoritative Rust list.
+  // Keep the editor aligned with the shared list after removing entries.
   if (editingConfigId.value && !ids.includes(editingConfigId.value) && !editorDirty.value) {
     editorOpen.value = false;
     editingConfigId.value = "";
@@ -611,17 +506,17 @@ watch(() => configs.value.map(config => config.id), ids => {
   selectedConfigIds.value = selectedConfigIds.value.filter((id) => existingIds.has(id));
   pendingDeleteIds.value = pendingDeleteIds.value.filter((id) => existingIds.has(id));
 });
-watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, blocked.value], openInitialDesktopEditor);
+watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openInitialDesktopEditor);
 </script>
 
 <template>
   <section class="settings-card http-tts-config-card" :class="{ 'http-tts-config-card--empty': !editorOpen && configs.length === 0 }">
-    <header class="http-tts-topbar">
+    <header class="http-tts-topbar safe-area-top">
       <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
       <div class="http-tts-top-title"><strong>TTS 引擎</strong></div>
       <div class="http-tts-top-add">
         <button type="button" class="button primary"
-:disabled="actionsBlocked || !!deleteBusyId"
+:disabled="actionsBlocked"
           @click="addMenuOpen = !addMenuOpen; filterMenuOpen = false; actionsMenuOpen = false; openConfigMenuId = null"><PrototypeIcon name="plus"/> 添加</button>
         <div v-if="addMenuOpen" class="http-tts-add-menu">
           <button type="button" @click="addConfigAction('new')">新建配置</button>
@@ -647,8 +542,6 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
         <template #actions-menu>
           <Teleport to="body">
             <div v-if="actionsMenuOpen" class="http-tts-actions-menu" :style="{ top: actionsMenuPosition.top + 'px', left: actionsMenuPosition.left + 'px' }">
-              <button type="button" :disabled="listBusy || importBusy || editBusy || blocked || settingsLoading || !!deleteBusyId"
-                @click="actionsMenuOpen = false; refreshPageData()">刷新配置</button>
               <button type="button" @click="toggleBatchManagement">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
             </div>
           </Teleport>
@@ -665,11 +558,11 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
       </ManagedListToolbar>
       <div class="http-tts-items-scroll" @scroll.passive="openConfigMenuId = null; filterMenuOpen = false; actionsMenuOpen = false">
       <ManagedListRow name="系统朗读" subtitle="不使用远程朗读" :enabled="false"
-        :active="selectedConfigId === ''" :busy="listBusy || editBusy || blocked" :show-menu="false"
+        :active="selectedConfigId === ''" :busy="blocked" :show-menu="false"
         @open="selectPlaybackConfig('')" />
       <ManagedListRow v-for="config in filteredConfigs" :key="config.id"
         :name="config.name" :subtitle="config.enabled ? 'HTTP TTS' : '已停用'" :enabled="config.enabled"
-        :active="selectedConfigId === config.id || (batchMode && selectedConfigIds.includes(config.id))" :busy="actionsBlocked || !!deleteBusyId"
+        :active="selectedConfigId === config.id || (batchMode && selectedConfigIds.includes(config.id))" :busy="actionsBlocked"
         :batch-mode="batchMode" :selected="selectedConfigIds.includes(config.id)"
         :show-menu="!batchMode"
         @open="batchMode ? toggleConfigSelection(config.id) : openEditor(config.id)"
@@ -677,28 +570,28 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
       >
         <template #menu-trigger>
           <button type="button" class="http-tts-config-menu-button" :class="{ 'is-open': openConfigMenuId === config.id }"
-            :disabled="actionsBlocked || !!deleteBusyId"
+            :disabled="actionsBlocked"
             @click.stop="toggleConfigMenu(config.id, $event)"><PrototypeIcon name="more"/></button>
         </template>
       </ManagedListRow>
       <p v-if="!filteredConfigs.length" class="http-tts-list-empty">{{ configs.length ? '没有符合条件的 TTS 配置' : '还没有 TTS 配置' }}</p>
       </div>
       <footer v-if="batchMode" class="http-tts-selection-bar">
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !!deleteBusyId || !filteredConfigs.length"
+        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !filteredConfigs.length"
           @click="selectVisibleConfigs()">{{ allVisibleSelected ? '取消全选' : '全选' }}</button>
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !!deleteBusyId || !filteredConfigs.length"
+        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !filteredConfigs.length"
           @click="selectVisibleConfigs(true)">反选</button>
         <span class="http-tts-selection-count">已选 {{ selectedConfigs.length }}</span>
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !!deleteBusyId || !selectedConfigs.length"
+        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !selectedConfigs.length"
           @click="requestBulkExport">导出</button>
-        <button type="button" class="http-tts-selection-text-button http-tts-selection-delete" :disabled="actionsBlocked || !!deleteBusyId || !selectedConfigs.length"
+        <button type="button" class="http-tts-selection-text-button http-tts-selection-delete" :disabled="actionsBlocked || !selectedConfigs.length"
           @click="requestBulkDelete">删除</button>
       </footer>
     </nav>
     <Teleport to="body">
       <div v-if="openConfigMenu" class="http-tts-config-menu" :style="{ top: configMenuPosition.top + 'px', left: configMenuPosition.left + 'px' }">
-        <button type="button" :disabled="actionsBlocked || !!deleteBusyId || !openConfigMenu.enabled || selectedConfigId === openConfigMenu.id" @click="selectPlaybackConfig(openConfigMenu.id)">设为当前朗读</button>
-        <button type="button" :disabled="actionsBlocked || !!deleteBusyId" @click="requestDeleteConfig(openConfigMenu.id)">删除配置</button>
+        <button type="button" :disabled="actionsBlocked || !openConfigMenu.enabled || selectedConfigId === openConfigMenu.id" @click="selectPlaybackConfig(openConfigMenu.id)">设为当前朗读</button>
+        <button type="button" :disabled="actionsBlocked" @click="requestDeleteConfig(openConfigMenu.id)">删除配置</button>
       </div>
     </Teleport>
     <p v-if="!importUrlOpen && (error || (!editorOpen && editorError))" class="source-identity-confirmation">{{ editorError || error }}</p>
@@ -708,7 +601,7 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
       <span class="http-tts-preview-icon"><PrototypeIcon name="tts"/></span>
       <strong>{{ selectedConfig.name }}</strong>
       <p>{{ selectedConfig.enabled ? '当前选择的网络朗读源' : '当前配置已停用' }}。参数由 Rust 保存，选择编辑后可以修改原始配置字段。</p>
-      <button type="button" class="button primary small" :disabled="actionsBlocked || !!deleteBusyId" @click="openEditor()">编辑配置</button>
+      <button type="button" class="button primary small" :disabled="actionsBlocked" @click="openEditor()">编辑配置</button>
     </aside>
     <div v-if="importUrlOpen" class="http-tts-import-scrim"
       @click.self="closeUrlImport">
@@ -718,9 +611,9 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
           <label for="http-tts-config-url">HTTP TTS 配置 JSON 链接</label>
           <input id="http-tts-config-url" v-model="importUrl" type="url" required
             inputmode="url" autocomplete="url" maxlength="4096"
-            placeholder="https://example.com/http-tts.json" :disabled="importUrlBusy || actionsBlocked || !!deleteBusyId" />
+            placeholder="https://example.com/http-tts.json" :disabled="importUrlBusy || actionsBlocked" />
           <button type="submit" class="button primary"
-            :disabled="importUrlBusy || actionsBlocked || !!deleteBusyId || !importUrl.trim()">
+            :disabled="importUrlBusy || actionsBlocked || !importUrl.trim()">
             {{ importUrlBusy || importBusy ? '下载并导入中…' : '下载并导入' }}
           </button>
           <small>下载完成后会直接导入配置，上限 1 MiB。</small>
@@ -733,21 +626,20 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
     </div>
     <section v-if="editorOpen" class="http-tts-editor-page">
       <article class="http-tts-editor-dialog">
-        <header class="http-tts-editor-header">
-          <button type="button" class="http-tts-editor-close" :disabled="editorLoading || editBusy" @click="closeEditor"><PrototypeIcon name="left"/></button>
+        <header class="http-tts-editor-header safe-area-top">
+          <button type="button" class="http-tts-editor-close" @click="closeEditor"><PrototypeIcon name="left"/></button>
           <div>
             <h2 id="http-tts-editor-title">{{ creatingConfig ? '新建 HTTP TTS 配置' : editingConfig?.name ?? '编辑朗读源' }}</h2>
           </div>
           <div class="http-tts-editor-header-actions">
-            <button v-if="editingConfig" type="button" class="button danger" :disabled="actionsBlocked || !!deleteBusyId" @click="requestDeleteConfig(editingConfig.id)">删除</button>
-            <button type="button" class="button primary" :disabled="blocked || editorLoading || editBusy || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">{{ editBusy ? '保存中…' : '保存' }}</button>
+            <button v-if="editingConfig" type="button" class="button danger" :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除</button>
+            <button type="button" class="button primary" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</button>
           </div>
         </header>
 
         <div class="http-tts-editor-body">
-          <p v-if="editorLoading" class="http-tts-editor-loading">正在读取配置…</p>
-          <template v-else>
-            <fieldset class="http-tts-editor-fields" :disabled="blocked || editBusy">
+          <template>
+            <fieldset class="http-tts-editor-fields" :disabled="blocked">
               <section class="http-tts-editor-section"><header><strong>请求</strong></header>
               <div class="http-tts-editor-grid">
             <label class="form-field">
@@ -804,11 +696,11 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
               </section>
             </fieldset>
             <div class="http-tts-editor-bottom">
-              <button v-if="editingConfig" type="button" class="button danger http-tts-editor-bottom-delete" :disabled="actionsBlocked || !!deleteBusyId" @click="requestDeleteConfig(editingConfig.id)">删除配置</button>
+              <button v-if="editingConfig" type="button" class="button danger http-tts-editor-bottom-delete" :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除配置</button>
               <button type="button" class="button secondary"
-                :disabled="blocked || editorLoading || editBusy || !editorDirty"
+                :disabled="blocked || !editorDirty"
                 @click="restoreEditorFields">还原</button>
-              <button type="button" class="button primary" :disabled="blocked || editorLoading || editBusy || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">{{ editBusy ? '保存中…' : '保存' }}</button>
+              <button type="button" class="button primary" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</button>
             </div>
             <p v-if="editorError || error" class="source-identity-confirmation">{{ editorError || error }}</p>
             <p v-if="editorSuccess" class="http-tts-editor-success">{{ editorSuccess }}</p>
@@ -822,7 +714,7 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
         <h3 id="tts-delete-title">删除{{ pendingDeleteIds.length === 1 ? ' HTTP TTS 配置？' : ` ${pendingDeleteIds.length} 个 HTTP TTS 配置？` }}</h3>
         <p>{{ pendingDeleteIds.length === 1 ? `“${pendingDeleteConfigs[0]?.name ?? '此引擎'}”将从应用中删除。` : `选中的 ${pendingDeleteIds.length} 个配置将从应用中删除。` }}此操作不能撤销，删除当前朗读源后会切回系统朗读。</p>
         <div><button type="button" class="button secondary" @click="cancelDeleteConfig">取消</button>
-          <button type="button" class="button danger" :disabled="actionsBlocked || !!deleteBusyId" @click="confirmDeleteConfig">确认删除</button></div>
+          <button type="button" class="button danger" :disabled="actionsBlocked" @click="confirmDeleteConfig">确认删除</button></div>
       </section>
     </div>
     <div v-if="discardPromptOpen" class="http-tts-discard-mask" @click.self="keepEditor">
@@ -843,7 +735,7 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
   --tts-accent: var(--app-accent);
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
-  grid-template-rows: 64px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 0;
   width: 100%;
   min-width: 0;
@@ -856,7 +748,7 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
   color: var(--app-text);
 }
 .http-tts-config-card--empty{grid-template-columns:minmax(0,1fr)}
-.http-tts-topbar{position:sticky;top:0;z-index:35;box-sizing:border-box;grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:64px;padding:0 max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--tts-line);background:#f6f7f9ef;backdrop-filter:blur(18px)}
+.http-tts-topbar{position:sticky;top:0;z-index:35;grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:64px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--tts-line);background:#f6f7f9ef;backdrop-filter:blur(18px)}
 .http-tts-top-title{min-width:0}
 .http-tts-top-title strong{font-size:14px;color:#242631;font-weight:750}
 .http-tts-top-add{position:relative}
@@ -911,7 +803,7 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
 .http-tts-preview p{max-width:290px;margin:0;color:#9295a1;font-size:11px;line-height:1.65}
 .http-tts-editor-page{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow-y:auto;background:#fff}
 .http-tts-editor-dialog{width:100%;background:#fff}
-.http-tts-editor-header{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:12px;padding:28px 34px 16px}
+.http-tts-editor-header{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:28px;padding-inline:34px;padding-bottom:16px}
 .http-tts-editor-header h2{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#272934;font-size:17px}
 .http-tts-editor-close{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:9px;background:transparent;color:#747983;cursor:pointer}
 .http-tts-editor-close :deep(svg){width:19px;height:19px}
@@ -948,12 +840,12 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
 .http-tts-discard-dialog>div{display:flex;justify-content:flex-end;gap:8px;margin-top:19px}
 @media(max-width:860px){
  .http-tts-config-card{display:flex;flex-direction:column;height:100%;min-height:0}
- .http-tts-topbar{padding:0 14px}
+ .http-tts-topbar{padding-inline:14px}
  .http-tts-overview{flex:1 1 auto;height:auto;min-height:0;max-height:none;padding:12px 14px;border:0;background:#fafafd}
  .http-tts-preview{display:none}
  .http-tts-config-card:has(.http-tts-editor-page) .http-tts-topbar,
  .http-tts-config-card:has(.http-tts-editor-page) .http-tts-overview{display:none}
- .http-tts-editor-header{position:sticky;top:0;z-index:30;grid-template-columns:36px minmax(0,1fr) auto;gap:8px;box-sizing:border-box;min-height:64px;padding:0 14px;border-bottom:1px solid var(--tts-line);background:#f6f7f9ef;backdrop-filter:blur(14px)}
+ .http-tts-editor-header{position:sticky;top:0;z-index:30;grid-template-columns:36px minmax(0,1fr) auto;gap:8px;margin-top:0;min-height:64px;padding-inline:14px;padding-bottom:0;border-bottom:1px solid var(--tts-line);background:#f6f7f9ef;backdrop-filter:blur(14px)}
  .http-tts-editor-close{display:grid}
  .http-tts-editor-header h2{font-size:12px}
  .http-tts-editor-header-actions>.button{display:inline-flex;align-items:center;min-height:34px;padding:0 9px;font-size:10px}
@@ -965,8 +857,8 @@ watch(() => [listBusy.value, configs.value.length, selectedConfigId.value, block
  .http-tts-editor-bottom{display:none}
 }
 @media(max-width:400px){
- .http-tts-topbar{padding:0 12px}
- .http-tts-editor-header{gap:5px;padding:0 10px}
+ .http-tts-topbar{padding-inline:12px}
+ .http-tts-editor-header{gap:5px;padding-inline:10px;padding-bottom:0}
  .http-tts-editor-header-actions>.button{padding:0 7px}
 }
 </style>

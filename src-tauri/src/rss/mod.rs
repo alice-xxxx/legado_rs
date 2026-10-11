@@ -446,7 +446,7 @@ pub async fn rss_state_resource(
     store: &crate::resources::ResourceStore,
 ) -> Result<ResourceRef, String> {
     let reference = store
-        .reading_ref(RSS_STATE_DOCUMENT)
+        .document_ref(RSS_STATE_DOCUMENT)
         .map_err(|error| error.to_string())?;
     store
         .update_json_ref(&reference, |current| {

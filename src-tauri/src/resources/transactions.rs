@@ -19,7 +19,7 @@ use crate::resources::ResourceRef;
 
 const JOURNAL_FORMAT: &str = "legado-rs-file-transaction";
 const JOURNAL_VERSION: u32 = 1;
-const TRANSACTIONS_RELATIVE_DIR: &str = "private-data/transactions";
+const TRANSACTIONS_RELATIVE_DIR: &str = "transactions";
 const MAX_OPERATION_BYTES: usize = 96;
 const MAX_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSACTION_BYTES: u64 = 128 * 1024 * 1024;
@@ -70,7 +70,7 @@ impl TransactionTarget {
     fn relative_path(&self) -> String {
         match self {
             Self::PublicJson(path) => path.clone(),
-            Self::PrivateBookJson(book_id) => format!("private-data/books/{book_id}.json"),
+            Self::PrivateBookJson(book_id) => format!("books/{book_id}/source-state.json"),
         }
     }
 
@@ -84,15 +84,12 @@ impl TransactionTarget {
             TargetDomain::PrivateBook => {
                 let components = safe_components(path)?;
                 if components.len() != 3
-                    || components[0] != "private-data"
-                    || components[1] != "books"
-                    || !components[2].ends_with(".json")
+                    || components[0] != "books"
+                    || components[2] != "source-state.json"
                 {
                     return Err(TransactionError::new("Unsafe private transaction target"));
                 }
-                let book_id = components[2]
-                    .strip_suffix(".json")
-                    .ok_or_else(|| TransactionError::new("Invalid private book path"))?;
+                let book_id = components[1];
                 Self::private_book_json(book_id)
             }
         }

@@ -1,5 +1,6 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
-import type { AppTask, BatchRemoveBooksResponse, ResourceDescriptor, ShelfResource, TaskResponse } from "../../api/types";
+import { shelf as shelfPositions } from "./shelfStore";
+import type { AppTask, ResourceDescriptor, ShelfResource, TaskResponse } from "../../api/types";
 
 type ShelfBook = ShelfResource["books"][number];
 type ShelfBatchRemovalTarget = Pick<ShelfBook, "id" | "title" | "author">;
@@ -25,12 +26,9 @@ interface ShelfBatchActionsOptions {
   recoveryMessage: Ref<string>;
   isShelfScreen: () => boolean;
   getRestoreRevision: () => number;
-  refreshShelf: (descriptor: ResourceDescriptor) => Promise<void>;
   refreshTasks: (descriptor?: ResourceDescriptor) => Promise<void>;
   refreshChapters: (bookId: string) => Promise<TaskResponse>;
   startBookDownload: (bookId: string) => Promise<TaskResponse>;
-  batchRemoveBooks: (bookIds: string[]) => Promise<BatchRemoveBooksResponse>;
-  batchSetBookGroups: (bookIds: string[], groups: string[]) => Promise<ResourceDescriptor>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
@@ -46,16 +44,11 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     groups,
     tasks,
     recoveryRequired,
-    recoveryTitle,
-    recoveryMessage,
     isShelfScreen,
     getRestoreRevision,
-    refreshShelf,
     refreshTasks,
     refreshChapters,
     startBookDownload,
-    batchRemoveBooks,
-    batchSetBookGroups,
     notify,
     errorText,
   } = options;
@@ -72,11 +65,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
   const newGroup = ref("");
   const removeConfirmOpen = ref(false);
   const removalTargets = ref<ShelfBatchRemovalTarget[]>([]);
-  const removalResult = ref<BatchRemoveBooksResponse | null>(null);
-  const removalError = ref("");
-  const shelfReadError = ref("");
-  const removalResultOpen = ref(false);
-
   const selectedVisibleBookIds = computed(() => {
     const selected = new Set(selectedBookIds.value);
     return visibleBooks.value.filter((book) => selected.has(book.id)).map((book) => book.id);
@@ -278,10 +266,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     const targets = selectedVisibleBooks.value.map((book) => ({ id: book.id, title: book.title, author: book.author }));
     if (!targets.length || targets.length > 256 || batchBusy.value || recoveryRequired.value) return;
     removalTargets.value = targets;
-    removalResult.value = null;
-    removalError.value = "";
-    shelfReadError.value = "";
-    removalResultOpen.value = false;
     removeConfirmOpen.value = true;
   }
 
@@ -291,89 +275,14 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     removalTargets.value = [];
   }
 
-  function removalTargetTitle(bookId: string): string {
-    const target = removalTargets.value.find((entry) => entry.id === bookId);
-    if (!target) return bookId;
-    return target.author ? `${target.title} · ${target.author}` : target.title;
-  }
-
-  function closeRemovalResult(): void {
-    removalResultOpen.value = false;
-  }
-
-  function dismissRemovalSummary(): void {
-    if (recoveryRequired.value) return;
-    removalResult.value = null;
+  function submitRemoval(): void {
+    const bookIds = new Set(removalTargets.value.map(book => book.id));
+    if (!bookIds.size || batchBusy.value || recoveryRequired.value) return;
+    shelfPositions.value.books = shelfPositions.value.books.filter(book => !bookIds.has(book.id));
+    selectedBookIds.value = selectedBookIds.value.filter(id => !bookIds.has(id));
     removalTargets.value = [];
-    removalError.value = "";
-    shelfReadError.value = "";
-  }
-
-  async function submitRemoval(): Promise<void> {
-    const restoreRevision = getRestoreRevision();
-    const isCurrent = () => restoreRevision === getRestoreRevision();
-    const targets = [...removalTargets.value];
-    const bookIds = targets.map((book) => book.id);
-    if (!bookIds.length || bookIds.length > 256 || batchBusy.value || recoveryRequired.value) return;
-    batchBusy.value = true;
-    removalError.value = "";
-    shelfReadError.value = "";
-    try {
-      const result = await batchRemoveBooks(bookIds);
-      if (!isCurrent()) return;
-      const targetIds = new Set(bookIds);
-      const completedIds = [...new Set(result.completedIds.filter((id) => targetIds.has(id)))];
-      const completed = new Set(completedIds);
-      selectedBookIds.value = selectedBookIds.value.filter((id) => !completed.has(id));
-      removalResult.value = result;
-      removeConfirmOpen.value = false;
-      removalResultOpen.value = true;
-
-      const needsRecovery = result.recoveryRequired
-        || result.notAttemptedIds.length > 0
-        || result.errors.some((entry) => entry.outcome === "unknown" || entry.commitState === "indeterminate")
-        || result.errors.some((entry) => entry.recoveryRequired)
-        || result.warnings.some((entry) => entry.recoveryRequired);
-      const notCommittedCount = result.errors.filter((entry) => entry.outcome === "notCommitted").length;
-      const unknownCount = result.errors.filter((entry) => entry.outcome === "unknown").length;
-      if (needsRecovery) {
-        recoveryRequired.value = true;
-        recoveryTitle.value = "需要重启应用完成恢复";
-        recoveryMessage.value = `批量移除已停止。已提交 ${completedIds.length} 本；请重启应用完成恢复后，再查看未处理书籍。`;
-      }
-
-      if (completedIds.length) {
-        const currentShelf = shelf.value;
-        shelf.value = { ...currentShelf, books: currentShelf.books.filter((book) => !completed.has(book.id)) };
-        try {
-          await refreshShelf(result.shelf);
-          if (!isCurrent()) return;
-        } catch (error) {
-          if (!isCurrent()) return;
-          shelfReadError.value = `删除结果已确认，但书架刷新失败：${errorText(error)}`;
-        }
-      }
-
-      if (!isCurrent()) return;
-      if (needsRecovery) {
-        notify("批量移除需要恢复；请重启应用后查看书架。", "error");
-      } else if (result.errors.length || result.warnings.length || result.notAttemptedIds.length) {
-        notify(`批量移除已处理：已提交 ${completedIds.length} 本，未提交 ${notCommittedCount} 本，状态未知 ${unknownCount} 本，未执行 ${result.notAttemptedIds.length} 本。`, "error");
-      } else {
-        notify(`已从书架移除 ${completedIds.length} 本书。`);
-      }
-    } catch (error) {
-      if (!isCurrent()) return;
-      removalError.value = `没有收到逐本处理结果，无法确认本次删除状态：${errorText(error)}`;
-      removeConfirmOpen.value = false;
-      removalResultOpen.value = true;
-      recoveryRequired.value = true;
-      recoveryTitle.value = "批量删除结果未确认";
-      recoveryMessage.value = "没有收到逐本处理结果，无法确认本批状态。请重启应用后检查书架；本会话已暂停书架批量修改，避免重复提交。";
-      notify("没有收到逐本处理结果，请重启应用检查书架后再继续。", "error");
-    } finally {
-      batchBusy.value = false;
-    }
+    removeConfirmOpen.value = false;
+    notify(`已从书架移除 ${bookIds.size} 本书，缓存和阅读记录保留。`);
   }
 
   function openGroups(): void {
@@ -422,40 +331,16 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     newGroup.value = "";
   }
 
-  async function submitGroups(): Promise<void> {
-    const restoreRevision = getRestoreRevision();
-    const isCurrent = () => restoreRevision === getRestoreRevision();
+  function submitGroups(): void {
     const bookIds = [...groupBookIds.value];
     if (!bookIds.length || batchBusy.value || recoveryRequired.value || (!groupDraft.value.length && !clearGroups.value)) return;
     const nextGroups = clearGroups.value ? [] : [...groupDraft.value];
-    batchBusy.value = true;
-    batchError.value = "";
-    try {
-      const descriptor = await batchSetBookGroups(bookIds, nextGroups);
-      if (!isCurrent()) return;
-      selectedBookIds.value = selectedBookIds.value.filter((id) => !bookIds.includes(id));
-      groupsOpen.value = false;
-      groupBookIds.value = [];
-      groupDraft.value = [];
-      clearGroups.value = false;
-      newGroup.value = "";
-      try {
-        await refreshShelf(descriptor);
-        if (!isCurrent()) return;
-        notify(`已为 ${bookIds.length} 本书替换分组。`);
-      } catch (error) {
-        if (!isCurrent()) return;
-        batchError.value = `分组已保存，但重新读取书架失败：${errorText(error)}`;
-        notify(batchError.value, "error");
-      }
-    } catch (error) {
-      if (!isCurrent()) return;
-      batchError.value = `批量设置分组失败：${errorText(error)}`;
-      notify(batchError.value, "error");
-    } finally {
-      batchBusy.value = false;
-      if (isCurrent() && !isShelfScreen()) exitSelectionMode();
-    }
+    for (const book of shelfPositions.value.books) if (bookIds.includes(book.id)) book.groups = [...nextGroups];
+    shelfPositions.value.groups = [...new Set([...(shelfPositions.value.groups ?? []), ...nextGroups])];
+    selectedBookIds.value = selectedBookIds.value.filter((id) => !bookIds.includes(id));
+    closeGroups();
+    notify(`已为 ${bookIds.length} 本书替换分组。`);
+    if (!isShelfScreen()) exitSelectionMode();
   }
 
   return {
@@ -475,10 +360,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     newGroup,
     removeConfirmOpen,
     removalTargets,
-    removalResult,
-    removalError,
-    shelfReadError,
-    removalResultOpen,
     enterSelectionMode,
     exitSelectionMode,
     toggleBookSelection,
@@ -487,9 +368,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     startSelectedTasks,
     openRemovalConfirm,
     cancelRemoval,
-    removalTargetTitle,
-    closeRemovalResult,
-    dismissRemovalSummary,
     submitRemoval,
     openGroups,
     toggleGroup,

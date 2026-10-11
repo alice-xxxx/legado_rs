@@ -355,10 +355,10 @@ pub async fn start_search(
     let result = service
         .start_search(&source_ids, &keyword, page.unwrap_or(1))
         .await?;
-    let history = service.get_search_history().await?;
+    let history = service.history_resource().await?;
     let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "searchHistory", "resource": history }),
+        "history-updated",
+        json!({ "requestId": 0, "resource": history }),
     );
     Ok(result)
 }
@@ -373,5 +373,5 @@ pub async fn search_book_source_candidates(
 ) -> Result<Value, String> {
     service
         .search_book_source_candidates(&book_id, &source_ids, keyword.as_deref(), page.unwrap_or(1))
-        .await
+        .await.map(super::tasks::task_resource_response)
 }

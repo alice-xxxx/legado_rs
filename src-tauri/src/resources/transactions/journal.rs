@@ -73,7 +73,7 @@ pub(super) fn validate_journal(
         }
         if entry.after.missing && !is_deletable_target(&target) {
             return Err(TransactionError::new(
-                "Only typed book/progress/private-book targets may be deleted by a transaction",
+                "Only typed book/private-book targets may be deleted by a transaction",
             ));
         }
     }

@@ -191,6 +191,15 @@ impl ApplicationService {
         status: &str,
         error: Option<String>,
     ) -> Result<(), String> {
+        if status == "completed" {
+            let task = self.task_summary_record(task_id).await?;
+            if task.kind == "bookSourceCandidates"
+                && reconcile_task_completion(&task.status, status) == Some("completed")
+            {
+                let search_id = task.search_id.as_deref().ok_or_else(|| "Candidate task has no search".to_owned())?;
+                self.cache_source_candidates(search_id).await?;
+            }
+        }
         // Keep the candidate snapshot and terminal task result in one critical
         // section. A task-resource reader must never see a terminal candidate
         // without the immutable resource descriptor that owns its results.
@@ -906,7 +915,7 @@ impl ApplicationService {
         commit: bool,
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
-        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let private_path = Path::new("books").join(book_id).join("source-state.json");
         let book_ref = self
             .store
             .book_ref(book_id)
@@ -918,7 +927,7 @@ impl ApplicationService {
         let (source, engine_book, old_raw, old_chapters, catalog_generation) = {
             let _sources_lock = self.sources_lock.lock().await;
             let source_id = {
-                let private = self.read_private_json(&private_path).await?;
+                let private = self.read_internal_json(&private_path).await?;
                 private["sourceId"]
                     .as_str()
                     .ok_or_else(|| "Private book is missing sourceId".to_owned())?
@@ -931,7 +940,7 @@ impl ApplicationService {
                 .find(|source| source.id == source_id)
                 .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
             let _book_lock = self.book_lock(book_id).await;
-            let private = self.read_private_json(&private_path).await?;
+            let private = self.read_internal_json(&private_path).await?;
             if private["sourceId"].as_str() != Some(source.id.as_str()) {
                 return Err("Book source changed while refreshing its catalog".to_owned());
             }
@@ -1006,7 +1015,7 @@ impl ApplicationService {
             }
             let _book_lock = self.book_lock(book_id).await;
             let current_private = self
-                .read_private_json(&private_path)
+                .read_internal_json(&private_path)
                 .await
                 .map_err(|_| "Book was removed while refreshing its catalog".to_owned())?;
             if current_private["sourceId"].as_str() != Some(source.id.as_str())
@@ -1070,34 +1079,13 @@ impl ApplicationService {
                 );
             }
 
-            let summary_progress = serde_json::from_value::<ProgressSummary>(
+            let progress = serde_json::from_value::<ProgressSummary>(
                 current_book
                     .get("progress")
                     .cloned()
                     .unwrap_or_else(|| json!({})),
             )
             .map_err(|error| format!("Cannot read saved book progress: {error}"))?;
-            let progress_ref = self
-                .store
-                .progress_ref(book_id)
-                .map_err(|error| error.to_string())?;
-            let progress_document = writer_guard
-                .read_optional_json_ref(&progress_ref)
-                .map_err(|error| error.to_string())?
-                .and_then(|value| serde_json::from_value::<ProgressDocument>(value).ok())
-                .filter(|progress| progress.book_id == book_id);
-            // save_progress writes the book summary before its mirror. On a
-            // timestamp tie the summary therefore wins; a newer mirror wins
-            // when recovering from an interrupted older write.
-            let progress = progress_document
-                .filter(|document| document.updated_at_ms > summary_progress.updated_at_ms)
-                .map(|document| ProgressSummary {
-                    chapter_id: document.chapter_id,
-                    chapter_index: document.chapter_index,
-                    offset: document.offset,
-                    updated_at_ms: document.updated_at_ms,
-                })
-                .unwrap_or(summary_progress);
             let mut cached_ids = HashSet::new();
             for chapter in &current_chapters {
                 let Some(reference) = chapter.resource.as_ref().map(|resource| &resource.resource_id) else {
@@ -1154,23 +1142,6 @@ impl ApplicationService {
             current_book["latestChapter"] = json!(plan.latest_chapter);
             current_book["progress"] =
                 serde_json::to_value(&plan.progress).map_err(|error| error.to_string())?;
-            let next_progress = ProgressDocument {
-                schema_version: CURRENT_SCHEMA_VERSION,
-                book_id: book_id.to_owned(),
-                chapter_id: plan.progress.chapter_id.clone(),
-                chapter_index: plan.progress.chapter_index,
-                offset: plan.progress.offset,
-                updated_at_ms: plan.progress.updated_at_ms,
-            };
-            let next_progress =
-                serde_json::to_value(next_progress).map_err(|error| error.to_string())?;
-
-            let shelf_ref = self.store.shelf_ref();
-            let mut next_shelf = writer_guard
-                .read_json_ref(&shelf_ref)
-                .map_err(|error| error.to_string())?;
-            crate::book_commit::upsert_shelf_entry(&mut next_shelf, book_id, &current_book)?;
-
             let private_bytes = serde_json::to_vec_pretty(&next_private)
                 .map_err(|error| format!("Cannot encode refreshed private book: {error}"))?;
             let replacements = vec![
@@ -1181,12 +1152,6 @@ impl ApplicationService {
                 .map_err(|error| error.to_string())?,
                 writer_guard
                     .public_json_replacement(&book_ref, &current_book)
-                    .map_err(|error| error.to_string())?,
-                writer_guard
-                    .public_json_replacement(&progress_ref, &next_progress)
-                    .map_err(|error| error.to_string())?,
-                writer_guard
-                    .public_json_replacement(&shelf_ref, &next_shelf)
                     .map_err(|error| error.to_string())?,
             ];
             let transaction_root = writer_guard.data_root().to_path_buf();

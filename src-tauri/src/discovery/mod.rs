@@ -1,7 +1,7 @@
 //! 处理发现页分类、书目和收藏的资源读写。
 //! Source discovery orchestration over the existing KMP WebBook engine.
 //!
-//! Category rule URLs are kept under private-data and are addressed from the
+//! Category rule URLs are kept under source-engine and are addressed from the
 //! WebView only through opaque category IDs. Public resources contain display
 //! metadata and projected search cards, never source definitions or rules.
 
@@ -344,7 +344,7 @@ pub(crate) async fn publish_categories(
     };
     let private_value = serde_json::to_value(private_map).map_err(|error| error.to_string())?;
     service
-        .write_private_json(category_map_path(source_id)?, &private_value)
+        .write_internal_json(category_map_path(source_id)?, &private_value)
         .await?;
 
     let document = DiscoveryCategoriesDocument {
@@ -377,7 +377,7 @@ pub(crate) async fn private_category(
     validate_source_id(source_id)?;
     validate_category_id(category_id)?;
     let mapping = service
-        .read_private_json(category_map_path(source_id)?)
+        .read_internal_json(category_map_path(source_id)?)
         .await?;
     if mapping.get("sourceId").and_then(Value::as_str) != Some(source_id) {
         return Err("Discovery category has expired; reload the categories".to_owned());
@@ -492,7 +492,7 @@ async fn enabled_source(
 
 pub(crate) fn category_map_path(source_id: &str) -> Result<std::path::PathBuf, String> {
     validate_source_id(source_id)?;
-    Ok(Path::new(CATEGORY_CACHE_DIRECTORY).join(format!("{source_id}.json")))
+    Ok(Path::new("source-engine").join(CATEGORY_CACHE_DIRECTORY).join(format!("{source_id}.json")))
 }
 
 pub(crate) fn validate_source_id(source_id: &str) -> Result<(), String> {

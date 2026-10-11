@@ -15,35 +15,6 @@ impl Replacement {
         })
     }
 
-    /// Delete exactly one public book document. The before-image remains in
-    /// the journal so a prepared transaction can restore it on recovery.
-    pub(crate) fn delete_book_json(reference: ResourceRef) -> Result<Self, TransactionError> {
-        let target = TransactionTarget::public_json(reference)?;
-        if !is_book_json_path(target.relative_path().as_str()) {
-            return Err(TransactionError::new(
-                "Book deletion accepts only a public book JSON resource",
-            ));
-        }
-        Ok(Self {
-            target,
-            bytes: None,
-        })
-    }
-
-    /// Delete exactly one public progress document.
-    pub(crate) fn delete_progress_json(reference: ResourceRef) -> Result<Self, TransactionError> {
-        let target = TransactionTarget::public_json(reference)?;
-        if !is_progress_json_path(target.relative_path().as_str()) {
-            return Err(TransactionError::new(
-                "Book deletion accepts only a public progress JSON resource",
-            ));
-        }
-        Ok(Self {
-            target,
-            bytes: None,
-        })
-    }
-
     pub(crate) fn private_book_json(
         book_id: &str,
         bytes: Vec<u8>,
@@ -58,14 +29,6 @@ impl Replacement {
         })
     }
 
-    /// Delete exactly one private source-engine book snapshot.
-    pub(crate) fn delete_private_book_json(book_id: &str) -> Result<Self, TransactionError> {
-        let target = TransactionTarget::private_book_json(book_id)?;
-        Ok(Self {
-            target,
-            bytes: None,
-        })
-    }
 }
 
 impl PostCommitDelete {
@@ -82,12 +45,4 @@ impl PostCommitDelete {
         })
     }
 
-    /// Remove the cached files beneath exactly one `books/<book-id>` folder.
-    /// The tree is checked for symlinks and special files before removal.
-    pub(crate) fn book_directory(book_id: &str) -> Result<Self, TransactionError> {
-        validate_identifier(book_id)?;
-        let path = format!("books/{book_id}");
-        safe_components(&path)?;
-        Ok(Self { path })
-    }
 }

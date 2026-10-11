@@ -1,20 +1,20 @@
 <script setup lang="ts">
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
-import { appBootstrap } from "../../api/core";
 import { readResource } from "../../api/resources";
 import { cancelTask, clearFinishedTasks, pauseTask, resumeTask, retryTask, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, ResourceDescriptor, ShelfResource, TasksResource } from "../../api/types";
+import type { AppBootstrap, AppTask, ResourceDescriptor,  TasksResource } from "../../api/types";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 
 const tasks = ref<AppTask[]>([]);
-const shelfBooks = ref<ShelfResource["books"]>([]);
+const shelfBooks = computed(() => shelf.value.books);
 const loading = ref(true);
 const dataError = ref("");
 const recoveryTaskSignaled = ref(false);
@@ -26,7 +26,6 @@ const bookTitles = computed(() => new Map(shelfBooks.value.map((book) => [book.i
 const unlisteners: UnlistenFn[] = [];
 let isUnmounted = false;
 let restoreRevision = 0;
-let shelfReadRevision = 0;
 let tasksReadRevision = 0;
 const recoveryTasks = new Map<string, AppTask>();
 
@@ -42,13 +41,6 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
-  const revision = ++shelfReadRevision;
-  const restoreAtStart = restoreRevision;
-  const document = await readResource<ShelfResource>(descriptor);
-  if (isUnmounted || revision !== shelfReadRevision || restoreAtStart !== restoreRevision) return;
-  shelfBooks.value = document.books ?? [];
-}
 
 async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const revision = ++tasksReadRevision;
@@ -83,14 +75,13 @@ function applyRecoveryTask(summary: Partial<AppTask>): void {
     : [...tasks.value, task];
 }
 
-async function loadBootstrap(snapshot?: AppBootstrap): Promise<void> {
+async function loadBootstrap(_snapshot?: AppBootstrap): Promise<void> {
   const restoreAtStart = restoreRevision;
   loading.value = true;
   dataError.value = "";
   try {
-    const current = snapshot ?? await appBootstrap();
     if (isUnmounted || restoreAtStart !== restoreRevision) return;
-    await Promise.all([refreshShelf(current.shelf), refreshTasks()]);
+    await Promise.all([refreshTasks()]);
   } catch (error) {
     if (!isUnmounted && restoreAtStart === restoreRevision) dataError.value = errorText(error);
   } finally {
@@ -105,9 +96,6 @@ async function registerListener<T>(event: string, handler: (payload: T) => void)
 }
 
 async function listenForUpdates(): Promise<void> {
-  await registerListener<ResourceDescriptor>("shelf-updated", (resource) => {
-    void refreshShelf(resource).catch((error) => { dataError.value = errorText(error); });
-  });
   await registerListener<{ kind: string; resource: ResourceDescriptor }>("resource-updated", ({ kind, resource }) => {
     if (kind === "tasks") void refreshTasks(resource).catch((error) => { dataError.value = errorText(error); });
   });
@@ -117,7 +105,6 @@ async function listenForUpdates(): Promise<void> {
   await registerListener<Partial<AppTask>>("task-recovery-required", applyRecoveryTask);
   await registerListener<AppBootstrap>("app-state-updated", (snapshot) => {
     restoreRevision += 1;
-    shelfReadRevision += 1;
     tasksReadRevision += 1;
     recoveryTasks.clear();
     tasks.value = [];
@@ -148,7 +135,7 @@ function returnToSettings(): void {
 }
 
 async function openTaskBook(bookId: string): Promise<void> {
-  const requestId = requestBookDetailOpen({ kind: "shelf-book", bookId, initialTab: "catalog" });
+  const requestId = requestBookDetailOpen({ kind: "cached-book", bookId, initialTab: "catalog" });
   try {
     const failure = await router.push({ name: routeNames.bookDetail });
     if (failure) discardBookDetailOpenRequest(requestId);
@@ -437,7 +424,7 @@ function hasTaskDetails(task: AppTask): boolean {
 
 <template>
   <div class="tasks-workspace">
-    <header class="tasks-topbar">
+    <header class="tasks-topbar safe-area-top">
       <BackButton label="返回我的" @click="returnToSettings" />
       <div class="tasks-title"><strong>下载与任务</strong></div>
       <span></span>
@@ -563,7 +550,7 @@ function hasTaskDetails(task: AppTask): boolean {
 
 <style scoped>
 .tasks-workspace{width:100%;min-height:100%;color:#282b33}
-.tasks-topbar{position:sticky;top:0;z-index:35;box-sizing:border-box;height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding:0 max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
+.tasks-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
 .tasks-title{min-width:0}
 .tasks-title strong{font-size:14px;color:#18191d;font-weight:750;line-height:1.25}
 .task-center{box-sizing:border-box;width:min(860px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px}
@@ -622,7 +609,7 @@ function hasTaskDetails(task: AppTask): boolean {
 .task-confirm footer button{min-height:35px;padding:0 13px;border:0;border-radius:9px;background:#eceef2;color:#525966;font-size:11px;cursor:pointer}
 .task-confirm footer .task-confirm-danger{background:#b95b68;color:#fff}
 @media(max-width:860px){
-  .tasks-topbar{padding:0 18px}
+  .tasks-topbar{padding-inline:18px}
   .task-center{width:calc(100% - 36px)}
   .task-card{grid-template-columns:36px minmax(0,1fr) 34px;gap:10px}
   .task-updated{display:none}

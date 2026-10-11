@@ -40,12 +40,6 @@ impl ApplicationService {
             .remove_source_definition_snapshots()
             .await
             .map_err(|error| error.to_string())?;
-        let private_root = root.join("private-data");
-        tokio::fs::create_dir_all(private_root.join("books"))
-            .await
-            .map_err(|error| {
-                format!("Cannot create private application data directory: {error}")
-            })?;
         let http_tts_ref = store.http_tts_configs_ref();
         let empty_http_tts = crate::http_tts_config::empty_document();
         let http_tts_configs = store
@@ -71,7 +65,6 @@ impl ApplicationService {
                 .await
                 .map_err(|error| error.to_string())?;
         }
-        cleanup_non_shelf_book_resources(&store, &private_root).await?;
         let settings_ref = store.settings_ref();
         let mut empty_settings = serde_json::to_value(crate::models::SettingsDocument::default())
             .map_err(|error| error.to_string())?;
@@ -97,10 +90,7 @@ impl ApplicationService {
                 .await
                 .map_err(|error| error.to_string())?,
         );
-        tokio::fs::create_dir_all(private_root.join("discovery-categories"))
-            .await
-            .map_err(|error| format!("Cannot create private discovery data directory: {error}"))?;
-        let staged_picker_imports = private_root.join("picker-imports");
+        let staged_picker_imports = super::file_import::picker_import_directory(&root);
         match tokio::fs::remove_dir_all(&staged_picker_imports).await {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -110,7 +100,7 @@ impl ApplicationService {
         }
         let root = store.root().to_path_buf();
         let task_ref = store
-            .reading_ref("tasks")
+            .document_ref("tasks")
             .map_err(|error| error.to_string())?;
         let empty_tasks = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": [] });
         let task_document = store
@@ -207,7 +197,6 @@ impl ApplicationService {
         let (restore_barrier, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             root,
-            private_root,
             _process_lock: process_lock,
             store,
             server,
@@ -217,6 +206,7 @@ impl ApplicationService {
             sources_lock: Arc::new(tokio::sync::Mutex::new(())),
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            book_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_recovery_notifier: Arc::new(std::sync::RwLock::new(None)),
             search_snapshot_notifier: Arc::new(std::sync::RwLock::new(None)),
@@ -241,6 +231,10 @@ impl ApplicationService {
 
     pub fn data_root(&self) -> &Path {
         &self.root
+    }
+
+    pub fn set_book_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
+        if let Ok(mut target) = self.book_notifier.write() { *target = Some(notifier); }
     }
 
     pub fn set_task_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
@@ -295,11 +289,13 @@ impl ApplicationService {
             "format": resource_format(resource.as_str()),
         })
     }
-    pub(crate) async fn read_private_json(
+    pub(crate) async fn read_internal_json(
         &self,
         relative: impl AsRef<Path>,
     ) -> Result<Value, String> {
-        let path = self.private_root.join(relative);
+        let path = self.root.join(relative);
+        crate::resources::check_path_no_symlink(&self.root, &path, false)
+            .map_err(|error| error.to_string())?;
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|error| format!("Cannot read private app data: {error}"))?;
@@ -307,25 +303,26 @@ impl ApplicationService {
             .map_err(|error| format!("Cannot parse private app data: {error}"))
     }
 
-    pub(crate) async fn write_private_json(
+    pub(crate) async fn write_internal_json(
         &self,
         relative: impl AsRef<Path>,
         value: &Value,
     ) -> Result<(), String> {
-        let path = self.private_root.join(relative);
+        let path = self.root.join(relative);
         let parent = path
             .parent()
             .ok_or_else(|| "Private app data path has no parent".to_owned())?;
+        crate::resources::check_path_no_symlink(&self.root, &path, true)
+            .map_err(|error| error.to_string())?;
         tokio::fs::create_dir_all(parent)
             .await
             .map_err(|error| format!("Cannot create private app data directory: {error}"))?;
         let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-        let root = self.private_root.clone();
+        let root = self.root.clone();
         let output = path.clone();
-        tokio::task::spawn_blocking(move || {
-            if !output.starts_with(root) {
-                return Err("Private app data path escaped its root".to_owned());
-            }
+        tokio::task::spawn_blocking(move || -> Result<(), String> {
+            crate::resources::check_path_no_symlink(&root, &output, true)
+                .map_err(|error| error.to_string())?;
             atomicwrites::AtomicFile::new(&output, atomicwrites::AllowOverwrite)
                 .write(|file| file.write_all(&bytes))
                 .map_err(|error| format!("Cannot commit private app data: {error}"))?;
@@ -333,47 +330,6 @@ impl ApplicationService {
         })
         .await
         .map_err(|error| format!("Private app data worker failed: {error}"))??;
-        Ok(())
-    }
-
-    pub(super) async fn upsert_shelf(&self, book_id: &str) -> Result<(), String> {
-        let shelf_ref = self.store.shelf_ref();
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let book = self
-            .store
-            .read_json_ref(&book_ref)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut entry = json!({
-            "id": book["id"], "title": book["title"], "author": book["author"],
-            "coverSrc": book["coverSrc"], "chapterCount": book["chapterCount"],
-            "latestChapter": book["latestChapter"], "progress": book["progress"], "groups": [],
-        });
-        self.store
-            .update_json_ref(&shelf_ref, move |mut shelf| {
-                let books = shelf
-                    .get_mut("books")
-                    .and_then(Value::as_array_mut)
-                    .ok_or_else(|| "Invalid shelf JSON: books must be an array".to_owned())?;
-                if let Some(existing) = books
-                    .iter_mut()
-                    .find(|existing| existing.get("id").and_then(Value::as_str) == Some(book_id))
-                {
-                    if let Some(groups) = existing.get("groups").cloned() {
-                        entry["groups"] = groups;
-                    }
-                    *existing = entry;
-                } else {
-                    books.push(entry);
-                }
-                crate::reading_tools::apply_shelf_sort(&mut shelf)?;
-                Ok(shelf)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
         Ok(())
     }
 
@@ -414,8 +370,10 @@ impl ApplicationService {
 }
 
 fn valid_startup_settings(value: &Value) -> bool {
-    serde_json::from_value::<crate::models::SettingsDocument>(value.clone())
-        .is_ok_and(|settings| settings.schema_version == CURRENT_SCHEMA_VERSION)
+    serde_json::from_value::<crate::models::SettingsDocument>(value.clone()).is_ok_and(|settings| {
+        settings.schema_version == CURRENT_SCHEMA_VERSION
+            && crate::discovery::home_config::validate_home_document(&settings.home).is_ok()
+    })
 }
 
 fn valid_startup_shelf(value: &Value) -> bool {
@@ -430,152 +388,4 @@ fn valid_startup_shelf(value: &Value) -> bool {
         .books
         .iter()
         .all(|book| validate_id(&book.id, "bookId").is_ok() && ids.insert(book.id.as_str()))
-}
-
-fn is_persisted_book_id(book_id: &str) -> bool {
-    (book_id.starts_with("book-") || book_id.starts_with("local-"))
-        && validate_id(book_id, "bookId").is_ok()
-}
-
-async fn cleanup_non_shelf_book_resources(
-    store: &ResourceStore,
-    private_root: &Path,
-) -> Result<(), String> {
-    let shelf = store
-        .read_json_ref(&store.shelf_ref())
-        .await
-        .map_err(|error| error.to_string())?;
-    let shelf_books = shelf
-        .get("books")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Cannot clean book resources: shelf books must be an array".to_owned())?;
-    let mut shelf_ids = HashSet::with_capacity(shelf_books.len());
-    for entry in shelf_books {
-        let book_id = entry
-            .get("id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Cannot clean book resources: shelf entry has no ID".to_owned())?;
-        validate_id(book_id, "bookId")?;
-        shelf_ids.insert(book_id.to_owned());
-    }
-
-    let root = store.root();
-    let public_books_dir = root.join("books");
-    let progress_dir = root.join("progress");
-    let private_books_dir = private_root.join("books");
-    for directory in [&public_books_dir, &progress_dir] {
-        tokio::fs::create_dir_all(directory)
-            .await
-            .map_err(|error| format!("Cannot prepare book resource cleanup: {error}"))?;
-    }
-
-    let mut candidates = HashSet::new();
-    let mut public_entries = tokio::fs::read_dir(&public_books_dir)
-        .await
-        .map_err(|error| format!("Cannot scan public book resources: {error}"))?;
-    while let Some(entry) = public_entries
-        .next_entry()
-        .await
-        .map_err(|error| format!("Cannot scan public book resources: {error}"))?
-    {
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| format!("Cannot inspect public book resource: {error}"))?;
-        if file_type.is_dir() {
-            if let Some(book_id) = entry.file_name().to_str() {
-                if is_persisted_book_id(book_id) {
-                    candidates.insert(book_id.to_owned());
-                }
-            }
-        }
-    }
-
-    let mut progress_entries = tokio::fs::read_dir(&progress_dir)
-        .await
-        .map_err(|error| format!("Cannot scan book progress: {error}"))?;
-    while let Some(entry) = progress_entries
-        .next_entry()
-        .await
-        .map_err(|error| format!("Cannot scan book progress: {error}"))?
-    {
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| format!("Cannot inspect book progress: {error}"))?;
-        if file_type.is_file() {
-            if let Some(book_id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_suffix(".json"))
-            {
-                if is_persisted_book_id(book_id) {
-                    candidates.insert(book_id.to_owned());
-                }
-            }
-        }
-    }
-
-    let mut private_entries = tokio::fs::read_dir(&private_books_dir)
-        .await
-        .map_err(|error| format!("Cannot scan private book resources: {error}"))?;
-    while let Some(entry) = private_entries
-        .next_entry()
-        .await
-        .map_err(|error| format!("Cannot scan private book resources: {error}"))?
-    {
-        let file_type = entry
-            .file_type()
-            .await
-            .map_err(|error| format!("Cannot inspect private book resource: {error}"))?;
-        if file_type.is_file() {
-            if let Some(book_id) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| name.strip_suffix(".json"))
-            {
-                if is_persisted_book_id(book_id) {
-                    candidates.insert(book_id.to_owned());
-                }
-            }
-        }
-    }
-
-    for book_id in candidates.difference(&shelf_ids) {
-        let writer_guard = store
-            .transaction_writer_guard()
-            .await
-            .map_err(|error| error.to_string())?;
-        let book_ref = store.book_ref(book_id).map_err(|error| error.to_string())?;
-        let progress_ref = store
-            .progress_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let replacements = vec![
-            crate::resource_transactions::Replacement::delete_book_json(book_ref)
-                .map_err(|error| error.to_string())?,
-            crate::resource_transactions::Replacement::delete_progress_json(progress_ref)
-                .map_err(|error| error.to_string())?,
-            crate::resource_transactions::Replacement::delete_private_book_json(book_id)
-                .map_err(|error| error.to_string())?,
-        ];
-        let post_commit_deletes = vec![
-            crate::resource_transactions::PostCommitDelete::book_directory(book_id)
-                .map_err(|error| error.to_string())?,
-        ];
-        let transaction_root = writer_guard.data_root().to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let transaction = crate::resource_transactions::FileTransaction::prepare(
-                &transaction_root,
-                "startup-prune-book-cache",
-                replacements,
-                post_commit_deletes,
-                &writer_guard,
-            )?;
-            transaction.commit()
-        })
-        .await
-        .map_err(|error| format!("Book resource cleanup worker failed: {error}"))?
-        .map_err(|error| format!("Cannot clean resources for book '{book_id}': {error}"))?;
-    }
-    Ok(())
 }

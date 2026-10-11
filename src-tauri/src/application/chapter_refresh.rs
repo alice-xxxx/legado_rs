@@ -33,7 +33,7 @@ impl ApplicationService {
             let sources = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
             let private = self
-                .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+                .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
                 .await?;
             let book = self
                 .store
@@ -186,7 +186,7 @@ impl ApplicationService {
             .await
             .map_err(|error| error.to_string())?;
         let latest_private = self
-            .read_private_json(Path::new("books").join(format!("{book_id}.json")))
+            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
             .await
             .map_err(|_| "Book was removed while refreshing the chapter".to_owned())?;
         let mut latest_book = writer_guard

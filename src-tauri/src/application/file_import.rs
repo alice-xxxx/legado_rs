@@ -2,6 +2,15 @@
 
 use super::*;
 
+/// Only picker copies are temporary. Imported originals live in books/{id}/.
+pub(super) fn picker_import_directory(root: &Path) -> PathBuf {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let key = stable_hash(&root.to_string_lossy());
+    std::env::temp_dir()
+        .join("legado-rs-picker-imports")
+        .join(format!("{key:016x}"))
+}
+
 pub(super) struct PickerFileCleanupOwner {
     pub(super) path: PathBuf,
     pub(super) cleanup_dir: Option<PathBuf>,
@@ -496,9 +505,7 @@ impl ApplicationService {
             return Err("Selected book file size is outside the supported range".to_owned());
         }
 
-        let staging_directory = self
-            .private_root
-            .join("picker-imports")
+        let staging_directory = picker_import_directory(&self.root)
             .join(uuid::Uuid::new_v4().simple().to_string());
         tokio::fs::create_dir_all(&staging_directory)
             .await
@@ -551,23 +558,12 @@ impl ApplicationService {
         )
         .await?;
         let book = imported.book;
-        if let Err(error) = self.upsert_shelf(&book.id).await {
-            if imported.created {
-                if let Err(cleanup_error) = self.store.remove_book_resources(&book.id).await {
-                    return Err(format!(
-                        "{error}; additionally failed to clean the new local book: {cleanup_error}"
-                    ));
-                }
-            }
-            return Err(error);
-        }
         let book_ref = self
             .store
             .book_ref(&book.id)
             .map_err(|error| error.to_string())?;
         Ok(json!({
             "book": self.resource_descriptor(&book_ref),
-            "shelf": self.resource_descriptor(&self.store.shelf_ref()),
         }))
     }
 

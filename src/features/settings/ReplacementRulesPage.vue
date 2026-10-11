@@ -1,12 +1,11 @@
 <script setup lang="ts">
-// This page owns its rule and shelf snapshots, plus their mutations.
+// All pages share the rule document; this form owns only its edit draft.
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import router, { settingsRouteNames } from "../../router";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
-import type { AppBootstrap, DisplayReplacementRule, ResourceDescriptor, ShelfResource } from "../../api/types";
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
+import type { AppBootstrap, DisplayReplacementRule } from "../../api/types";
 import BackButton from "../../ui/BackButton.vue";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
@@ -19,15 +18,12 @@ defineOptions({ inheritAttrs: false });
 type RuleStatusFilter = "all" | "enabled" | "disabled";
 
 const route = useRoute();
-const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [] });
+
 const restoreRevision = ref(0);
-const loadBusy = ref(true);
 const loadError = ref("");
 const notice = ref("");
 const noticeKind = ref<"success" | "error">("success");
 let noticeTimer: ReturnType<typeof setTimeout> | undefined;
-let shelfReadRevision = 0;
-let bootstrapReadRevision = 0;
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 
@@ -52,70 +48,18 @@ const replacementImportOpen = replacementRulesFeature.replacementImportOpen;
 const replacementImportUrl = replacementRulesFeature.replacementImportUrl;
 const replacementImportError = replacementRulesFeature.replacementImportError;
 const replacementImportBusy = replacementRulesFeature.replacementImportBusy;
-const busy = computed(() => loadBusy.value || replacementImportBusy.value
-  || replacementRulesFeature.replacementExportBusy.value
-  || replacementRulesFeature.replacementRefreshBusy.value
-  || replacementRulesFeature.replacementDeleteBusy.value
-  || replacementRulesFeature.replacementAddBusy.value);
+const busy = replacementImportBusy;
 const scopeOptions = computed(() => [
   { value: "all", label: "全部书籍" },
   ...shelf.value.books.map((book) => ({ value: `book:${book.id}`, label: book.title })),
 ]);
 
-async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
-  const revision = ++shelfReadRevision;
-  const restoreAtStart = restoreRevision.value;
-  const document = await readResource<ShelfResource>(descriptor);
-  if (disposed || revision !== shelfReadRevision || restoreAtStart !== restoreRevision.value) return;
-  shelf.value = { ...document, groups: document.groups ?? [], books: document.books ?? [] };
-}
-
-async function loadBootstrap(snapshot?: AppBootstrap): Promise<void> {
-  const revision = ++bootstrapReadRevision;
-  const restoreAtStart = restoreRevision.value;
-  loadBusy.value = true;
-  loadError.value = "";
-  try {
-    const current = snapshot ?? await appBootstrap();
-    if (disposed || revision !== bootstrapReadRevision || restoreAtStart !== restoreRevision.value) return;
-    await Promise.all([
-      refreshShelf(current.shelf),
-      replacementRulesFeature.refreshReplacementRules(current.replacementRules),
-    ]);
-  } catch (error) {
-    if (!disposed && revision === bootstrapReadRevision && restoreAtStart === restoreRevision.value) {
-      loadError.value = errorText(error);
-    }
-  } finally {
-    if (!disposed && revision === bootstrapReadRevision && restoreAtStart === restoreRevision.value) {
-      loadBusy.value = false;
-    }
-  }
-}
-
 async function listenForResourceUpdates(): Promise<void> {
-  const unlistenShelf = await listen<ResourceDescriptor>("shelf-updated", (event) => {
-    void refreshShelf(event.payload).catch((error) => notify(`读取书架范围失败：${errorText(error)}`, "error"));
-  });
-  if (disposed) { unlistenShelf(); return; }
-  unlisteners.push(unlistenShelf);
-
-  const unlistenResources = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-    if (event.payload.kind !== "replacementRules") return;
-    void replacementRulesFeature.refreshReplacementRules(event.payload.resource)
-      .catch((error) => notify(`读取替换规则失败：${errorText(error)}`, "error"));
-  });
-  if (disposed) { unlistenResources(); return; }
-  unlisteners.push(unlistenResources);
-
-  const unlistenRestore = await listen<AppBootstrap>("app-state-updated", (event) => {
-    restoreRevision.value += 1;
-    shelfReadRevision += 1;
+  const unlistenRestore = await listen<AppBootstrap>("app-state-updated", () => {
+    restoreRevision.value++;
     replacementRulesFeature.resetForRestore();
-    void loadBootstrap(event.payload);
   });
-  if (disposed) { unlistenRestore(); return; }
-  unlisteners.push(unlistenRestore);
+  if (disposed) unlistenRestore(); else unlisteners.push(unlistenRestore);
 }
 
 function openUrlImportFromRoute(): void {
@@ -136,12 +80,10 @@ onMounted(() => {
   void (async () => {
     try {
       await listenForResourceUpdates();
-      await loadBootstrap();
       openUrlImportFromRoute();
     } catch (error) {
       loadError.value = errorText(error);
-      loadBusy.value = false;
-    }
+        }
   })();
 });
 
@@ -174,7 +116,8 @@ const samplePreview = computed(() => {
 const statusFilter = ref<RuleStatusFilter>("all");
 const batchMode = ref(false);
 const selectedIds = ref<string[]>([]);
-const editingRule = ref<DisplayReplacementRule | null>(null);
+const editingRuleId = ref<string | null>(null);
+const editingRule = computed(() => rules.value.find(rule => rule.id === editingRuleId.value) ?? null);
 const draft = ref<DisplayReplacementRule | null>(null);
 const editorInitial = ref("");
 const upstreamRuleChanged = ref(false);
@@ -185,7 +128,7 @@ const pendingNewRule = ref(false);
 let pendingRouteNavigation: ((allow: boolean) => void) | null = null;
 onBeforeRouteLeave(() => {
   if (!draft.value) return true;
-  if (busy.value || editorSaving.value) return false;
+  if (busy.value) return false;
   if (!editorDirty.value) return true;
   return new Promise<boolean>((resolve) => {
     pendingRouteNavigation?.(false);
@@ -205,7 +148,7 @@ function keepRuleEditor(): void {
   resume?.(false);
 }
 function abandonRuleEditor(): void {
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   const nextRule = pendingRuleSwitch.value;
   const newRule = pendingNewRule.value;
   discardPromptOpen.value = false;
@@ -219,7 +162,7 @@ function abandonRuleEditor(): void {
   else if (newRule) createRule();
 }
 function requestCloseEditor(): void {
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   if (editorDirty.value) discardPromptOpen.value = true;
   else closeEditor();
 }
@@ -227,7 +170,6 @@ const actionsMenuOpen = ref(false);
 const addMenuOpen = ref(false);
 const filterPanelOpen = ref(false);
 const filterMenuPosition = ref({ top: 0, left: 0 });
-const editorSaving = ref(false);
 const editorSaveError = ref("");
 const openRuleMenuId = ref<string | null>(null);
 // The rules arrive asynchronously. Open the first editable rule once when
@@ -235,7 +177,7 @@ const openRuleMenuId = ref<string | null>(null);
 let desktopMounted = false;
 let initialDesktopSelectionPending = true;
 function openInitialDesktopRule(): void {
-  if (!desktopMounted || !initialDesktopSelectionPending || busy.value || editorSaving.value
+  if (!desktopMounted || !initialDesktopSelectionPending || busy.value
     || !window.matchMedia("(min-width: 861px)").matches || draft.value) return;
   const first = rules.value[0];
   if (!first) return;
@@ -291,20 +233,20 @@ watch(() => rules.value.map((rule) => rule.id), () => openInitialDesktopRule());
 watch(busy, () => openInitialDesktopRule());
 
 // A background refresh must not silently replace a partially edited rule.
-watch(() => rules.value.find((rule) => rule.id === editingRule.value?.id), (current) => {
-  if (!editingRule.value || !draft.value || editorSaving.value || upstreamRuleChanged.value) return;
+watch(() => rules.value.find((rule) => rule.id === editingRuleId.value), (current) => {
+  if (!editingRuleId.value || !draft.value || upstreamRuleChanged.value) return;
   if (!current) {
     if (!editorDirty.value) closeEditor();
     else upstreamRuleChanged.value = true;
     return;
   }
-  if (JSON.stringify(current) === JSON.stringify(editingRule.value)) return;
+  if (JSON.stringify(current) === editorInitial.value) return;
   if (editorDirty.value) {
     upstreamRuleChanged.value = true;
     return;
   }
   // Nothing typed by the user: refresh the clean editor to the latest rule.
-  editingRule.value = { ...current };
+  editingRuleId.value = current.id;
   draft.value = { ...current };
   editorInitial.value = JSON.stringify(draft.value);
 }, { deep: true });
@@ -315,14 +257,14 @@ function scopeLabel(scope: string): string {
 }
 
 function openEditor(rule: DisplayReplacementRule): void {
-  if (busy.value || editorSaving.value || (draft.value && editingRule.value?.id === rule.id)) return;
+  if (busy.value || (draft.value && editingRule.value?.id === rule.id)) return;
   if (editorDirty.value) {
     pendingRuleSwitch.value = rule;
     discardPromptOpen.value = true;
     return;
   }
   initialDesktopSelectionPending = false;
-  editingRule.value = { ...rule };
+  editingRuleId.value = rule.id;
   draft.value = { ...rule };
   editorInitial.value = JSON.stringify(draft.value);
   upstreamRuleChanged.value = false;
@@ -331,14 +273,14 @@ function openEditor(rule: DisplayReplacementRule): void {
 
 function closeEditor(): void {
   upstreamRuleChanged.value = false;
-  editingRule.value = null;
+  editingRuleId.value = null;
   draft.value = null;
   editorInitial.value = "";
   editorSaveError.value = "";
 }
 
 function createRule(): void {
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   if (editorDirty.value) {
     pendingNewRule.value = true;
     discardPromptOpen.value = true;
@@ -347,7 +289,7 @@ function createRule(): void {
   initialDesktopSelectionPending = false;
   addMenuOpen.value = false;
   actionsMenuOpen.value = false;
-  editingRule.value = null;
+  editingRuleId.value = null;
   draft.value = {
     id: "",
     name: "",
@@ -377,59 +319,34 @@ function reloadEditorRule(): void {
     editorSaveError.value = "";
     return;
   }
-  const current = rules.value.find((rule) => rule.id === editingRule.value?.id);
+  const current = rules.value.find((rule) => rule.id === editingRuleId.value);
   if (!current) {
     closeEditor();
     return;
   }
-  editingRule.value = { ...current };
+  editingRuleId.value = current.id;
   draft.value = { ...current };
   editorInitial.value = JSON.stringify(draft.value);
   upstreamRuleChanged.value = false;
   editorSaveError.value = "";
 }
-async function saveEditor(): Promise<void> {
-  if (!draft.value || busy.value || editorSaving.value || upstreamRuleChanged.value
+function saveEditor(): void {
+  if (!draft.value || busy.value || upstreamRuleChanged.value
     || (draft.value.enabled && !draft.value.pattern.trim())) return;
   const current = { ...draft.value, name: draft.value.name.trim() };
   if (!current.name) {
     editorSaveError.value = "请填写规则名称。";
     return;
   }
-  editorSaving.value = true;
   editorSaveError.value = "";
-  try {
-    const updating = editingRule.value !== null;
-    let savedId = current.id;
-    let saved: boolean;
-    if (updating) {
-      saved = await replacementRulesFeature.saveReplacementRule(current.id, {
-        name: current.name,
-        pattern: current.pattern,
-        replacement: current.replacement,
-        enabled: current.enabled,
-        isRegex: current.isRegex,
-        scope: current.scope,
-      });
-    } else {
-      const createdId = await replacementRulesFeature.createReplacementRule(current);
-      saved = createdId !== null;
-      if (createdId !== null) savedId = createdId;
-    }
-    if (saved) {
-      const savedRule = { ...current, id: savedId };
-      if (window.matchMedia("(min-width: 861px)").matches) {
-        editingRule.value = savedRule;
-        draft.value = { ...savedRule };
-        editorInitial.value = JSON.stringify(draft.value);
-      } else closeEditor();
-    }
-    else editorSaveError.value = "保存未完成，规则仍可修改或重试。";
-  } catch (error) {
-    editorSaveError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    editorSaving.value = false;
-  }
+  const id = editingRule.value
+    ? (replacementRulesFeature.saveReplacementRule(current.id, current), current.id)
+    : replacementRulesFeature.createReplacementRule(current);
+  if (window.matchMedia("(min-width: 861px)").matches) {
+    editingRuleId.value = id;
+    draft.value = { ...current, id };
+    editorInitial.value = JSON.stringify(draft.value);
+  } else closeEditor();
 }
 
 function updateEnabled(rule: DisplayReplacementRule, enabled: boolean): void {
@@ -439,7 +356,7 @@ function updateEnabled(rule: DisplayReplacementRule, enabled: boolean): void {
 
 function chooseAddAction(kind: "new" | "file" | "url"): void {
   addMenuOpen.value = false;
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   if (kind === "new") {
     createRule();
   }
@@ -452,7 +369,7 @@ function closeRowMenu(): void {
 }
 
 function toggleSelection(rule: DisplayReplacementRule): void {
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   const selected = new Set(selectedIds.value);
   if (selected.has(rule.id)) selected.delete(rule.id);
   else selected.add(rule.id);
@@ -460,7 +377,7 @@ function toggleSelection(rule: DisplayReplacementRule): void {
 }
 
 function selectVisible(invert = false): void {
-  if (busy.value || editorSaving.value) return;
+  if (busy.value) return;
   const selected = new Set(selectedIds.value);
   for (const rule of filteredRules.value) {
     if (invert) {
@@ -476,13 +393,13 @@ function selectVisible(invert = false): void {
 }
 
 function requestBulkDelete(): void {
-  if (busy.value || editorSaving.value || !selectedRules.value.length) return;
+  if (busy.value || !selectedRules.value.length) return;
   void replacementRulesFeature.removeReplacements(selectedRules.value.map((rule) => rule.id));
 }
 
 function exportSelectedRules(): void {
   const rules = selectedRules.value;
-  if (busy.value || editorSaving.value || !rules.length) return;
+  if (busy.value || !rules.length) return;
   const url = URL.createObjectURL(new Blob(
     [JSON.stringify({ schemaVersion: 1, rules }, null, 2)],
     { type: "application/json" },
@@ -525,12 +442,12 @@ function toggleFilterPanel(event: MouseEvent): void {
 
 <template>
   <section class="replacement-rules-page" :class="{ 'replacement-rules-page--empty': rules.length === 0 && !draft }">
-    <header class="replacement-global-header">
+    <header class="replacement-global-header safe-area-top">
       <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
       <div class="replacement-global-title"><strong>替换与净化</strong></div>
       <div class="replacement-add-wrap">
         <button type="button" class="replacement-primary-button replacement-global-add"
-          :disabled="busy || editorSaving"
+          :disabled="busy"
 @click="addMenuOpen = !addMenuOpen; actionsMenuOpen = false; filterPanelOpen = false">
           <PrototypeIcon name="plus"/> 添加
         </button>
@@ -559,8 +476,7 @@ function toggleFilterPanel(event: MouseEvent): void {
       >
         <template #actions-menu>
           <div v-if="actionsMenuOpen" class="replacement-menu">
-            <button type="button" :disabled="busy" @click="actionsMenuOpen = false; void replacementRulesFeature.reloadReplacementRules()">刷新规则</button>
-            <button type="button" :disabled="busy || editorSaving" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
+            <button type="button" :disabled="busy" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
           </div>
         </template>
         <template #filter-menu>
@@ -582,7 +498,7 @@ function toggleFilterPanel(event: MouseEvent): void {
           :subtitle="`${scopeLabel(rule.scope)} · ${rule.isRegex ? '正则' : '文本'}`"
           :enabled="rule.enabled"
           :active="editingRule?.id === rule.id && !!draft"
-          :busy="busy || editorSaving"
+          :busy="busy"
           :batch-mode="batchMode"
           :selected="selectedIds.includes(rule.id)"
           :menu-open="openRuleMenuId === rule.id"
@@ -595,20 +511,19 @@ function toggleFilterPanel(event: MouseEvent): void {
               <button type="button" :disabled="busy" @click="closeRowMenu(); void replacementRulesFeature.removeReplacement(rule.id)">删除规则</button>
             </template>
         </ManagedListRow>
-        <p v-if="loadBusy" class="replacement-rule-empty">正在读取规则…</p>
-        <p v-else-if="!loadError && rules.length === 0" class="replacement-rule-empty">还没有规则</p>
+        <p v-if="!loadError && rules.length === 0" class="replacement-rule-empty">还没有规则</p>
         <p v-else-if="!loadError && !filteredRules.length" class="replacement-rule-empty">没有符合条件的规则</p>
       </div>
       <footer v-if="batchMode" class="replacement-selection-bar">
-        <button type="button" class="replacement-text-button" :disabled="busy || editorSaving || !filteredRules.length" @click="selectVisible()">{{ allVisibleSelected ? '取消全选' : '全选' }}</button>
-        <button type="button" class="replacement-text-button" :disabled="busy || editorSaving || !filteredRules.length" @click="selectVisible(true)">反选</button>
+        <button type="button" class="replacement-text-button" :disabled="busy || !filteredRules.length" @click="selectVisible()">{{ allVisibleSelected ? '取消全选' : '全选' }}</button>
+        <button type="button" class="replacement-text-button" :disabled="busy || !filteredRules.length" @click="selectVisible(true)">反选</button>
         <span class="replacement-selection-count">已选 {{ selectedRules.length }}</span>
-        <button type="button" class="replacement-text-button" :disabled="busy || editorSaving || !selectedRules.length" @click="exportSelectedRules">导出所选</button>
-        <button type="button" class="replacement-text-button replacement-delete-button" :disabled="busy || editorSaving || !selectedRules.length" @click="requestBulkDelete">删除</button>
+        <button type="button" class="replacement-text-button" :disabled="busy || !selectedRules.length" @click="exportSelectedRules">导出所选</button>
+        <button type="button" class="replacement-text-button replacement-delete-button" :disabled="busy || !selectedRules.length" @click="requestBulkDelete">删除</button>
       </footer>
     </div>
     <main v-if="draft" class="replacement-detail">
-      <header class="replacement-editor-header">
+      <header class="replacement-editor-header safe-area-top">
         <BackButton label="返回规则列表" @click="requestCloseEditor" />
         <div class="replacement-page-title">
           <h1>{{ draft.name || (editingRule ? '未命名规则' : '新净化规则') }}</h1>
@@ -616,8 +531,8 @@ function toggleFilterPanel(event: MouseEvent): void {
         <label class="replacement-enabled-toggle"><span>启用</span><input v-model="draft.enabled" type="checkbox" :disabled="busy || !draft.pattern.trim()"/></label>
         <div class="replacement-editor-actions">
           <button type="button" class="replacement-primary-button replacement-mobile-save"
-            :disabled="busy || editorSaving || upstreamRuleChanged || !draft.name.trim() || (draft.enabled && !draft.pattern.trim())"
-            @click="saveEditor">{{ editorSaving ? '保存中…' : '保存' }}</button>
+            :disabled="busy || upstreamRuleChanged || !draft.name.trim() || (draft.enabled && !draft.pattern.trim())"
+            @click="saveEditor">保存</button>
         </div>
       </header>
       <form class="replacement-editor-form" @submit.prevent="saveEditor">
@@ -644,14 +559,14 @@ function toggleFilterPanel(event: MouseEvent): void {
         </section>
         <div v-if="upstreamRuleChanged" class="replacement-editor-upstream">
           <span>这条规则已从外部更新或删除，当前未保存草稿仍保留，但不能直接覆盖新内容。重新读取将放弃当前草稿。</span>
-          <button type="button" class="replacement-secondary-button" :disabled="busy || editorSaving" @click="reloadEditorRule">重新读取规则</button>
+          <button type="button" class="replacement-secondary-button" :disabled="busy" @click="reloadEditorRule">重新读取规则</button>
         </div>
         <p v-if="editorSaveError" class="replacement-validation">{{ editorSaveError }}</p>
         <div class="replacement-editor-bottom">
           <span></span>
           <button type="button" class="replacement-secondary-button"
-            :disabled="busy || editorSaving || !editorDirty" @click="reloadEditorRule">还原</button>
-          <button type="submit" class="replacement-primary-button" :disabled="busy || editorSaving || upstreamRuleChanged || !draft.name.trim() || (draft.enabled && !draft.pattern.trim())">{{ editorSaving ? '保存中…' : editingRule ? '保存修改' : '添加规则' }}</button>
+            :disabled="busy || !editorDirty" @click="reloadEditorRule">还原</button>
+          <button type="submit" class="replacement-primary-button" :disabled="busy || upstreamRuleChanged || !draft.name.trim() || (draft.enabled && !draft.pattern.trim())">{{ editingRule ? '保存修改' : '添加规则' }}</button>
         </div>
       </form>
     </main>
@@ -761,7 +676,7 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-global-header{
   position:sticky;top:0;z-index:35;grid-column:1/-1;display:grid;
   grid-template-columns:40px minmax(0,1fr) auto;align-items:center;gap:10px;
-  box-sizing:border-box;min-height:64px;padding:0 max(14px,calc((100% - 1180px)/2));
+  min-height:64px;padding-inline:max(14px,calc((100% - 1180px)/2));
   border-bottom:1px solid var(--rr-line);background:#f6f7f9f0;backdrop-filter:blur(14px);
 }
 .replacement-global-title{min-width:0}
@@ -821,7 +736,7 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-editor-upstream>span{flex:1;min-width:200px}
 .replacement-master{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;max-height:none;overflow:hidden}
 @media(min-width:861px){
-  .replacement-rules-page{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:64px minmax(0,1fr);align-items:start}
+  .replacement-rules-page{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-items:start}
   .replacement-global-header{grid-row:1;grid-column:1/-1}
   .replacement-master{grid-row:2;grid-column:1;min-width:0;box-sizing:border-box;height:100%;max-height:none;overflow:hidden;padding:14px;border-right:1px solid var(--rr-line);background:#fafafd}
   .replacement-detail{grid-row:2;grid-column:2}
@@ -829,13 +744,13 @@ function toggleFilterPanel(event: MouseEvent): void {
 }
 @media(max-width:860px){
   .replacement-rules-page{display:flex;flex-direction:column}
-  .replacement-global-header{box-sizing:border-box;min-height:64px;padding:0 14px}
+  .replacement-global-header{min-height:64px;padding-inline:14px}
   .replacement-global-title strong{font-size:13px}
   .replacement-master{height:auto;flex:1 1 auto;padding:12px 14px;min-width:0}
   .replacement-rules-page:has(.replacement-detail)>.replacement-global-header,
   .replacement-rules-page:has(.replacement-detail)>.replacement-master{display:none}
   .replacement-detail{height:auto;flex:1 1 auto;padding:0 14px 66px}
-  .replacement-editor-header{position:sticky;top:0;z-index:32;box-sizing:border-box;min-height:64px;margin:0 -14px 15px;padding:0 14px;border-bottom:1px solid var(--rr-line);background:#f6f7f9f5;backdrop-filter:blur(12px)}
+  .replacement-editor-header{position:sticky;top:0;z-index:32;min-height:64px;margin:0 -14px 15px;padding-inline:14px;border-bottom:1px solid var(--rr-line);background:#f6f7f9f5;backdrop-filter:blur(12px)}
   .replacement-editor-header>.back-button{display:inline-flex}
   .replacement-editor-header .replacement-page-title{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}
   .replacement-editor-header .replacement-page-title h1{font-size:12px;line-height:1.25}

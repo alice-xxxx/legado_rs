@@ -1,6 +1,7 @@
 import { nextTick, type Ref } from "vue";
 import { prepareChapters } from "../../api/books";
 import { readResource } from "../../api/resources";
+import { refreshOpenedBook } from "../books/bookDetailState";
 import { type AppSettingsResource, type BookResource, type ChapterMediaResource, type ChapterResourceDescriptor, type ChapterPdfPageResource, type ChapterRichTextResource, type ChapterTextResource, type DisplayReplacementRule } from "../../api/types";
 import {
   hasDisplayableReaderContent,
@@ -19,7 +20,6 @@ type ReadonlyRef<T> = Readonly<Ref<T>>;
 export interface ReaderChapterLoadingOptions {
   reader: {
     book: Ref<BookResource | null>;
-    openedBook: Ref<BookResource | null>;
     chapterIndex: Ref<number>;
     chapterHtml: Ref<string>;
     chapterRaw: Ref<string>;
@@ -97,16 +97,6 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
     reader.prefetchBusy.value = prepareOperations > 0;
   }
 
-  // 旧数据或不完整响应可能缺少目录；阅读器内部统一使用有效数组。
-  function normalizeReaderBook(book: BookResource): BookResource {
-    const chapters = Array.isArray(book.chapters) ? book.chapters : [];
-    return {
-      ...book,
-      chapterCount: Number.isFinite(book.chapterCount) ? Math.max(0, book.chapterCount) : chapters.length,
-      chapters,
-    };
-  }
-
   function preparedChapterResource(
     chapter: BookResource["chapters"][number] | undefined,
   ): ChapterResourceDescriptor | null {
@@ -134,11 +124,9 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
     beginPreparing();
     const pending = (async () => {
       const response = await prepareChapters(bookId, index, 1);
-      const updatedBook = normalizeReaderBook(await readResource<BookResource>(response.book));
+      const updatedBook = await refreshOpenedBook(response.book);
       if (!isCurrent()) return;
-      if (updatedBook.id !== bookId) throw new Error("章节准备返回了不匹配的书籍。");
-      reader.book.value = updatedBook;
-      if (reader.openedBook.value?.id === bookId) reader.openedBook.value = updatedBook;
+      if (!updatedBook || updatedBook.id !== bookId) throw new Error("章节准备返回了不匹配的书籍。");
     })();
     preparePromise = pending;
     try {
@@ -163,7 +151,7 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
     if (fromIndex >= total || wanted < 1 || reader.prefetchBusy.value) return;
     const loadRevision = reader.getLoadRevision();
     const isCurrent = () => reader.visible.value
-      && reader.book.value === book
+      && reader.book.value?.id === book.id
       && reader.getLoadRevision() === loadRevision
       && !actions.isBackupRestoreInProgress();
 
@@ -172,10 +160,8 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
     beginPreparing();
     try {
       const response = await prepareChapters(book.id, fromIndex, wanted);
-      const updated = normalizeReaderBook(await readResource<BookResource>(response.book));
-      if (!isCurrent() || updated.id !== book.id) return;
-      reader.book.value = updated;
-      if (reader.openedBook.value?.id === book.id) reader.openedBook.value = updated;
+      const updated = await refreshOpenedBook(response.book);
+      if (!isCurrent() || updated?.id !== book.id) return;
     } catch (error) {
       if (isCurrent()) actions.notify(`后续章节缓存失败：${actions.errorText(error)}`, "error");
     } finally {
@@ -234,7 +220,7 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
 
   async function startReading(book: BookResource, requestedIndex?: number, requestedOffset?: number): Promise<void> {
     const request = ++startReadingRequest;
-    const openingBook = normalizeReaderBook(book);
+    const openingBook = book;
     await actions.showShelfBehindReader(openingBook);
     if (request !== startReadingRequest) return;
     actions.stopTts(false);
@@ -258,7 +244,6 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
       : 0;
     reader.mediaDurationMs.value = 0;
     reader.mediaError.value = "";
-    reader.book.value = openingBook;
     reader.chapterError.value = "";
     reader.chapterIndex.value = firstIndex;
     reader.pageIndex.value = mediaBook ? 0 : requestedOffset != null
@@ -414,10 +399,8 @@ export function useReaderChapterLoading(options: ReaderChapterLoadingOptions) {
       if (!isCurrentRetry()) return;
       const offsetMs = reader.mediaTimeMs.value;
       const response = await prepareChapters(bookId, chapterIndex, 1);
-      const refreshedBook = await readResource<BookResource>(response.book);
-      if (!isCurrentRetry()) return;
-      reader.book.value = refreshedBook;
-      if (reader.openedBook.value?.id === bookId) reader.openedBook.value = refreshedBook;
+      const refreshedBook = await refreshOpenedBook(response.book);
+      if (!isCurrentRetry() || !refreshedBook) return;
       reader.mediaTimeMs.value = offsetMs;
 
       // 保留旧章节画面，书源刷新失败时仍可从当前位置继续重试。

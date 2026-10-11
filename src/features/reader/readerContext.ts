@@ -52,7 +52,6 @@ type ReaderFeatureContext = Pick<
   | "openReaderDirectory"
   | "openTtsControls"
   | "pauseSelectedTts"
-  | "persistSettings"
   | "prefetchBusy"
   | "progressSaveState"
   | "readerBookDownloadBusy"
@@ -99,7 +98,6 @@ type ReaderFeatureContext = Pick<
   | "refreshCurrentReaderChapter"
   | "resumeSelectedTts"
   | "retryTtsAvailability"
-  | "saveSettingsBusy"
   | "selectReaderDirectoryChapter"
   | "selectTtsEngine"
   | "setHttpTtsAudioElement"
@@ -228,7 +226,6 @@ export function createAppReaderContext(
     openReaderDirectory: features.openReaderDirectory,
     openTtsControls: features.openTtsControls,
     pauseSelectedTts: features.pauseSelectedTts,
-    persistSettings: features.persistSettings,
     prefetchBusy: features.prefetchBusy,
     progressSaveState: features.progressSaveState,
     readerBookDownloadBusy: features.readerBookDownloadBusy,
@@ -278,7 +275,6 @@ export function createAppReaderContext(
     refreshCurrentReaderChapter: features.refreshCurrentReaderChapter,
     resumeSelectedTts: features.resumeSelectedTts,
     retryTtsAvailability: features.retryTtsAvailability,
-    saveSettingsBusy: features.saveSettingsBusy,
     saveBookmark: features.saveBookmark,
     selectReaderDirectoryChapter: features.selectReaderDirectoryChapter,
     selectTtsEngine: features.selectTtsEngine,

@@ -58,37 +58,6 @@ impl ApplicationService {
             })
             .await
             .map_err(|error| error.to_string())?;
-        let record = ProgressDocument {
-            schema_version: CURRENT_SCHEMA_VERSION,
-            book_id: book_id.to_owned(),
-            chapter_id,
-            chapter_index,
-            offset,
-            updated_at_ms,
-        };
-        let progress_ref = self
-            .store
-            .progress_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let value = serde_json::to_value(record).map_err(|error| error.to_string())?;
-        self.store
-            .write_json_ref(&progress_ref, &value)
-            .await
-            .map_err(|error| error.to_string())?;
-        let shelf = self
-            .store
-            .read_json_ref(&self.store.shelf_ref())
-            .await
-            .map_err(|error| error.to_string())?;
-        let is_on_shelf = shelf
-            .get("books")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Invalid shelf JSON: books must be an array".to_owned())?
-            .iter()
-            .any(|entry| entry.get("id").and_then(Value::as_str) == Some(book_id));
-        if is_on_shelf {
-            self.upsert_shelf(book_id).await?;
-        }
         Ok(self.resource_descriptor(&book_ref))
     }
 
@@ -100,11 +69,6 @@ impl ApplicationService {
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        let progress_ref = self
-            .store
-            .progress_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let shelf_ref = self.store.shelf_ref();
 
         // Keep the same source → book → resource-writer order used by catalog
         // commits so a reset cannot deadlock with a concurrent source change.
@@ -122,31 +86,11 @@ impl ApplicationService {
         if book.get("id").and_then(Value::as_str) != Some(book_id) {
             return Err("Book resource ID does not match its catalog path".into());
         }
-        let mut shelf = writer_guard
-            .read_json_ref(&shelf_ref)
-            .map_err(|error| error.to_string())?;
-        let listed_on_shelf = shelf
-            .get("books")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Invalid shelf JSON: books must be an array".to_owned())?
-            .iter()
-            .any(|entry| entry.get("id").and_then(Value::as_str) == Some(book_id));
-        if !listed_on_shelf {
-            return Err(format!("Book '{book_id}' is no longer on the shelf"));
-        }
-
         book["progress"] = serde_json::to_value(ProgressSummary::default())
             .map_err(|error| format!("Cannot encode reset progress: {error}"))?;
-        crate::book_commit::upsert_shelf_entry(&mut shelf, book_id, &book)?;
-
         let replacements = vec![
             writer_guard
                 .public_json_replacement(&book_ref, &book)
-                .map_err(|error| error.to_string())?,
-            crate::resource_transactions::Replacement::delete_progress_json(progress_ref)
-                .map_err(|error| error.to_string())?,
-            writer_guard
-                .public_json_replacement(&shelf_ref, &shelf)
                 .map_err(|error| error.to_string())?,
         ];
         let transaction_root = writer_guard.data_root().to_path_buf();
@@ -198,10 +142,7 @@ impl ApplicationService {
         };
         let resources = (commit_state == crate::resource_transactions::CommitState::Committed)
             .then(|| {
-                (
-                    self.resource_descriptor(&book_ref),
-                    self.resource_descriptor(&shelf_ref),
-                )
+                self.resource_descriptor(&book_ref)
             });
         Ok(book_display_metadata_commit_outcome(
             commit_state,
@@ -234,7 +175,7 @@ impl ApplicationService {
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        let private_path = Path::new("books").join(format!("{book_id}.json"));
+        let private_path = Path::new("books").join(book_id).join("source-state.json");
 
         // Take an unlocked catalog snapshot first, then acquire every chapter
         // lock before the source/book/writer locks. prepare_chapters holds a
@@ -245,7 +186,7 @@ impl ApplicationService {
             .read_json_ref(&book_ref)
             .await
             .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
-        let initial_private = self.read_private_json(&private_path).await?;
+        let initial_private = self.read_internal_json(&private_path).await?;
         if initial_book.get("id").and_then(Value::as_str) != Some(book_id)
             || initial_book.get("canChangeSource").and_then(Value::as_bool) != Some(true)
             || initial_book
@@ -311,7 +252,7 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
 
         let latest_private = self
-            .read_private_json(&private_path)
+            .read_internal_json(&private_path)
             .await
             .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
         let mut book = writer_guard
@@ -634,14 +575,31 @@ impl ApplicationService {
 
     pub async fn save_settings(&self, settings: Value) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        let mut document = if settings.get("reader").is_some() {
-            settings
-        } else {
-            json!({ "reader": settings })
-        };
+        let mut document = settings;
         if !document.is_object() {
             return Err("Settings must be a JSON object".into());
         }
+        let home_value = document
+            .get("home")
+            .cloned()
+            .ok_or_else(|| "Settings home is required".to_owned())?;
+        let mut home: crate::models::HomeConfigDocument =
+            serde_json::from_value(home_value.clone())
+                .map_err(|error| format!("Invalid settings home: {error}"))?;
+        crate::discovery::home_config::validate_home_document(&home)?;
+        let settings_ref = self.store.settings_ref();
+        let current = self
+            .store
+            .read_json_ref(&settings_ref)
+            .await
+            .map_err(|error| error.to_string())?;
+        if current.get("home") != Some(&home_value) {
+            crate::discovery::home_config::validate_home_sources(self, &home).await?;
+        }
+        crate::discovery::home_config::normalize_home_document(&mut home);
+        document["home"] = serde_json::to_value(home)
+            .map_err(|error| format!("Cannot encode settings home: {error}"))?;
+
         let source_http_timeout_seconds = match document.get("sourceHttpTimeoutSeconds") {
             None => 15,
             Some(value) => value
@@ -674,13 +632,7 @@ impl ApplicationService {
                 _ => return Err("TTS engine must be system or http".to_owned()),
             }
         }
-        if reader.contains_key("fontSizePx") {
-            validate_number_range(reader, "fontSizePx", 12.0, 36.0)?;
-        } else {
-            // Accept the pre-canonical field when reading older settings, then
-            // write only `fontSizePx` below.
-            validate_number_range(reader, "fontSize", 12.0, 36.0)?;
-        }
+        validate_number_range(reader, "fontSizePx", 12.0, 36.0)?;
         validate_number_range(reader, "lineHeight", 1.2, 2.8)?;
         validate_integer_range(reader, "preloadCount", 1, 20)?;
         if let Some(skip_seconds) = reader.get("audioSkipSeconds") {
@@ -696,7 +648,7 @@ impl ApplicationService {
         }
         if let Some(theme) = reader.get("theme") {
             match theme.as_str() {
-                Some("paper" | "sepia" | "dark" | "system" | "light") => {}
+                Some("paper" | "sepia" | "dark" | "system") => {}
                 _ => return Err("Settings theme must be paper, sepia, dark, or system".into()),
             }
         }
@@ -707,36 +659,24 @@ impl ApplicationService {
         if reader.get("httpTtsConfigId").is_some_and(Value::is_null) {
             reader.remove("httpTtsConfigId");
         }
-        if !reader.contains_key("fontSizePx") {
-            if let Some(legacy_size) = reader.remove("fontSize") {
-                reader.insert("fontSizePx".to_owned(), legacy_size);
+        if let Some(src) = reader.get("backgroundImageSrc").and_then(Value::as_str) {
+            let raw = if let Some(path) = src.strip_prefix(self.server.base_url()) {
+                format!("resource://{path}")
+            } else { src.to_owned() };
+            let reference = super::book_display::user_reader_background_reference(&raw)
+                .ok_or_else(|| "Invalid reader background resource".to_owned())?;
+            if !self.store.regular_file_exists(&reference).await.map_err(|error| error.to_string())? {
+                return Err("Reader background image is missing".into());
             }
-        } else {
-            reader.remove("fontSize");
+            reader.insert("backgroundImageSrc".into(), json!(reference.as_str()));
         }
-        if reader.get("theme").and_then(Value::as_str) == Some("light") {
-            reader.insert("theme".to_owned(), json!("system"));
-        }
-        // Replacement rules have their own resource and command surface. Keep
-        // this legacy settings field empty so there is only one stored copy.
-        reader.insert("replacements".to_owned(), json!([]));
+        let background = document["reader"].get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
+        let mut previous_background = None;
         document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
-        let settings_ref = self.store.settings_ref();
+        let _config = self.webdav_backup_config_gate.lock().await;
         self.store
-            .update_json_ref(&settings_ref, move |current| {
-                // The reader background is written only by the native picker.
-                // A settings JSON read materializes this stable ref as a
-                // process-local URL, so never persist the client copy.
-                let background_image_src = current
-                    .get("reader")
-                    .and_then(|reader| reader.get("backgroundImageSrc"))
-                    .cloned();
-                if let Some(reader) = document.get_mut("reader").and_then(Value::as_object_mut) {
-                    reader.remove("backgroundImageSrc");
-                    if let Some(background_image_src) = background_image_src {
-                        reader.insert("backgroundImageSrc".to_owned(), background_image_src);
-                    }
-                }
+            .update_json_ref(&settings_ref, |current| {
+                previous_background = current["reader"].get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
                 // This value is maintained by successful picker exports. Never
                 // accept a stale or client-provided copy from reader settings.
                 let last_backup_at_ms = current.get("lastBackupAtMs").cloned();
@@ -745,10 +685,12 @@ impl ApplicationService {
                 } else if let Some(object) = document.as_object_mut() {
                     object.remove("lastBackupAtMs");
                 }
+                super::backup_service::normalize_webdav_settings(&current, &mut document)?;
                 Ok(document)
             })
             .await
             .map_err(|error| error.to_string())?;
+        self.cleanup_unreferenced_reader_background_asset(previous_background, background.as_deref()).await;
         crate::source_http::set_network_timeout_seconds(source_http_timeout_seconds);
         Ok(self.resource_descriptor(&settings_ref))
     }

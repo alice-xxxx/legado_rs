@@ -18,7 +18,7 @@ function openHomeConfig(): void {
 
 <template>
   <section class="other-settings-page">
-    <header class="other-home-topbar">
+    <header class="other-home-topbar safe-area-top">
         <BackButton
           class="other-home-back"
           label="返回我的"
@@ -81,8 +81,8 @@ function openHomeConfig(): void {
   grid-template-columns: 44px minmax(0, 1fr) 42px;
   align-items: center;
   gap: 10px;
-  height: 64px;
-  padding: 0 max(18px, calc((100% - 1180px) / 2));
+  min-height: 64px;
+  padding-inline: max(18px, calc((100% - 1180px) / 2));
   border-bottom: 1px solid var(--app-line);
   background: #f6f7f9ed;
   backdrop-filter: blur(18px);
@@ -164,6 +164,6 @@ function openHomeConfig(): void {
 }
 
 .other-home-topbar {
-    padding: 0 18px;
+    padding-inline: 18px;
   }
 </style>

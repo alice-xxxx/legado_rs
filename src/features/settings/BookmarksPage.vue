@@ -1,18 +1,17 @@
 <script setup lang="ts">
-// 页面自行读取书签和书架资源；书签删除由 Rust 命令持久化。
+// 完整书签直接保存在全局 history 中。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
+import { bookPreviews, loadBookPreviews } from "../books/bookDetailState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
-import { deleteBookmark, listBookmarks } from "../../api/reading";
-import type { AppBootstrap, Bookmark, BookmarksResource, ResourceDescriptor, ShelfResource } from "../../api/types";
+import type { AppBootstrap, Bookmark, HistoryResource } from "../../api/types";
 import router, { routeNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { backupBusy } from "./backupState";
 import { getReaderSession } from "../reader/readerSession";
+import { history as appHistory, removeHistoryBookmark } from "./historyStore";
 
 const mutationBlocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRequired.value);
 
@@ -25,7 +24,7 @@ async function openBookmark(bookmark: Bookmark): Promise<void> {
   }
 }
 
-const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [], groups: [] });
+
 const bookmarks = ref<Bookmark[]>([]);
 const loading = ref(true);
 const loadError = ref("");
@@ -44,42 +43,26 @@ const bookmarkDeleteFeedback = ref("");
 let disposed = false;
 let restoreRevision = 0;
 let loadRevision = 0;
-let shelfReadRevision = 0;
 let bookmarkReadRevision = 0;
-let shelfEventRevision = 0;
-let bookmarkEventRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function normalizeShelf(value: ShelfResource): ShelfResource {
-  return { ...value, groups: value.groups ?? [], books: value.books ?? [] };
-}
-
-function applyBookmarkDocument(value: BookmarksResource): void {
-  bookmarks.value = Array.isArray(value.bookmarks) ? value.bookmarks : [];
+function applyBookmarkRecords(value: Bookmark[]): void {
+  bookmarks.value = value;
   const currentIds = new Set(bookmarks.value.map((bookmark) => bookmark.id));
   selectedBookmarkIds.value = selectedBookmarkIds.value.filter((id) => currentIds.has(id));
 }
 
-async function applyShelfDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++shelfReadRevision;
-  const currentRestoreRevision = restoreRevision;
-  const next = normalizeShelf(await readResource<ShelfResource>(descriptor));
-  if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== shelfReadRevision) return;
-  shelf.value = next;
-  shelfError.value = "";
-}
-
-async function applyBookmarkDescriptor(descriptor: ResourceDescriptor): Promise<void> {
+async function refreshBookmarkRecords(): Promise<void> {
   const requestRevision = ++bookmarkReadRevision;
   const currentRestoreRevision = restoreRevision;
   try {
-    const next = await readResource<BookmarksResource>(descriptor);
+    const records = loadBookmarkRecords(appHistory.value);
     if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== bookmarkReadRevision) return;
-    applyBookmarkDocument(next);
+    applyBookmarkRecords(records);
     bookmarkResourceError.value = "";
   } catch (error) {
     if (!disposed && currentRestoreRevision === restoreRevision && requestRevision === bookmarkReadRevision) {
@@ -88,29 +71,23 @@ async function applyBookmarkDescriptor(descriptor: ResourceDescriptor): Promise<
   }
 }
 
-async function loadPageData(snapshot?: AppBootstrap): Promise<void> {
+function loadBookmarkRecords(history: HistoryResource): Bookmark[] {
+  return Object.entries(history.bookmarks)
+    .flatMap(([bookId, records]) => records.map((bookmark) => ({ ...bookmark, bookId })));
+}
+
+async function loadPageData(_snapshot?: AppBootstrap): Promise<void> {
   const requestRevision = ++loadRevision;
   const currentRestoreRevision = restoreRevision;
-  const shelfEventAtStart = shelfEventRevision;
-  const bookmarkEventAtStart = bookmarkEventRevision;
+  const bookmarkReadAtStart = bookmarkReadRevision;
   loading.value = true;
   loadError.value = "";
   try {
-    const bootstrap = snapshot ?? await appBootstrap();
-    const bookmarksDescriptor = await listBookmarks();
-    const [nextShelf, nextBookmarks] = await Promise.all([
-      readResource<ShelfResource>(bootstrap.shelf),
-      readResource<BookmarksResource>(bookmarksDescriptor),
-    ]);
+    const nextBookmarks = loadBookmarkRecords(appHistory.value);
     if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== loadRevision) return;
-    if (shelfEventAtStart === shelfEventRevision) {
-      shelfReadRevision += 1;
-      shelf.value = normalizeShelf(nextShelf);
-      shelfError.value = "";
-    }
-    if (bookmarkEventAtStart === bookmarkEventRevision) {
+    if (bookmarkReadAtStart === bookmarkReadRevision) {
       bookmarkReadRevision += 1;
-      applyBookmarkDocument(nextBookmarks);
+      applyBookmarkRecords(nextBookmarks);
       bookmarkResourceError.value = "";
     }
   } catch (error) {
@@ -125,7 +102,6 @@ async function loadPageData(snapshot?: AppBootstrap): Promise<void> {
 function handleRestore(snapshot: AppBootstrap): void {
   restoreRevision += 1;
   loadRevision += 1;
-  shelfReadRevision += 1;
   bookmarkReadRevision += 1;
   selectedBookmarkIds.value = [];
   pendingBookmarkDeleteIds.value = null;
@@ -157,26 +133,16 @@ async function deleteSelectedBookmarks(): Promise<void> {
         interruptedByBlock = true;
         break;
       }
-      const eventAtStart = bookmarkEventRevision;
-      let descriptor: ResourceDescriptor;
+      const bookmark = bookmarks.value.find((entry) => entry.id === id);
+      if (!bookmark) continue;
       try {
-        descriptor = await deleteBookmark(id);
+        removeHistoryBookmark(bookmark.bookId, id);
       } catch (error) {
         failedIds.push(id);
         bookmarkDeleteError.value = errorText(error);
         continue;
       }
       deletedIds.push(id);
-      try {
-        const next = await readResource<BookmarksResource>(descriptor);
-        if (!disposed && currentRestoreRevision === restoreRevision && eventAtStart === bookmarkEventRevision) {
-          bookmarkReadRevision += 1;
-          applyBookmarkDocument(next);
-          bookmarkResourceError.value = "";
-        }
-      } catch (error) {
-        if (!disposed && currentRestoreRevision === restoreRevision) bookmarkResourceError.value = errorText(error);
-      }
     }
     if (disposed || currentRestoreRevision !== restoreRevision) return;
     pendingBookmarkDeleteIds.value = null;
@@ -192,10 +158,9 @@ async function deleteSelectedBookmarks(): Promise<void> {
   }
 }
 
-const shelfBookMap = computed(() => new Map(shelf.value.books.map((book) => [book.id, book])));
-const bookCoverMap = computed(() => new Map(shelf.value.books.map((book) => [book.id, book.coverSrc])));
-function coverForBook(bookId: string): string | undefined { return bookCoverMap.value.get(bookId); }
-function title(bookId: string): string { return shelfBookMap.value.get(bookId)?.title ?? "书架中已移除的书"; }
+watch(() => Object.keys(appHistory.value.bookmarks), (ids) => { void loadBookPreviews(ids); }, { immediate: true });
+function coverForBook(bookId: string): string | undefined { return bookPreviews.value[bookId]?.coverSrc; }
+function title(bookId: string): string { return bookPreviews.value[bookId]?.title ?? "缓存书信息暂不可用"; }
 
 const filteredBookmarks = computed(() => {
   const query = bookmarkQuery.value.trim().toLocaleLowerCase();
@@ -275,21 +240,6 @@ function returnToSettings(): void {
 
 async function setupEvents(): Promise<void> {
   try {
-    const unlistenShelf = await listen<ResourceDescriptor>("shelf-updated", (event) => {
-      shelfEventRevision += 1;
-      void applyShelfDescriptor(event.payload).catch((error: unknown) => {
-        if (!disposed) shelfError.value = errorText(error);
-      });
-    });
-    if (disposed) { unlistenShelf(); return; }
-    unlisteners.push(unlistenShelf);
-    const unlistenResources = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-      if (event.payload.kind !== "bookmarks") return;
-      bookmarkEventRevision += 1;
-      void applyBookmarkDescriptor(event.payload.resource);
-    });
-    if (disposed) { unlistenResources(); return; }
-    unlisteners.push(unlistenResources);
     const unlistenRestore = await listen<AppBootstrap>("app-state-updated", (event) => handleRestore(event.payload));
     if (disposed) { unlistenRestore(); return; }
     unlisteners.push(unlistenRestore);
@@ -303,18 +253,23 @@ onMounted(async () => {
   await loadPageData();
 });
 
+watch(() => JSON.stringify(appHistory.value.bookmarks), () => {
+  void refreshBookmarkRecords().catch((error: unknown) => {
+    if (!disposed) bookmarkResourceError.value = errorText(error);
+  });
+});
+
 onBeforeUnmount(() => {
   disposed = true;
   restoreRevision += 1;
   loadRevision += 1;
-  shelfReadRevision += 1;
   bookmarkReadRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
 });
 </script>
 
 <template>
-  <header class="history-topbar bookmarks-topbar">
+  <header class="history-topbar bookmarks-topbar safe-area-top">
     <BackButton label="返回我的" @click="returnToSettings" />
     <div class="history-heading"><strong>书签</strong></div>
     <button v-if="bookmarks.length" type="button" class="record-icon-button"
@@ -392,7 +347,7 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 .my-records--bookmarks{box-sizing:border-box;width:min(820px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px;color:#343641}
-.history-topbar{position:sticky;top:0;z-index:35;height:64px;box-sizing:border-box;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding:0 max(18px,calc((100% - 1180px) / 2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
+.history-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px) / 2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
 .history-heading{display:flex;flex-direction:column;gap:2px;min-width:0}
 .history-heading strong{font-size:14px;font-weight:750;color:#18191d;line-height:1.25}
 .bookmarks-topbar{grid-template-columns:44px minmax(0,1fr) 42px}
@@ -445,7 +400,7 @@ onBeforeUnmount(() => {
 .record-icon-button svg{width:19px;height:19px}
 .record-icon-button:hover{background:#eeecf8;color:var(--app-accent)}
 @media(max-width:660px){
-  .history-topbar{height:64px;padding:0 18px}
+  .history-topbar{padding-inline:18px}
   .my-records--bookmarks{width:calc(100% - 36px);padding:24px 0 54px}
   .bookmark-target{grid-template-columns:70px minmax(0,1fr) 16px;gap:7px}
 }

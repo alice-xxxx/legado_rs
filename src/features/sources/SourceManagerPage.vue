@@ -323,7 +323,7 @@ useOutsidePointerDismiss(
 <style scoped>
 .source-manager-page{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;max-width:none;margin:0;padding:0}
 .source-manager-page:not(.source-manager-page--editing){overflow:hidden}
-.source-manager-page > :deep(.subpage-header){position:sticky;top:0;z-index:10;box-sizing:border-box;min-height:64px;margin:0;padding:4px max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:#f6f7f9}
+.source-manager-page > :deep(.subpage-header){position:sticky;top:0;z-index:10;min-height:64px;margin:0;padding-inline:max(18px,calc((100% - 1180px)/2));padding-bottom:4px;border-bottom:1px solid var(--app-line);background:#f6f7f9}
 .source-manager-page :deep(.subpage-header__copy h2){color:#22252d;font-size:14px;line-height:1.25}
 
 .source-header-import{display:flex;align-items:center;gap:5px;min-height:40px;padding:0 12px;border:0;border-radius:10px;background:var(--app-accent);color:#fff;font-size:11px;font-weight:700;cursor:pointer}
@@ -346,7 +346,7 @@ useOutsidePointerDismiss(
 .source-inspector-status { display:inline-flex; align-items:center; gap:7px; margin:13px 0 0; color:var(--app-accent); font-size:12px; }
 .source-inspector-status.off { color:#9296a0; }
 
-.source-workbench { min-width:0;min-height:400px;height:calc(100dvh - 64px);display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;border:0;border-radius:0;background:#fff; }
+.source-workbench { min-width:0;min-height:400px;height:calc(100dvh - 64px - var(--safe-top));display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;border:0;border-radius:0;background:#fff; }
 .source-manager-page:not(.source-manager-page--editing) .source-workbench{flex:1 1 auto;min-height:0;height:auto}
 .source-manager-page--editing .source-workbench{flex:1 1 auto;height:auto;min-height:0;border-top:1px solid var(--app-line)}
 .source-manager-page--editing .source-master{border-right:1px solid var(--app-line);background:#fafafd}
@@ -404,9 +404,9 @@ useOutsidePointerDismiss(
   .source-manager-page--editing > :deep(.subpage-header),
   .source-manager-page--editing .source-recovery-notice,
   .source-manager-page--editing .source-master{display:none}
-  .source-manager-page--editing .source-workbench{display:block;height:auto;min-height:100dvh;overflow:visible;border:0}
+  .source-manager-page--editing .source-workbench{display:block;height:auto;min-height:calc(100dvh - var(--safe-top));overflow:visible;border:0}
   .source-manager-page--editing :deep(.source-edit-screen){width:100%;min-width:0}
-  .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px);grid-template-columns:1fr}
+  .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px - var(--safe-top));grid-template-columns:1fr}
   .source-manager-page:not(.source-manager-page--editing) .source-master{border:0}
   .source-master{padding:12px 14px}
 }

@@ -1,11 +1,9 @@
 import { ref, type Ref } from "vue";
 import { cancelPendingPdfImport, importBookFromPicker, importProtectedPdf, type LocalImportFormat } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { type BookResource, type LocalBookImportResponse, type ShelfResource } from "../../api/types";
+import { type LocalBookImportResponse } from "../../api/types";
+import { switchOpenedBook } from "./bookDetailState";
 
 interface LocalBookImportOptions {
-  openedBook: Ref<BookResource | null>;
-  shelf: Ref<ShelfResource>;
   externalFileRequestBusy: Readonly<Ref<boolean>>;
   backupBusy: Readonly<Ref<unknown>>;
   recoveryRequired: Readonly<Ref<boolean>>;
@@ -30,13 +28,11 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
   }
 
   async function acceptLocalBookImport(response: LocalBookImportResponse, initialPdfPassword = ""): Promise<void> {
-    if (!response.book || !response.shelf) throw new Error("导入完成后没有返回书籍资源。");
+    if (!response.book) throw new Error("导入完成后没有返回书籍资源。");
     const restoreRevision = options.getRestoreRevision();
     try {
-      const [book, nextShelf] = await Promise.all([
-        readResource<BookResource>(response.book),
-        readResource<ShelfResource>(response.shelf),
-      ]);
+      const book = await switchOpenedBook(response.book);
+      if (!book) return;
       if (restoreRevision !== options.getRestoreRevision() || options.recoveryRequired.value) return;
 
       if (initialPdfPassword) {
@@ -50,12 +46,10 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
         };
         options.pdfImportPasswords.set(book.id, entry);
       }
-      options.openedBook.value = book;
-      options.shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
-      options.notify(`《${book.title}》已加入书架。`);
+      options.notify(`《${book.title}》已导入，可在详情页加入书架。`);
     } catch (error) {
       if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`文件已导入，但书架刷新失败：${options.errorText(error)}`, "error");
+        options.notify(`文件已导入，但书籍详情读取失败：${options.errorText(error)}`, "error");
       }
     }
   }

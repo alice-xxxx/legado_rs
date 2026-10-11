@@ -2,14 +2,15 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
-import { appBootstrap } from "../../api/core";
 import { readResource } from "../../api/resources";
-import { batchRemoveBooks, batchSetBookGroups, setShelfSort } from "../../api/shelf";
 import { refreshChapters, startBookDownload, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor, ShelfResource, ShelfSortKey, ShelfSortOrder, TasksResource } from "../../api/types";
+import type { AppBootstrap, AppTask, ResourceDescriptor, ShelfResource, ShelfSortKey, ShelfSortOrder, TasksResource } from "../../api/types";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import ShelfLoadState from "./ShelfLoadState.vue";
+import { shelf as shelfPositions } from "./shelfStore";
+import { shelfBooks as shelf } from "./shelfBooks";
+import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
@@ -23,7 +24,6 @@ import { useShelfGroupActions } from "./useShelfGroupActions";
 
 const route = useRoute();
 const readerSession = getReaderSession();
-const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [] });
 const tasks = ref<AppTask[]>([]);
 const activeGroup = ref("");
 const loading = ref(true);
@@ -33,7 +33,6 @@ const mutationLocked = computed(() => shelfBatchRecoveryRequired.value || recove
 const recoveryTitle = ref("需要重启应用完成恢复");
 const recoveryMessage = ref("");
 let restoreRevision = 0;
-let shelfReadRevision = 0;
 let tasksReadRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 
@@ -48,7 +47,9 @@ async function continueReading(bookId: string): Promise<void> {
     return;
   }
   try {
-    await readerSession.startReading(await readResource<BookResource>(bookSrc));
+    openedBookFromShelf.value = true;
+    const book = await switchOpenedBook(bookId);
+    if (book) await readerSession.startReading(book);
   } catch (error) {
     notify(`打开阅读失败：${errorText(error)}`, "error");
   }
@@ -64,18 +65,6 @@ async function openBookInfo(bookId: string): Promise<void> {
     discardBookDetailOpenRequest(requestId);
     notify(errorText(error), "error");
   }
-}
-
-function normalizeShelf(next: ShelfResource): ShelfResource {
-  return { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
-
-async function refreshShelfFromDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const currentRestoreRevision = restoreRevision;
-  const requestRevision = ++shelfReadRevision;
-  const next = normalizeShelf(await readResource<ShelfResource>(descriptor));
-  if (currentRestoreRevision !== restoreRevision || requestRevision !== shelfReadRevision) return;
-  shelf.value = next;
 }
 
 async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
@@ -95,34 +84,15 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
 }
 
 async function loadShelf(): Promise<void> {
-  const currentRestoreRevision = ++restoreRevision;
-  const requestRevision = ++shelfReadRevision;
-  tasksReadRevision += 1;
-  loading.value = true;
-  loadError.value = "";
-  try {
-    const snapshot = await appBootstrap();
-    const nextShelf = normalizeShelf(await readResource<ShelfResource>(snapshot.shelf));
-    if (currentRestoreRevision !== restoreRevision || requestRevision !== shelfReadRevision) return;
-    shelf.value = nextShelf;
-    loading.value = false;
-    void refreshTasks().catch((error) => {
-      if (currentRestoreRevision === restoreRevision) notify(`任务列表读取失败：${errorText(error)}`, "error");
-    });
-  } catch (error) {
-    if (currentRestoreRevision !== restoreRevision) return;
-    loadError.value = errorText(error);
-  } finally {
-    if (currentRestoreRevision === restoreRevision) loading.value = false;
-  }
+  loading.value = false;
+  void refreshTasks().catch((error) => notify(errorText(error), "error"));
 }
 
-async function loadRestoredState(snapshot: AppBootstrap): Promise<void> {
+async function loadRestoredState(): Promise<void> {
   restoreRevision += 1;
   const currentRestoreRevision = restoreRevision;
   tasksReadRevision += 1;
   try {
-    await refreshShelfFromDescriptor(snapshot.shelf);
     if (currentRestoreRevision !== restoreRevision) return;
     tasks.value = [];
     recoveryRequired.value = false;
@@ -139,14 +109,6 @@ async function loadRestoredState(snapshot: AppBootstrap): Promise<void> {
 
 async function setupEvents(): Promise<void> {
   try {
-    unlisteners.push(await listen<ResourceDescriptor>("shelf-updated", async (event) => {
-      const currentRestoreRevision = restoreRevision;
-      try {
-        await refreshShelfFromDescriptor(event.payload);
-      } catch (error) {
-        if (currentRestoreRevision === restoreRevision) notify(`书架更新失败：${errorText(error)}`, "error");
-      }
-    }));
     unlisteners.push(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
       if (event.payload.kind !== "tasks") return;
       const currentRestoreRevision = restoreRevision;
@@ -170,8 +132,8 @@ async function setupEvents(): Promise<void> {
       recoveryTitle.value = "目录任务需要恢复";
       recoveryMessage.value = event.payload.error || "请重启应用完成任务恢复后，再继续修改书架。";
     }));
-    unlisteners.push(await listen<AppBootstrap>("app-state-updated", (event) => {
-      void loadRestoredState(event.payload);
+    unlisteners.push(await listen<AppBootstrap>("app-state-updated", () => {
+      void loadRestoredState();
     }));
   } catch (error) {
     // Browser preview does not provide native events; command results remain authoritative.
@@ -186,16 +148,10 @@ const groups = computed(() => shelf.value.groups ?? []);
 const shelfSortKey = computed<ShelfSortKey>(() => shelf.value.sort ?? "updatedAt");
 const shelfSortOrder = computed<ShelfSortOrder>(() => shelf.value.sortOrder ?? "descending");
 
-async function changeShelfSort(key: ShelfSortKey, order = shelfSortOrder.value): Promise<void> {
+function changeShelfSort(key: ShelfSortKey, order = shelfSortOrder.value): void {
   if (mutationLocked.value) return;
-  const currentRestoreRevision = restoreRevision;
-  try {
-    const descriptor = await setShelfSort(key, order);
-    if (currentRestoreRevision !== restoreRevision) return;
-    await refreshShelfFromDescriptor(descriptor);
-  } catch (error) {
-    if (currentRestoreRevision === restoreRevision) notify(`书架排序保存失败：${errorText(error)}`, "error");
-  }
+  shelfPositions.value.sort = key;
+  shelfPositions.value.sortOrder = order;
 }
 
 const shelfBatch = reactive(useShelfBatchActions({
@@ -208,12 +164,9 @@ const shelfBatch = reactive(useShelfBatchActions({
   recoveryMessage,
   isShelfScreen: () => route.name === routeNames.shelf,
   getRestoreRevision: () => restoreRevision,
-  refreshShelf: refreshShelfFromDescriptor,
   refreshTasks,
   refreshChapters,
   startBookDownload,
-  batchRemoveBooks,
-  batchSetBookGroups,
   notify,
   errorText,
 }));
@@ -224,13 +177,10 @@ const shelfGroup = reactive({
     activeGroup,
     selectionMode: computed(() => shelfBatch.selectionMode),
     batchBusy: computed(() => shelfBatch.batchBusy),
-    refreshShelfFromDescriptor,
-    getRestoreRevision: () => restoreRevision,
     toggleBookSelection: shelfBatch.toggleBookSelection,
     openBookInfo,
     continueReading,
     notify,
-    errorText,
   }),
   shelfGroups: groups,
   shelfActiveGroup: activeGroup,
@@ -456,11 +406,6 @@ title="整理内容库"
                 </section>
               </div>
             </section>
-            <div v-if="shelfBatch.removalResult && !shelfBatch.removalResultOpen" class="shelf-batch-result-inline">
-              <span>批量移除：已提交 {{ shelfBatch.removalResult.completedIds.length }} 本，未提交 {{ shelfBatch.removalResult.errors.filter((entry) => entry.outcome === 'notCommitted').length }} 本，状态未知 {{ shelfBatch.removalResult.errors.filter((entry) => entry.outcome === 'unknown').length }} 本，未执行 {{ shelfBatch.removalResult.notAttemptedIds.length }} 本。</span>
-              <button class="text-button" @click="shelfBatch.removalResultOpen = true">查看结果</button>
-              <button v-if="!recoveryRequired" class="text-button" @click="shelfBatch.dismissRemovalSummary">关闭提示</button>
-            </div>
                 <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
                   <label v-for="book in shelfView.visibleBooks" :key="book.id"
                     class="library-manage-book" :class="{ selected: shelfBatch.selectedBookIds.includes(book.id) }"
@@ -526,46 +471,10 @@ title="整理内容库"
             <strong>{{ book.title }}</strong><span>{{ book.author || '作者未知' }}</span>
           </li>
         </ul>
-        <p v-if="shelfBatch.removalError" class="shelf-batch-error">{{ shelfBatch.removalError }}</p>
         <div class="modal-actions">
           <button class="button secondary" :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">取消</button>
           <button class="button danger" :disabled="shelfBatch.batchBusy || mutationLocked" @click="shelfBatch.submitRemoval">{{ shelfBatch.batchBusy ? '正在移除…' : `确认移除 ${shelfBatch.removalTargets.length} 本书` }}</button>
         </div>
-      </article>
-    </section>
-
-    <section v-if="shelfBatch.removalResultOpen" class="modal-backdrop" @click.self="shelfBatch.closeRemovalResult">
-      <article class="app-modal shelf-batch-result-modal">
-        <button class="detail-close" @click="shelfBatch.closeRemovalResult">×</button>
-        <p class="eyebrow">批量移除</p>
-        <h2 id="shelf-batch-remove-result-title">处理结果</h2>
-        <p v-if="shelfBatch.removalResult" class="modal-description">
-          已提交移除 {{ shelfBatch.removalResult.completedIds.length }} 本；未提交 {{ shelfBatch.removalResult.errors.filter((entry) => entry.outcome === 'notCommitted').length }} 本；状态未知 {{ shelfBatch.removalResult.errors.filter((entry) => entry.outcome === 'unknown').length }} 本；未执行 {{ shelfBatch.removalResult.notAttemptedIds.length }} 本。
-        </p>
-        <p v-if="shelfBatch.removalError" class="shelf-batch-error">{{ shelfBatch.removalError }}</p>
-        <p v-if="shelfBatch.shelfReadError" class="shelf-batch-error">{{ shelfBatch.shelfReadError }}</p>
-        <div v-if="recoveryRequired" class="shelf-batch-recovery shelf-batch-result-recovery">
-          <strong>{{ recoveryTitle }}</strong><span>{{ recoveryMessage }}</span>
-        </div>
-        <template v-if="shelfBatch.removalResult">
-          <section v-if="shelfBatch.removalResult.completedIds.length" class="shelf-batch-result-section">
-            <h3>已提交移除</h3>
-            <ul><li v-for="id in shelfBatch.removalResult.completedIds" :key="id">{{ shelfBatch.removalTargetTitle(id) }}</li></ul>
-          </section>
-          <section v-if="shelfBatch.removalResult.warnings.length" class="shelf-batch-result-section warning">
-            <h3>已移除，但有清理提示</h3>
-            <ul><li v-for="warning in shelfBatch.removalResult.warnings" :key="warning.bookId"><strong>{{ shelfBatch.removalTargetTitle(warning.bookId) }}</strong><span>{{ warning.recoveryRequired ? '已提交，需重启恢复。' : '删除已提交。' }} {{ warning.message }}</span></li></ul>
-          </section>
-          <section v-if="shelfBatch.removalResult.errors.length" class="shelf-batch-result-section error">
-            <h3>未完成或状态未知</h3>
-            <ul><li v-for="entry in shelfBatch.removalResult.errors" :key="entry.bookId"><strong>{{ shelfBatch.removalTargetTitle(entry.bookId) }}</strong><span>{{ entry.outcome === 'notCommitted' ? '未提交，书籍未移除。' : '提交状态未知，请重启应用确认。' }} {{ entry.message }}</span></li></ul>
-          </section>
-          <section v-if="shelfBatch.removalResult.notAttemptedIds.length" class="shelf-batch-result-section">
-            <h3>未执行</h3>
-            <ul><li v-for="id in shelfBatch.removalResult.notAttemptedIds" :key="id">{{ shelfBatch.removalTargetTitle(id) }}<span>未尝试移除。</span></li></ul>
-          </section>
-        </template>
-        <div class="modal-actions"><button class="button primary" @click="shelfBatch.closeRemovalResult">完成</button></div>
       </article>
     </section>
 

@@ -10,7 +10,7 @@ function returnToAdvancedSettings(): void {
 </script>
 
 <template>
-  <header class="settings-detail-topbar">
+  <header class="settings-detail-topbar safe-area-top">
     <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
     <strong>{{ title }}</strong>
     <span></span>
@@ -27,7 +27,7 @@ function returnToAdvancedSettings(): void {
   align-items: center;
   gap: 12px;
   min-height: 64px;
-  padding: 0 20px;
+  padding-inline: 20px;
   border-bottom: 1px solid var(--app-line);
   background: #f6f7f9f5;
   backdrop-filter: blur(14px);

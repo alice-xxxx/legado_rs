@@ -65,7 +65,7 @@ function reset(): void {
 
 <template>
  <section class="source-edit-screen">
-  <header class="source-edit-bar">
+  <header class="source-edit-bar safe-area-top">
    <button type="button" class="source-edit-back" :disabled="busy" @click="cancel"><PrototypeIcon name="left"/> 返回来源</button>
    <strong>编辑书源配置</strong>
    <button type="button" class="button primary" :disabled="busy||locked||!changed||!parsed.value||fieldPending" @click="emit('save')">{{busy?'保存中…':'保存'}}</button>

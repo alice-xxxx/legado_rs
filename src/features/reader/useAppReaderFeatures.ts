@@ -4,7 +4,7 @@ import type { AppSettingsResource, AppTask, BookResource, DisplayReplacementRule
 import { readResource as appReadResource } from "../../api/resources";
 import { refreshChapterContent as appRefreshChapterContent } from "../../api/books";
 import { startChapterDownload as appStartChapterDownload } from "../../api/tasks";
-import { deferSettingsSaveDuringRestore as deferBackupSettingsSaveDuringRestore, type BackupBusy } from "../settings/backupState";
+import type { BackupBusy } from "../settings/backupState";
 import type { PdfPageResource } from "./displayHtml";
 import type { ReaderPendingFragmentState, ReaderTouchStartState } from "./useReaderPageInteraction";
 import { useReaderDisplay } from "./useReaderDisplay";
@@ -19,6 +19,7 @@ import { useReaderBookmarksAndHistory } from "./useReaderBookmarksAndHistory";
 import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding, type ReaderVideoQualityChoice } from "./useReaderMediaBinding";
 import { readerHttpTtsConfigs, registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
+import { clearOpenedBook, refreshOpenedBook as refreshBookResource, switchOpenedBook } from "../books/bookDetailState";
 
 type ReaderControlsMode = "settings" | "tts" | "appearance" | "search";
 
@@ -32,7 +33,6 @@ interface AppReaderFeatureDependencies {
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
-  normalizeSettings: (settings: AppSettingsResource) => AppSettingsResource;
   lockChapterCacheRecovery: (title: string, message: string) => void;
   refreshChapterContent: typeof appRefreshChapterContent;
   startChapterDownload: typeof appStartChapterDownload;
@@ -47,12 +47,12 @@ interface AppReaderFeatureDependencies {
 export function useAppReaderFeatures(options: AppReaderFeatureDependencies) {
 const { settings, replacementRules, openedBook, shelfBatchRecoveryRequired, backupBusy,
   pdfImportPasswords, getRestoreRevision, notify, errorText,
-  normalizeSettings, lockChapterCacheRecovery, refreshChapterContent,
+  lockChapterCacheRecovery, refreshChapterContent,
   startChapterDownload, refreshTasks, reusedCatalogTaskNotice, openOtherSettings } = options;
 const readResource: typeof appReadResource = options.readResource ?? appReadResource;
 const unlisteners: UnlistenFn[] = [];
 const readerVisible = ref(false);
-const readingBook = ref<BookResource | null>(null);
+const readingBook = openedBook;
 const readingChapterIndex = ref(0);
 const readingChapterHtml = ref("");
 const readingChapterRaw = ref("");
@@ -103,10 +103,8 @@ const readerProgressDirty = ref(false);
 const progressSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
 const prefetchBusy = ref(false);
 const readerBookDownloadBusy = ref(false);
-const saveSettingsBusy = ref(false);
 const readerBackgroundBusy = ref(false);
 const readerBackgroundError = ref("");
-const pendingSettingsSave = ref<ReturnType<typeof setTimeout> | null>(null);
 let progressRevision = 0;
 let readerLoadRevision = 0;
 let readerMediaElement: HTMLMediaElement | null = null;
@@ -279,7 +277,7 @@ async function closeReader(discardProgress = false): Promise<void> {
   readerFrame.value = null;
   readerBusy.value = false;
   if (discardProgress) {
-    readingBook.value = null;
+    clearOpenedBook();
     readingChapterIndex.value = 0;
   }
 }
@@ -300,14 +298,14 @@ let readerMediaPlayback!: ReturnType<typeof useReaderMedia>;
 let readerTts!: ReturnType<typeof useReaderTts>;
 let readerTtsActions!: ReturnType<typeof useReaderTtsActions>;
 let readerBookmarksAndHistory!: ReturnType<typeof useReaderBookmarksAndHistory>;
-let deferSettingsSaveDuringRestore = deferBackupSettingsSaveDuringRestore;
 
 function loadReaderChapter(index: number, mediaOffset?: number, fragment?: string): Promise<boolean> {
   return readerChapterLoading.loadReaderChapter(index, mediaOffset, fragment);
 }
 
-function startReading(book: BookResource, index?: number, offset?: number): Promise<void> {
-  return readerChapterLoading.startReading(book, index, offset);
+async function startReading(book: BookResource, index?: number, offset?: number): Promise<void> {
+  const activeBook = openedBook.value?.id === book.id ? openedBook.value : await switchOpenedBook(book.id);
+  if (activeBook) await readerChapterLoading.startReading(activeBook, index, offset);
 }
 
 function setReaderPage(index: number): void { readerNavigationActions.setReaderPage(index); }
@@ -479,7 +477,6 @@ watch(readerFindQuery, () => rebuildReaderFind(true));
 readerChapterLoading = useReaderChapterLoading({
   reader: {
     book: readingBook,
-    openedBook,
     chapterIndex: readingChapterIndex,
     chapterHtml: readingChapterHtml,
     chapterRaw: readingChapterRaw,
@@ -563,23 +560,19 @@ saveCurrentProgressAction = readerNavigationActions.saveCurrentProgress;
 
 readerSettingsActions = useReaderSettingsActions({
   settings,
-  saveSettingsBusy,
   readerBackgroundBusy,
   readerBackgroundError,
-  pendingSettingsSave,
   readerMediaError,
   readerMediaElement: () => readerMediaElement,
   readingVideoChapter,
   backupBusy: () => backupBusy.value !== null,
   recoveryRequired: shelfBatchRecoveryRequired,
-  deferSettingsSaveDuringRestore: () => deferSettingsSaveDuringRestore(),
-  normalizeSettings,
   rebuildReaderDisplay: () => rebuildReaderDisplay(),
   notify,
   errorText,
 });
 const { setReaderTheme, applyAppearanceSettings, updateReaderSetting,
-  updateSourceHttpTimeout, scheduleSettingsSave, persistSettings, chooseReaderBackgroundImage,
+  updateSourceHttpTimeout, chooseReaderBackgroundImage,
   clearReaderBackground } = readerSettingsActions;
 
 readerBookmarksAndHistory = useReaderBookmarksAndHistory({
@@ -776,11 +769,10 @@ async function refreshCurrentReaderChapter(): Promise<void> {
     }
     if (!isCurrentChapter()) return;
     if (!response.book) throw new Error("书源已返回刷新结果，但没有返回更新后的书籍资源。");
-    const updatedBook = await readResource<BookResource>(response.book);
+    const updatedBook = await refreshBookResource(response.book);
+    if (!updatedBook) return;
     if (updatedBook.id !== book.id) throw new Error("刷新后返回的书籍与当前阅读书籍不匹配。");
     if (!isCurrentChapter()) return;
-    readingBook.value = updatedBook;
-    if (openedBook.value?.id === book.id) openedBook.value = updatedBook;
     if (!(await loadReaderChapter(chapterIndex))) return;
     if (!readerVisible.value || readingBook.value?.id !== book.id) return;
     if (offset) setReaderPage(offset);
@@ -837,7 +829,7 @@ function toggleReaderNightTheme(): void {
 async function openHttpTtsSettings(): Promise<void> {
   await closeReader();
   if (!readerVisible.value) {
-    openedBook.value = null;
+    clearOpenedBook();
     openOtherSettings();
   }
 }
@@ -847,11 +839,11 @@ async function openHttpTtsSettings(): Promise<void> {
 return {
   settings, replacementRules, openedBook, shelfBatchRecoveryRequired, backupBusy, pdfImportPasswords,
   httpTtsConfigs: readerHttpTtsConfigs,
-  getRestoreRevision, notify, errorText, normalizeSettings, lockChapterCacheRecovery, refreshChapterContent, startChapterDownload, refreshTasks,
+  getRestoreRevision, notify, errorText, lockChapterCacheRecovery, refreshChapterContent, startChapterDownload, refreshTasks,
   reusedCatalogTaskNotice, openOtherSettings, frameBinding, rebuildReaderDisplay, scrollReaderFrameToPage, onReaderFrameScroll, onReaderFrameKeydown, shouldIgnoreReaderKeydown,
   onReaderFrameTouchStart, onReaderFrameTouchMove, onReaderFrameTouchEnd, onReaderFrameLoad, onReaderFrameTouchCancel, readerSegmentForElement, readerSegmentForRect, onReaderFrameClick,
   onReaderSurfaceClick, rebuildReaderFind, moveReaderFind, handleReaderFindKeydown, setReaderTheme, applyAppearanceSettings, updateReaderSetting,
-  updateSourceHttpTimeout, scheduleSettingsSave, persistSettings, chooseReaderBackgroundImage, clearReaderBackground, bookmarks, readingHistory, readingStatisticsPeriod,
+  updateSourceHttpTimeout, chooseReaderBackgroundImage, clearReaderBackground, bookmarks, readingHistory, readingStatisticsPeriod,
   readingStatisticsData, readingStatisticsBusy, readingStatisticsError, bookmarkEditorOpen, bookmarkNote, bookmarkEditingId, bookmarkBusy, bookmarkDeleteBatchBusy,
   bookmarkDeleteBatchResult, currentBookmark, refreshBookmarksAndReadingHistory, refreshCurrentReadingStatistics, changeReadingStatisticsPeriod, continueReading, toggleCurrentBookmark, editCurrentBookmarkNote,
   closeBookmarkEditor, beginReadingSessionAction, finishReadingSessionAction, openBookmark, saveBookmark, removeBookmark, removeBookmarks, clearReadingHistoryData,
@@ -869,12 +861,12 @@ return {
   readerMediaRetrying, readerMediaPlaying, readerVideoPlaybackRate, setReaderVideoPlaybackRate, toggleReaderMediaPlayback, seekReaderMedia, skipReaderMedia, readerVideoQualityChoices, readerVideoQualityIndex, comicImageScrollTop, comicScaleMode, readerFrame, readerPageIndex, readerPageCount,
   readerControlsOpen, readerTouchStart, readerPendingFragment, readerPageInteraction, readerDisplay, readerSettingsActions, readerChapterLoading, readerControlsMode,
   readerDirectoryOpen, readerDirectoryQuery, readerSourceRefreshBusy, readerMenuOpen, readerFindQuery, readerFindMatches, readerFindIndex, readerBusy,
-  readerProgressDirty, progressSaveState, prefetchBusy, readerBookDownloadBusy, readerChapterError, readerErrorChapterIndex, saveSettingsBusy, readerBackgroundBusy, readerBackgroundError, pendingSettingsSave,
+  readerProgressDirty, progressSaveState, prefetchBusy, readerBookDownloadBusy, readerChapterError, readerErrorChapterIndex, readerBackgroundBusy, readerBackgroundError,
   progressRevision, readerLoadRevision, getReaderLoadRevision: () => readerLoadRevision, readerMediaElement, readerClickSuppressedUntil, scheduleReaderMediaProgressSaveAction, pauseReaderMediaAndSaveAction, clearReaderMediaQualityResumeHandlerAction, getReaderMediaBindingRevisionAction,
   readerMediaSleepTimer, readerMediaSleepTimerGeneration, readerMediaSleepTimerMinutes, currentChapter, currentChapterTitle, readerChapterCount, readerSettings, readerCurrentOffset,
   filteredReaderChapters, saveCurrentProgressAction, pauseReaderMediaAndSave, clearReaderMediaBinding, clearReaderScrollListeners, clearReaderFindMatches, applyPendingReaderFragment, applyComicScrollPosition,
   measureReaderPages, beginReadingSession, finishReadingSession, stopTts, stopHttpTtsAudio, stopTtsForDisplayChange, updateTtsSelection, refreshTtsVoices,
-  setupTts, readerNavigationActions, readerMediaBinding, readerMediaPlayback, readerTts, readerTtsActions, readerBookmarksAndHistory, deferSettingsSaveDuringRestore,
+  setupTts, readerNavigationActions, readerMediaBinding, readerMediaPlayback, readerTts, readerTtsActions, readerBookmarksAndHistory,
   ttsSelectionError, ttsError, readerDictionary, isBackupRestoreInProgress, isReaderMediaControlBlocked, getReaderCurrentOffset, showShelfBehindReader, selectedReaderText,
   clearReaderMediaSleepTimer, setReaderMediaSleepTimer, onReaderMediaSleepTimerChange, closeReader, handleReaderResize, cancelPendingPdfImportOnUnmount, loadReaderChapter, startReading,
   setReaderPage, turnPage, changeChapter, saveCurrentProgress, formatReaderMediaTime, openReaderDirectory, selectReaderDirectoryChapter, jumpReaderChapterSlider,

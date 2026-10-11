@@ -419,7 +419,7 @@ impl ApplicationService {
     ) -> Result<(), String> {
         let reference = self
             .store
-            .reading_ref("tasks")
+            .document_ref("tasks")
             .map_err(|error| error.to_string())?;
         let value = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": records });
         self.store
@@ -431,7 +431,7 @@ impl ApplicationService {
     pub(in crate::application) fn task_resource_descriptor(&self) -> Result<Value, String> {
         let resource = self
             .store
-            .reading_ref("tasks")
+            .document_ref("tasks")
             .map_err(|error| error.to_string())?;
         Ok(self.resource_descriptor(&resource))
     }

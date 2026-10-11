@@ -60,12 +60,9 @@ async fn stage_desktop_external_path<R: tauri::Runtime>(
         .map(str::to_ascii_lowercase)
         .ok_or_else(|| "Selected file has no supported extension".to_owned())?;
     let display_name = identity_path.file_name().and_then(|name| name.to_str());
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("private-data")
-        .join("picker-imports");
+    let directory = super::file_import::picker_import_directory(
+        &app.path().app_data_dir().map_err(|error| error.to_string())?,
+    );
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| format!("Cannot prepare external file staging directory: {error}"))?;
@@ -196,12 +193,9 @@ async fn selected_to_local_with_limit<R: tauri::Runtime>(
             max_bytes / (1024 * 1024)
         ));
     }
-    let directory = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?
-        .join("private-data")
-        .join("picker-imports");
+    let directory = super::file_import::picker_import_directory(
+        &app.path().app_data_dir().map_err(|error| error.to_string())?,
+    );
     tokio::fs::create_dir_all(&directory)
         .await
         .map_err(|error| error.to_string())?;

@@ -1,88 +1,27 @@
 //! 保存发现页首页模块的排序、显隐和来源配置。
 //! Rust-owned home navigation and section configuration.
 //!
-//! The browser edits processed IDs and display labels. Source category URLs
-//! stay in discovery's private mapping and are resolved only by Rust.
-
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+//! The settings resource stores selected IDs and layout; Rust resolves each
+//! source/category ID against its discovery category cache when saving.
 
 use crate::{
     application::ApplicationService,
     discovery::{self, PrivateCategory},
-    models::CURRENT_SCHEMA_VERSION,
-    resources::{ResourceRef, ResourceStore},
+    models::HomeConfigDocument,
     rss::is_rss_source,
 };
 
-const HOME_DOCUMENT: &str = "home-tabs";
 const MAX_TABS: usize = 32;
 const MAX_SECTIONS_PER_TAB: usize = 64;
 const MAX_TITLE_CHARS: usize = 128;
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HomeConfigDocument {
-    pub schema_version: u32,
-    pub tabs: Vec<HomeTab>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HomeTab {
-    pub id: String,
-    pub title: String,
-    pub sort_order: u32,
-    pub sections: Vec<HomeSection>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct HomeSection {
-    pub id: String,
-    pub title: String,
-    pub source_id: String,
-    pub source_name: String,
-    pub category_id: String,
-    pub category_name: String,
-    pub style: u8,
-    pub sort_order: u32,
-    #[serde(default)]
-    pub cover_video: bool,
-}
-
-/// Ensure the home configuration resource exists and return its stable ref.
-pub async fn home_config_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
-    let reference = store
-        .reading_ref(HOME_DOCUMENT)
-        .map_err(|error| error.to_string())?;
-    store
-        .update_json_ref(&reference, |current| {
-            let document = match current {
-                Value::Null => HomeConfigDocument::default(),
-                value => decode_document(value)?,
-            };
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-/// Validate and persist a complete processed home configuration.
-///
-/// Every section must refer to an enabled, non-RSS source and a category ID
-/// already issued by discovery. Source names and category titles are refreshed
-/// from Rust-owned records; URLs and rules are rejected by the JSON model.
-pub async fn save_home_config(
+/// Validate sources and categories when the complete settings document changes home layout.
+pub(crate) async fn validate_home_sources(
     service: &ApplicationService,
-    input: Value,
-) -> Result<ResourceRef, String> {
-    let mut document = decode_document(input)?;
-    validate_structure(&document)?;
-
-    for tab in &mut document.tabs {
-        for section in &mut tab.sections {
+    document: &HomeConfigDocument,
+) -> Result<(), String> {
+    for tab in &document.tabs {
+        for section in &tab.sections {
             let source = service.source_record(&section.source_id).await?;
             if !source.enabled {
                 return Err("A home section source is disabled".to_owned());
@@ -96,57 +35,19 @@ pub async fn save_home_config(
             if category.kind != "engine" || category.url.is_none() {
                 return Err("A home section must use a navigable discovery category".to_owned());
             }
-            section.source_name = bounded_name(&source.name, "来源");
-            section.category_name = bounded_name(&category.title, "分类");
         }
     }
-    normalize_orders(&mut document);
-
-    let reference = service
-        .resource_store()
-        .reading_ref(HOME_DOCUMENT)
-        .map_err(|error| error.to_string())?;
-    let value = serde_json::to_value(document).map_err(|error| error.to_string())?;
-    service
-        .resource_store()
-        .write_json_ref(&reference, &value)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-impl Default for HomeConfigDocument {
-    fn default() -> Self {
-        Self {
-            schema_version: CURRENT_SCHEMA_VERSION,
-            tabs: vec![HomeTab {
-                id: "tab-home".to_owned(),
-                title: "主页".to_owned(),
-                sort_order: 0,
-                sections: Vec::new(),
-            }],
-        }
-    }
-}
-
-fn decode_document(value: Value) -> Result<HomeConfigDocument, String> {
-    let mut document: HomeConfigDocument = serde_json::from_value(value)
-        .map_err(|error| format!("Invalid home configuration: {error}"))?;
-    if document.schema_version != CURRENT_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported home configuration schema version {}",
-            document.schema_version
-        ));
-    }
-    validate_structure(&document)?;
-    normalize_orders(&mut document);
-    Ok(document)
+    Ok(())
 }
 
 /// Validate the stored JSON shape without consulting source or category data.
 /// Backup code uses the same bounds and schema contract as the runtime loader.
-pub(crate) fn validate_home_document(value: &Value) -> Result<(), String> {
-    decode_document(value.clone()).map(|_| ())
+pub(crate) fn validate_home_document(document: &HomeConfigDocument) -> Result<(), String> {
+    validate_structure(document)
+}
+
+pub(crate) fn normalize_home_document(document: &mut HomeConfigDocument) {
+    normalize_orders(document);
 }
 
 fn validate_structure(document: &HomeConfigDocument) -> Result<(), String> {
@@ -189,8 +90,6 @@ fn validate_structure(document: &HomeConfigDocument) -> Result<(), String> {
             if section.style > 3 {
                 return Err("Unsupported home section style".to_owned());
             }
-            validate_title(&section.source_name, "source name")?;
-            validate_title(&section.category_name, "category name")?;
         }
     }
     Ok(())
@@ -213,19 +112,6 @@ fn validate_title(value: &str, name: &str) -> Result<(), String> {
         return Err(format!("Invalid {name}"));
     }
     Ok(())
-}
-
-fn bounded_name(value: &str, fallback: &str) -> String {
-    let bounded = value
-        .trim()
-        .chars()
-        .take(MAX_TITLE_CHARS)
-        .collect::<String>();
-    if bounded.is_empty() {
-        fallback.to_owned()
-    } else {
-        bounded
-    }
 }
 
 fn normalize_orders(document: &mut HomeConfigDocument) {

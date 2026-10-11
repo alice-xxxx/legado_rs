@@ -142,6 +142,8 @@ export interface BookResource {
   sourceId?: string;
   sourceName?: string;
   sourceGroup?: string;
+  /** IDs of cached books that hold source-specific catalogs. */
+  sourceBookIds?: string[];
   displayBase?: BookDisplayMetadataValues;
   displayOverrides?: Partial<Record<keyof BookDisplayMetadataValues, string>>;
   canChangeSource?: boolean;
@@ -155,6 +157,18 @@ export interface BookResource {
     updatedAtMs?: number;
   };
   chapters: ChapterResource[];
+}
+
+/** Shared list metadata. Complete catalogs belong only to openedBook. */
+export type BookPreview = Pick<BookResource,
+  "id" | "title" | "author" | "coverSrc" | "kind" | "mediaType" | "chapterCount" |
+  "latestChapter" | "progress" | "canChangeSource" | "sourceId" | "sourceName"
+> & { bookSrc: string };
+
+/** Partial save payload: only the book ID and fields editable in the details UI. */
+export interface BookMetadataUpdate {
+  id: string;
+  displayOverrides?: Partial<Pick<BookDisplayMetadataValues, "title" | "author" | "intro" | "coverSrc">>;
 }
 
 export interface BookDisplayMetadataValues {
@@ -177,24 +191,17 @@ export type BookCoverPickerResponse =
 
 export type ReaderBackgroundPickerResponse =
   | { cancelled: true }
-  | { cancelled: false; settings: ResourceDescriptor };
+  | { cancelled: false; image: ResourceDescriptor };
 
-export type BookDisplayMetadataUpdateResponse =
-  | {
-      commitState: "committed";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book: ResourceDescriptor;
-      shelf: ResourceDescriptor;
-    }
-  | {
-      commitState: "notCommitted" | "indeterminate";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book?: never;
-      shelf?: never;
-    };
+export interface ShelfDocument {
+  schemaVersion: number;
+  sort?: ShelfSortKey;
+  sortOrder?: ShelfSortOrder;
+  groups?: string[];
+  books: Array<{ id: string; groups?: string[] }>;
+}
 
+/** Browser view derived from shelf positions and the cached book documents. */
 export interface ShelfResource {
   schemaVersion: number;
   sort?: ShelfSortKey;
@@ -203,64 +210,18 @@ export interface ShelfResource {
   books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "mediaType"> & { bookSrc: string; groups?: string[] }>;
 }
 
-export interface BatchRemoveBookError {
-  bookId: string;
-  outcome: "notCommitted" | "unknown";
-  commitState: "notCommitted" | "indeterminate";
-  recoveryRequired: boolean;
-  message: string;
-}
-
-export interface BatchRemoveBookWarning {
-  bookId: string;
-  outcome: "committed";
-  commitState?: "committed";
-  recoveryRequired: boolean;
-  message: string;
-}
-
-export interface BatchRemoveBooksResponse {
-  shelf: ResourceDescriptor;
-  completedIds: string[];
-  errors: BatchRemoveBookError[];
-  warnings: BatchRemoveBookWarning[];
-  recoveryRequired: boolean;
-  notAttemptedIds: string[];
-}
-
-export type RemoveBookResponse =
-  | {
-      outcome: "deleted";
-      commitState: "committed";
-      bookId: string;
-      shelf: ResourceDescriptor;
-      recoveryRequired: boolean;
-      warning: string | null;
-    }
-  | {
-      commitState: "notCommitted" | "indeterminate";
-      recoveryRequired: boolean;
-      error: string;
-      outcome?: never;
-      bookId?: never;
-      shelf?: never;
-      warning?: never;
-    };
-
 export type ResetBookProgressResponse =
   | {
       commitState: "committed";
       recoveryRequired: boolean;
       warning: string | null;
       book: ResourceDescriptor;
-      shelf: ResourceDescriptor;
     }
   | {
       commitState: "notCommitted" | "indeterminate";
       recoveryRequired: boolean;
       warning: string | null;
       book?: never;
-      shelf?: never;
     };
 
 export type ClearBookChapterCacheResponse =
@@ -302,6 +263,7 @@ export type ShelfSortOrder = "ascending" | "descending";
 export interface Bookmark {
   id: string;
   bookId: string;
+  chapterId: string;
   chapterIndex: number;
   chapterTitle?: string;
   offset: number;
@@ -311,13 +273,9 @@ export interface Bookmark {
   updatedAtMs: number;
 }
 
-export interface BookmarksResource {
-  schemaVersion: number;
-  bookmarks: Bookmark[];
-}
+export type BookmarkRecord = Omit<Bookmark, "bookId">;
 
 export interface ReadingHistoryResource {
-  schemaVersion: number;
   sessions: Array<{ bookId: string; sessionId: string; durationMs: number; endedAtMs: number; utcOffsetMinutes: number }>;
   books: Array<{ bookId: string; sessionCount: number; totalDurationMs: number; lastReadAtMs: number }>;
   days: Array<{ day: string; sessionCount: number; totalDurationMs: number; books: Array<{ bookId: string; sessionCount: number; totalDurationMs: number }> }>;
@@ -341,18 +299,6 @@ export interface ReplacementRulesResource {
   schemaVersion: number;
   rules: DisplayReplacementRule[];
 }
-
-export type ReplacementRulesMutation =
-  | { kind: "local" }
-  | { kind: "url"; url: string }
-  | { kind: "save"; id: string | null; json: string }
-  | { kind: "delete"; ruleIds: string[] };
-
-export type ReplacementRulesMutationResponse =
-  | { cancelled: true }
-  | { resource: ResourceDescriptor; importedCount: number }
-  | { resource: ResourceDescriptor; savedId: string }
-  | { resource: ResourceDescriptor };
 
 /** Rust 处理后的单个书源候选；resultId 用于详情、入架和换源操作。 */
 export interface SearchResultSource {
@@ -406,9 +352,16 @@ export interface SearchHistoryEntry {
 }
 
 export interface SearchHistoryResource {
-  schemaVersion: number;
   entries: SearchHistoryEntry[];
   processedSearchIds: string[];
+}
+
+export interface HistoryResource {
+  schemaVersion: number;
+  reading: ReadingHistoryResource;
+  search: SearchHistoryResource;
+  /** Book ID -> full bookmark records; the key supplies each record's bookId. */
+  bookmarks: Record<string, BookmarkRecord[]>;
 }
 
 export interface ReaderSettings {
@@ -437,7 +390,6 @@ export interface ReaderSettings {
   httpTtsConfigId?: string | null;
   ttsContinueAcrossChapters: boolean;
   ttsStartPosition: "current" | "chapter";
-  replacements: Array<{ find: string; replace: string }>;
 }
 
 export interface HttpTtsConfigMetadata {
@@ -472,20 +424,7 @@ export interface TxtTocRulesDocument {
   rules: TxtTocRule[];
 }
 
-export type TxtTocRulesMutation =
-  | { kind: "local" }
-  | { kind: "url"; url: string }
-  | { kind: "save"; id: string | null; json: string }
-  | { kind: "reorder"; orderedIds: string[] }
-  | { kind: "delete"; ruleIds: string[] };
-
-export type TxtTocRulesMutationResponse =
-  | { cancelled: true }
-  | { resource: ResourceDescriptor; importedCount: number }
-  | { resource: ResourceDescriptor; savedId: string }
-  | { resource: ResourceDescriptor };
-
-/** Vue-local form state; the Tauri save command receives the completed JSON string. */
+/** Only the fields edited by the local form; saving updates the shared rule. */
 export interface HttpTtsConfigEditorFields {
   name: string;
   url: string;
@@ -499,16 +438,6 @@ export interface HttpTtsConfigEditorFields {
   enabledCookieJar: boolean | null;
   enableDangerousApi: boolean | null;
 }
-
-export type HttpTtsConfigMutation =
-  | { kind: "local" }
-  | { kind: "url"; url: string }
-  | { kind: "save"; id: string | null; json: string }
-  | { kind: "delete"; configIds: string[] };
-
-export type HttpTtsConfigMutationResponse =
-  | { cancelled: true }
-  | { items: HttpTtsConfigMetadata[]; deleted?: boolean; resource: ResourceDescriptor };
 
 export type HttpTtsAudioResult =
   | { status: "empty" }
@@ -547,9 +476,11 @@ export type SourceMutationResponse =
   | { cancelled: boolean };
 
 export interface AppSettingsResource {
+  webdavBackup?: WebDavBackupConfig;
   schemaVersion: number;
   sourceHttpTimeoutSeconds: number;
   reader: ReaderSettings;
+  home: HomeConfigDocument;
   lastBackupAtMs?: number | null;
 }
 
@@ -559,7 +490,7 @@ export interface AppBootstrap {
   httpTtsConfigs: ResourceDescriptor;
   txtTocRules: ResourceDescriptor;
   replacementRules: ResourceDescriptor;
-  searchHistory: ResourceDescriptor;
+  history: ResourceDescriptor;
   sources: ResourceDescriptor;
 }
 
@@ -589,26 +520,7 @@ export interface SourceDebugResponse {
   chapterResource?: ResourceDescriptor | null;
 }
 
-export interface BookMutationResponse {
-  book: ResourceDescriptor;
-  shelf: ResourceDescriptor;
-}
-
-export type RefreshBookInfoResponse =
-  | {
-      commitState: "committed";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book: ResourceDescriptor;
-      shelf: ResourceDescriptor;
-    }
-  | {
-      commitState: "notCommitted" | "indeterminate";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book?: never;
-      shelf?: never;
-    };
+export type RefreshBookInfoResponse = ResetBookProgressResponse;
 
 export type ChangeChapterSourceResponse =
   | {
@@ -628,14 +540,9 @@ export type ChangeChapterSourceResponse =
       chapterId?: never;
     };
 
-export interface BookSourceMutationResponse extends BookMutationResponse {
+export interface BookSourceMutationResponse {
+  book: ResourceDescriptor;
   progress: ReadingProgress;
-  movedProgress: boolean;
-  bookmarks: {
-    resource: ResourceDescriptor;
-    migratedCount: number;
-    orphanedCount: number;
-  };
 }
 
 export interface LocalBookImportResponse {
@@ -643,7 +550,6 @@ export interface LocalBookImportResponse {
   passwordRequired?: boolean;
   importToken?: string;
   book?: ResourceDescriptor;
-  shelf?: ResourceDescriptor;
 }
 
 export interface LocalBookImportOptions {
@@ -746,8 +652,11 @@ export interface BackupResponse {
 export interface WebDavBackupConfig {
   url: string;
   username: string;
-  hasPassword: boolean;
+  password: string | null;
   autoIntervalHours?: number | null;
+  lastWebdavBackupAtMs?: number | null;
+  autoBackupScheduledAtMs?: number | null;
+  lastAutoAttemptAtMs?: number | null;
 }
 
 export interface WebDavBackupUploadResponse {
@@ -786,9 +695,7 @@ export interface HomeSection {
   id: string;
   title: string;
   sourceId: string;
-  sourceName: string;
   categoryId: string;
-  categoryName: string;
   style: 0 | 1 | 2 | 3;
   sortOrder: number;
   coverVideo?: boolean;
@@ -802,7 +709,6 @@ export interface HomeTab {
 }
 
 export interface HomeConfigDocument {
-  schemaVersion: number;
   tabs: HomeTab[];
 }
 

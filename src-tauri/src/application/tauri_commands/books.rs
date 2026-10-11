@@ -3,18 +3,6 @@
 use super::*;
 
 #[tauri::command]
-pub async fn add_book(
-    app: tauri::AppHandle,
-    result_id: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let result = service.add_book(&result_id).await?;
-    let _ = app.emit("book-added", result["book"].clone());
-    let _ = app.emit("shelf-updated", result["shelf"].clone());
-    Ok(result)
-}
-
-#[tauri::command]
 pub async fn prepare_search_result_book(
     result_id: String,
     service: State<'_, ApplicationService>,
@@ -26,22 +14,16 @@ pub async fn prepare_search_result_book(
 pub async fn change_book_source(
     app: tauri::AppHandle,
     book_id: String,
-    result_id: String,
+    source_book_id: String,
     confirm_missing_author: bool,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let result = service
-        .change_book_source(&book_id, &result_id, confirm_missing_author)
+        .change_book_source(&book_id, &source_book_id, confirm_missing_author)
         .await?;
-    let _ = app.emit("book-source-changed", result.clone());
-    let _ = app.emit("shelf-updated", result["shelf"].clone());
     let _ = app.emit(
-        "progress-saved",
-        json!({ "bookId": book_id, "book": result["book"] }),
-    );
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "bookmarks", "resource": result["bookmarks"]["resource"] }),
+        "book-updated",
+        json!({ "requestId": 0, "resource": result["book"] }),
     );
     Ok(result)
 }
@@ -60,8 +42,8 @@ pub async fn change_chapter_source(
         .await?;
     if result["commitState"] == "committed" {
         let _ = app.emit(
-            "resource-updated",
-            json!({ "kind": "book", "resource": result["book"] }),
+            "book-updated",
+            json!({ "requestId": 0, "resource": result["book"] }),
         );
     }
     Ok(result)
@@ -76,22 +58,18 @@ pub async fn get_book(
 }
 
 #[tauri::command]
-pub async fn update_book_display_metadata(
+pub async fn save_book(
     app: tauri::AppHandle,
-    book_id: String,
-    patch: Value,
+    book: Value,
+    request_id: u64,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    let result = service
-        .update_book_display_metadata(&book_id, patch)
-        .await?;
-    if result["commitState"] == "committed" {
-        let _ = app.emit(
-            "resource-updated",
-            json!({ "kind": "book", "resource": result["book"] }),
-        );
-        let _ = app.emit("shelf-updated", result["shelf"].clone());
-    }
+    let resource = service.save_book(book).await?;
+    let result = json!({
+        "requestId": request_id,
+        "resource": service.resource_descriptor(&resource),
+    });
+    let _ = app.emit("book-updated", result.clone());
     Ok(result)
 }
 
@@ -104,10 +82,9 @@ pub async fn refresh_book_info(
     let result = service.refresh_book_info(&book_id).await?;
     if result["commitState"] == "committed" {
         let _ = app.emit(
-            "resource-updated",
-            json!({ "kind": "book", "resource": result["book"] }),
+            "book-updated",
+            json!({ "requestId": 0, "resource": result["book"] }),
         );
-        let _ = app.emit("shelf-updated", result["shelf"].clone());
     }
     Ok(result)
 }
@@ -148,21 +125,8 @@ pub async fn pick_reader_background_image(
     else {
         return Ok(json!({ "cancelled": true }));
     };
-    let settings = service
-        .store_selected_reader_background(picked_file)
-        .await?;
-    let _ = app.emit("settings-updated", settings.clone());
-    Ok(json!({ "cancelled": false, "settings": settings }))
-}
-
-#[tauri::command]
-pub async fn clear_reader_background_image(
-    app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let settings = service.clear_reader_background_image().await?;
-    let _ = app.emit("settings-updated", settings.clone());
-    Ok(settings)
+    let image = service.store_selected_reader_background(picked_file).await?;
+    Ok(json!({ "cancelled": false, "image": image }))
 }
 
 #[tauri::command]
@@ -174,20 +138,4 @@ pub async fn discard_book_cover_asset(
     service
         .discard_selected_book_cover(&book_id, &asset_id)
         .await
-}
-
-#[tauri::command]
-pub async fn remove_book(
-    app: tauri::AppHandle,
-    book_id: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let result = match service.remove_book_with_outcome(&book_id).await {
-        Ok(outcome) => outcome.into_value(),
-        Err(error) => error.into_value(),
-    };
-    if result["commitState"] == "committed" {
-        let _ = app.emit("shelf-updated", result["shelf"].clone());
-    }
-    Ok(result)
 }

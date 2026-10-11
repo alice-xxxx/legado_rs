@@ -249,7 +249,7 @@ export default defineComponent({
 
 <template>
 <section v-if="ctx.readerVisible" class="reader-shell" :data-reader-mode="ctx.readingPdfPage ? 'pdf' : ctx.readingVideoChapter ? 'video' : ctx.readingMediaChapter ? 'audio' : ctx.readingImagePage ? 'comic' : 'novel'" :class="[`reader-theme-${ctx.settings.reader.theme}`, { 'reader-menu-open': readerMenuOpen, 'reader-chrome-hidden': !readerMenuOpen, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingChapterHtml }]" @click="onReaderSurfaceClick">
-      <header class="reader-topbar">
+      <header class="reader-topbar safe-area-top">
         <div class="reader-toolbar-row">
           <component :is="ctx.BackButton" class="reader-back" label="返回书架" :disabled="readerSourceRefreshBusy" @click="closeReader()" />
           <div class="reader-book-heading"><strong>{{ ctx.readingBook?.title }}</strong><small>{{ currentChapterTitle }}</small></div>
@@ -555,7 +555,6 @@ export default defineComponent({
           <div><label>阅读主题</label></div>
           <div class="theme-options"><button v-for="theme in ([['paper','纸'],['sepia','暖'],['dark','夜'],['system','白']] as const)" :key="theme[0]" class="theme-option compact-theme" :class="[`theme-${theme[0]}`, { selected: ctx.settings.reader.theme === theme[0] }]" @click="setReaderTheme(theme[0])">{{ theme[1] }}</button></div>
         </div>
-        <button v-if="readerControlsMode === 'settings'" class="text-button popover-save" :disabled="saveSettingsBusy" @click="persistSettings">{{ saveSettingsBusy ? '保存中…' : '保存阅读设置' }}</button>
       </aside>
       <!-- 播放器放在弹窗外，关闭朗读面板时不要卸载正在播放的音频。 -->
       <audio v-if="ctx.settings.reader.ttsEngine === 'http' && httpTtsAudioResource" :ref="setHttpTtsAudioElement" preload="none" :src="httpTtsAudioResource.src" class="reader-audio-element" @play="onHttpTtsAudioPlay" @pause="onHttpTtsAudioPause" @ended="onHttpTtsAudioEnded" @error="onHttpTtsAudioError"></audio>
@@ -660,7 +659,7 @@ export default defineComponent({
   border-color: var(--reader-chrome-border);
   background: var(--reader-chrome-bg); color: var(--reader-chrome-text);
 }
-.reader-topbar { top: 0; height: calc(56px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 12px 0; border-bottom: 1px solid var(--reader-chrome-border); }
+.reader-topbar { top: 0; height: auto; min-height: 56px; padding-inline: 12px; border-bottom: 1px solid var(--reader-chrome-border); }
 .reader-toolbar-row { display: grid; height: 56px; grid-template-columns: 44px minmax(0, 1fr) auto; align-items: center; gap: 8px; }
 .reader-book-heading { display: flex; min-width: 0; flex-direction: column; }
 .reader-book-heading strong, .reader-book-heading small { overflow: hidden; max-width: 100%; text-overflow: ellipsis; white-space: nowrap; }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// TXT 目录规则维护界面；规则读写统一经现有 API 完成。
+// 列表使用全局规则；表单只编辑当前规则的草稿。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -9,14 +9,13 @@ import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
-import { readResource } from "../../api/resources";
-import { appBootstrap } from "../../api/core";
+import { txtTocRules as rules, txtTocRuleStore } from "./configurationStores";
 import {
-  mutateTxtTocRules,
+  prepareConfigurationImport,
   type TxtTocRule,
   type TxtTocRulesDocument,
 } from "../../api/settings";
-import type { AppBootstrap, ResourceDescriptor } from "../../api/types";
+import type { AppBootstrap } from "../../api/types";
 import { notify } from "../../app/notifications";
 
 interface RuleDraft {
@@ -30,11 +29,7 @@ function returnToAdvancedSettings(): void {
   void router.push({ name: settingsRouteNames.other });
 }
 
-const rules = ref<TxtTocRule[]>([]);
-const rulesResource = ref<ResourceDescriptor | null>(null);
-const loading = ref(true);
-const saving = ref(false);
-const loadError = ref("");
+
 const errorMessage = ref("");
 const editingId = ref<string | null>(null);
 const editingSerialNumber = ref(0);
@@ -48,9 +43,7 @@ const importUrl = ref("");
 const importError = ref("");
 const importBusy = ref(false);
 const importDialogOpen = ref(false);
-// Older descriptor reads must not replace a newer published TXT rules snapshot.
-let rulesReadRevision = 0;
-let descriptorRevision = 0;
+let restoreRevision = 0;
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 const testText = ref("");
@@ -132,7 +125,6 @@ onBeforeUnmount(() => {
   disposed = true;
   for (const unlisten of unlisteners) unlisten();
   resolveNavigation?.(false);
-  rulesReadRevision++;
 });
 useOutsidePointerDismiss(
   () => addMenuOpen.value || actionsMenuOpen.value || filterPanelOpen.value || !!openRuleMenuId.value,
@@ -187,7 +179,7 @@ const visibleRules = computed(() => {
 const selectedRules = computed(() => orderedRules.value.filter((rule) => selectedIds.value.includes(rule.id)));
 const allVisibleSelected = computed(() => visibleRules.value.length > 0
   && visibleRules.value.every((rule) => selectedIds.value.includes(rule.id)));
-const busy = computed(() => loading.value || saving.value);
+const busy = importBusy;
 const atRuleLimit = computed(() => editingId.value === null && rules.value.length >= 64);
 const canSave = computed(() =>
   !busy.value && !upstreamRuleChanged.value && !atRuleLimit.value && validPriority.value
@@ -195,35 +187,9 @@ const canSave = computed(() =>
 );
 
 onMounted(async () => {
-  const initialDescriptorRevision = descriptorRevision;
-  try {
-    const resourceListener = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-      if (event.payload.kind === "txtTocRules") void acceptResource(event.payload.resource);
-    });
-    if (disposed) resourceListener();
-    else unlisteners.push(resourceListener);
-
-    const restoreListener = await listen<AppBootstrap>("app-state-updated", (event) => {
-      void acceptResource(event.payload.txtTocRules);
-    });
-    if (disposed) restoreListener();
-    else unlisteners.push(restoreListener);
-  } catch (error) {
-    loadError.value = errorText(error);
-  }
-
-  try {
-    const bootstrap = await appBootstrap();
-    if (!disposed && descriptorRevision === initialDescriptorRevision) {
-      await acceptResource(bootstrap.txtTocRules);
-      if (window.matchMedia("(min-width: 861px)").matches && orderedRules.value.length) editRule(orderedRules.value[0]);
-    }
-  } catch (error) {
-    if (!disposed) {
-      loading.value = false;
-      loadError.value = errorText(error);
-    }
-  }
+  const unlisten = await listen<AppBootstrap>("app-state-updated", () => { restoreRevision++; resetEditor(); });
+  if (disposed) unlisten(); else unlisteners.push(unlisten);
+  if (window.matchMedia("(min-width: 861px)").matches && orderedRules.value.length) editRule(orderedRules.value[0]);
 });
 watch(() => rules.value.map((rule) => rule.id), (ids) => {
   const existingIds = new Set(ids);
@@ -250,30 +216,6 @@ function resetEditor(): void {
   initialDraft.value = JSON.stringify(draft.value);
   errorMessage.value = "";
   openRuleMenuId.value = null;
-}
-
-async function reload(resource?: ResourceDescriptor): Promise<void> {
-  const revision = ++rulesReadRevision;
-  loading.value = true;
-  loadError.value = "";
-  try {
-    const descriptor = resource ?? rulesResource.value ?? undefined;
-    if (!descriptor) throw new Error("TXT 目录规则资源尚未就绪");
-    const document = await readResource<TxtTocRulesDocument>(descriptor);
-    if (!document || !Array.isArray(document.rules)) throw new Error("TXT 目录规则资源格式无效");
-    if (revision === rulesReadRevision) rules.value = document.rules;
-  } catch (error) {
-    if (revision === rulesReadRevision) loadError.value = errorText(error);
-  } finally {
-    if (revision === rulesReadRevision) loading.value = false;
-  }
-}
-
-async function acceptResource(resource: ResourceDescriptor): Promise<void> {
-  if (disposed) return;
-  descriptorRevision++;
-  rulesResource.value = resource;
-  await reload(resource);
 }
 
 function editRule(rule: TxtTocRule): void {
@@ -391,23 +333,16 @@ async function openLocalImport(): Promise<void> {
   actionsMenuOpen.value = false;
   importError.value = "";
   errorMessage.value = "";
+  const revision = restoreRevision;
   importBusy.value = true;
-  saving.value = true;
   try {
-    const result = await mutateTxtTocRules({ kind: "local" });
-    if ("cancelled" in result) return;
-    if (!("importedCount" in result)) throw new Error("本地导入没有返回已提交的资源");
-    await reloadAfterMutation(result.resource);
-    notify(`已从本地文件导入 ${result.importedCount} 条 TXT 规则。`);
+    const result = await prepareConfigurationImport<TxtTocRulesDocument>("txtTocRules", { kind: "local" });
+    if (!result || disposed || revision !== restoreRevision) return;
+    appendImportedRules(result);
+    notify(`已从本地文件导入 ${result.rules.length} 条 TXT 规则。`);
   } catch (error) {
     errorMessage.value = `本地导入失败：${errorText(error)}`;
-    try {
-      await reload();
-    } catch (reloadError) {
-      errorMessage.value += ` 重新读取规则失败：${errorText(reloadError)}`;
-    }
   } finally {
-    saving.value = false;
     importBusy.value = false;
   }
 }
@@ -429,24 +364,18 @@ async function importUrlRules(): Promise<void> {
   if (!url || importBusy.value || busy.value) return;
   importError.value = "";
   errorMessage.value = "";
+  const revision = restoreRevision;
   importBusy.value = true;
-  saving.value = true;
   try {
-    const result = await mutateTxtTocRules({ kind: "url", url });
-    if (!("importedCount" in result)) throw new Error("网络导入没有返回已提交的资源");
-    await reloadAfterMutation(result.resource);
+    const result = await prepareConfigurationImport<TxtTocRulesDocument>("txtTocRules", { kind: "url", url });
+    if (!result || disposed || revision !== restoreRevision) return;
+    appendImportedRules(result);
     importDialogOpen.value = false;
     importUrl.value = "";
-    notify(`已从网络链接导入 ${result.importedCount} 条 TXT 规则。`);
+    notify(`已从网络链接导入 ${result.rules.length} 条 TXT 规则。`);
   } catch (error) {
     importError.value = `网络导入失败：${errorText(error)}`;
-    try {
-      await reload();
-    } catch (reloadError) {
-      importError.value += ` 重新读取规则失败：${errorText(reloadError)}`;
-    }
   } finally {
-    saving.value = false;
     importBusy.value = false;
   }
 }
@@ -458,7 +387,7 @@ function closeUrlImport(): void {
   importError.value = "";
 }
 
-async function saveRule(): Promise<void> {
+function saveRule(): void {
   if (busy.value || !showEditor.value) return;
   if (upstreamRuleChanged.value) {
     errorMessage.value = "规则已在其他操作中更新，不能用旧草稿覆盖。请还原并重新编辑。";
@@ -478,84 +407,30 @@ async function saveRule(): Promise<void> {
     return;
   }
 
-  let reopenedRuleId: string | null = null;
-  saving.value = true;
-  try {
-    const id = editingId.value;
-    const rule = {
-      name: draft.value.name.trim(),
-      rule: draft.value.rule,
-      ...(draft.value.example.trim() ? { example: draft.value.example } : {}),
-      serialNumber: editingSerialNumber.value,
-      enable: draft.value.enable,
-    };
-    const result = await mutateTxtTocRules({ kind: "save", id, json: JSON.stringify(rule) });
-    if (!("resource" in result) || !("savedId" in result)) throw new Error("保存规则没有返回已提交的规则 ID 和资源");
-    await reloadAfterMutation(result.resource);
-    resetEditor();
-    if (window.matchMedia("(min-width: 861px)").matches) reopenedRuleId = result.savedId;
-    notify(id !== null ? "规则已保存并从资源重新读取。" : "规则已添加并从资源重新读取。");
-  } catch (error) {
-    errorMessage.value = errorText(error);
-    // Rust owns regex parsing and size limits. Re-read after any command error
-    // so the list always reflects the persisted document, including partial
-    // multi-rule reorder operations.
-    await reload();
-  } finally {
-    saving.value = false;
-  }
-  // Saving must finish before editRule checks busy, otherwise desktop loses its detail panel.
-  if (reopenedRuleId) {
-    const saved = orderedRules.value.find((item) => item.id === reopenedRuleId);
-    if (saved) editRule(saved);
-  }
+  const item: TxtTocRule = {
+    id: editingId.value ?? `txt-toc-${crypto.randomUUID()}`,
+    name: draft.value.name.trim(), rule: draft.value.rule,
+    ...(draft.value.example.trim() ? { example: draft.value.example } : {}),
+    serialNumber: editingSerialNumber.value, enable: draft.value.enable,
+  };
+  txtTocRuleStore.update(item);
+  resetEditor();
+  if (window.matchMedia("(min-width: 861px)").matches) editRule(item);
 }
 
-async function persistRule(rule: TxtTocRule, notice: string): Promise<void> {
-  errorMessage.value = "";
-  saving.value = true;
-  try {
-    const { id, ...ruleJson } = rule;
-    const result = await mutateTxtTocRules({ kind: "save", id, json: JSON.stringify(ruleJson) });
-    if (!("resource" in result) || !("savedId" in result) || result.savedId !== id) {
-      throw new Error("保存规则没有返回已提交的资源");
-    }
-    await reloadAfterMutation(result.resource);
-    notify(notice);
-  } catch (error) {
-    errorMessage.value = errorText(error);
-    await reload();
-  } finally {
-    saving.value = false;
-  }
-}
-
-async function toggleRule(rule: TxtTocRule, enable: boolean): Promise<void> {
+function toggleRule(rule: TxtTocRule, enable: boolean): void {
   if (busy.value) return;
-  await persistRule({ ...rule, enable }, enable ? "规则已启用。" : "规则已停用。");
+  rule.enable = enable;
 }
-
-async function moveRule(ruleId: string, direction: -1 | 1): Promise<void> {
+function moveRule(ruleId: string, direction: -1 | 1): void {
   if (busy.value) return;
   const reordered = orderedRules.value;
   const index = reordered.findIndex((rule) => rule.id === ruleId);
   const targetIndex = index + direction;
   if (index < 0 || targetIndex < 0 || targetIndex >= reordered.length) return;
   [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
-
-  saving.value = true;
   errorMessage.value = "";
-  try {
-    const result = await mutateTxtTocRules({ kind: "reorder", orderedIds: reordered.map((rule) => rule.id) });
-    if (!("resource" in result)) throw new Error("排序规则没有返回已提交的资源");
-    await reloadAfterMutation(result.resource);
-    notify("规则顺序已保存。");
-  } catch (error) {
-    errorMessage.value = errorText(error);
-    await reload();
-  } finally {
-    saving.value = false;
-  }
+  reordered.forEach((rule, index) => { rule.serialNumber = index; });
 }
 
 function requestDelete(rule: TxtTocRule): void {
@@ -577,52 +452,38 @@ function cancelDelete(): void {
   errorMessage.value = "";
 }
 
-async function confirmDelete(): Promise<void> {
+function confirmDelete(): void {
   const targets = [...deleteTargets.value];
   if (!targets.length || busy.value) return;
-  saving.value = true;
   errorMessage.value = "";
   try {
-    const result = await mutateTxtTocRules({ kind: "delete", ruleIds: targets.map((rule) => rule.id) });
-    if (!("resource" in result)) throw new Error("删除规则没有返回已提交的资源");
+    targets.forEach(rule => txtTocRuleStore.remove(rule.id));
     deleteTargets.value = [];
     const targetIds = new Set(targets.map((rule) => rule.id));
     selectedIds.value = selectedIds.value.filter((id) => !targetIds.has(id));
     if (targets.some((rule) => editingId.value === rule.id)) resetEditor();
-    await reloadAfterMutation(result.resource);
     notify(targets.length === 1
       ? `“${targets[0].name}”已删除。`
       : `已删除 ${targets.length} 条规则。`);
   } catch (error) {
     errorMessage.value = errorText(error);
-    await reload();
     const existingIds = new Set(rules.value.map((rule) => rule.id));
     selectedIds.value = selectedIds.value.filter((id) => existingIds.has(id));
     deleteTargets.value = deleteTargets.value.filter((rule) => existingIds.has(rule.id));
-  } finally {
-    saving.value = false;
   }
 }
 
-async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> {
-  descriptorRevision++;
-  rulesResource.value = resource;
-  const revision = ++rulesReadRevision;
-  // Read the immutable version returned by the committed Rust transaction,
-  // not an unrelated "latest" descriptor that another operation may publish.
-  const document = await readResource<TxtTocRulesDocument>(resource);
-  if (!document || !Array.isArray(document.rules)) throw new Error("TXT 目录规则资源格式无效");
-  if (revision === rulesReadRevision) {
-    rules.value = document.rules;
-    loadError.value = "";
-    loading.value = false;
-  }
+function appendImportedRules(document: TxtTocRulesDocument): void {
+  if (rules.value.length + document.rules.length > 64) throw new Error("TXT 目录规则最多保存 64 条。");
+  const first = Math.max(0, ...rules.value.map(rule => rule.serialNumber)) + 1;
+  if (first + document.rules.length - 1 > 2147483647) throw new Error("规则优先级超出 32 位整数范围。");
+  document.rules.forEach((rule, index) => txtTocRuleStore.update({ ...rule, serialNumber: first + index }));
 }
 </script>
 
 <template>
   <section class="txt-toc-editor my-settings-subpage">
-    <header class="txt-toc-editor__topbar">
+    <header class="txt-toc-editor__topbar safe-area-top">
       <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
       <div class="txt-toc-editor__top-title"><strong>TXT 目录识别</strong></div>
       <div class="txt-toc-editor__top-actions">
@@ -638,12 +499,7 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
         </div>
       </div>
     </header>
-    <div v-if="loading" class="txt-toc-editor__message">正在读取规则…</div>
-    <div v-else-if="loadError" class="txt-toc-editor__error">
-      <strong>无法读取规则</strong><span>{{ loadError }}</span>
-      <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="busy" @click="reload()">重试</button>
-    </div>
-    <div v-else class="txt-toc-editor__body" :class="{ 'txt-toc-editor__body--empty': rules.length === 0 }">
+    <div class="txt-toc-editor__body" :class="{ 'txt-toc-editor__body--empty': rules.length === 0 }">
       <aside class="txt-toc-editor__master">
         <header class="txt-toc-editor__summary">
           <div><strong>{{ enabledRuleCount }} 个启用</strong><small>{{ rules.length }} / 64 个配置</small></div>
@@ -660,7 +516,6 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
         >
           <template #actions-menu>
             <div v-if="actionsMenuOpen" class="txt-toc-editor__menu txt-toc-editor__menu--right">
-              <button type="button" :disabled="busy" @click="actionsMenuOpen = false; reload()">刷新规则</button>
               <button type="button" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
               <span class="txt-toc-editor__menu-hint">正则表达式由 Rust 在保存时校验</span>
             </div>
@@ -716,7 +571,7 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
         </footer>
       </aside>
       <main v-if="showEditor" class="txt-toc-editor__detail">
-        <header class="txt-toc-editor__editor-header">
+        <header class="txt-toc-editor__editor-header safe-area-top">
           <BackButton class="txt-toc-editor__back-button" label="返回规则列表" :disabled="busy"
             @click="requestCancelEditor" />
           <div class="txt-toc-editor__editor-title">
@@ -726,7 +581,7 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
             <span>启用</span><input v-model="draft.enable" type="checkbox" :disabled="busy"/>
           </label>
           <button type="button" class="txt-toc-editor__button txt-toc-editor__button--primary txt-toc-editor__mobile-save"
-            :disabled="!canSave" @click="saveRule">{{ saving ? '保存中…' : '保存' }}</button>
+            :disabled="!canSave" @click="saveRule">保存</button>
         </header>
         <form class="txt-toc-editor__form" @submit.prevent="saveRule">
           <div v-if="upstreamRuleChanged" class="txt-toc-editor__stale">
@@ -760,7 +615,7 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
             <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary"
               :disabled="busy || (!editorDirty && !upstreamRuleChanged)"
               @click="restoreEditorDraft">还原</button>
-            <button type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary" :disabled="!canSave">{{ saving ? '正在保存…' : editingId ? '保存修改' : '添加规则' }}</button>
+            <button type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary" :disabled="!canSave">{{ editingId ? '保存修改' : '添加规则' }}</button>
           </div>
         </form>
       </main>
@@ -792,7 +647,7 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
         <div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div>
         <div class="txt-toc-editor__confirm-actions">
           <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="busy" @click="cancelDelete">取消</button>
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" :disabled="busy" @click="confirmDelete">{{ saving ? '正在删除…' : '删除规则' }}</button>
+          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" :disabled="busy" @click="confirmDelete">保存</button>
         </div>
       </section>
     </div>
@@ -810,8 +665,8 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
   </section>
 </template>
 <style scoped>
-.txt-toc-editor{--txt-accent:var(--app-accent);--txt-text:#343640;--txt-muted:#999da6;--txt-line:var(--app-line);--txt-soft:#fafafd;display:grid;grid-template-rows:64px minmax(0,1fr);width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;color:var(--txt-text)}
-.txt-toc-editor__topbar{position:sticky;top:0;z-index:35;box-sizing:border-box;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;height:64px;padding:0 max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--txt-line);background:#f6f7f9f0;backdrop-filter:blur(18px)}
+.txt-toc-editor{--txt-accent:var(--app-accent);--txt-text:#343640;--txt-muted:#999da6;--txt-line:var(--app-line);--txt-soft:#fafafd;display:grid;grid-template-rows:auto minmax(0,1fr);width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;color:var(--txt-text)}
+.txt-toc-editor__topbar{position:sticky;top:0;z-index:35;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:64px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--txt-line);background:#f6f7f9f0;backdrop-filter:blur(18px)}
 .txt-toc-editor__top-title{min-width:0}
 .txt-toc-editor__top-title strong{font-size:14px;font-weight:750;color:#242631}
 .txt-toc-editor__top-actions{position:relative;display:flex;justify-content:flex-end}
@@ -889,13 +744,13 @@ async function reloadAfterMutation(resource: ResourceDescriptor): Promise<void> 
 .txt-toc-editor__confirm-actions{display:flex;justify-content:flex-end;gap:8px}
 @media(min-width:861px){.txt-toc-editor__body{grid-template-columns:300px minmax(0,1fr)}.txt-toc-editor__master{border-right:1px solid var(--txt-line)}}
 @media(max-width:860px){
- .txt-toc-editor__topbar{padding:0 14px}
+ .txt-toc-editor__topbar{padding-inline:14px}
  .txt-toc-editor__master{padding:12px 14px}
  .txt-toc-editor:has(.txt-toc-editor__detail){grid-template-rows:minmax(0,1fr)}
  .txt-toc-editor:has(.txt-toc-editor__detail) .txt-toc-editor__topbar{display:none}
  .txt-toc-editor__body:has(.txt-toc-editor__detail) .txt-toc-editor__master{display:none}
  .txt-toc-editor__detail{padding:0 14px 66px}
- .txt-toc-editor__editor-header{position:sticky;top:0;z-index:30;box-sizing:border-box;min-height:64px;gap:8px;margin:0 -14px 17px;padding:0 14px;border-bottom:1px solid var(--txt-line);background:#f6f7f9f0;backdrop-filter:blur(12px)}
+ .txt-toc-editor__editor-header{position:sticky;top:0;z-index:30;min-height:64px;gap:8px;margin:0 -14px 17px;padding-inline:14px;border-bottom:1px solid var(--txt-line);background:#f6f7f9f0;backdrop-filter:blur(12px)}
  .txt-toc-editor__back-button{display:inline-flex}
  .txt-toc-editor__editor-title h2{font-size:12px}
  .txt-toc-editor__switchline input{width:16px;height:16px}

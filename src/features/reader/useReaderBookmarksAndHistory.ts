@@ -1,8 +1,8 @@
-import { computed, ref, type Ref } from "vue";
-import { clearReadingHistory, deleteBookmark, deleteReadingHistoryForBook, getReadingStatistics, listBookmarks, readingHistoryResource, recordReadingSession, upsertBookmark } from "../../api/reading";
-import { getBook } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { type Bookmark, type BookmarksResource, type BookResource, type ReadingHistoryResource, type ReadingStatisticsResource, type ResourceDescriptor } from "../../api/types";
+import { computed, ref, watch, type Ref } from "vue";
+import { readingStatistics } from "../settings/readingStatistics";
+import { type Bookmark, type BookResource, type ReadingStatisticsResource } from "../../api/types";
+import { history as appHistory, removeHistoryBookmark } from "../settings/historyStore";
+import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 
 export type ReadingStatisticsPeriod = "today" | "7days" | "30days" | "all";
 
@@ -17,10 +17,10 @@ interface ReaderBookmarksAndHistoryOptions {
   errorText: (error: unknown) => string;
 }
 
-/** 管理阅读书签、阅读会话与统计；持久化仍统一由 Rust 命令处理。 */
+/** 阅读记录和完整书签都来自全局 history。 */
 export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryOptions) {
   const bookmarks = ref<Bookmark[]>([]);
-  const readingHistory = ref<ReadingHistoryResource>({ schemaVersion: 1, sessions: [], books: [], days: [], totalDurationMs: 0, totalSessions: 0 });
+  const readingHistory = computed(() => appHistory.value.reading);
   const readingStatisticsPeriod = ref<ReadingStatisticsPeriod>("30days");
   const filteredReadingStatistics = ref<ReadingStatisticsResource | null>(null);
   const readingStatisticsBusy = ref(false);
@@ -36,7 +36,6 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
   const readingSessionStartedAt = ref<number | null>(null);
   let readingStatisticsGeneration = 0;
   let bookmarkSnapshotRevision = 0;
-  let historySnapshotRevision = 0;
 
   const readingStatisticsData = computed<ReadingStatisticsResource>(() => readingStatisticsPeriod.value === "all"
     ? readingHistory.value
@@ -50,46 +49,30 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     && bookmark.chapterIndex === options.readingChapterIndex.value
     && bookmark.offset === options.getReaderCurrentOffset()) ?? null);
 
-  async function applyBookmarksResource(descriptor: ResourceDescriptor): Promise<void> {
-    const restoreRevision = options.getRestoreRevision();
-    const requestRevision = ++bookmarkSnapshotRevision;
-    const document = await readResource<BookmarksResource>(descriptor);
-    if (restoreRevision !== options.getRestoreRevision() || requestRevision !== bookmarkSnapshotRevision
-      || options.isBackupRestoreInProgress()) return;
-    bookmarks.value = Array.isArray(document.bookmarks) ? document.bookmarks : [];
-  }
+  watch(() => ({
+    bookId: options.readingBook.value?.id,
+    records: appHistory.value.bookmarks[options.readingBook.value?.id ?? ""],
+  }), ({ bookId, records }) => {
+    bookmarks.value = bookId ? (records ?? []).map((bookmark) => ({ ...bookmark, bookId })) : [];
+  }, { immediate: true, deep: true });
 
-  async function applyReadingHistoryResource(descriptor: ResourceDescriptor): Promise<void> {
-    const restoreRevision = options.getRestoreRevision();
-    const requestRevision = ++historySnapshotRevision;
-    const document = await readResource<ReadingHistoryResource>(descriptor);
-    if (restoreRevision !== options.getRestoreRevision() || requestRevision !== historySnapshotRevision
-      || options.isBackupRestoreInProgress()) return;
-    readingHistory.value = document;
-    await refreshCurrentReadingStatistics();
+  async function refreshBookBookmarks(bookId = options.readingBook.value?.id): Promise<void> {
+    const requestRevision = ++bookmarkSnapshotRevision;
+    if (!bookId) { bookmarks.value = []; return; }
+    const records = appHistory.value.bookmarks[bookId] ?? [];
+    if (requestRevision !== bookmarkSnapshotRevision) return;
+    bookmarks.value = records.map((bookmark) => ({ ...bookmark, bookId }));
   }
 
   async function refreshBookmarksAndReadingHistory(): Promise<void> {
     const restoreRevision = options.getRestoreRevision();
-    const bookmarkRevision = ++bookmarkSnapshotRevision;
-    const historyRevision = ++historySnapshotRevision;
-    const [bookmarksDescriptor, historyDescriptor] = await Promise.all([listBookmarks(), readingHistoryResource()]);
-    const [nextBookmarks, nextHistory] = await Promise.all([
-      readResource<BookmarksResource>(bookmarksDescriptor),
-      readResource<ReadingHistoryResource>(historyDescriptor),
-    ]);
     if (restoreRevision !== options.getRestoreRevision() || options.isBackupRestoreInProgress()) return;
-    if (bookmarkRevision === bookmarkSnapshotRevision) bookmarks.value = Array.isArray(nextBookmarks.bookmarks) ? nextBookmarks.bookmarks : [];
-    if (historyRevision !== historySnapshotRevision) return;
-    readingHistory.value = {
-      schemaVersion: nextHistory.schemaVersion ?? 1,
-      sessions: Array.isArray(nextHistory.sessions) ? nextHistory.sessions : [],
-      books: Array.isArray(nextHistory.books) ? nextHistory.books : [],
-      days: Array.isArray(nextHistory.days) ? nextHistory.days : [],
-      totalDurationMs: nextHistory.totalDurationMs ?? 0,
-      totalSessions: nextHistory.totalSessions ?? 0,
-    };
-    await refreshCurrentReadingStatistics();
+    await refreshBookBookmarks();
+    if (restoreRevision === options.getRestoreRevision()) await refreshCurrentReadingStatistics();
+  }
+
+  async function refreshBookmarksAfterHistoryUpdate(): Promise<void> {
+    if (!options.isBackupRestoreInProgress()) await refreshBookBookmarks();
   }
 
   function readingStatisticsDateRange(period: Exclude<ReadingStatisticsPeriod, "all">, now = new Date()): { fromMs: number; toMs: number } {
@@ -120,7 +103,7 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     readingStatisticsBusy.value = true;
     readingStatisticsError.value = "";
     try {
-      const statistics = await getReadingStatistics(fromMs, toMs);
+      const statistics = readingStatistics(readingHistory.value, fromMs, toMs);
       if (isCurrent()) filteredReadingStatistics.value = statistics;
     } catch (error) {
       if (isCurrent()) readingStatisticsError.value = options.errorText(error);
@@ -129,6 +112,8 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     }
   }
 
+  watch(() => readingHistory.value.sessions, () => { void refreshCurrentReadingStatistics(); }, { deep: true });
+
   function changeReadingStatisticsPeriod(period: ReadingStatisticsPeriod): void {
     readingStatisticsPeriod.value = period;
     void refreshCurrentReadingStatistics();
@@ -136,9 +121,9 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
 
   async function continueReading(bookId: string): Promise<void> {
     try {
-      const descriptor = await getBook(bookId);
-      const book = await readResource<BookResource>(descriptor);
-      await options.startReading(book);
+      openedBookFromShelf.value = false;
+      const book = await switchOpenedBook(bookId);
+      if (book) await options.startReading(book);
     } catch (error) {
       options.notify(`打开阅读位置失败：${options.errorText(error)}`, "error");
     }
@@ -178,7 +163,6 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
   async function finishReadingSession(): Promise<void> {
     if (options.isBackupRestoreInProgress()) return;
     const restoreRevision = options.getRestoreRevision();
-    const historyRevision = ++historySnapshotRevision;
     const bookId = options.readingBook.value?.id;
     const sessionId = readingSessionId.value;
     const startedAt = readingSessionStartedAt.value;
@@ -186,24 +170,15 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     readingSessionStartedAt.value = null;
     if (!bookId || !sessionId || startedAt == null) return;
     const endedAtMs = Date.now();
-    try {
-      const descriptor = await recordReadingSession({
-        bookId,
-        sessionId,
-        durationMs: Math.max(0, endedAtMs - startedAt),
-        endedAtMs,
-        utcOffsetMinutes: -new Date(endedAtMs).getTimezoneOffset(),
-      });
-      const history = await readResource<ReadingHistoryResource>(descriptor);
-      if (restoreRevision !== options.getRestoreRevision() || historyRevision !== historySnapshotRevision
-        || options.isBackupRestoreInProgress()) return;
-      readingHistory.value = history;
-      await refreshCurrentReadingStatistics();
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`保存阅读记录失败：${options.errorText(error)}`, "error");
-      }
-    }
+    const durationMs = endedAtMs - startedAt;
+    if (durationMs <= 0 || restoreRevision !== options.getRestoreRevision()) return;
+    appHistory.value.reading.sessions.push({
+      bookId,
+      sessionId,
+      durationMs,
+      endedAtMs,
+      utcOffsetMinutes: -new Date(endedAtMs).getTimezoneOffset(),
+    });
   }
 
   async function openBookmark(bookmark: Bookmark): Promise<void> {
@@ -212,9 +187,9 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
       return;
     }
     try {
-      const descriptor = await getBook(bookmark.bookId);
-      const book = await readResource<BookResource>(descriptor);
-      await options.startReading(book, bookmark.chapterIndex, bookmark.offset);
+      openedBookFromShelf.value = false;
+      const book = await switchOpenedBook(bookmark.bookId);
+      if (book) await options.startReading(book, bookmark.chapterIndex, bookmark.offset);
     } catch (error) {
       options.notify(`打开书签失败：${options.errorText(error)}`, "error");
     }
@@ -236,25 +211,26 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     const restoreRevision = options.getRestoreRevision();
     try {
       const note = bookmarkNote.value.trim();
-      const input = bookmarkToEdit
-        ? {
-            id: bookmarkToEdit.id,
-            bookId: bookmarkToEdit.bookId,
-            chapterIndex: bookmarkToEdit.chapterIndex,
-            offset: bookmarkToEdit.offset,
-            note,
-          }
-        : {
-            bookId: book.id,
-            chapterIndex: options.readingChapterIndex.value,
-            offset: options.getReaderCurrentOffset(),
-            note,
-          };
-      const descriptor = await upsertBookmark(input);
-      const resource = await readResource<BookmarksResource>(descriptor);
+      const now = Date.now();
+      const records = appHistory.value.bookmarks[book.id] ?? [];
+      if (bookmarkToEdit) {
+        const record = records.find((entry) => entry.id === bookmarkToEdit.id);
+        if (!record) return;
+        record.note = note;
+        record.updatedAtMs = now;
+      } else {
+        const chapter = book.chapters[options.readingChapterIndex.value];
+        if (!chapter) return;
+        records.push({
+          id: globalThis.crypto.randomUUID(), chapterId: chapter.id,
+          chapterIndex: chapter.index, chapterTitle: chapter.title,
+          offset: options.getReaderCurrentOffset(), note,
+          createdAtMs: now, updatedAtMs: now,
+        });
+        appHistory.value.bookmarks[book.id] = records;
+      }
       if (restoreRevision !== options.getRestoreRevision() || options.isBackupRestoreInProgress()) return;
-      bookmarkSnapshotRevision += 1;
-      bookmarks.value = resource.bookmarks ?? [];
+      await refreshBookBookmarks(book.id);
       closeBookmarkEditor();
       options.notify(bookmarkToEdit ? "书签备注已更新。" : "书签已保存。");
     } catch (error) {
@@ -268,11 +244,11 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     if (options.isBackupRestoreInProgress()) return false;
     const restoreRevision = options.getRestoreRevision();
     try {
-      const descriptor = await deleteBookmark(bookmarkId);
-      const resource = await readResource<BookmarksResource>(descriptor);
+      const bookmark = bookmarks.value.find((entry) => entry.id === bookmarkId);
+      if (!bookmark) return false;
+      removeHistoryBookmark(bookmark.bookId, bookmarkId);
       if (restoreRevision !== options.getRestoreRevision() || options.isBackupRestoreInProgress()) return false;
-      bookmarkSnapshotRevision += 1;
-      bookmarks.value = resource.bookmarks ?? [];
+      await refreshBookBookmarks(bookmark.bookId);
       if (showNotification) options.notify("书签已删除。");
       return true;
     } catch (error) {
@@ -323,42 +299,17 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     }
   }
 
-  async function clearReadingHistoryData(): Promise<void> {
+  function clearReadingHistoryData(): void {
     if (options.isBackupRestoreInProgress()) return;
-    const restoreRevision = options.getRestoreRevision();
-    const historyRevision = ++historySnapshotRevision;
-    try {
-      const descriptor = await clearReadingHistory();
-      const resource = await readResource<ReadingHistoryResource>(descriptor);
-      if (restoreRevision !== options.getRestoreRevision() || historyRevision !== historySnapshotRevision
-        || options.isBackupRestoreInProgress()) return;
-      readingHistory.value = resource;
-      await refreshCurrentReadingStatistics();
-      options.notify("阅读记录已清空。");
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`清空阅读记录失败：${options.errorText(error)}`, "error");
-      }
-    }
+    appHistory.value.reading = { sessions: [], books: [], days: [], totalDurationMs: 0, totalSessions: 0 };
+    options.notify("阅读记录已清空。");
   }
 
-  async function removeBookHistory(bookId: string): Promise<void> {
+  function removeBookHistory(bookId: string): void {
     if (options.isBackupRestoreInProgress()) return;
-    const restoreRevision = options.getRestoreRevision();
-    const historyRevision = ++historySnapshotRevision;
-    try {
-      const descriptor = await deleteReadingHistoryForBook(bookId);
-      const resource = await readResource<ReadingHistoryResource>(descriptor);
-      if (restoreRevision !== options.getRestoreRevision() || historyRevision !== historySnapshotRevision
-        || options.isBackupRestoreInProgress()) return;
-      readingHistory.value = resource;
-      await refreshCurrentReadingStatistics();
-      options.notify("这本书的阅读记录已删除。");
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`删除阅读记录失败：${options.errorText(error)}`, "error");
-      }
-    }
+    appHistory.value.reading.sessions = appHistory.value.reading.sessions
+      .filter((session) => session.bookId !== bookId);
+    options.notify("这本书的阅读记录已删除。");
   }
 
   return {
@@ -376,8 +327,7 @@ export function useReaderBookmarksAndHistory(options: ReaderBookmarksAndHistoryO
     bookmarkDeleteBatchResult,
     currentBookmark,
     refreshBookmarksAndReadingHistory,
-    applyBookmarksResource,
-    applyReadingHistoryResource,
+    refreshBookmarksAfterHistoryUpdate,
     refreshCurrentReadingStatistics,
     changeReadingStatisticsPeriod,
     continueReading,

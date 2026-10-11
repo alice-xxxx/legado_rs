@@ -1,22 +1,17 @@
 import type { Ref } from "vue";
-import { clearReaderBackgroundImage, pickReaderBackgroundImage, saveSettings } from "../../api/settings";
-import { readResource } from "../../api/resources";
+import { pickReaderBackgroundImage } from "../../api/settings";
 import { type AppSettingsResource, type ReaderSettings } from "../../api/types";
 import { clamp } from "./displayHtml";
 
 interface ReaderSettingsActionOptions {
   settings: Ref<AppSettingsResource>;
-  saveSettingsBusy: Ref<boolean>;
   readerBackgroundBusy: Ref<boolean>;
   readerBackgroundError: Ref<string>;
-  pendingSettingsSave: Ref<ReturnType<typeof setTimeout> | null>;
   readerMediaError: Ref<string>;
   readerMediaElement: () => HTMLMediaElement | null;
   readingVideoChapter: Readonly<Ref<boolean>>;
   backupBusy: () => boolean;
   recoveryRequired: Readonly<Ref<boolean>>;
-  deferSettingsSaveDuringRestore: () => boolean;
-  normalizeSettings: (value: AppSettingsResource) => AppSettingsResource;
   rebuildReaderDisplay: () => void;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
@@ -31,17 +26,13 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
       dark: { textColor: "#d1d0cb", backgroundColor: "#17191c" },
       system: { textColor: "#252525", backgroundColor: "#ffffff" },
     };
-    options.settings.value = {
-      ...options.settings.value,
-      reader: { ...options.settings.value.reader, theme, ...colors[theme] },
-    };
+    Object.assign(options.settings.value.reader, { theme, ...colors[theme] });
     options.rebuildReaderDisplay();
-    scheduleSettingsSave();
   }
 
   function applyAppearanceSettings(reader: ReaderSettings): void {
-    const previous = options.settings.value.reader;
-    options.settings.value = { ...options.settings.value, reader };
+    const previous = { ...options.settings.value.reader };
+    Object.assign(options.settings.value.reader, reader);
     // A playback preference is not a text-layout change. Avoid rebuilding the
     // reader iframe (and disrupting active media) for rate-only updates.
     const displayKeys = [
@@ -59,17 +50,13 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
           ? "当前视频播放器无法调整播放速度。" : "当前音频播放器无法调整播放速度。";
       }
     }
-    scheduleSettingsSave();
   }
 
   function updateReaderSetting<K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]): void {
     const valueToStore = key === "audioPlaybackRate" || key === "videoPlaybackRate"
       ? Math.round(clamp(Number(value), 0.5, 3) * 4) / 4 as ReaderSettings[K]
       : value;
-    options.settings.value = {
-      ...options.settings.value,
-      reader: { ...options.settings.value.reader, [key]: valueToStore },
-    };
+    options.settings.value.reader[key] = valueToStore;
     const media = options.readerMediaElement();
     if ((key === "audioPlaybackRate" && !options.readingVideoChapter.value
       || key === "videoPlaybackRate" && options.readingVideoChapter.value) && media) {
@@ -84,58 +71,21 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
     }
     if (key !== "ttsRate" && key !== "ttsVoiceURI" && key !== "ttsContinueAcrossChapters"
       && key !== "ttsStartPosition" && key !== "audioPlaybackRate" && key !== "videoPlaybackRate") options.rebuildReaderDisplay();
-    scheduleSettingsSave();
   }
 
   function updateSourceHttpTimeout(seconds: number): void {
-    options.settings.value = options.normalizeSettings({ ...options.settings.value, sourceHttpTimeoutSeconds: seconds });
-    scheduleSettingsSave();
-  }
-
-  function scheduleSettingsSave(): void {
-    if (options.deferSettingsSaveDuringRestore()) return;
-    if (options.pendingSettingsSave.value) clearTimeout(options.pendingSettingsSave.value);
-    options.pendingSettingsSave.value = setTimeout(() => void persistSettings(), 450);
-  }
-
-  async function persistSettings(): Promise<boolean> {
-    if (options.pendingSettingsSave.value) clearTimeout(options.pendingSettingsSave.value);
-    options.pendingSettingsSave.value = null;
-    options.saveSettingsBusy.value = true;
-    try {
-      const normalized = options.normalizeSettings(options.settings.value);
-      // 背景图片源由图片选择器单独保存，避免写入当前运行时临时地址。
-      delete normalized.reader.backgroundImageSrc;
-      const descriptor = await saveSettings(normalized);
-      options.settings.value = options.normalizeSettings(await readResource<AppSettingsResource>(descriptor));
-      options.notify("阅读设置已保存。");
-      return true;
-    } catch (error) {
-      options.notify(`阅读设置保存失败：${options.errorText(error)}`, "error");
-      return false;
-    } finally {
-      options.saveSettingsBusy.value = false;
-    }
-  }
-
-  async function flushPendingSettingsBeforeBackgroundChange(): Promise<void> {
-    if (!options.pendingSettingsSave.value) return;
-    clearTimeout(options.pendingSettingsSave.value);
-    options.pendingSettingsSave.value = null;
-    if (!(await persistSettings())) throw new Error("阅读设置保存失败，请重试后再更改背景图片。");
+    options.settings.value.sourceHttpTimeoutSeconds = seconds;
   }
 
   async function chooseReaderBackgroundImage(): Promise<void> {
-    if (options.readerBackgroundBusy.value || options.saveSettingsBusy.value || options.backupBusy()
+    if (options.readerBackgroundBusy.value || options.backupBusy()
       || options.recoveryRequired.value) return;
     options.readerBackgroundBusy.value = true;
     options.readerBackgroundError.value = "";
     try {
-      await flushPendingSettingsBeforeBackgroundChange();
       const result = await pickReaderBackgroundImage();
       if (result.cancelled) return;
-      options.settings.value = options.normalizeSettings(await readResource<AppSettingsResource>(result.settings));
-      options.rebuildReaderDisplay();
+      options.settings.value.reader.backgroundImageSrc = result.image.src;
       options.notify("阅读背景图片已保存。");
     } catch (error) {
       options.readerBackgroundError.value = options.errorText(error);
@@ -145,23 +95,11 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
     }
   }
 
-  async function clearReaderBackground(): Promise<void> {
-    if (options.readerBackgroundBusy.value || options.saveSettingsBusy.value || options.backupBusy()
-      || options.recoveryRequired.value) return;
-    options.readerBackgroundBusy.value = true;
+  function clearReaderBackground(): void {
+    if (options.readerBackgroundBusy.value || options.backupBusy() || options.recoveryRequired.value) return;
+    delete options.settings.value.reader.backgroundImageSrc;
     options.readerBackgroundError.value = "";
-    try {
-      await flushPendingSettingsBeforeBackgroundChange();
-      const descriptor = await clearReaderBackgroundImage();
-      options.settings.value = options.normalizeSettings(await readResource<AppSettingsResource>(descriptor));
-      options.rebuildReaderDisplay();
-      options.notify("阅读背景图片已清除。");
-    } catch (error) {
-      options.readerBackgroundError.value = options.errorText(error);
-      options.notify(`清除阅读背景图片失败：${options.readerBackgroundError.value}`, "error");
-    } finally {
-      options.readerBackgroundBusy.value = false;
-    }
+    options.notify("阅读背景图片已清除。");
   }
 
   return {
@@ -169,8 +107,6 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
     applyAppearanceSettings,
     updateReaderSetting,
     updateSourceHttpTimeout,
-    scheduleSettingsSave,
-    persistSettings,
     chooseReaderBackgroundImage,
     clearReaderBackground,
   };

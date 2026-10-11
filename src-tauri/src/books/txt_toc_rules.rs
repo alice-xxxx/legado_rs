@@ -5,7 +5,7 @@
 //! public JSON resource and are evaluated by Rust; they are not book-source
 //! rules and are never handed to the source engine.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
@@ -59,13 +59,6 @@ pub struct TxtTocRule {
     pub enable: bool,
 }
 
-#[derive(Debug)]
-pub enum TxtTocRulesEdit {
-    Save { id: Option<String>, rule: TxtTocRule },
-    Reorder { ordered_ids: Vec<String> },
-    Delete { rule_ids: Vec<String> },
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TocHeading {
     pub title: String,
@@ -78,7 +71,7 @@ pub struct TocHeading {
 
 pub fn resource_ref(store: &ResourceStore) -> Result<ResourceRef, String> {
     store
-        .reading_ref(RESOURCE_NAME)
+        .document_ref(RESOURCE_NAME)
         .map_err(|error| error.to_string())
 }
 
@@ -93,7 +86,7 @@ pub async fn publish_snapshot(
     let digest = Sha256::digest(bytes);
     let name = format!("txt-toc-rules-snapshot-{digest:x}");
     let reference = store
-        .reading_ref(&name)
+        .search_ref(&name)
         .map_err(|error| error.to_string())?;
     store
         .write_serializable(&reference, document)
@@ -131,40 +124,6 @@ pub async fn replace_document(
         .write_serializable(&resource_ref(store)?, document)
         .await
         .map_err(|error| error.to_string())
-}
-
-/// Create a rule without an ID or update the existing rule named by the ID.
-pub async fn save_rule(
-    store: &ResourceStore,
-    id: Option<String>,
-    mut rule: TxtTocRule,
-) -> Result<(TxtTocRulesDocument, String), String> {
-    let updating = id.is_some();
-    let id = id.unwrap_or_else(|| format!("txt-toc-{}", uuid::Uuid::new_v4().simple()));
-    rule.id = id.clone();
-    validate_rule(&rule)?;
-    let reference = resource_ref(store)?;
-    let value = store
-        .update_json_ref_or_default(&reference, empty_document_value(), move |current| {
-            let mut document = decode_current(current)?;
-            let position = document.rules.iter().position(|saved| saved.id == rule.id);
-            match (updating, position) {
-                (true, Some(position)) => document.rules[position] = rule,
-                (true, None) => return Err("TXT TOC rule to update was not found".to_owned()),
-                (false, Some(_)) => {
-                    return Err("Generated TXT TOC rule ID already exists".to_owned());
-                }
-                (false, None) => document.rules.push(rule),
-            }
-            validate_document(&document)?;
-            serde_json::to_value(document)
-                .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let document = decode_document(value)?;
-    validate_document(&document)?;
-    Ok((document, id))
 }
 
 struct ImportedTxtTocRule {
@@ -257,12 +216,8 @@ fn safe_json_integer(value: &Value) -> Option<i64> {
     (integer >= -MAX_SAFE_INTEGER && integer <= MAX_SAFE_INTEGER).then_some(integer)
 }
 
-/// Parse and append Legado rules atomically. Imported IDs are replaced with
-/// app-owned IDs, and invalid input leaves the stored document unchanged.
-pub async fn import_rules_json(
-    store: &ResourceStore,
-    source_json: &str,
-) -> Result<(TxtTocRulesDocument, usize), String> {
+/// Parse imported rules without changing the saved configuration.
+pub fn parse_import(source_json: &str) -> Result<TxtTocRulesDocument, String> {
     if source_json.len() > MAX_IMPORT_BODY_BYTES {
         return Err("TXT TOC rule JSON exceeds the 1 MiB limit".to_owned());
     }
@@ -311,118 +266,13 @@ pub async fn import_rules_json(
             .cmp(&right.priority)
             .then_with(|| left.original_index.cmp(&right.original_index))
     });
-    let imported_count = imported.len();
-    let reference = resource_ref(store)?;
-    let value = store
-        .update_json_ref_or_default(&reference, empty_document_value(), move |current| {
-            let mut document = decode_current(current)?;
-            if document.rules.len() + imported_count > MAX_RULES {
-                return Err(format!("TXT TOC rules cannot exceed {MAX_RULES} entries"));
-            }
-            let first_serial_number = document
-                .rules
-                .iter()
-                .map(|rule| rule.serial_number)
-                .max()
-                .unwrap_or(0)
-                .max(0)
-                .checked_add(1)
-                .ok_or_else(|| "TXT TOC rule priority has reached the maximum value".to_owned())?;
-            if first_serial_number as i64 + imported_count as i64 - 1 > i32::MAX as i64 {
-                return Err("TXT TOC rule priority has reached the maximum value".to_owned());
-            }
-            for (index, imported) in imported.into_iter().enumerate() {
-                let rule = TxtTocRule {
-                    id: format!("txt-toc-{}-{index}", uuid::Uuid::new_v4().simple()),
-                    name: imported.name,
-                    rule: imported.rule,
-                    example: imported.example.filter(|example| !example.is_empty()),
-                    serial_number: first_serial_number + index as i32,
-                    enable: imported.enable,
-                };
-                validate_rule(&rule)?;
-                document.rules.push(rule);
-            }
-            validate_document(&document)?;
-            serde_json::to_value(document)
-                .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let document = decode_document(value)?;
-    validate_document(&document)?;
-    Ok((document, imported_count))
-}
-
-/// Reorder the complete set in one transaction. Reject stale lists and duplicates
-/// instead of silently removing or overwriting any newly added rules.
-pub async fn reorder_rules(
-    store: &ResourceStore,
-    ordered_ids: Vec<String>,
-) -> Result<TxtTocRulesDocument, String> {
-    if ordered_ids.len() > MAX_RULES {
-        return Err(format!("TXT TOC rules cannot exceed {MAX_RULES} entries"));
-    }
-    let reference = resource_ref(store)?;
-    let value = store
-        .update_json_ref_or_default(&reference, empty_document_value(), move |current| {
-            let mut document = decode_current(current)?;
-            if document.rules.len() != ordered_ids.len() {
-                return Err(
-                    "TXT TOC rules changed during reorder; refresh before retrying".to_owned(),
-                );
-            }
-            let mut positions = HashMap::with_capacity(ordered_ids.len());
-            for (index, id) in ordered_ids.into_iter().enumerate() {
-                validate_rule_id(&id)?;
-                if positions.insert(id.clone(), index as i32).is_some() {
-                    return Err(format!("Duplicate TXT TOC reorder ID: {id}"));
-                }
-            }
-            for rule in &mut document.rules {
-                rule.serial_number = positions
-                    .remove(&rule.id)
-                    .ok_or_else(|| format!("TXT TOC reorder missing rule: {}", rule.id))?;
-            }
-            if !positions.is_empty() {
-                return Err("TXT TOC reorder includes unknown rules".to_owned());
-            }
-            validate_document(&document)?;
-            serde_json::to_value(document)
-                .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let document = decode_document(value)?;
-    validate_document(&document)?;
-    Ok(document)
-}
-
-/// Delete multiple rules in one transaction. A failed validation leaves all
-/// saved rules untouched; unknown IDs are harmless and deletion is idempotent.
-pub async fn delete_rules(
-    store: &ResourceStore,
-    rule_ids: Vec<String>,
-) -> Result<TxtTocRulesDocument, String> {
-    if rule_ids.is_empty() {
-        return Err("TXT TOC delete selection is empty".to_owned());
-    }
-    for id in &rule_ids {
-        validate_rule_id(id)?;
-    }
-    let targets = rule_ids.into_iter().collect::<HashSet<_>>();
-    let reference = resource_ref(store)?;
-    let value = store
-        .update_json_ref_or_default(&reference, empty_document_value(), move |current| {
-            let mut document = decode_current(current)?;
-            document.rules.retain(|rule| !targets.contains(&rule.id));
-            validate_document(&document)?;
-            serde_json::to_value(document)
-                .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let document = decode_document(value)?;
+    let rules = imported.into_iter().enumerate().map(|(index, imported)| TxtTocRule {
+        id: format!("txt-toc-{}", uuid::Uuid::new_v4().simple()),
+        name: imported.name, rule: imported.rule,
+        example: imported.example.filter(|example| !example.is_empty()),
+        serial_number: index as i32, enable: imported.enable,
+    }).collect();
+    let document = TxtTocRulesDocument { schema_version: SCHEMA_VERSION, rules };
     validate_document(&document)?;
     Ok(document)
 }
@@ -619,8 +469,4 @@ fn decode_current(value: Value) -> Result<TxtTocRulesDocument, String> {
             Ok(document)
         })
         .unwrap_or_default())
-}
-
-fn empty_document_value() -> Value {
-    serde_json::to_value(TxtTocRulesDocument::default()).expect("TXT TOC defaults serialize")
 }

@@ -10,9 +10,7 @@ type MetadataField = "title" | "author" | "intro" | "coverSrc";
 
 const props = defineProps<{
   book: BookResource;
-  busy: boolean;
   locked: boolean;
-  error: string;
   returnLabel: string;
 }>();
 const emit = defineEmits<{
@@ -116,7 +114,7 @@ async function discardSelectedCoverAsset(): Promise<void> {
 }
 
 async function chooseLocalCover(): Promise<void> {
-  if (props.busy || props.locked || coverPicking.value) return;
+  if (props.locked || coverPicking.value) return;
   coverPicking.value = true;
   coverSelectionError.value = "";
   try {
@@ -139,7 +137,7 @@ async function chooseLocalCover(): Promise<void> {
 }
 
 onBeforeRouteLeave(() => {
-  if (props.busy || coverPicking.value) return false;
+  if (coverPicking.value) return false;
   if (!hasChanges.value) return true;
   return new Promise<boolean>(resolve => {
     pendingRouteNavigation?.(false);
@@ -152,7 +150,7 @@ onBeforeUnmount(() => {
   void discardSelectedCoverAsset();
 });
 function requestClose(): void {
-  if (props.busy || coverPicking.value) return;
+  if (coverPicking.value) return;
   if (hasChanges.value) discardPromptOpen.value = true;
   else emit("close");
 }
@@ -163,7 +161,7 @@ function keepEditing(): void {
   resume?.(false);
 }
 function discardAndClose(): void {
-  if (props.busy || coverPicking.value) return;
+  if (coverPicking.value) return;
   discardPromptOpen.value = false;
   const resume = pendingRouteNavigation;
   pendingRouteNavigation = null;
@@ -185,13 +183,16 @@ function isSafeExternalCoverUrl(value: string): boolean {
 }
 
 function submit(): void {
-  if (props.busy || coverPicking.value || !hasChanges.value) return;
+  if (coverPicking.value || !hasChanges.value) return;
   const patch: BookDisplayMetadataPatch = {};
   for (const field of fields) {
     if (resetFields[field]) patch[field] = null;
     else if (draft[field] !== initial[field]) patch[field] = draft[field];
   }
-  if (Object.keys(patch).length) emit("save", patch);
+  if (Object.keys(patch).length) {
+    selectedCoverAssetId.value = null;
+    emit("save", patch);
+  }
 }
 </script>
 
@@ -199,10 +200,10 @@ function submit(): void {
   <Teleport to="body">
     <section class="book-display-editor-backdrop" @click.self="requestClose">
       <article class="book-display-editor">
-        <header class="book-display-editor-toolbar">
-          <BackButton class="book-display-editor-back" :label="returnLabel" :disabled="busy || coverPicking" @click="requestClose" />
+        <header class="book-display-editor-toolbar safe-area-top">
+          <BackButton class="book-display-editor-back" :label="returnLabel" :disabled="coverPicking" @click="requestClose" />
           <h2 id="book-display-editor-title">书籍信息编辑</h2>
-          <button type="submit" form="book-display-editor-form" class="book-display-editor-save" :title="busy ? '正在保存' : '保存书籍信息'" :disabled="busy || locked || coverPicking || !hasChanges">{{ busy ? '保存中…' : '保存' }}</button>
+          <button type="submit" form="book-display-editor-form" class="book-display-editor-save" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</button>
         </header>
         <form id="book-display-editor-form" class="book-display-editor-form" @submit.prevent="submit">
           <div class="book-display-editor-identity">
@@ -215,14 +216,14 @@ function submit(): void {
               <label class="book-display-field">
                 <span>书名</span>
                 <div class="book-display-input-row">
-                  <input v-model="draft.title" autocomplete="off" :disabled="busy || locked" @input="resetFields.title = false" />
+                  <input v-model="draft.title" autocomplete="off" :disabled="locked" @input="resetFields.title = false" />
                 </div>
               </label>
 
               <label class="book-display-field">
                 <span>作者</span>
                 <div class="book-display-input-row">
-                  <input v-model="draft.author" autocomplete="off" :disabled="busy || locked" @input="resetFields.author = false" />
+                  <input v-model="draft.author" autocomplete="off" :disabled="locked" @input="resetFields.author = false" />
                 </div>
               </label>
             </div>
@@ -230,26 +231,25 @@ function submit(): void {
 
           <label class="book-display-field">
             <span>简介</span>
-            <textarea v-model="draft.intro" rows="5" :disabled="busy || locked" @input="resetFields.intro = false"></textarea>
+            <textarea v-model="draft.intro" rows="5" :disabled="locked" @input="resetFields.intro = false"></textarea>
           </label>
 
           <label class="book-display-field">
             <span>封面地址</span>
             <div class="book-display-input-row">
-              <input v-model="draft.coverSrc" autocomplete="off" inputmode="url" :disabled="busy || locked || coverPicking" @input="resetFields.coverSrc = false; clearCoverPreview()" />
-              <button type="button" class="text-button" :disabled="busy || locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</button>
-              <button type="button" class="text-button" :disabled="busy || locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</button>
+              <input v-model="draft.coverSrc" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" @input="resetFields.coverSrc = false; clearCoverPreview()" />
+              <button type="button" class="text-button" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</button>
+              <button type="button" class="text-button" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</button>
             </div>
             <small>支持选择 JPEG、PNG、WebP 图片或填写 HTTPS 地址；留空表示不显示封面。所选图片在保存显示信息后生效。</small>
             <p v-if="coverSelectionError" class="book-display-editor-error">{{ coverSelectionError }}</p>
           </label>
 
-          <button type="button" class="text-button book-display-reset-all" :disabled="busy || locked" @click="resetAll">全部恢复原值</button>
-          <p v-if="error" class="book-display-editor-error">{{ error }}</p>
-          <p v-else-if="locked" class="book-display-editor-error">恢复完成前不能继续保存。请重启应用后检查书架。</p>
+          <button type="button" class="text-button book-display-reset-all" :disabled="locked" @click="resetAll">全部恢复原值</button>
+          <p v-if="locked" class="book-display-editor-error">恢复完成前不能继续保存。请重启应用后检查书架。</p>
           <footer class="book-display-editor-actions">
-            <button type="button" class="button secondary" :disabled="busy || coverPicking" @click="requestClose">取消</button>
-            <button type="submit" class="button primary" :disabled="busy || locked || coverPicking || !hasChanges">{{ busy ? '正在保存…' : '保存修改' }}</button>
+            <button type="button" class="button secondary" :disabled="coverPicking" @click="requestClose">取消</button>
+            <button type="submit" class="button primary" :disabled="locked || coverPicking || !hasChanges">保存修改</button>
           </footer>
         </form>
       </article>
@@ -270,7 +270,7 @@ function submit(): void {
 <style scoped>
 .book-display-editor-backdrop{--be-accent:var(--app-accent);--be-line:var(--app-line);--be-muted:#959aa5;position:fixed;z-index:80;inset:0;display:grid;place-items:center;padding:18px;background:#191b2780;backdrop-filter:blur(2px)}
 .book-display-editor{width:min(700px,100%);height:min(860px,92dvh);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--be-line);border-radius:15px;color:#343640;background:#fff;box-shadow:0 24px 72px #15172130}
-.book-display-editor-toolbar{flex:none;min-height:61px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding:6px 20px;border-bottom:1px solid var(--be-line)}
+.book-display-editor-toolbar{flex:none;min-height:61px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding-inline:20px;padding-bottom:6px;border-bottom:1px solid var(--be-line)}
 .book-display-editor-toolbar h2{margin:0;text-align:center;color:#343640;font-size:16px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .book-display-editor-back{justify-self:start}
 .book-display-editor-save{min-height:35px;padding:0 14px;border:0;border-radius:9px;background:var(--be-accent);color:#fff;font-size:12px;font-weight:700;cursor:pointer}
@@ -303,7 +303,7 @@ function submit(): void {
 @media(max-width:640px){
  .book-display-editor-backdrop{padding:0;display:block}
  .book-display-editor{width:100%;height:100dvh;border:0;border-radius:0}
- .book-display-editor-toolbar{min-height:calc(55px + env(safe-area-inset-top));padding:env(safe-area-inset-top) 12px 0}
+ .book-display-editor-toolbar{min-height:55px;padding-inline:12px;padding-bottom:0}
  .book-display-editor-toolbar h2{font-size:14px}
  .book-display-editor-form{gap:17px;padding:16px 15px 22px}
  .book-display-editor-identity{grid-template-columns:92px minmax(0,1fr);gap:12px}

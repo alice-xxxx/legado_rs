@@ -1,17 +1,13 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
+import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
-import type { AppBootstrap, ResourceDescriptor, ShelfResource } from "../../api/types";
 import { errorText, notify } from "../../app/notifications";
 import {
   getFrontendRestoreRevision,
   shelfBatchRecoveryMessage,
   shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle,
-} from "../../app/recoveryState";
+  shelfBatchRecoveryTitle } from "../../app/recoveryState";
 import { openedBook } from "../books/bookDetailState";
 import { getReaderSession } from "../reader/readerSession";
 import { backupBusy } from "./backupState";
@@ -22,7 +18,6 @@ import SettingsDetailHeader from "./SettingsDetailHeader.vue";
 
 const route = useRoute();
 const reader = getReaderSession();
-const shelf = shallowRef<ShelfResource>({ schemaVersion: 1, books: [] });
 const bootstrapped = ref(false);
 const chapterCacheUsage = ref<import("../../api/types").ChapterCacheUsage | null>(null);
 const chapterCacheUsageBusy = ref(false);
@@ -72,49 +67,8 @@ const cacheRefreshBlocked = computed(() => chapterCacheUsageBusy.value || shelfC
   || bookChapterCacheClearBusy.value || backupBusy.value !== null || shelfBatchRecoveryRequired.value);
 const cacheClearBlocked = computed(() => cacheRefreshBlocked.value);
 const formatChapterCacheBytes = cacheActions.formatChapterCacheBytes;
-const unlisteners: UnlistenFn[] = [];
-let disposed = false;
-let shelfReadRevision = 0;
-
-async function refreshShelf(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const requestRevision = ++shelfReadRevision;
-  const source = descriptor ?? (await appBootstrap()).shelf;
-  const next = await readResource<ShelfResource>(source);
-  if (disposed || restoreRevision !== getFrontendRestoreRevision() || requestRevision !== shelfReadRevision) return;
-  shelf.value = { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
-
-function retain(unlisten: UnlistenFn): void {
-  if (disposed) unlisten();
-  else unlisteners.push(unlisten);
-}
-
-async function setupEvents(): Promise<void> {
-  try {
-    retain(await listen<ResourceDescriptor>("shelf-updated", (event) => refreshShelf(event.payload).catch((error) => {
-      notify(`书架更新失败：${errorText(error)}`, "error");
-    })));
-    retain(await listen<AppBootstrap>("app-state-updated", async (event) => {
-      const revision = getFrontendRestoreRevision();
-      cacheActions.resetForRestore();
-      bootstrapped.value = false;
-      try {
-        await refreshShelf(event.payload.shelf);
-        if (revision === getFrontendRestoreRevision()) bootstrapped.value = true;
-      } catch (error) {
-        if (revision === getFrontendRestoreRevision()) notify(`恢复后的书架读取失败：${errorText(error)}`, "error");
-      }
-    }));
-  } catch (error) {
-    if (!disposed) console.debug("Chapter cache event subscription unavailable:", errorText(error));
-  }
-}
-
 onMounted(async () => {
-  void setupEvents();
   try {
-    await refreshShelf();
     bootstrapped.value = true;
     void cacheActions.refreshChapterCacheUsage();
   } catch (error) {
@@ -122,11 +76,6 @@ onMounted(async () => {
   }
 });
 
-onBeforeUnmount(() => {
-  disposed = true;
-  shelfReadRevision += 1;
-  for (const unlisten of unlisteners.splice(0)) unlisten();
-});
 </script>
 
 <template>

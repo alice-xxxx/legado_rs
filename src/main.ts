@@ -1,14 +1,21 @@
 import { createApp, type Component } from "vue";
 import { emit } from "@tauri-apps/api/event";
+import { appBootstrap } from "./api/core";
 import router from "./router";
 import RoutesRoot from "./app/RoutesRoot.vue";
 import ExternalImportHost from "./features/import/ExternalImportHost.vue";
 import ReaderHost from "./features/reader/ReaderHost.vue";
 import GlobalNoticeHost from "./app/GlobalNoticeHost.vue";
 import RecoveryRuntime from "./app/RecoveryRuntime.vue";
+import { loadSettings } from "./features/settings/settingsStore";
+import { loadHistory } from "./features/settings/historyStore";
+import { loadConfigurations } from "./features/settings/configurationStores";
+import { initializeBookStore } from "./features/books/bookDetailState";
+import { loadShelf } from "./features/shelf/shelfStore";
 import "./style.css";
 
 const mountedApps: Array<{ unmount: () => void }> = [];
+let startupDisposed = false;
 const preventIosZoomGesture = (event: Event) => event.preventDefault();
 window.addEventListener("gesturestart", preventIosZoomGesture, { passive: false });
 window.addEventListener("gesturechange", preventIosZoomGesture, { passive: false });
@@ -61,15 +68,28 @@ const onUnhandledRejection = (event: PromiseRejectionEvent) => {
 };
 window.addEventListener("unhandledrejection", onUnhandledRejection);
 
-// Feature hosts install their narrow session contracts before route setup.
+// Recovery listening starts immediately; settings initialize before session hosts and pages.
 mountRoot(RecoveryRuntime, "#recovery-runtime", "recovery");
-mountRoot(ExternalImportHost, "#external-import-host", "external-import");
-mountRoot(ReaderHost, "#reader-host", "reader", true);
-mountRoot(GlobalNoticeHost, "#notice-host", "notices");
-mountRoot(RoutesRoot, "#app", "routes", true);
+
+void appBootstrap().then((bootstrap) => Promise.all([
+  loadSettings(bootstrap.settings),
+  loadHistory(bootstrap.history),
+  loadShelf(bootstrap.shelf),
+  loadConfigurations(bootstrap),
+  initializeBookStore(bootstrap.shelf),
+])).then(() => {
+  if (startupDisposed) return;
+  // The import host installs its session before ReaderHost consumes it.
+  mountRoot(ExternalImportHost, "#external-import-host", "external-import");
+  // ReaderHost installs the reader session used by notices and route pages.
+  mountRoot(ReaderHost, "#reader-host", "reader", true);
+  mountRoot(GlobalNoticeHost, "#notice-host", "notices");
+  mountRoot(RoutesRoot, "#app", "routes", true);
+}).catch((error: unknown) => console.error("App initialization failed", error));
 
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
+    startupDisposed = true;
     window.removeEventListener("gesturestart", preventIosZoomGesture);
     window.removeEventListener("gesturechange", preventIosZoomGesture);
     window.removeEventListener("unhandledrejection", onUnhandledRejection);

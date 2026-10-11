@@ -6,11 +6,10 @@
 //! stay in Rust's private source store and are never copied here.
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::resources::{ResourceRef, ResourceStore};
 
-const CURRENT_SCHEMA_VERSION: u32 = 1;
 pub const MAX_HISTORY_ENTRIES: usize = 100;
 const MAX_PROCESSED_SEARCH_IDS: usize = 256;
 const MAX_QUERY_CHARS: usize = 512;
@@ -22,7 +21,6 @@ const MAX_SEARCH_ID_BYTES: usize = 128;
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SearchHistoryDocument {
-    pub schema_version: u32,
     pub entries: Vec<SearchHistoryEntry>,
     pub processed_search_ids: Vec<String>,
 }
@@ -30,7 +28,6 @@ pub struct SearchHistoryDocument {
 impl Default for SearchHistoryDocument {
     fn default() -> Self {
         Self {
-            schema_version: CURRENT_SCHEMA_VERSION,
             entries: Vec::new(),
             processed_search_ids: Vec::new(),
         }
@@ -48,24 +45,21 @@ pub struct SearchHistoryEntry {
     pub last_use_time_ms: u64,
 }
 
-/// Stable browser resource location: `resource://reading/search-history.json`.
+/// Search history is one section of the shared `history.json` resource.
 pub fn resource_ref(store: &ResourceStore) -> Result<ResourceRef, String> {
-    store
-        .reading_ref("search-history")
-        .map_err(|error| error.to_string())
+    Ok(store.history_ref())
 }
 
 /// Read the typed document, creating the default JSON resource on first use.
 pub async fn load(store: &ResourceStore) -> Result<SearchHistoryDocument, String> {
-    let reference = resource_ref(store)?;
+    let reference = crate::reading_tools::history_resource(store).await?;
     let value = store
-        .update_json_ref_or_default(&reference, empty_document(), |current| {
-            let document = decode_or_default(current)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
+        .read_json_ref(&reference)
         .await
         .map_err(|error| error.to_string())?;
-    decode_document(value)
+    let history = crate::reading_tools::parse_history(&value)?;
+    validate_typed_document(&history.search)?;
+    Ok(history.search)
 }
 
 /// Record a user initiated search exactly once per `search_id` within the
@@ -84,44 +78,33 @@ pub async fn record_search(
     let reference = resource_ref(store)?;
 
     store
-        .update_json_ref_or_default(&reference, empty_document(), move |current| {
-            let mut document = decode_or_default(current)?;
-            if document
-                .processed_search_ids
-                .iter()
-                .any(|processed| processed == &search_id)
+        .update_json_ref_or_default(&reference, empty_history_document(), move |current| {
+            let mut history = crate::reading_tools::parse_history(&current)?;
             {
-                return serde_json::to_value(document).map_err(|error| error.to_string());
+                let document = &mut history.search;
+                validate_typed_document(document)?;
+                if !document.processed_search_ids.iter().any(|processed| processed == &search_id) {
+                    document.processed_search_ids.push(search_id);
+                    if document.processed_search_ids.len() > MAX_PROCESSED_SEARCH_IDS {
+                        let discard = document.processed_search_ids.len() - MAX_PROCESSED_SEARCH_IDS;
+                        document.processed_search_ids.drain(0..discard);
+                    }
+                    if let Some(entry) = document.entries.iter_mut().find(|entry| entry.normalized_query == normalized_query) {
+                        entry.query = query;
+                        entry.usage = entry.usage.saturating_add(1);
+                        entry.last_use_time_ms = entry.last_use_time_ms.max(now_ms);
+                        entry.first_use_time_ms = entry.first_use_time_ms.min(now_ms);
+                    } else {
+                        document.entries.push(SearchHistoryEntry {
+                            query, normalized_query, usage: 1,
+                            first_use_time_ms: now_ms, last_use_time_ms: now_ms,
+                        });
+                    }
+                    sort_by_recency(&mut document.entries);
+                    document.entries.truncate(MAX_HISTORY_ENTRIES);
+                }
             }
-
-            document.processed_search_ids.push(search_id);
-            if document.processed_search_ids.len() > MAX_PROCESSED_SEARCH_IDS {
-                let discard = document.processed_search_ids.len() - MAX_PROCESSED_SEARCH_IDS;
-                document.processed_search_ids.drain(0..discard);
-            }
-
-            if let Some(entry) = document
-                .entries
-                .iter_mut()
-                .find(|entry| entry.normalized_query == normalized_query)
-            {
-                entry.query = query;
-                entry.usage = entry.usage.saturating_add(1);
-                entry.last_use_time_ms = entry.last_use_time_ms.max(now_ms);
-                entry.first_use_time_ms = entry.first_use_time_ms.min(now_ms);
-            } else {
-                document.entries.push(SearchHistoryEntry {
-                    query,
-                    normalized_query,
-                    usage: 1,
-                    first_use_time_ms: now_ms,
-                    last_use_time_ms: now_ms,
-                });
-            }
-
-            sort_by_recency(&mut document.entries);
-            document.entries.truncate(MAX_HISTORY_ENTRIES);
-            serde_json::to_value(document).map_err(|error| error.to_string())
+            serde_json::to_value(history).map_err(|error| error.to_string())
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -129,80 +112,16 @@ pub async fn record_search(
     Ok(reference)
 }
 
-/// Delete the history entry matching a query after normalization. Repeating
-/// this operation is safe and leaves the de-duplication window intact.
-pub async fn delete_query(store: &ResourceStore, query: &str) -> Result<ResourceRef, String> {
-    let query = validate_query(query)?;
-    let normalized_query = normalize_query(&query);
-    let reference = resource_ref(store)?;
-
-    store
-        .update_json_ref_or_default(&reference, empty_document(), move |current| {
-            let mut document = decode_or_default(current)?;
-            document
-                .entries
-                .retain(|entry| entry.normalized_query != normalized_query);
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(reference)
+pub fn validate_search_history(document: &SearchHistoryDocument) -> Result<(), String> {
+    validate_typed_document(document)
 }
 
-/// Clear all visible history entries. Recent operation IDs remain in the
-/// document so a delayed IPC retry cannot recreate a just-cleared entry.
-pub async fn clear(store: &ResourceStore) -> Result<ResourceRef, String> {
-    let reference = resource_ref(store)?;
-    store
-        .update_json_ref_or_default(&reference, empty_document(), |current| {
-            let mut document = decode_or_default(current)?;
-            document.entries.clear();
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-/// Strictly decode and validate the supported schema. Unknown/future versions
-/// are rejected instead of being rewritten as this version.
-pub fn decode_document(value: Value) -> Result<SearchHistoryDocument, String> {
-    let document: SearchHistoryDocument = serde_json::from_value(value)
-        .map_err(|error| format!("Invalid search history: {error}"))?;
-    validate_typed_document(&document)?;
-    Ok(document)
-}
-
-/// Validate a JSON document for backup/restore callers without consulting live
-/// sources or interpreting any source rules.
-pub fn validate_document(value: &Value) -> Result<(), String> {
-    decode_document(value.clone()).map(|_| ())
-}
-
-fn decode_or_default(value: Value) -> Result<SearchHistoryDocument, String> {
-    if value.is_null() {
-        Ok(SearchHistoryDocument::default())
-    } else {
-        Ok(decode_document(value).unwrap_or_default())
-    }
-}
-
-fn empty_document() -> Value {
-    json!({
-        "schemaVersion": CURRENT_SCHEMA_VERSION,
-        "entries": [],
-        "processedSearchIds": [],
-    })
+fn empty_history_document() -> Value {
+    serde_json::to_value(crate::reading_tools::HistoryDocument::default())
+        .expect("default history document is serializable")
 }
 
 fn validate_typed_document(document: &SearchHistoryDocument) -> Result<(), String> {
-    if document.schema_version != CURRENT_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported search history schema version: {}",
-            document.schema_version
-        ));
-    }
     if document.entries.len() > MAX_HISTORY_ENTRIES {
         return Err("Search history contains too many entries".into());
     }

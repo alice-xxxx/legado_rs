@@ -28,8 +28,8 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     models::{
-        BookDocument, BookMediaType, CURRENT_SCHEMA_VERSION, ChapterDescriptor, ProgressDocument,
-        ProgressSummary, ReaderDefaults, ReaderTheme,
+        BookDocument, BookMediaType, CURRENT_SCHEMA_VERSION, ChapterDescriptor, ProgressSummary,
+        ReaderDefaults, ReaderTheme, ShelfDocument,
     },
     resources::{
         ChapterVideoSource, ResourceRef, ResourceServer, ResourceStore, ResourceStoreWriterGuard,
@@ -43,7 +43,6 @@ mod backup_service;
 use backup_service::restore_error_response;
 mod book_catalog;
 mod book_display;
-mod book_shelf;
 
 // 本地文件、章节资源和通用数据处理。
 mod file_import;
@@ -104,6 +103,7 @@ const PENDING_EXTERNAL_FILE_IMPORT_TTL: Duration = Duration::from_secs(10 * 60);
 const MAX_PENDING_EXTERNAL_FILE_IMPORTS: usize = 8;
 const BOOK_SOURCE_CANDIDATE_TTL_MS: u64 = 30 * 60 * 1000;
 const MAX_SOURCE_IMPORT_BODY_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 const MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_DICTIONARY_WORD_CHARS: usize = 128;
 const MAX_DICTIONARY_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
@@ -127,7 +127,6 @@ const MAX_PICKER_SOURCE_JSON_BYTES: u64 = 32 * 1024 * 1024;
 #[derive(Clone)]
 pub struct ApplicationService {
     root: PathBuf,
-    private_root: PathBuf,
     _process_lock: Arc<crate::resource_transactions::AppDataProcessLock>,
     store: Arc<ResourceStore>,
     server: Arc<ResourceServer>,
@@ -137,6 +136,7 @@ pub struct ApplicationService {
     sources_lock: Arc<tokio::sync::Mutex<()>>,
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
+    book_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_recovery_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     search_snapshot_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
@@ -208,86 +208,6 @@ struct AppTask {
 struct TaskSignal {
     paused: bool,
     cancelled: bool,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BookRemovalOutcome {
-    pub(crate) book_id: String,
-    pub(crate) shelf: Value,
-    pub(crate) recovery_required: bool,
-    pub(crate) warning: Option<String>,
-}
-
-impl BookRemovalOutcome {
-    fn into_value(self) -> Value {
-        json!({
-            "outcome": "deleted",
-            "commitState": "committed",
-            "bookId": self.book_id,
-            "shelf": self.shelf,
-            "recoveryRequired": self.recovery_required,
-            "warning": self.warning,
-        })
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct BookRemovalError {
-    pub(crate) commit_state: crate::resource_transactions::CommitState,
-    pub(crate) recovery_required: bool,
-    pub(crate) detail: String,
-}
-
-impl BookRemovalError {
-    fn not_committed(detail: impl Into<String>, recovery_required: bool) -> Self {
-        Self {
-            commit_state: crate::resource_transactions::CommitState::NotCommitted,
-            recovery_required,
-            detail: detail.into(),
-        }
-    }
-
-    fn transaction(error: crate::resource_transactions::TransactionError) -> Self {
-        Self {
-            commit_state: error.commit_state(),
-            recovery_required: error.recovery_required_flag(),
-            detail: error.to_string(),
-        }
-    }
-
-    fn ui_message(&self) -> String {
-        use crate::resource_transactions::CommitState;
-        let outcome = match (self.commit_state, self.recovery_required) {
-            (CommitState::NotCommitted, false) => {
-                "Book was not removed; the deletion was not committed and its prior files were retained."
-            }
-            (CommitState::NotCommitted, true) => {
-                "Book removal was not committed, but rollback or an earlier recovery is incomplete. Files may be mixed; restart the application before retrying."
-            }
-            (CommitState::Committed, _) => {
-                "Book removal was committed. Cleanup is pending; restart the application before further writes."
-            }
-            (CommitState::Indeterminate, _) => {
-                "Book removal status is unknown. Do not retry; restart the application to recover the transaction first."
-            }
-        };
-        format!("{outcome} Details: {}", self.detail)
-    }
-
-    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-    fn into_value(self) -> Value {
-        use crate::resource_transactions::CommitState;
-        let commit_state = match self.commit_state {
-            CommitState::NotCommitted => "notCommitted",
-            CommitState::Committed => "committed",
-            CommitState::Indeterminate => "indeterminate",
-        };
-        json!({
-            "commitState": commit_state,
-            "recoveryRequired": self.recovery_required,
-            "error": self.detail,
-        })
-    }
 }
 
 #[derive(Default)]

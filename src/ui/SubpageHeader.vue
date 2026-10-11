@@ -16,7 +16,7 @@ const emit = defineEmits<{ back: [] }>();
 </script>
 
 <template>
-  <header class="subpage-header" :class="{ 'subpage-header--compact': !title }">
+  <header class="subpage-header safe-area-top" :class="{ 'subpage-header--compact': !title }">
     <BackButton
       class="subpage-header__back"
       :label="backLabel"
@@ -39,7 +39,7 @@ const emit = defineEmits<{ back: [] }>();
   min-height: 64px;
   align-items: center;
   gap: 12px;
-  padding: 0 16px;
+  padding-inline: 16px;
   border-bottom: 1px solid var(--app-line);
   background: var(--app-background);
 }

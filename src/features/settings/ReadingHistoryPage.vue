@@ -1,14 +1,14 @@
 <script setup lang="ts">
-// 页面展示资源快照；所有持久化仍通过 Rust 命令完成。
+// 页面直接显示全局 history 中的阅读记录；改动由 historyStore 自动保存。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
+import { bookPreviews, loadBookPreviews } from "../books/bookDetailState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { backupBusy } from "./backupState";
-import { clearReadingHistory, deleteReadingHistoryForBook, getReadingStatistics, readingHistoryResource } from "../../api/reading";
-import type { AppBootstrap, ReadingHistoryResource, ReadingStatisticsResource, ResourceDescriptor, ShelfResource } from "../../api/types";
+import { readingStatistics } from "./readingStatistics";
+import type { AppBootstrap, ReadingHistoryResource, ReadingStatisticsResource } from "../../api/types";
+import { history as appHistory } from "./historyStore";
 import router, { routeNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
@@ -20,7 +20,7 @@ const blocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRe
 
 async function openHistoryBook(bookId: string): Promise<void> {
   if (blocked.value) return;
-  const requestId = requestBookDetailOpen({ kind: "shelf-book", bookId, initialTab: "catalog" });
+  const requestId = requestBookDetailOpen({ kind: "cached-book", bookId, initialTab: "catalog" });
   try {
     const failure = await router.push({ name: routeNames.bookDetail });
     if (failure) discardBookDetailOpenRequest(requestId);
@@ -30,26 +30,15 @@ async function openHistoryBook(bookId: string): Promise<void> {
   }
 }
 
-const emptyHistory = (): ReadingHistoryResource => ({
-  schemaVersion: 1,
-  sessions: [],
-  books: [],
-  days: [],
-  totalDurationMs: 0,
-  totalSessions: 0,
-});
-const shelf = ref<ShelfResource>({ schemaVersion: 1, books: [], groups: [] });
-const history = ref<ReadingHistoryResource>(emptyHistory());
+
+const history = computed(() => appHistory.value.reading);
 const statisticsPeriod = ref<ReadingStatisticsPeriod>("30days");
 const periodStatistics = ref<ReadingStatisticsResource>({ books: [], days: [], totalDurationMs: 0, totalSessions: 0 });
 const loading = ref(true);
 const loadError = ref("");
 const shelfError = ref("");
-const historyResourceError = ref("");
 const statisticsBusy = ref(false);
 const statisticsError = ref("");
-const historyActionBusy = ref(false);
-const historyActionError = ref("");
 const historyQuery = ref("");
 const historyVisibleLimit = ref(50);
 const historySearchOpen = ref(false);
@@ -62,37 +51,16 @@ const books = computed(() => statisticsData.value.books);
 const totalDurationMs = computed(() => statisticsData.value.totalDurationMs);
 const totalSessions = computed(() => statisticsData.value.totalSessions);
 const allTimeTotalSessions = computed(() => history.value.totalSessions);
-const shelfBookMap = computed(() => new Map(shelf.value.books.map((book) => [book.id, book])));
-const shelfBookIds = computed(() => new Set(shelf.value.books.map((book) => book.id)));
-const bookCoverMap = computed(() => new Map(shelf.value.books.map((book) => [book.id, book.coverSrc])));
+watch(() => history.value.books.map((book) => book.bookId), (ids) => { void loadBookPreviews(ids); }, { immediate: true });
 
 let disposed = false;
 let restoreRevision = 0;
 let loadRevision = 0;
-let shelfReadRevision = 0;
-let historyReadRevision = 0;
-let shelfEventRevision = 0;
-let historyEventRevision = 0;
 let statisticsRequestRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function normalizeShelf(value: ShelfResource): ShelfResource {
-  return { ...value, groups: value.groups ?? [], books: value.books ?? [] };
-}
-
-function normalizeHistory(value: ReadingHistoryResource): ReadingHistoryResource {
-  return {
-    schemaVersion: value.schemaVersion ?? 1,
-    sessions: Array.isArray(value.sessions) ? value.sessions : [],
-    books: Array.isArray(value.books) ? value.books : [],
-    days: Array.isArray(value.days) ? value.days : [],
-    totalDurationMs: value.totalDurationMs ?? 0,
-    totalSessions: value.totalSessions ?? 0,
-  };
 }
 
 function localDateKey(date: Date): string {
@@ -121,7 +89,7 @@ async function refreshStatistics(): Promise<void> {
   statisticsBusy.value = true;
   try {
     const { fromMs, toMs } = readingStatisticsDateRange(period);
-    const next = await getReadingStatistics(fromMs, toMs);
+    const next = readingStatistics(history.value, fromMs, toMs);
     if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== statisticsRequestRevision) return;
     periodStatistics.value = next;
   } catch (error) {
@@ -135,62 +103,22 @@ async function refreshStatistics(): Promise<void> {
   }
 }
 
+watch(() => history.value.sessions, () => { void refreshStatistics(); }, { deep: true });
+
 function changeStatisticsPeriod(period: ReadingStatisticsPeriod): void {
-  if (blocked.value || historyActionBusy.value) return;
+  if (blocked.value) return;
   statisticsPeriod.value = period;
   historyVisibleLimit.value = 50;
   void refreshStatistics();
 }
 
-function applyHistoryDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++historyReadRevision;
-  const currentRestoreRevision = restoreRevision;
-  return readResource<ReadingHistoryResource>(descriptor).then((value) => {
-    if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== historyReadRevision) return;
-    history.value = normalizeHistory(value);
-    historyResourceError.value = "";
-    void refreshStatistics();
-  }).catch((error: unknown) => {
-    if (!disposed && currentRestoreRevision === restoreRevision && requestRevision === historyReadRevision) {
-      historyResourceError.value = errorText(error);
-    }
-  });
-}
-
-async function applyShelfDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++shelfReadRevision;
-  const currentRestoreRevision = restoreRevision;
-  const next = normalizeShelf(await readResource<ShelfResource>(descriptor));
-  if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== shelfReadRevision) return;
-  shelf.value = next;
-  shelfError.value = "";
-}
-
-async function loadPageData(snapshot?: AppBootstrap): Promise<void> {
+async function loadPageData(_snapshot?: AppBootstrap): Promise<void> {
   const requestRevision = ++loadRevision;
   const currentRestoreRevision = restoreRevision;
-  const shelfEventAtStart = shelfEventRevision;
-  const historyEventAtStart = historyEventRevision;
   loading.value = true;
   loadError.value = "";
   try {
-    const bootstrap = snapshot ?? await appBootstrap();
-    const historyDescriptor = await readingHistoryResource();
-    const [nextShelf, nextHistory] = await Promise.all([
-      readResource<ShelfResource>(bootstrap.shelf),
-      readResource<ReadingHistoryResource>(historyDescriptor),
-    ]);
     if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== loadRevision) return;
-    if (shelfEventAtStart === shelfEventRevision) {
-      shelfReadRevision += 1;
-      shelf.value = normalizeShelf(nextShelf);
-      shelfError.value = "";
-    }
-    if (historyEventAtStart === historyEventRevision) {
-      historyReadRevision += 1;
-      history.value = normalizeHistory(nextHistory);
-      historyResourceError.value = "";
-    }
     await refreshStatistics();
   } catch (error) {
     if (!disposed && currentRestoreRevision === restoreRevision && requestRevision === loadRevision) {
@@ -204,42 +132,24 @@ async function loadPageData(snapshot?: AppBootstrap): Promise<void> {
 function handleRestore(snapshot: AppBootstrap): void {
   restoreRevision += 1;
   loadRevision += 1;
-  shelfReadRevision += 1;
-  historyReadRevision += 1;
   statisticsRequestRevision += 1;
   historyClearPending.value = false;
   historyDeletePendingBookId.value = null;
-  historyActionError.value = "";
   void loadPageData(snapshot);
 }
 
-async function mutateHistory(action: { kind: "clear" } | { kind: "deleteBook"; bookId: string }): Promise<void> {
-  if (blocked.value || loading.value || historyActionBusy.value) return;
-  const currentRestoreRevision = restoreRevision;
-  const eventAtStart = historyEventRevision;
+function mutateHistory(action: { kind: "clear" } | { kind: "deleteBook"; bookId: string }): void {
+  if (blocked.value || loading.value) return;
   statisticsRequestRevision += 1;
   statisticsBusy.value = false;
-  historyActionBusy.value = true;
-  historyActionError.value = "";
-  try {
-    const descriptor = action.kind === "clear"
-      ? await clearReadingHistory()
-      : await deleteReadingHistoryForBook(action.bookId);
-    const next = normalizeHistory(await readResource<ReadingHistoryResource>(descriptor));
-    if (disposed || currentRestoreRevision !== restoreRevision) return;
-    if (eventAtStart === historyEventRevision) {
-      historyReadRevision += 1;
-      history.value = next;
-      historyResourceError.value = "";
-    }
-    historyClearPending.value = false;
-    historyDeletePendingBookId.value = null;
-    await refreshStatistics();
-  } catch (error) {
-    if (!disposed && currentRestoreRevision === restoreRevision) historyActionError.value = errorText(error);
-  } finally {
-    historyActionBusy.value = false;
+  if (action.kind === "clear") {
+    appHistory.value.reading = { sessions: [], books: [], days: [], totalDurationMs: 0, totalSessions: 0 };
+  } else {
+    appHistory.value.reading.sessions = appHistory.value.reading.sessions
+      .filter((session) => session.bookId !== action.bookId);
   }
+  historyClearPending.value = false;
+  historyDeletePendingBookId.value = null;
 }
 
 function confirmHistoryBookDeletion(): void {
@@ -255,11 +165,11 @@ function returnToSettings(): void {
   void router.push({ name: routeNames.settings });
 }
 
-const canOpenHistoryBook = (bookId: string) => shelfBookIds.value.has(bookId);
-function coverForBook(bookId: string): string | undefined { return bookCoverMap.value.get(bookId); }
-function title(bookId: string): string { return shelfBookMap.value.get(bookId)?.title ?? "书架中已移除的书"; }
+const canOpenHistoryBook = (bookId: string) => Boolean(bookId);
+function coverForBook(bookId: string): string | undefined { return bookPreviews.value[bookId]?.coverSrc; }
+function title(bookId: string): string { return bookPreviews.value[bookId]?.title ?? "缓存书信息暂不可用"; }
 function historyBookSubtitle(book: ReadingHistoryResource["books"][number]): string {
-  const shelfBook = shelfBookMap.value.get(book.bookId);
+  const shelfBook = bookPreviews.value[book.bookId];
   const chapterIndex = shelfBook?.progress?.chapterIndex;
   if (shelfBook && typeof chapterIndex === "number" && Number.isInteger(chapterIndex)
     && chapterIndex >= 0 && shelfBook.chapterCount > 0) {
@@ -342,21 +252,9 @@ function dayLabel(date: Date): string {
 
 async function setupEvents(): Promise<void> {
   try {
-    const unlistenShelf = await listen<ResourceDescriptor>("shelf-updated", (event) => {
-      shelfEventRevision += 1;
-      void applyShelfDescriptor(event.payload).catch((error: unknown) => {
-        if (!disposed) shelfError.value = errorText(error);
-      });
-    });
-    if (disposed) { unlistenShelf(); return; }
-    unlisteners.push(unlistenShelf);
-    const unlistenResources = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", (event) => {
-      if (event.payload.kind !== "readingHistory") return;
-      historyEventRevision += 1;
-      void applyHistoryDescriptor(event.payload.resource);
-    });
-    if (disposed) { unlistenResources(); return; }
-    unlisteners.push(unlistenResources);
+    const unlistenHistory = await listen("history-updated", () => { void refreshStatistics(); });
+    if (disposed) { unlistenHistory(); return; }
+    unlisteners.push(unlistenHistory);
     const unlistenRestore = await listen<AppBootstrap>("app-state-updated", (event) => handleRestore(event.payload));
     if (disposed) { unlistenRestore(); return; }
     unlisteners.push(unlistenRestore);
@@ -374,15 +272,13 @@ onBeforeUnmount(() => {
   disposed = true;
   restoreRevision += 1;
   loadRevision += 1;
-  shelfReadRevision += 1;
-  historyReadRevision += 1;
   statisticsRequestRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
 });
 </script>
 
 <template>
-  <header class="history-topbar">
+  <header class="history-topbar safe-area-top">
     <BackButton label="返回我的" @click="returnToSettings" />
     <div class="history-heading">
       <strong>历史</strong>
@@ -396,19 +292,17 @@ onBeforeUnmount(() => {
     </div>
     <template v-else>
       <p v-if="shelfError" class="record-state record-error" role="alert">书架更新失败：{{ shelfError }} <button type="button" @click="loadPageData()">重试</button></p>
-      <p v-if="historyResourceError" class="record-state record-error" role="alert">历史更新失败：{{ historyResourceError }} <button type="button" @click="loadPageData()">重试</button></p>
-      <p v-if="historyActionError" class="record-state record-error" role="alert">操作失败：{{ historyActionError }}</p>
       <div class="records-toolbar">
         <nav class="record-periods">
           <button v-for="option in ([['today','今天'],['7days','7 天'],['30days','30 天'],['all','全部']] as const)" :key="option[0]"
             type="button" :class="{ active: statisticsPeriod === option[0] }"
-            :disabled="blocked || historyActionBusy || statisticsBusy" @click="changeStatisticsPeriod(option[0])">{{ option[1] }}</button>
+            :disabled="blocked || statisticsBusy" @click="changeStatisticsPeriod(option[0])">{{ option[1] }}</button>
         </nav>
         <div class="record-toolbar-actions">
           <button v-if="allTimeTotalSessions" type="button" class="record-icon-button" @click="toggleHistorySearch"><PrototypeIcon name="search"/></button>
           <details v-if="allTimeTotalSessions" class="record-row-menu record-clear-menu">
             <summary><PrototypeIcon name="more"/></summary>
-            <div><button type="button" class="record-delete" :disabled="blocked || historyActionBusy" @click="historyClearPending = true">清空全部历史记录</button></div>
+            <div><button type="button" class="record-delete" :disabled="blocked" @click="historyClearPending = true">清空全部历史记录</button></div>
           </details>
         </div>
       </div>
@@ -451,7 +345,7 @@ onBeforeUnmount(() => {
                   :disabled="blocked"
                   @click="openHistoryBook(book.bookId)">打开内容</button>
                 <button type="button" class="record-delete"
-                  :disabled="blocked || historyActionBusy"
+                  :disabled="blocked"
                   @click="historyDeletePendingBookId = book.bookId">删除这本书的历史</button>
               </div>
             </details>
@@ -474,17 +368,17 @@ onBeforeUnmount(() => {
           <strong>删除《{{ title(historyDeletePendingBookId) }}》的阅读记录？</strong>
           <p>这本书的阅读会话与时长统计将被删除，操作不可撤销。</p>
           <footer>
-            <button type="button" class="record-action" :disabled="historyActionBusy" @click="historyDeletePendingBookId = null">取消</button>
+            <button type="button" class="record-action" @click="historyDeletePendingBookId = null">取消</button>
             <button type="button" class="record-action record-delete"
-              :disabled="blocked || historyActionBusy" @click="confirmHistoryBookDeletion">{{ historyActionBusy ? '删除中…' : '确认删除' }}</button>
+              :disabled="blocked" @click="confirmHistoryBookDeletion">确认删除</button>
           </footer>
         </div>
       </div>
       <div v-if="historyClearPending" class="record-confirm-backdrop">
         <div class="record-confirm"><strong>清空全部阅读历史？</strong>
           <p>将删除已记录的阅读历史和统计，无法撤销。</p>
-          <footer><button type="button" class="record-action" :disabled="historyActionBusy" @click="historyClearPending = false">取消</button>
-            <button type="button" class="record-action record-delete" :disabled="blocked || historyActionBusy" @click="confirmHistoryClear">{{ historyActionBusy ? '清空中…' : '确认清空' }}</button></footer>
+          <footer><button type="button" class="record-action" @click="historyClearPending = false">取消</button>
+            <button type="button" class="record-action record-delete" :disabled="blocked" @click="confirmHistoryClear">确认清空</button></footer>
         </div>
       </div>
     </template>
@@ -493,7 +387,7 @@ onBeforeUnmount(() => {
 <style scoped>
 .my-records{width:min(940px,100%);margin:0 auto;padding:8px 0 50px;color:#343641}
 .my-records--history{width:min(860px,calc(100% - 36px));padding:24px 0 54px}
-.history-topbar{position:sticky;top:0;z-index:35;height:64px;box-sizing:border-box;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding:0 max(18px,calc((100% - 1180px) / 2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
+.history-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px) / 2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
 .history-heading{display:flex;flex-direction:column;gap:2px;min-width:0}
 .history-heading strong{font-size:14px;font-weight:750;color:#18191d;line-height:1.25}
 .records-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
@@ -554,6 +448,6 @@ onBeforeUnmount(() => {
 .record-row-menu>div{position:absolute;right:0;top:39px;z-index:9;min-width:158px;padding:6px;border:1px solid #e4e5ed;border-radius:10px;background:#fff;box-shadow:0 14px 32px #25223520}
 .record-row-menu>div button{display:block;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:6px;background:transparent;text-align:left;font-size:12px;cursor:pointer}
 .record-row-menu>div button:hover{background:#fff3f3}
-@media(max-width:660px){.history-topbar{height:64px;padding:0 18px}.my-records--history{width:calc(100% - 36px);padding-top:24px}.record-timeline-row{grid-template-columns:76px 45px minmax(0,1fr) 36px;gap:8px}.record-timeline-row time{font-size:8px}.record-book-icon{width:45px;height:54px}.record-book-title{font-size:10px}}
+@media(max-width:660px){.history-topbar{padding-inline:18px}.my-records--history{width:calc(100% - 36px);padding-top:24px}.record-timeline-row{grid-template-columns:76px 45px minmax(0,1fr) 36px;gap:8px}.record-timeline-row time{font-size:8px}.record-book-icon{width:45px;height:54px}.record-book-title{font-size:10px}}
 @media(max-width:400px){.record-timeline-row{grid-template-columns:64px 40px minmax(0,1fr) 32px;gap:6px}.record-book-icon{width:40px;height:49px}.record-stats>div{padding:11px 9px}}
 </style>

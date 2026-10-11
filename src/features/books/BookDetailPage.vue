@@ -1,11 +1,12 @@
 <script setup lang="ts">
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { appBootstrap } from "../../api/core";
-import { clearBookChapterCache as clearBookChapterCacheApi, getBook } from "../../api/books";
+import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
 import { readResource } from "../../api/resources";
 import { checkNewChapters, refreshChapters, startBookDownload, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor, ShelfResource, SourceDefinitionsResource, SourceMetadata, TasksResource } from "../../api/types";
+import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor,  SourceDefinitionsResource, SourceMetadata, TasksResource } from "../../api/types";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -18,13 +19,12 @@ import { getBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
 import { consumeBookDetailOpenRequest } from "./bookDetailOpenRequest";
 import { useBookDetailSession } from "./useBookDetailSession";
-import { openedBook } from "./bookDetailState";
+import { clearOpenedBook, openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
 import { errorText, notify } from "../../app/notifications";
 import { getFrontendRestoreRevision, lockShelfBatchRecovery, shelfBatchRecoveryMessage, shelfBatchRecoveryRequired, shelfBatchRecoveryTitle } from "../../app/recoveryState";
 
 type BookTaskKind = "refreshChapters" | "checkNewChapters";
 type BookTaskAction = "download" | "refresh" | "check";
-const shelf = shallowRef<ShelfResource>({ schemaVersion: 1, books: [] });
 const sources = shallowRef<SourceMetadata[]>([]);
 const bookSourceCandidates = computed(() => sources.value.filter((source) => source.enabled && source.isRss !== true));
 const tasks = shallowRef<AppTask[]>([]);
@@ -42,16 +42,11 @@ const bookProgressResetBusy = ref(false);
 const bookProgressResetError = ref("");
 const pendingBookProgressReset = ref<{ id: string; title: string } | null>(null);
 const bookDisplayEditorBookId = ref<string | null>(null);
-const bookDisplayEditorError = ref("");
-const bookDisplaySaveBusy = ref(false);
 const pendingRemoval = ref<{ id: string; title: string } | null>(null);
-const singleBookRemovalBusy = ref(false);
 const bookChapterCacheClearBusy = ref(false);
 const bookChapterCacheClearError = ref("");
 const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(null);
-const detailGlobalError = ref("");
 let sourceDefinitionsResource: ResourceDescriptor | null = null;
-let shelfReadRevision = 0;
 let sourcesReadRevision = 0;
 let tasksReadRevision = 0;
 let pageResourceRevision = 0;
@@ -59,19 +54,6 @@ let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
-async function refreshShelfFromDescriptor(descriptor: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getRestoreRevision();
-  const requestRevision = ++shelfReadRevision;
-  const next = await readResource<ShelfResource>(descriptor);
-  if (restoreRevision !== getRestoreRevision() || requestRevision !== shelfReadRevision) return;
-  shelf.value = { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
-async function refreshShelf(): Promise<void> {
-  const restoreRevision = getRestoreRevision();
-  const bootstrap = await appBootstrap();
-  if (restoreRevision !== getRestoreRevision()) return;
-  await refreshShelfFromDescriptor(bootstrap.shelf);
-}
 async function refreshSources(descriptor?: ResourceDescriptor): Promise<void> {
   const restoreRevision = getRestoreRevision();
   const requestRevision = ++sourcesReadRevision;
@@ -93,24 +75,21 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
 }
 async function loadPageResources(bootstrap?: AppBootstrap, expectedRevision = getRestoreRevision()): Promise<boolean> {
   const requestRevision = ++pageResourceRevision;
-  const expectedShelfRevision = ++shelfReadRevision;
   const expectedSourcesRevision = ++sourcesReadRevision;
   const expectedTasksRevision = ++tasksReadRevision;
   const state = bootstrap ?? await appBootstrap();
   if (expectedRevision !== getRestoreRevision() || requestRevision !== pageResourceRevision
-    || expectedShelfRevision !== shelfReadRevision || expectedSourcesRevision !== sourcesReadRevision
+    || expectedSourcesRevision !== sourcesReadRevision
     || expectedTasksRevision !== tasksReadRevision) return false;
   sourceDefinitionsResource = state.sources;
   const tasksResourceResponse = await tasksResource();
-  const [nextShelf, sourceDocument, taskDocument] = await Promise.all([
-    readResource<ShelfResource>(state.shelf),
+  const [sourceDocument, taskDocument] = await Promise.all([
     readResource<SourceDefinitionsResource>(state.sources),
     readResource<TasksResource>(tasksResourceResponse.resource),
   ]);
   if (expectedRevision !== getRestoreRevision() || requestRevision !== pageResourceRevision
-    || expectedShelfRevision !== shelfReadRevision || expectedSourcesRevision !== sourcesReadRevision
+    || expectedSourcesRevision !== sourcesReadRevision
     || expectedTasksRevision !== tasksReadRevision) return false;
-  shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
   sources.value = (sourceDocument.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
   tasks.value = taskDocument.tasks ?? [];
   return true;
@@ -121,14 +100,12 @@ const canRefreshOpenedBookInfo = computed(() => {
     && sources.value.some((source) => source.id === book.sourceId && source.enabled === true);
 });
 const bookDetailActions = useBookDetailActions({
-  openedBook, readingBook, shelf, panelBusy: bookPanelBusy,
+  openedBook, readingBook, panelBusy: bookPanelBusy,
   infoRefreshBusy: bookInfoRefreshBusy, canRefreshInfo: canRefreshOpenedBookInfo,
-  progressResetBusy: bookProgressResetBusy, displaySaveBusy: bookDisplaySaveBusy,
-  singleRemovalBusy: singleBookRemovalBusy,
+  progressResetBusy: bookProgressResetBusy,
   recoveryRequired, recoveryTitle: shelfBatchRecoveryTitle, recoveryMessage: shelfBatchRecoveryMessage,
   pendingProgressReset: pendingBookProgressReset, progressResetError: bookProgressResetError,
   readerProgressDirty: readerSession.readerProgressDirty,
-  refreshShelfFromDescriptor,
   saveCurrentProgress: readerSession.saveCurrentProgress,
   finishReadingSession: readerSession.finishReadingSession,
   closeReader: readerSession.closeReader,
@@ -136,14 +113,8 @@ const bookDetailActions = useBookDetailActions({
   notify, errorText,
 });
 const bookMetadataActions = useBookMetadataActions({
-  openedBook, readingBook, shelf,
-  editorBookId: bookDisplayEditorBookId, editorError: bookDisplayEditorError,
-  saveBusy: bookDisplaySaveBusy, pendingRemoval, removalBusy: singleBookRemovalBusy,
-  globalError: detailGlobalError, recoveryRequired,
-  recoveryTitle: shelfBatchRecoveryTitle, recoveryMessage: shelfBatchRecoveryMessage,
-  refreshShelfFromDescriptor,
-  getRestoreRevision,
-  notify, errorText,
+  openedBook, editorBookId: bookDisplayEditorBookId, pendingRemoval, recoveryRequired,
+  getRestoreRevision, notify,
 });
 const detailSession = useBookDetailSession({
   openedBook, shelf, bookPanelBusy,
@@ -151,7 +122,6 @@ const detailSession = useBookDetailSession({
   getRestoreRevision,
   startReading: readerSession.startReading,
   closeDisplayEditor: () => { bookDisplayEditorBookId.value = null; },
-  refreshShelf,
   notify,
   errorText,
 });
@@ -159,12 +129,11 @@ const {
   searchResultDetails,
   searchResultDetailsShelfBook,
   searchResultDetailsReadingBusy,
-  searchResultBatchBusy,
 } = detailSession;
 const currentSearchResultDetails = computed(() => searchResultDetails.value ?? {
   result: openRequest?.kind === "search-result" ? openRequest.result : null,
-  bookId: openRequest?.kind === "shelf-book" ? openRequest.bookId : null,
-  initialTab: openRequest?.kind === "shelf-book" ? openRequest.initialTab ?? "catalog" : "info",
+  bookId: openRequest && openRequest.kind !== "search-result" ? openRequest.bookId : null,
+  initialTab: openRequest && openRequest.kind !== "search-result" ? openRequest.initialTab ?? "catalog" : "info",
   error: pageResourceError.value,
 });
 let openRequestStarted = false;
@@ -179,13 +148,6 @@ function retainUnlistener(unlisten: UnlistenFn): void {
 }
 async function setupPageEvents(): Promise<void> {
   try {
-    retainUnlistener(await listen<ResourceDescriptor>("shelf-updated", async (event) => {
-      try {
-        await refreshShelfFromDescriptor(event.payload);
-      } catch (error) {
-        notify(`书架更新失败：${errorText(error)}`, "error");
-      }
-    }));
     retainUnlistener(await listen<ResourceDescriptor>("sources-updated", async (event) => {
       try {
         await refreshSources(event.payload);
@@ -221,7 +183,7 @@ async function setupPageEvents(): Promise<void> {
         }
         if (task.kind === "refreshChapters" || task.kind === "checkNewChapters") {
           try {
-            await bookMetadataActions.refreshOpenedBook(await getBook(task.bookId));
+            await bookMetadataActions.refreshOpenedBook();
           } catch (error) {
             if (revision === getRestoreRevision()) notify(`目录已更新，但书籍信息刷新失败：${errorText(error)}`, "error");
           }
@@ -242,21 +204,12 @@ async function setupPageEvents(): Promise<void> {
         }
       }
     }));
-    retainUnlistener(await listen<{ bookId: string; book: ResourceDescriptor }>("chapters-prepared", async (event) => {
-      const revision = getRestoreRevision();
-      if (openedBook.value?.id !== event.payload.bookId) return;
-      try {
-        await bookMetadataActions.refreshOpenedBook(event.payload.book);
-      } catch (error) {
-        if (revision === getRestoreRevision()) notify(`读取更新后的目录失败：${errorText(error)}`, "error");
-      }
-    }));
     retainUnlistener(await listen<AppBootstrap>("app-state-updated", async (event) => {
       const revision = getRestoreRevision();
       const detailsWereOpen = Boolean(searchResultDetails.value);
       pageResourceLoading.value = true;
       pageResourceError.value = "";
-      openedBook.value = null;
+      clearOpenedBook();
       bookCacheActionGeneration += 1;
       bookChapterCacheClearBusy.value = false;
       pendingBookChapterCacheClear.value = null;
@@ -264,7 +217,6 @@ async function setupPageEvents(): Promise<void> {
       bookDisplayEditorBookId.value = null;
       pendingBookProgressReset.value = null;
       pendingRemoval.value = null;
-      shelfReadRevision += 1;
       sourcesReadRevision += 1;
       tasksReadRevision += 1;
       try {
@@ -275,7 +227,7 @@ async function setupPageEvents(): Promise<void> {
       } catch (error) {
         if (revision !== getRestoreRevision()) return;
         pageResourceError.value = errorText(error);
-        openedBook.value = null;
+        clearOpenedBook();
         notify(`恢复后的书架数据载入失败：${pageResourceError.value}`, "error");
       } finally {
         if (revision === getRestoreRevision()) {
@@ -310,12 +262,12 @@ async function retryBookDetails(): Promise<void> {
 }
 onMounted(async () => {
   pageResourceLoading.value = true;
-  openedBook.value = null;
+  clearOpenedBook();
   try {
     await setupPageEvents();
     if (await loadPageResources()) {
       pageResourceError.value = "";
-      openedBook.value = null;
+      clearOpenedBook();
       await startOpenRequestOnce();
     }
   } catch (error) {
@@ -334,7 +286,6 @@ onBeforeUnmount(() => {
   disposed = true;
   bookCacheActionGeneration += 1;
   pageResourceRevision += 1;
-  shelfReadRevision += 1;
   sourcesReadRevision += 1;
   tasksReadRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
@@ -454,12 +405,7 @@ async function clearOpenedBookChapterCache(): Promise<void> {
         throw new Error(`《${pending.title}》的阅读位置尚未保存，缓存未清除。`);
       }
       if (readerBook.progress) {
-        openedBook.value = { ...bookAtStart, progress: { ...readerBook.progress } };
-        shelf.value = {
-          ...shelf.value,
-          books: shelf.value.books.map((book) => book.id === pending.id
-            ? { ...book, progress: { ...readerBook.progress! } } : book),
-        };
+        replaceOpenedBook({ ...bookAtStart, progress: { ...readerBook.progress } });
       }
       await readerSession.finishReadingSession();
       if (!isCurrentOperation()) return;
@@ -490,47 +436,26 @@ async function clearOpenedBookChapterCache(): Promise<void> {
     if (response.recoveryRequired || recoveryRequired.value) {
       pendingBookChapterCacheClear.value = null;
       if (openedBook.value?.id === pending.id) {
-        openedBook.value = { ...openedBook.value, chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined })) };
+        replaceOpenedBook({ ...openedBook.value, chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined })) });
       }
       if (response.recoveryRequired) lockShelfBatchRecovery("需要重启应用完成缓存恢复", `《${pending.title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
       throw new Error(shelfBatchRecoveryMessage.value || "缓存清理需要完成恢复。");
     }
 
     pendingBookChapterCacheClear.value = null;
-    let updatedBook: BookResource | null = null;
     let readError = "";
     try {
-      updatedBook = await readResource<BookResource>(response.book);
+      await refreshOpenedBook(response.book);
       if (!isCurrentOperation()) return;
-      if (updatedBook.id !== pending.id) throw new Error("清除后返回的书籍与当前操作不匹配。");
     } catch (error) {
       if (!isCurrentOperation()) return;
-      const firstError = errorText(error);
-      try {
-        updatedBook = await readResource<BookResource>(await getBook(pending.id));
-        if (!isCurrentOperation()) return;
-        if (updatedBook.id !== pending.id) throw new Error("重读后返回的书籍与当前操作不匹配。");
-      } catch (reloadError) {
-        if (!isCurrentOperation()) return;
-        readError = `${firstError}；重读失败：${errorText(reloadError)}`;
+      readError = errorText(error);
+      if (openedBook.value?.id === pending.id) {
+        replaceOpenedBook({
+          ...openedBook.value,
+          chapters: openedBook.value.chapters.map(chapter => ({ ...chapter, resource: undefined })),
+        });
       }
-    }
-    if (openedBook.value?.id === pending.id && openedBook.value !== bookAtStart && updatedBook) {
-      try {
-        updatedBook = await readResource<BookResource>(await getBook(pending.id));
-        if (!isCurrentOperation()) return;
-        if (updatedBook.id !== pending.id) throw new Error("重读后返回的书籍与当前操作不匹配。");
-      } catch (error) {
-        if (!isCurrentOperation()) return;
-        readError = `并发更新后重读失败：${errorText(error)}`;
-        updatedBook = null;
-      }
-    }
-    if (openedBook.value?.id === pending.id) {
-      openedBook.value = updatedBook ?? {
-        ...openedBook.value,
-        chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined })),
-      };
     }
     if (readError) notify(`《${pending.title}》的章节缓存已清除，但详情未能重新载入：${readError}`, "error");
     else notify(response.clearedCount > 0
@@ -568,13 +493,13 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
               <div v-if="bookDetailMenuOpen" class="book-detail-menu" @click.stop>
                 <button v-if="!searchResultDetailsShelfBook && currentSearchResultDetails.result"
                   class="book-detail-menu-item"
-                  :disabled="searchResultBatchBusy || recoveryRequired || detailSession.searchResultIsBusy(currentSearchResultDetails.result) || searchResultDetailsReadingBusy"
+                  :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
                   @click="bookDetailMenuOpen = false; detailSession.addSearchResultFromDetails()">
-                  <PrototypeIcon name="plus"/><span>{{ detailSession.searchResultIsBusy(currentSearchResultDetails.result) ? '加入中…' : '加入内容库' }}</span>
+                  <PrototypeIcon name="plus"/><span>加入书架</span>
                 </button>
                 <template v-if="searchResultDetailsShelfBook">
                 <button class="book-detail-menu-item"
-                  :disabled="bookDisplaySaveBusy || recoveryRequired"
+                  :disabled="recoveryRequired"
                   @click="bookDetailMenuOpen = false; bookMetadataActions.openBookDisplayEditor()">
                   <PrototypeIcon name="edit"/><span>编辑显示信息</span>
                 </button>
@@ -596,13 +521,13 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
                 </button>
                 <div class="book-detail-menu-divider"></div>
                 <button class="book-detail-menu-item"
-                  :disabled="bookProgressResetBusy || bookPanelBusy || bookDisplaySaveBusy || bookInfoRefreshBusy || singleBookRemovalBusy || recoveryRequired"
+                  :disabled="bookProgressResetBusy || bookPanelBusy || bookInfoRefreshBusy || recoveryRequired"
                   @click="pendingBookProgressReset = { id: openedBook.id, title: openedBook.title }; bookProgressResetError = ''; bookDetailMenuOpen = false">
                   <PrototypeIcon name="history"/><span>重置{{ openedBook.mediaType === 'video' ? '观看' : openedBook.mediaType === 'audio' ? '收听' : '阅读' }}进度</span>
                 </button>
                 <button v-if="openedBook.canChangeSource === true && openedBook.sourceId"
                   class="book-detail-menu-item"
-                  :disabled="bookChapterCacheClearBusy || bookPanelBusy || bookDisplaySaveBusy || bookInfoRefreshBusy || bookProgressResetBusy || singleBookRemovalBusy || bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
+                  :disabled="bookChapterCacheClearBusy || bookPanelBusy || bookInfoRefreshBusy || bookProgressResetBusy || bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
                   @click="pendingBookChapterCacheClear = { id: openedBook.id, title: openedBook.title }; bookChapterCacheClearError = ''; bookDetailMenuOpen = false">
                   <PrototypeIcon name="trash"/><span>{{ bookChapterCacheClearBusy ? '清除中…' : '清除正文缓存' }}</span>
                 </button>
@@ -619,7 +544,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
                 </button>
                 <div class="book-detail-menu-divider"></div>
                 <button class="book-detail-menu-item book-detail-menu-item--danger"
-                  :disabled="singleBookRemovalBusy || recoveryRequired"
+                  :disabled="recoveryRequired"
                   @click="bookDetailMenuOpen = false; pendingRemoval = { id: openedBook.id, title: openedBook.title }">
                   <PrototypeIcon name="trash"/><span>从内容库移除</span>
                 </button>
@@ -789,9 +714,9 @@ loading="lazy" decoding="async"/>
                     </button>
                     <button v-if="!searchResultDetailsShelfBook && currentSearchResultDetails.result"
                       type="button" class="button secondary"
-                      :disabled="searchResultBatchBusy || recoveryRequired || detailSession.searchResultIsBusy(currentSearchResultDetails.result) || searchResultDetailsReadingBusy"
+                      :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
                       @click="detailSession.addSearchResultFromDetails()">
-                      {{ detailSession.searchResultIsBusy(currentSearchResultDetails.result) ? '加入中…' : '加入内容库' }}
+                      加入书架
                     </button>
                   </div>
                 </div>
@@ -849,9 +774,7 @@ loading="lazy" decoding="async"/>
           v-if="openedBook && bookDisplayEditorBookId === openedBook.id"
           :key="openedBook.id"
           :book="openedBook"
-          :busy="bookDisplaySaveBusy"
           :locked="recoveryRequired"
-          :error="bookDisplayEditorError"
           :return-label="bookDetailTab === 'catalog' ? '返回目录' : '返回概览'"
           @close="bookMetadataActions.closeBookDisplayEditor"
           @save="bookMetadataActions.saveBookDisplayMetadata"
@@ -902,16 +825,16 @@ loading="lazy" decoding="async"/>
     <section
       v-if="pendingRemoval"
       class="modal-backdrop"
-      @click.self="!singleBookRemovalBusy && (pendingRemoval = null)"
+      @click.self="pendingRemoval = null"
     >
       <article class="app-modal confirm-modal">
         <div class="confirm-symbol">⌫</div>
         <h2>从书架移除这本书？</h2>
         <p>《{{ pendingRemoval.title }}》及其本地书籍数据、阅读进度和书签都会被移除。</p>
         <div class="modal-actions">
-          <button class="button secondary" :disabled="singleBookRemovalBusy" @click="pendingRemoval = null">保留</button>
-          <button class="button danger" :disabled="singleBookRemovalBusy || recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
-            {{ singleBookRemovalBusy ? '正在移除…' : '确认移除' }}
+          <button class="button secondary" @click="pendingRemoval = null">保留</button>
+          <button class="button danger" :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
+            确认移除
           </button>
         </div>
       </article>

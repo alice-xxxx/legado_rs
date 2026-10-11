@@ -1,14 +1,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
-import type { AppBootstrap, ResourceDescriptor, ShelfResource } from "../../api/types";
+import type { AppBootstrap } from "../../api/types";
 import { notify } from "../../app/notifications";
 import { getFrontendRestoreRevision, shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { backupBusy } from "../settings/backupState";
 import { getReaderSession } from "../reader/readerSession";
-import { openedBook } from "../books/bookDetailState";
 import { useLocalBookImport } from "../books/useLocalBookImport";
 import PdfPasswordPrompt from "../books/PdfPasswordPrompt.vue";
 import router, { routeNames } from "../../router";
@@ -28,7 +25,6 @@ type PdfPasswordPromptContext = {
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const bootstrapped = ref(false);
 const externalFileRequestBusy = ref(false);
-const shelf = ref<ShelfResource>({ schemaVersion: 1, groups: [], books: [] });
 const pdfImportPasswords = new Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>();
 const pendingPdfPassword = ref("");
 const currentRoute = router.currentRoute;
@@ -36,18 +32,9 @@ const sourceImportOpen = computed(() => currentRoute.value.name === routeNames.s
   && (currentRoute.value.query.sourceImport === "url" || currentRoute.value.query.sourceImport === "new"));
 const unlisteners: UnlistenFn[] = [];
 let disposed = false;
-let shelfRequestRevision = 0;
 
-async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++shelfRequestRevision;
-  const currentRestoreRevision = getFrontendRestoreRevision();
-  const next = await readResource<ShelfResource>(descriptor);
-  if (disposed || requestRevision !== shelfRequestRevision || currentRestoreRevision !== getFrontendRestoreRevision()) return;
-  shelf.value = { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
 
-function refreshRestoredShelf(snapshot: AppBootstrap): void {
-  void refreshShelf(snapshot.shelf).catch((error) => notify(`恢复后书架刷新失败：${errorText(error)}`, "error"));
+function refreshRestoredShelf(_snapshot: AppBootstrap): void {
   bootstrapped.value = true;
 }
 
@@ -57,8 +44,6 @@ async function openSourceImport(url: string): Promise<void> {
 }
 
 const localBookImportFeature = useLocalBookImport({
-  openedBook,
-  shelf,
   externalFileRequestBusy,
   backupBusy,
   recoveryRequired: shelfBatchRecoveryRequired,
@@ -126,20 +111,13 @@ function ignorePendingImportLink(): void {
 onMounted(() => {
   void (async () => {
     try {
-      const unlistenShelf = await listen<ResourceDescriptor>("shelf-updated", (event) => {
-        void refreshShelf(event.payload).catch((error) => notify(`书架刷新失败：${errorText(error)}`, "error"));
-      });
-      if (disposed) unlistenShelf();
-      else unlisteners.push(unlistenShelf);
       const unlistenAppState = await listen<AppBootstrap>("app-state-updated", (event) => refreshRestoredShelf(event.payload));
       if (disposed) unlistenAppState();
       else unlisteners.push(unlistenAppState);
       void externalImports.setupExternalFiles();
       void externalImports.setupImportLinks();
       const bootstrapRestoreRevision = getFrontendRestoreRevision();
-      const bootstrap = await appBootstrap();
       if (disposed || bootstrapRestoreRevision !== getFrontendRestoreRevision()) return;
-      await refreshShelf(bootstrap.shelf);
       if (!disposed) bootstrapped.value = true;
     } catch (error) {
       if (!disposed) notify(`导入服务初始化失败：${errorText(error)}`, "error");
@@ -149,7 +127,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true;
-  shelfRequestRevision += 1;
   externalImports.dispose();
   localBookImportFeature.cancelPendingPdfImportOnUnmount();
   removeLocalBookImportSession();

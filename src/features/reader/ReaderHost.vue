@@ -1,21 +1,17 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs, ref, shallowRef, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs,  shallowRef, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRoute } from "vue-router";
 import type {
   AppBootstrap,
-  AppSettingsResource,
   AppTask,
   BookResource,
-  DisplayReplacementRule,
-  HttpTtsConfigMetadata,
-  HttpTtsConfigResource,
   ResourceDescriptor,
-  ShelfResource,
   SourceDefinitionsResource,
   SourceMetadata,
-  TasksResource,
-} from "../../api/types";
+  TasksResource } from "../../api/types";
+import { replacementRules } from "../settings/configurationStores";
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { appBootstrap } from "../../api/core";
 import { refreshChapterContent } from "../../api/books";
 import { readResource } from "../../api/resources";
@@ -26,15 +22,13 @@ import {
   lockShelfBatchRecovery,
   shelfBatchRecoveryMessage,
   shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle,
-} from "../../app/recoveryState";
+  shelfBatchRecoveryTitle } from "../../app/recoveryState";
 import { getLocalBookImportSession } from "../import/localBookImportSession";
 import { backupBusy } from "../settings/backupState";
-import { defaultSettings, normalizeSettings } from "../settings/settingsDefaults";
-import { openedBook } from "../books/bookDetailState";
+import { settings as sharedSettings } from "../settings/settingsStore";
+import { clearOpenedBook, openedBook } from "../books/bookDetailState";
 import { installReaderBackupSession } from "./readerBackupSession";
 import { installReaderSession } from "./readerSession";
-import { beginReaderHttpTtsConfigRefresh, publishReaderHttpTtsConfigs } from "./readerTtsConfigService";
 import { useAppReaderFeatures } from "./useAppReaderFeatures";
 import { useBookSourceSwitch } from "../sources/useBookSourceSwitch";
 import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
@@ -42,35 +36,24 @@ import router, { routeNames } from "../../router";
 
 const AppReader = defineAsyncComponent(() => import("./AppReader.vue"));
 const route = useRoute();
-const settings = ref<AppSettingsResource>(structuredClone(defaultSettings));
-const replacementRules = ref<DisplayReplacementRule[]>([]);
-const shelf = shallowRef<ShelfResource>({ schemaVersion: 1, books: [] });
+const settings = sharedSettings;
+watch(() => settings.value.reader.backgroundImageSrc, (next, previous) => {
+  if (next !== previous) readerFeatures.rebuildReaderDisplay();
+});
+
+
 const sources = shallowRef<SourceMetadata[]>([]);
 const tasks = shallowRef<AppTask[]>([]);
 const sourceCandidates = computed(() => sources.value.filter((source) => source.enabled && source.isRss !== true));
 
-let shelfDescriptor: ResourceDescriptor | null = null;
 let sourceDescriptor: ResourceDescriptor | null = null;
 let tasksDescriptor: ResourceDescriptor | null = null;
 let disposed = false;
-let shelfReadRevision = 0;
 let sourceReadRevision = 0;
 let tasksReadRevision = 0;
-let replacementRulesReadRevision = 0;
-let settingsReadRevision = 0;
 let readerDataRefreshPending = false;
 const unlisteners: UnlistenFn[] = [];
 const readerImportPasswords = getLocalBookImportSession().pdfImportPasswords;
-
-async function refreshShelf(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const requestRevision = ++shelfReadRevision;
-  if (descriptor) shelfDescriptor = descriptor;
-  if (!shelfDescriptor) shelfDescriptor = (await appBootstrap()).shelf;
-  const next = await readResource<ShelfResource>(shelfDescriptor);
-  if (restoreRevision !== getFrontendRestoreRevision() || requestRevision !== shelfReadRevision) return;
-  shelf.value = { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
 
 async function refreshSources(descriptor?: ResourceDescriptor): Promise<void> {
   const restoreRevision = getFrontendRestoreRevision();
@@ -92,25 +75,6 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const byId = new Map((document.tasks ?? []).map((task) => [task.id, task]));
   for (const task of tasks.value) if (task.status === "recoveryRequired") byId.set(task.id, task);
   tasks.value = [...byId.values()];
-}
-
-async function refreshReplacementRules(descriptor: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const requestRevision = ++replacementRulesReadRevision;
-  const document = await readResource<{ schemaVersion: number; rules: DisplayReplacementRule[] }>(descriptor);
-  if (restoreRevision !== getFrontendRestoreRevision() || requestRevision !== replacementRulesReadRevision) return;
-  replacementRules.value = Array.isArray(document.rules) ? document.rules : [];
-}
-
-async function refreshReaderTtsConfigs(descriptor: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const generation = beginReaderHttpTtsConfigRefresh();
-  const document = await readResource<HttpTtsConfigResource>(descriptor);
-  if (restoreRevision !== getFrontendRestoreRevision() || !Array.isArray(document.configs)) return;
-  const configs: HttpTtsConfigMetadata[] = document.configs
-    .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.enabled === "boolean")
-    .map(({ id, name, enabled }) => ({ id, name, enabled }));
-  publishReaderHttpTtsConfigs(generation, configs);
 }
 
 function reusedCatalogTaskNotice(task: AppTask): string {
@@ -146,7 +110,6 @@ const readerFeatures = useAppReaderFeatures({
   getRestoreRevision: getFrontendRestoreRevision,
   notify,
   errorText,
-  normalizeSettings,
   lockChapterCacheRecovery: lockReaderRecovery,
   refreshChapterContent,
   startChapterDownload,
@@ -180,7 +143,6 @@ const bookSourceSwitchActions = useBookSourceSwitch({
   shelfBatchRecoveryMessage,
   saveCurrentProgress: readerFeatures.saveCurrentProgress,
   refreshTasks: () => refreshTasks(),
-  refreshShelfFromDescriptor: refreshShelf,
   loadReaderChapter: readerFeatures.loadReaderChapter,
   notify,
   errorText,
@@ -190,7 +152,7 @@ const bookSourceSwitch = proxyRefs(bookSourceSwitchActions);
 
 async function closeReaderForNavigation(discardProgress = false): Promise<void> {
   await readerFeatures.closeReader(discardProgress);
-  if (!readerFeatures.readerVisible.value) openedBook.value = null;
+  if (!readerFeatures.readerVisible.value && route.meta.screen !== "detail") clearOpenedBook();
 }
 
 const disposeReaderSession = installReaderSession({
@@ -206,48 +168,28 @@ const disposeReaderSession = installReaderSession({
 });
 const disposeBackupSession = installReaderBackupSession({
   settings,
-  saveSettingsBusy: readerFeatures.saveSettingsBusy,
-  pendingSettingsSave: readerFeatures.pendingSettingsSave,
   readingBook: readerFeatures.readingBook,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   hasActiveReaderMedia: readerFeatures.hasActiveReaderMedia,
   pauseReaderMediaAndSave: readerFeatures.pauseReaderMediaAndSave,
   saveCurrentProgress: readerFeatures.saveCurrentProgress,
-  persistSettings: readerFeatures.persistSettings,
-  scheduleSettingsSave: readerFeatures.scheduleSettingsSave,
   closeReaderAfterRestore: readerFeatures.closeReaderAfterRestore,
-  deferSettingsSaveDuringRestore: readerFeatures.deferSettingsSaveDuringRestore,
 });
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
 
 async function bootstrap(snapshot?: AppBootstrap): Promise<void> {
   const restoreRevision = getFrontendRestoreRevision();
-  const shelfRequestRevision = ++shelfReadRevision;
+
   const sourceRequestRevision = ++sourceReadRevision;
   const tasksRequestRevision = ++tasksReadRevision;
-  const rulesRequestRevision = ++replacementRulesReadRevision;
-  const settingsRequestRevision = ++settingsReadRevision;
-  const ttsRequestGeneration = beginReaderHttpTtsConfigRefresh();
   const current = snapshot ?? await appBootstrap();
-  const [nextShelf, nextSettings, rules, ttsConfigs, taskDescriptor, sourceDocument] = await Promise.all([
-    readResource<ShelfResource>(current.shelf),
-    readResource<AppSettingsResource>(current.settings),
-    readResource<{ schemaVersion: number; rules: DisplayReplacementRule[] }>(current.replacementRules),
-    readResource<HttpTtsConfigResource>(current.httpTtsConfigs),
+  const [taskDescriptor, sourceDocument] = await Promise.all([
     loadTasksResource(),
     readResource<SourceDefinitionsResource>(current.sources),
   ]);
   if (restoreRevision !== getFrontendRestoreRevision()) return;
   const nextTasks = await readResource<TasksResource>(taskDescriptor.resource);
   if (restoreRevision !== getFrontendRestoreRevision()) return;
-  if (shelfRequestRevision === shelfReadRevision) {
-    shelfDescriptor = current.shelf;
-    shelf.value = { ...nextShelf, groups: nextShelf.groups ?? [], books: nextShelf.books ?? [] };
-  }
-  if (settingsRequestRevision === settingsReadRevision) settings.value = normalizeSettings(nextSettings);
-  if (rulesRequestRevision === replacementRulesReadRevision) {
-    replacementRules.value = Array.isArray(rules.rules) ? rules.rules : [];
-  }
   if (sourceRequestRevision === sourceReadRevision) {
     sourceDescriptor = current.sources;
     sources.value = (sourceDocument.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
@@ -256,9 +198,6 @@ async function bootstrap(snapshot?: AppBootstrap): Promise<void> {
     tasksDescriptor = taskDescriptor.resource;
     tasks.value = nextTasks.tasks ?? [];
   }
-  publishReaderHttpTtsConfigs(ttsRequestGeneration, (ttsConfigs.configs ?? [])
-    .filter((item) => typeof item.id === "string" && typeof item.name === "string" && typeof item.enabled === "boolean")
-    .map(({ id, name, enabled }) => ({ id, name, enabled })));
   if (backupBusy.value === "restore") {
     readerDataRefreshPending = true;
   } else {
@@ -276,22 +215,6 @@ watch(backupBusy, (busy) => {
   }
 });
 
-function updateCurrentBook(resource: ResourceDescriptor, bookId: string, forProgress: boolean): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const loadRevision = readerFeatures.getReaderLoadRevision();
-  const readingAtStart = readerFeatures.readingBook.value;
-  const openedAtStart = openedBook.value;
-  return readResource<BookResource>(resource).then((updated) => {
-    if (restoreRevision !== getFrontendRestoreRevision() || updated.id !== bookId) return;
-    if (forProgress && readerFeatures.readingBook.value?.id === bookId
-      && (readerFeatures.readerProgressDirty.value || readerFeatures.getReaderLoadRevision() !== loadRevision)) return;
-    if (readingAtStart && readerFeatures.readingBook.value === readingAtStart && readingAtStart.id === bookId) {
-      readerFeatures.readingBook.value = updated;
-    }
-    if (openedAtStart && openedBook.value === openedAtStart && openedAtStart.id === bookId) openedBook.value = updated;
-  });
-}
-
 function retain(unlisten: UnlistenFn): void {
   if (disposed) unlisten();
   else unlisteners.push(unlisten);
@@ -299,40 +222,24 @@ function retain(unlisten: UnlistenFn): void {
 
 async function setupReaderEvents(): Promise<void> {
   try {
-    retain(await listen<ResourceDescriptor>("settings-updated", async (event) => {
-      const requestRevision = ++settingsReadRevision;
-      const restoreRevision = getFrontendRestoreRevision();
-      try {
-        const next = normalizeSettings(await readResource<AppSettingsResource>(event.payload));
-        if (restoreRevision === getFrontendRestoreRevision() && requestRevision === settingsReadRevision) settings.value = next;
-      } catch (error) {
-        if (restoreRevision === getFrontendRestoreRevision() && requestRevision === settingsReadRevision) {
-          notify(`阅读设置更新失败：${errorText(error)}`, "error");
-        }
+    retain(await listen<{ requestId: number; resource: ResourceDescriptor }>("history-updated", (event) => {
+      void readerFeatures.readerBookmarksAndHistory.refreshCurrentReadingStatistics();
+      if (event.payload.requestId === 0) {
+        void readerFeatures.readerBookmarksAndHistory.refreshBookmarksAfterHistoryUpdate();
       }
     }));
     retain(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
       const revision = getFrontendRestoreRevision();
       try {
-        if (event.payload.kind === "bookmarks") {
-          await readerFeatures.readerBookmarksAndHistory.applyBookmarksResource(event.payload.resource);
-        } else if (event.payload.kind === "readingHistory") {
-          await readerFeatures.readerBookmarksAndHistory.applyReadingHistoryResource(event.payload.resource);
-        } else if (event.payload.kind === "replacementRules") {
-          await refreshReplacementRules(event.payload.resource);
-        } else if (event.payload.kind === "tasks") {
+        if (event.payload.kind === "tasks") {
           await refreshTasks(event.payload.resource);
           await bookSourceSwitchActions.syncBookSourceCandidateTask();
-        } else if (event.payload.kind === "httpTtsConfigs") {
-          await refreshReaderTtsConfigs(event.payload.resource);
+
         }
       } catch (error) {
         if (revision === getFrontendRestoreRevision()) notify(`阅读器数据更新失败：${errorText(error)}`, "error");
       }
     }));
-    retain(await listen<ResourceDescriptor>("shelf-updated", (event) => refreshShelf(event.payload).catch((error) => {
-      notify(`阅读器书架状态更新失败：${errorText(error)}`, "error");
-    })));
     retain(await listen<ResourceDescriptor>("sources-updated", (event) => refreshSources(event.payload).catch((error) => {
       notify(`书源刷新失败：${errorText(error)}`, "error");
     })));
@@ -351,32 +258,12 @@ async function setupReaderEvents(): Promise<void> {
     retain(await listen<Partial<AppTask>>("task-recovery-required", async (event) => {
       await bookSourceSwitchActions.syncBookSourceCandidateTask(event.payload);
     }));
-    retain(await listen<{ bookId: string; book: ResourceDescriptor }>("chapters-prepared", async (event) => {
-      if (readerFeatures.readingBook.value?.id !== event.payload.bookId && openedBook.value?.id !== event.payload.bookId) return;
-      try {
-        await updateCurrentBook(event.payload.book, event.payload.bookId, false);
-      } catch (error) {
-        notify(`读取更新后的目录失败：${errorText(error)}`, "error");
-      }
-    }));
-    retain(await listen<{ bookId: string; book: ResourceDescriptor }>("progress-saved", async (event) => {
-      try {
-        await updateCurrentBook(event.payload.book, event.payload.bookId, true);
-      } catch (error) {
-        notify(`阅读位置更新失败：${errorText(error)}`, "error");
-      }
-    }));
     retain(await listen<AppBootstrap>("app-state-updated", async (event) => {
       const revision = getFrontendRestoreRevision();
       tasks.value = [];
-      shelf.value = { schemaVersion: 1, books: [] };
       sources.value = [];
-      replacementRules.value = [];
-      shelfDescriptor = null;
       sourceDescriptor = null;
       tasksDescriptor = null;
-      if (readerFeatures.pendingSettingsSave.value) clearTimeout(readerFeatures.pendingSettingsSave.value);
-      readerFeatures.pendingSettingsSave.value = null;
       bookSourceSwitchActions.resetForRestore();
       try {
         await bootstrap(event.payload);
@@ -463,7 +350,6 @@ onBeforeUnmount(() => {
     media.pause();
   }
   readerFeatures.clearReaderScrollListeners();
-  if (readerFeatures.pendingSettingsSave.value) clearTimeout(readerFeatures.pendingSettingsSave.value);
   void readerFeatures.saveCurrentProgress();
   void readerFeatures.finishReadingSession();
   readerFeatures.cancelPendingPdfImportOnUnmount();

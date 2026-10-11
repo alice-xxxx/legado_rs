@@ -6,25 +6,7 @@ const WEBDAV_BACKUP_RETRY_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 const WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_WEBDAV_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 const WEBDAV_BACKUP_FILE_NAME: &str = "legado-rs-backup.zip";
-const WEBDAV_BACKUP_CONFIG_PATH: &str = "webdav-backup.json";
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct WebDavBackupConfig {
-    #[serde(default)]
-    url: String,
-    #[serde(default)]
-    username: String,
-    #[serde(default)]
-    password: Option<String>,
-    #[serde(default)]
-    auto_interval_hours: Option<u32>,
-    #[serde(default)]
-    last_webdav_backup_at_ms: Option<u64>,
-    #[serde(default)]
-    auto_backup_scheduled_at_ms: Option<u64>,
-    #[serde(default)]
-    last_auto_attempt_at_ms: Option<u64>,
-}
+use crate::models::WebDavBackupConfig;
 
 async fn temporary_webdav_backup_file() -> Result<PickerFile, String> {
     let directory = std::env::temp_dir()
@@ -121,18 +103,47 @@ pub(super) fn restore_error_response(
     })
 }
 
+pub(super) fn normalize_webdav_settings(current: &Value, document: &mut Value) -> Result<(), String> {
+    let previous: WebDavBackupConfig = serde_json::from_value(
+        current.get("webdavBackup").cloned().unwrap_or_else(|| json!({}))
+    ).map_err(|error| error.to_string())?;
+    let mut config: WebDavBackupConfig = serde_json::from_value(
+        document.get("webdavBackup").cloned().unwrap_or_else(|| json!({}))
+    ).map_err(|error| format!("Invalid WebDAV configuration: {error}"))?;
+    config.url = config.url.trim().to_owned();
+    config.username = config.username.trim().to_owned();
+    if config.username.len() > 512 || config.username.contains(':') || config.username.chars().any(char::is_control) {
+        return Err("WebDAV 用户名无效或超过 512 字节".into());
+    }
+    if config.password.as_ref().is_some_and(|password| password.len() > 4096) {
+        return Err("WebDAV 密码不能超过 4096 字节".into());
+    }
+    if config.auto_interval_hours.is_some_and(|hours| !(1..=720).contains(&hours)) {
+        return Err("自动备份间隔必须为 1 到 720 小时".into());
+    }
+    if config.url.is_empty() {
+        if config.auto_interval_hours.is_some() { return Err("请先设置 WebDAV 连接".into()); }
+        config = WebDavBackupConfig::default();
+    } else {
+        config.url = webdav_directory_url(&config.url)?.to_string();
+        let same_remote = config.url == previous.url && config.username == previous.username;
+        let same_schedule = same_remote && config.auto_interval_hours == previous.auto_interval_hours;
+        config.last_webdav_backup_at_ms = if same_remote { previous.last_webdav_backup_at_ms } else { None };
+        config.auto_backup_scheduled_at_ms = if same_schedule {
+            previous.auto_backup_scheduled_at_ms
+        } else { config.auto_interval_hours.map(|_| now_ms()) };
+        config.last_auto_attempt_at_ms = if same_schedule { previous.last_auto_attempt_at_ms } else { None };
+    }
+    document["webdavBackup"] = serde_json::to_value(config).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 /// Resource-oriented application service for commands and resource delivery.
 impl ApplicationService {
     async fn read_webdav_backup_config(&self) -> Result<WebDavBackupConfig, String> {
-        let path = self.private_root.join(WEBDAV_BACKUP_CONFIG_PATH);
-        let bytes = match tokio::fs::read(path).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(WebDavBackupConfig::default());
-            }
-            Err(error) => return Err(format!("Cannot read WebDAV backup settings: {error}")),
-        };
-        serde_json::from_slice(&bytes)
+        let settings = self.store.read_json_ref(&self.store.settings_ref()).await
+            .map_err(|error| format!("Cannot read WebDAV backup settings: {error}"))?;
+        serde_json::from_value(settings.get("webdavBackup").cloned().unwrap_or_else(|| json!({})))
             .map_err(|error| format!("Cannot parse WebDAV backup settings: {error}"))
     }
 
@@ -147,105 +158,11 @@ impl ApplicationService {
     ) -> Result<(), String> {
         let value = serde_json::to_value(config)
             .map_err(|error| format!("Cannot encode WebDAV backup settings: {error}"))?;
-        self.write_private_json(Path::new(WEBDAV_BACKUP_CONFIG_PATH), &value)
-            .await
-    }
-
-    fn webdav_backup_config_metadata(config: &WebDavBackupConfig) -> Value {
-        json!({
-            "url": config.url,
-            "username": config.username,
-            "hasPassword": config.password.as_ref().is_some_and(|password| !password.is_empty()),
-            "autoIntervalHours": config.auto_interval_hours,
-        })
-    }
-
-    pub async fn get_webdav_backup_config(&self) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let config = self.read_webdav_backup_config().await?;
-        Ok(Self::webdav_backup_config_metadata(&config))
-    }
-
-    pub async fn save_webdav_backup_config(
-        &self,
-        url: String,
-        username: String,
-        password: String,
-        clear_password: bool,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let url = url.trim().to_owned();
-        let username = username.trim().to_owned();
-        if username.len() > 512 || username.contains(':') || username.chars().any(char::is_control)
-        {
-            return Err("WebDAV 用户名无效或超过 512 字节".to_owned());
-        }
-        if password.len() > 4096 {
-            return Err("WebDAV 密码不能超过 4096 字节".to_owned());
-        }
-
-        let _config = self.webdav_backup_config_gate.lock().await;
-        let previous = self.read_webdav_backup_config().await?;
-        let config = if url.is_empty() {
-            WebDavBackupConfig::default()
-        } else {
-            let normalized_url = webdav_directory_url(&url)?.to_string();
-            let same_remote = previous.url == normalized_url && previous.username == username;
-            let saved_password = if clear_password {
-                None
-            } else if password.is_empty() && same_remote {
-                previous.password
-            } else if password.is_empty() {
-                None
-            } else {
-                Some(password)
-            };
-            WebDavBackupConfig {
-                url: normalized_url,
-                username,
-                password: saved_password,
-                auto_interval_hours: previous.auto_interval_hours,
-                last_webdav_backup_at_ms: if same_remote {
-                    previous.last_webdav_backup_at_ms
-                } else {
-                    None
-                },
-                auto_backup_scheduled_at_ms: if same_remote {
-                    previous.auto_backup_scheduled_at_ms
-                } else {
-                    previous.auto_interval_hours.map(|_| now_ms())
-                },
-                last_auto_attempt_at_ms: if same_remote {
-                    previous.last_auto_attempt_at_ms
-                } else {
-                    None
-                },
-            }
-        };
-        self.write_webdav_backup_config_locked(&config).await?;
-        Ok(Self::webdav_backup_config_metadata(&config))
-    }
-
-    pub async fn save_webdav_auto_backup_interval(
-        &self,
-        interval_hours: Option<u32>,
-    ) -> Result<Value, String> {
-        if interval_hours.is_some_and(|hours| !(1..=720).contains(&hours)) {
-            return Err("自动备份间隔必须为 1 到 720 小时".to_owned());
-        }
-        let _operation = self.operation_read().await;
-        let _config = self.webdav_backup_config_gate.lock().await;
-        let mut config = self.read_webdav_backup_config().await?;
-        if interval_hours.is_some() && config.url.is_empty() {
-            return Err("请先保存 WebDAV 连接设置".to_owned());
-        }
-        if interval_hours != config.auto_interval_hours {
-            config.auto_interval_hours = interval_hours;
-            config.auto_backup_scheduled_at_ms = interval_hours.map(|_| now_ms());
-            config.last_auto_attempt_at_ms = None;
-            self.write_webdav_backup_config_locked(&config).await?;
-        }
-        Ok(Self::webdav_backup_config_metadata(&config))
+        self.store.update_json_ref(&self.store.settings_ref(), move |mut settings| {
+            settings["webdavBackup"] = value;
+            Ok(settings)
+        }).await.map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     async fn record_webdav_backup_success(
@@ -617,7 +534,7 @@ impl ApplicationService {
     async fn reload_tasks_after_restore(&self) -> Result<(), String> {
         let reference = self
             .store
-            .reading_ref("tasks")
+            .document_ref("tasks")
             .map_err(|error| error.to_string())?;
         let document = if self.store.regular_file_exists(&reference).await
             .map_err(|error| format!("Cannot inspect restored task history: {error}"))?

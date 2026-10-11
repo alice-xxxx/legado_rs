@@ -30,7 +30,6 @@ pub async fn import_external_file(
             claim.finish()?;
             if result.get("passwordRequired").and_then(Value::as_bool) != Some(true) {
                 let _ = app.emit("book-added", result["book"].clone());
-                let _ = app.emit("shelf-updated", result["shelf"].clone());
             }
             Ok(result)
         }
@@ -79,7 +78,6 @@ pub async fn import_book_from_picker(
         return Ok(result);
     }
     let _ = app.emit("book-added", result["book"].clone());
-    let _ = app.emit("shelf-updated", result["shelf"].clone());
     Ok(result)
 }
 
@@ -94,7 +92,6 @@ pub async fn import_protected_pdf(
         .retry_pending_pdf_import(&import_token, password)
         .await?;
     let _ = app.emit("book-added", result["book"].clone());
-    let _ = app.emit("shelf-updated", result["shelf"].clone());
     Ok(result)
 }
 

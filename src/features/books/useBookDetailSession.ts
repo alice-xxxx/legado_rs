@@ -1,8 +1,9 @@
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
-import { getBook, prepareSearchResultBook } from "../../api/books";
-import { readResource } from "../../api/resources";
+import { prepareSearchResultBook } from "../../api/books";
 import type { BookResource, SearchBookResult, ShelfResource } from "../../api/types";
-import type { BookDetailOpenRequest, BookDetailSearchResultActions, BookDetailTab } from "./bookDetailOpenRequest";
+import { shelf as shelfPositions } from "../shelf/shelfStore";
+import { clearOpenedBook, closeBookDetail, switchOpenedBook, openedBookFromShelf } from "./bookDetailState";
+import type { BookDetailOpenRequest, BookDetailTab } from "./bookDetailOpenRequest";
 
 export interface BookDetailSessionState {
   result: SearchBookResult | null;
@@ -22,7 +23,6 @@ export interface BookDetailSessionDependencies {
   getRestoreRevision: () => number;
   startReading: (book: BookResource, chapterIndex?: number) => Promise<void>;
   closeDisplayEditor: () => void;
-  refreshShelf: () => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
@@ -33,19 +33,16 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   const { bookPanelBusy } = dependencies;
   const searchResultDetailsReadingBusy = ref(false);
   let generation = 0;
-  const activeSearchActions = shallowRef<BookDetailSearchResultActions | null>(null);
-  const searchResultBatchBusy = computed(() => activeSearchActions.value?.searchResultBatchBusy.value ?? false);
-
-  function searchResultIsBusy(result: SearchBookResult): boolean {
-    return activeSearchActions.value?.searchResultIsBusy(result) ?? false;
-  }
-
   const searchResultDetailsShelfBook = computed(() => {
     const bookId = dependencies.openedBook.value?.id;
     return bookId ? dependencies.shelf.value.books.find((book) => book.id === bookId) ?? null : null;
   });
   watch(searchResultDetailsShelfBook, (book) => {
-    if (book && searchResultDetails.value) searchResultDetails.value.inShelf = true;
+    if (searchResultDetails.value) searchResultDetails.value.inShelf = Boolean(book);
+  });
+
+  watch(() => dependencies.openedBook.value?.id, (id) => {
+    if (id && searchResultDetails.value) searchResultDetails.value.bookId = id;
   });
 
   function isCurrentRequest(requestGeneration: number, restoreRevision: number, details: ActiveBookDetailSession): boolean {
@@ -54,7 +51,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       && searchResultDetails.value === details;
   }
 
-  function beginSession(state: BookDetailSessionState, searchActions?: BookDetailSearchResultActions): {
+  function beginSession(state: BookDetailSessionState): {
     generation: number;
     restoreRevision: number;
     details: ActiveBookDetailSession;
@@ -62,11 +59,11 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     generation += 1;
     const currentGeneration = generation;
     const restoreRevision = dependencies.getRestoreRevision();
-    activeSearchActions.value = searchActions ?? null;
+    openedBookFromShelf.value = false;
     dependencies.closeDisplayEditor();
     searchResultDetailsReadingBusy.value = false;
     bookPanelBusy.value = true;
-    dependencies.openedBook.value = null;
+    clearOpenedBook();
     const details = reactive(state);
     searchResultDetails.value = details;
     return { generation: currentGeneration, restoreRevision, details };
@@ -74,7 +71,6 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
 
   async function openSearchResultDetails(
     result: SearchBookResult,
-    searchActions: BookDetailSearchResultActions,
   ): Promise<void> {
     const request = beginSession({
       result,
@@ -82,13 +78,14 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       inShelf: false,
       initialTab: "info",
       error: "",
-    }, searchActions);
+    });
     try {
       const response = await prepareSearchResultBook(result.resultId);
-      const book = await readResource<BookResource>(response.book);
+      if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+      const book = await switchOpenedBook(response.book);
+      if (!book) return;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       request.details.bookId = book.id;
-      dependencies.openedBook.value = book;
     } catch (error) {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) {
         request.details.error = dependencies.errorText(error);
@@ -98,21 +95,22 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     }
   }
 
-  async function openShelfBook(bookId: string, initialTab: BookDetailTab = "catalog"): Promise<void> {
+  async function openShelfBook(bookId: string, initialTab: BookDetailTab = "catalog", fromShelf = true): Promise<void> {
     const request = beginSession({
       result: null,
       bookId,
-      inShelf: true,
+      inShelf: dependencies.shelf.value.books.some((entry) => entry.id === bookId),
       initialTab,
       error: "",
     });
+    openedBookFromShelf.value = fromShelf;
     try {
-      if (!dependencies.shelf.value.books.some((entry) => entry.id === bookId)) {
+      if (fromShelf && !dependencies.shelf.value.books.some((entry) => entry.id === bookId)) {
         throw new Error("\u4e66\u7c4d\u6587\u4ef6\u6682\u65f6\u4e0d\u53ef\u7528\u3002");
       }
-      const book = await readResource<BookResource>(await getBook(bookId));
+      const book = await switchOpenedBook(bookId);
+      if (!book) return;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
-      dependencies.openedBook.value = book;
     } catch (error) {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) {
         request.details.error = dependencies.errorText(error);
@@ -124,20 +122,20 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
 
   async function openRequest(request: BookDetailOpenRequest): Promise<void> {
     if (request.kind === "search-result") {
-      await openSearchResultDetails(request.result, request.actions);
+      await openSearchResultDetails(request.result);
       return;
     }
-    await openShelfBook(request.bookId, request.initialTab);
+    await openShelfBook(request.bookId, request.initialTab, request.kind === "shelf-book");
   }
 
   async function retry(): Promise<void> {
     const details = searchResultDetails.value;
     if (!details) return;
-    if (details.result && activeSearchActions.value) {
-      await openSearchResultDetails(details.result, activeSearchActions.value);
+    if (details.result) {
+      await openSearchResultDetails(details.result);
       return;
     }
-    if (details.bookId) await openShelfBook(details.bookId, details.initialTab);
+    if (details.bookId) await openShelfBook(details.bookId, details.initialTab, openedBookFromShelf.value);
   }
 
   async function startReading(chapterIndex?: number): Promise<void> {
@@ -161,42 +159,18 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   }
 
   async function addSearchResultFromDetails(): Promise<void> {
-    const details = searchResultDetails.value;
-    const result = details?.result;
-    const addSearchResult = activeSearchActions.value?.addSearchResult;
-    if (!details || !result || !dependencies.openedBook.value || searchResultDetailsShelfBook.value || !addSearchResult) return;
-    const requestGeneration = generation;
-    const restoreRevision = dependencies.getRestoreRevision();
-    await addSearchResult(result);
-    if (!isCurrentRequest(requestGeneration, restoreRevision, details)) return;
-    await dependencies.refreshShelf();
-    if (!isCurrentRequest(requestGeneration, restoreRevision, details) || !details.bookId
-      || !searchResultDetailsShelfBook.value) return;
-    details.inShelf = true;
-    bookPanelBusy.value = true;
-    try {
-      if (!dependencies.shelf.value.books.some((entry) => entry.id === details.bookId)) {
-        throw new Error("\u4e66\u7c4d\u6587\u4ef6\u6682\u65f6\u4e0d\u53ef\u7528\u3002");
-      }
-      const book = await readResource<BookResource>(await getBook(details.bookId));
-      if (!isCurrentRequest(requestGeneration, restoreRevision, details)) return;
-      dependencies.openedBook.value = book;
-    } catch (error) {
-      if (isCurrentRequest(requestGeneration, restoreRevision, details)) {
-        dependencies.notify(`\u4e66\u7c4d\u5df2\u52a0\u5165\u4e66\u67b6\uff0c\u8be6\u60c5\u5237\u65b0\u5931\u8d25\uff1a${dependencies.errorText(error)}`, "error");
-      }
-    } finally {
-      if (isCurrentRequest(requestGeneration, restoreRevision, details)) bookPanelBusy.value = false;
-    }
+    const book = dependencies.openedBook.value;
+    if (!book || searchResultDetailsShelfBook.value) return;
+    shelfPositions.value.books.push({ id: book.id, groups: [] });
+    if (searchResultDetails.value) searchResultDetails.value.inShelf = true;
   }
 
   function clear(options: { preserveOpenedBook?: boolean } = {}): void {
     generation += 1;
-    activeSearchActions.value = null;
     bookPanelBusy.value = false;
     searchResultDetailsReadingBusy.value = false;
     searchResultDetails.value = null;
-    if (!options.preserveOpenedBook) dependencies.openedBook.value = null;
+    closeBookDetail(Boolean(options.preserveOpenedBook));
     dependencies.closeDisplayEditor();
   }
 
@@ -204,8 +178,6 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     searchResultDetails,
     searchResultDetailsShelfBook,
     searchResultDetailsReadingBusy,
-    searchResultBatchBusy,
-    searchResultIsBusy,
     bookPanelBusy,
     openRequest,
     openSearchResultDetails,

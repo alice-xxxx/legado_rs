@@ -1,7 +1,7 @@
 import { watch, type Ref } from "vue";
-import { clearBookChapterCache, getBook, getChapterCacheUsage } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { type BookResource, type ChapterCacheUsage, type ClearBookChapterCacheResponse, type ShelfResource } from "../../api/types";
+import { clearBookChapterCache, getChapterCacheUsage } from "../../api/books";
+import { type BookPreview, type BookResource, type ChapterCacheUsage, type ClearBookChapterCacheResponse, type ShelfResource } from "../../api/types";
+import { loadBookPreview, refreshOpenedBook, replaceOpenedBook } from "../books/bookDetailState";
 
 type ClearResult = {
   clearedBooks: number;
@@ -81,15 +81,6 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
       if (!isCurrent()) return "备份恢复期间书架已变化，旧缓存清理已停止。";
       if (readingBook.value?.id !== bookId) return `阅读器中的书籍已改变，未清除《${title}》的章节缓存。请重新确认后再试。`;
       if (readerProgressDirty.value) return `《${title}》的阅读位置尚未保存，缓存未清除。请保留当前状态后重试。`;
-      if (openedBook.value?.id === bookId && readerBook.progress) {
-        openedBook.value = { ...openedBook.value, progress: { ...readerBook.progress } };
-      }
-      if (readerBook.progress) {
-        shelf.value = {
-          ...shelf.value,
-          books: shelf.value.books.map((book) => book.id === bookId ? { ...book, progress: { ...readerBook.progress! } } : book),
-        };
-      }
       await finishReadingSession();
       if (!isCurrent()) return "备份恢复期间书架已变化，旧缓存清理已停止。";
       if (readingBook.value?.id === bookId) await closeReader(true);
@@ -154,7 +145,7 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
     let readerPreparationFailed = false;
     const errors: ClearResult["errors"] = [];
     const shelfBooksAtStart = [...(shelf.value.books ?? [])];
-    const onlineBooks: BookResource[] = [];
+    const onlineBooks: BookPreview[] = [];
 
     try {
       for (let index = 0; index < shelfBooksAtStart.length; index += 1) {
@@ -167,9 +158,9 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
           break;
         }
         try {
-          const book = await readResource<BookResource>(await getBook(shelfBook.id));
+          const book = await loadBookPreview(shelfBook.id);
           if (!isCurrent()) return;
-          if (book.id !== shelfBook.id) throw new Error("返回的书籍与书架条目不匹配。");
+          if (!book || book.id !== shelfBook.id) throw new Error("返回的书籍与书架条目不匹配。");
           if (book.canChangeSource === true && Boolean(book.sourceId?.trim())) onlineBooks.push(book);
         } catch (error) {
           if (!isCurrent()) return;
@@ -306,7 +297,7 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
       if (response.recoveryRequired || recoveryRequired.value) {
         pendingBookClear.value = null;
         if (openedBook.value?.id === bookId) {
-          openedBook.value = withoutChapterResources(openedBook.value);
+          replaceOpenedBook(withoutChapterResources(openedBook.value));
         }
         if (response.recoveryRequired) lockChapterCacheRecovery("需要重启应用完成缓存恢复", `《${title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
         notify(`《${title}》的缓存清理已提交，但当前需要完成恢复；未刷新书籍资源，请重启应用。${warning ? ` ${warning}` : ""}`, "error");
@@ -314,27 +305,14 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
       }
 
       pendingBookClear.value = null;
-      let updatedBook: BookResource | null = null;
       let bookReadError = "";
       try {
-        updatedBook = await readResource<BookResource>(response.book);
+        await refreshOpenedBook(response.book);
         if (!isCurrent()) return;
-        if (updatedBook.id !== bookId) throw new Error("清除后返回的书籍与当前操作不匹配。");
       } catch (error) {
         if (!isCurrent()) return;
-        const responseReadError = errorText(error);
-        try {
-          updatedBook = await readResource<BookResource>(await getBook(bookId));
-          if (!isCurrent()) return;
-          if (updatedBook.id !== bookId) throw new Error("重读后返回的书籍与当前操作不匹配。");
-        } catch (reloadError) {
-          if (!isCurrent()) return;
-          bookReadError = `${responseReadError}；重读失败：${errorText(reloadError)}`;
-        }
-      }
-      const currentBook = openedBook.value;
-      if (currentBook?.id === bookId) {
-        openedBook.value = updatedBook ?? withoutChapterResources(currentBook);
+        bookReadError = errorText(error);
+        if (openedBook.value?.id === bookId) replaceOpenedBook(withoutChapterResources(openedBook.value));
       }
       if (bookReadError) {
         notify(`《${title}》的章节缓存已清除，但详情未能重新载入：${bookReadError}。`, "error");

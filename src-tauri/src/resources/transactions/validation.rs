@@ -93,7 +93,7 @@ pub(super) fn validate_target_payload(
 pub(super) fn is_deletable_target(target: &TransactionTarget) -> bool {
     match target {
         TransactionTarget::PublicJson(path) => {
-            is_book_json_path(path) || is_progress_json_path(path)
+            is_book_json_path(path)
         }
         TransactionTarget::PrivateBookJson(_) => true,
     }
@@ -169,15 +169,6 @@ pub(super) fn is_book_json_path(path: &str) -> bool {
         && components[0] == "books"
         && valid_identifier(components[1])
         && components[2] == "book.json"
-}
-
-pub(super) fn is_progress_json_path(path: &str) -> bool {
-    let components = path.split('/').collect::<Vec<_>>();
-    components.len() == 2
-        && components[0] == "progress"
-        && components[1]
-            .strip_suffix(".json")
-            .is_some_and(valid_identifier)
 }
 
 pub(super) fn is_book_directory_path(path: &str) -> bool {

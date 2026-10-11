@@ -12,8 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use crate::models::{
-    BookDocument, ProgressDocument, ReaderDefaults, SettingsDocument, ShelfDocument,
-    CURRENT_SCHEMA_VERSION,
+    BookDocument, ReaderDefaults, SettingsDocument, ShelfDocument, CURRENT_SCHEMA_VERSION,
 };
 
 use super::json::validate_embedded_refs;
@@ -128,21 +127,16 @@ impl ResourceStore {
         &self,
         content_hash: &str,
     ) -> Result<ResourceRef, ResourceError> {
-        self.reading_ref(&format!("source-definitions-{content_hash}"))
+        self.search_ref(&format!("source-definitions-{content_hash}"))
     }
 
-    pub fn bookmarks_ref(&self) -> ResourceRef {
-        ResourceRef::from_validated_path("bookmarks.json")
+    pub fn history_ref(&self) -> ResourceRef {
+        ResourceRef::from_validated_path("history.json")
     }
 
     pub fn book_ref(&self, book_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(book_id)?;
         ResourceRef::new(format!("resource://books/{book_id}/book.json"))
-    }
-
-    pub fn progress_ref(&self, book_id: &str) -> Result<ResourceRef, ResourceError> {
-        validate_id(book_id)?;
-        ResourceRef::new(format!("resource://progress/{book_id}.json"))
     }
 
     /// Versioned chapter bodies are addressed by identity and content.
@@ -168,14 +162,14 @@ impl ResourceStore {
         ResourceRef::new(format!("resource://search/{search_id}.json"))
     }
 
-    pub fn reading_ref(&self, document_name: &str) -> Result<ResourceRef, ResourceError> {
+    pub fn document_ref(&self, document_name: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(document_name)?;
-        ResourceRef::new(format!("resource://reading/{document_name}.json"))
+        ResourceRef::new(format!("resource://{document_name}.json"))
     }
 
     pub fn discovery_ref(&self, discovery_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(discovery_id)?;
-        ResourceRef::new(format!("resource://discovery/{discovery_id}.json"))
+        self.search_ref(&format!("discovery-{discovery_id}"))
     }
 
     pub fn dictionary_ref(&self, dictionary_id: &str) -> Result<ResourceRef, ResourceError> {
@@ -288,7 +282,7 @@ impl ResourceStore {
     /// TXT rule versions are immutable browser resources for one WebView
     /// session; the persisted current document remains at its stable ref.
     pub(crate) async fn remove_txt_toc_rule_snapshots(&self) -> Result<usize, ResourceError> {
-        self.remove_session_json_snapshots("reading", "txt-toc-rules-snapshot-")
+        self.remove_session_json_snapshots("search", "txt-toc-rules-snapshot-")
             .await
     }
 
@@ -297,7 +291,7 @@ impl ResourceStore {
     pub(crate) async fn remove_source_definition_snapshots(
         &self,
     ) -> Result<usize, ResourceError> {
-        self.remove_session_json_snapshots("reading", "source-definitions-")
+        self.remove_session_json_snapshots("search", "source-definitions-")
             .await
     }
 
@@ -559,21 +553,6 @@ impl ResourceStore {
     pub async fn write_settings(&self, settings: &SettingsDocument) -> Result<(), ResourceError> {
         self.write_serializable(&self.settings_ref(), settings)
             .await
-    }
-
-    pub async fn write_progress(
-        &self,
-        book_id: &str,
-        progress: &ProgressDocument,
-    ) -> Result<(), ResourceError> {
-        validate_id(book_id)?;
-        if progress.book_id != book_id {
-            return Err(ResourceError::new(
-                "Progress bookId does not match the resource path",
-            ));
-        }
-        let reference = self.progress_ref(book_id)?;
-        self.write_serializable(&reference, progress).await
     }
 
     pub async fn write_book(&self, book: &BookDocument) -> Result<(), ResourceError> {
@@ -1017,16 +996,11 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
         Ok(())
     }
 
-    /// Delete a book's public cache and its progress document. The caller
-    /// updates the shelf JSON as part of the same application operation.
+    /// Delete one book's public cache. The caller updates the shelf JSON as
+    /// part of the same application operation.
     pub async fn remove_book_resources(&self, book_id: &str) -> Result<(), ResourceError> {
         validate_id(book_id)?;
         let book_dir = self.inner.root.join("books").join(book_id);
-        let progress_path = self
-            .inner
-            .root
-            .join("progress")
-            .join(format!("{book_id}.json"));
         let root = self.inner.root.clone();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
@@ -1041,14 +1015,7 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
                     )));
                 }
             }
-            check_path_no_symlink(&root, &progress_path, true)?;
-            match std::fs::remove_file(progress_path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(ResourceError::new(format!(
-                    "Cannot remove book progress: {error}"
-                ))),
-            }
+            Ok(())
         })
         .await
         .map_err(|error| ResourceError::new(format!("Book deletion worker failed: {error}")))??;
@@ -1056,7 +1023,7 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
     }
 
     /// Remove only cached RSS typed article bodies and media for a source's private
-    /// pseudo-book namespace. Shelf, progress, and ordinary book resources are
+    /// pseudo-book namespace. Shelf and ordinary book resources are
     /// outside this operation and remain untouched.
     pub async fn remove_rss_chapter_resources(&self, source_id: &str) -> Result<(), ResourceError> {
         validate_id(source_id)?;
@@ -1229,7 +1196,7 @@ fn prune_unreferenced_chapter_versions(root: &Path) -> Result<(), ResourceError>
 
     // RSS has its own Rust-owned article catalog instead of book.json.
     // If that catalog cannot be read, retain all RSS versions conservatively.
-    let rss_path = root.join("reading/rss-state.json");
+    let rss_path = root.join("rss-state.json");
     check_path_no_symlink(root, &rss_path, true)?;
     let rss_state: Option<crate::rss::RssStateDocument> =
         fs::read(&rss_path)
@@ -1347,6 +1314,7 @@ fn prune_unused_chapter_media_mappings(root: &Path) -> Result<(), ResourceError>
     let books_dir = root.join("books");
     check_path_no_symlink(root, &books_dir, true)?;
     let mut live_ids = HashSet::new();
+    let mut mapping_directories = Vec::new();
     let books = match fs::read_dir(&books_dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -1427,31 +1395,42 @@ fn prune_unused_chapter_media_mappings(root: &Path) -> Result<(), ResourceError>
             }
         }
     }
-    let directory = root.join("private-data/media-maps");
-    check_path_no_symlink(root, &directory, true)?;
-    let mappings = match fs::read_dir(&directory) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(ResourceError::new(format!(
-            "Cannot inspect private chapter media mappings: {error}"
-        ))),
-    };
-    for mapping in mappings {
-        let mapping = mapping.map_err(|error| ResourceError::new(error.to_string()))?;
-        let name = mapping.file_name().to_string_lossy().into_owned();
-        let Some(id) = name.strip_suffix(".json") else {
+    for book in fs::read_dir(&books_dir).map_err(|error| ResourceError::new(error.to_string()))? {
+        let book = book.map_err(|error| ResourceError::new(error.to_string()))?;
+        if !book.file_type().is_ok_and(|kind| kind.is_dir()) {
             continue;
+        }
+        let book_id = book.file_name().to_string_lossy().into_owned();
+        if validate_id(&book_id).is_ok() {
+            mapping_directories.push(book.path().join("media-maps"));
+        }
+    }
+    for directory in mapping_directories {
+        check_path_no_symlink(root, &directory, true)?;
+        let mappings = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(ResourceError::new(format!(
+                "Cannot inspect private chapter media mappings: {error}"
+            ))),
         };
-        if !is_chapter_media_mapping_id(id) || live_ids.contains(id) {
-            continue;
+        for mapping in mappings {
+            let mapping = mapping.map_err(|error| ResourceError::new(error.to_string()))?;
+            let name = mapping.file_name().to_string_lossy().into_owned();
+            let Some(id) = name.strip_suffix(".json") else {
+                continue;
+            };
+            if !is_chapter_media_mapping_id(id) || live_ids.contains(id) {
+                continue;
+            }
+            // Symlinks and special files are never removed by this collector.
+            if !mapping.file_type().is_ok_and(|kind| kind.is_file()) {
+                continue;
+            }
+            fs::remove_file(mapping.path()).map_err(|error| {
+                ResourceError::new(format!("Cannot remove obsolete chapter media mapping: {error}"))
+            })?;
         }
-        // Symlinks and special files are never removed by this collector.
-        if !mapping.file_type().is_ok_and(|kind| kind.is_file()) {
-            continue;
-        }
-        fs::remove_file(mapping.path()).map_err(|error| {
-            ResourceError::new(format!("Cannot remove obsolete chapter media mapping: {error}"))
-        })?;
     }
     Ok(())
 }

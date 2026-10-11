@@ -10,40 +10,6 @@ impl ApplicationService {
             .map_err(|error| error.to_string())
     }
 
-    async fn write_http_tts_configs(&self, document: &Value) -> Result<(), String> {
-        crate::http_tts_config::list_configs(document)?;
-        self.store
-            .write_json_ref(&self.store.http_tts_configs_ref(), document)
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    pub async fn fetch_http_tts_config_json(&self, input: &str) -> Result<String, String> {
-        let config_json = download_json_url(
-            input,
-            crate::http_tts_config::MAX_CONFIG_BYTES,
-            Duration::from_secs(30),
-            "HTTP TTS JSON",
-        )
-        .await?;
-        Ok(config_json)
-    }
-
-    pub async fn mutate_http_tts_configs(
-        &self,
-        mutation: crate::http_tts_config::HttpTtsConfigMutation,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let _lock = self.sources_lock.lock().await;
-        let document = self.read_http_tts_configs().await?;
-        let (updated, mut result) = crate::http_tts_config::apply_mutation(&document, mutation)?;
-        if result.get("deleted").and_then(Value::as_bool) != Some(false) {
-            self.write_http_tts_configs(&updated).await?;
-        }
-        result["resource"] = self.resource_descriptor(&self.store.http_tts_configs_ref());
-        Ok(result)
-    }
-
     pub async fn request_http_tts_audio(
         &self,
         config_id: &str,

@@ -3,22 +3,60 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use crate::{
-    models::CURRENT_SCHEMA_VERSION,
-    resources::{ResourceRef, ResourceStore},
-};
+use crate::resources::{ResourceRef, ResourceStore};
 
-use super::common::{current_schema_version, ensure_document, validate_id};
+use super::common::validate_id;
 
-const HISTORY_PATH: &str = "resource://reading-history.json";
+pub const HISTORY_SCHEMA_VERSION: u32 = 2;
+
+/// The app's single history document, including complete bookmark records.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryDocument {
+    pub schema_version: u32,
+    pub reading: ReadingHistoryDocument,
+    pub search: crate::search_history::SearchHistoryDocument,
+    #[serde(default)]
+    pub bookmarks: BTreeMap<String, Vec<Bookmark>>,
+}
+
+impl Default for HistoryDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: HISTORY_SCHEMA_VERSION,
+            reading: ReadingHistoryDocument::default(),
+            search: crate::search_history::SearchHistoryDocument::default(),
+            bookmarks: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Bookmark {
+    pub id: String,
+    pub chapter_id: String,
+    pub chapter_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chapter_title: Option<String>,
+    pub offset: u64,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub orphaned: bool,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadingHistoryDocument {
-    #[serde(default = "current_schema_version")]
-    pub schema_version: u32,
     #[serde(default)]
     pub sessions: Vec<ReadingSession>,
     #[serde(default)]
@@ -35,7 +73,6 @@ pub struct ReadingHistoryDocument {
 impl Default for ReadingHistoryDocument {
     fn default() -> Self {
         Self {
-            schema_version: CURRENT_SCHEMA_VERSION,
             sessions: Vec::new(),
             books: Vec::new(),
             days: Vec::new(),
@@ -86,139 +123,77 @@ pub struct BookDailySummary {
     pub total_duration_ms: u64,
 }
 
-pub async fn reading_history_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
-    ensure_document(store, history_ref(), ReadingHistoryDocument::default()).await
-}
-
-/// Build processed reading summaries for one UTC millisecond window without
-/// changing the persisted history or returning its raw sessions.
-pub async fn reading_statistics(
-    store: &ResourceStore,
-    from_ms: u64,
-    to_ms: u64,
-) -> Result<Value, String> {
-    const MAX_WINDOW_MS: u64 = 31 * 24 * 60 * 60 * 1_000;
-    if from_ms >= to_ms {
-        return Err("Reading statistics range must satisfy fromMs < toMs".to_owned());
-    }
-    if to_ms - from_ms > MAX_WINDOW_MS {
-        return Err("Reading statistics range must not exceed 31 days".to_owned());
-    }
-
-    let history = store
-        .read_json_ref(&history_ref())
+pub async fn history_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
+    let reference = history_ref();
+    store
+        .update_json_ref_or_default(
+            &reference,
+            serde_json::to_value(HistoryDocument::default()).map_err(|error| error.to_string())?,
+            |value| {
+                let document: HistoryDocument = serde_json::from_value(value)
+                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
+                serde_json::to_value(document).map_err(|error| error.to_string())
+            },
+        )
         .await
         .map_err(|error| error.to_string())?;
-    let mut document = history_document(&history)?;
-    let mut sessions = Vec::with_capacity(document.sessions.len());
-    for mut session in document.sessions {
-        if session.duration_ms == 0
+    Ok(reference)
+}
+
+pub(crate) fn parse_history(value: &Value) -> Result<HistoryDocument, String> {
+    if value.is_null() {
+        return Ok(HistoryDocument::default());
+    }
+    let history: HistoryDocument = serde_json::from_value(value.clone())
+        .map_err(|error| format!("Invalid history JSON: {error}"))?;
+    if history.schema_version != HISTORY_SCHEMA_VERSION {
+        return Err(format!(
+            "Unsupported history schema version: {}",
+            history.schema_version
+        ));
+    }
+    Ok(history)
+}
+
+pub fn validate_history_document(value: &Value) -> Result<(), String> {
+    let history = parse_history(value)?;
+    let mut session_ids = std::collections::HashSet::new();
+    for session in &history.reading.sessions {
+        validate_id(&session.book_id, "reading bookId")?;
+        validate_id(&session.session_id, "reading sessionId")?;
+        if session.ended_at_ms == 0
+            || session.duration_ms == 0
             || session.duration_ms > session.ended_at_ms
             || !(-840..=840).contains(&session.utc_offset_minutes)
+            || !session_ids.insert(&session.session_id)
         {
-            return Err("Reading history contains invalid session data".to_owned());
-        }
-        let session_start = session.ended_at_ms - session.duration_ms;
-        let clipped_start = from_ms.max(session_start);
-        let clipped_end = to_ms.min(session.ended_at_ms);
-        if clipped_start < clipped_end {
-            session.duration_ms = clipped_end - clipped_start;
-            session.ended_at_ms = clipped_end;
-            sessions.push(session);
+            return Err("Reading history contains invalid or duplicate sessions".to_owned());
         }
     }
-    document.sessions = sessions;
-    rebuild_reading_summaries(&mut document);
-
-    Ok(json!({
-        "books": document.books,
-        "days": document.days,
-        "totalDurationMs": document.total_duration_ms,
-        "totalSessions": document.total_sessions,
-    }))
-}
-
-/// Persist one completed reading visit and recompute its per-book aggregates.
-/// Replaying a save with the same `sessionId` replaces that session record
-/// instead of adding its duration again.
-pub async fn record_reading_session(
-    store: &ResourceStore,
-    session: ReadingSession,
-) -> Result<ResourceRef, String> {
-    validate_id(&session.book_id, "bookId")?;
-    validate_id(&session.session_id, "sessionId")?;
-    if session.ended_at_ms == 0 {
-        return Err("Reading session endedAtMs must be positive".to_owned());
-    }
-    if session.duration_ms == 0 || session.duration_ms > session.ended_at_ms {
-        return Err(
-            "Reading session duration must be positive and no longer than its timestamp".to_owned(),
-        );
-    }
-    if !(-840..=840).contains(&session.utc_offset_minutes) {
-        return Err("Reading session UTC offset must be within -14:00 to +14:00".to_owned());
-    }
-    let document = store
-        .update_json_ref(&history_ref(), move |mut value| {
-            let mut document = history_document(&mut value)?;
-            if let Some(existing) = document
-                .sessions
-                .iter_mut()
-                .find(|existing| existing.session_id == session.session_id)
-            {
-                if existing.book_id != session.book_id {
-                    return Err("Reading session ID already belongs to another book".to_owned());
-                }
-                *existing = session;
-            } else {
-                document.sessions.push(session);
+    crate::search_history::validate_search_history(&history.search)?;
+    let mut bookmark_ids = std::collections::HashSet::new();
+    for (book_id, bookmarks) in history.bookmarks {
+        validate_id(&book_id, "bookmark bookId")?;
+        if bookmarks.is_empty() {
+            return Err("History must not contain empty bookmark lists".to_owned());
+        }
+        for bookmark in bookmarks {
+            validate_id(&bookmark.id, "bookmark id")?;
+            validate_id(&bookmark.chapter_id, "bookmark chapterId")?;
+            if bookmark.note.len() > 16_384 || !bookmark_ids.insert(bookmark.id) {
+                return Err("History contains an invalid or duplicate bookmark".to_owned());
             }
-            document.schema_version = CURRENT_SCHEMA_VERSION;
-            rebuild_reading_summaries(&mut document);
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let _ = document;
-    Ok(history_ref())
-}
-
-pub async fn delete_reading_history_for_book(
-    store: &ResourceStore,
-    book_id: &str,
-) -> Result<ResourceRef, String> {
-    validate_id(book_id, "bookId")?;
-    store
-        .update_json_ref(&history_ref(), move |value| {
-            let mut document = history_document(&value)?;
-            document
-                .sessions
-                .retain(|session| session.book_id != book_id);
-            rebuild_reading_summaries(&mut document);
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(history_ref())
-}
-
-pub async fn clear_reading_history(store: &ResourceStore) -> Result<ResourceRef, String> {
-    store
-        .update_json_ref(&history_ref(), |_| {
-            serde_json::to_value(ReadingHistoryDocument::default())
-                .map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(history_ref())
-}
-
-fn history_document(value: &Value) -> Result<ReadingHistoryDocument, String> {
-    if value.is_null() {
-        return Ok(ReadingHistoryDocument::default());
+        }
     }
-    serde_json::from_value(value.clone())
-        .map_err(|error| format!("Invalid reading history JSON: {error}"))
+    Ok(())
+}
+
+pub fn normalize_history_document(value: &Value) -> Result<Value, String> {
+    let mut history = parse_history(value)?;
+    rebuild_reading_summaries(&mut history.reading);
+    let value = serde_json::to_value(history).map_err(|error| error.to_string())?;
+    validate_history_document(&value)?;
+    Ok(value)
 }
 
 fn rebuild_reading_summaries(document: &mut ReadingHistoryDocument) {
@@ -333,6 +308,6 @@ fn civil_day_key(days_since_epoch: i128) -> String {
     format!("{year:04}{month:02}{day:02}")
 }
 
-fn history_ref() -> ResourceRef {
-    ResourceRef::new(HISTORY_PATH).expect("static reading history reference is valid")
+pub(crate) fn history_ref() -> ResourceRef {
+    ResourceRef::from_validated_path("history.json")
 }

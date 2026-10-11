@@ -15,11 +15,8 @@ interface SearchWorkflowDependencies {
   searchResults: Ref<SearchBookResult[]>;
   searchResourceErrors: Ref<Array<{ sourceId?: string; message: string }>>;
   searchWasRun: Ref<boolean>;
-  searchResultBatchBusy: Ref<boolean>;
   shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
   openedBook?: Ref<BookResource | null>;
-  resetSearchResultState: () => void;
-  pruneSelectionToResults: (results: SearchBookResult[]) => void;
   refreshTasks?: (descriptor?: ResourceDescriptor) => Promise<void>;
   reusedCatalogTaskNotice?: (task: AppTask) => string;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -48,11 +45,8 @@ export function useSearchWorkflow({
   searchResults,
   searchResourceErrors,
   searchWasRun,
-  searchResultBatchBusy,
   shelfBatchRecoveryRequired,
   openedBook,
-  resetSearchResultState,
-  pruneSelectionToResults,
   refreshTasks,
   reusedCatalogTaskNotice,
   notify,
@@ -92,7 +86,6 @@ export function useSearchWorkflow({
     searchResourceErrors.value = Array.isArray(result.errors) ? result.errors : [];
     searchResponseErrors.value = status === "failed" && result.error ? [{ message: result.error }] : [];
 
-    if (result.complete === true) pruneSelectionToResults(nextResults);
 
     if (status === "queued" || status === "running") {
       if (result.taskId) activeSearchTaskId.value = result.taskId;
@@ -138,7 +131,7 @@ export function useSearchWorkflow({
   }
 
   async function runSearch(page?: number): Promise<void> {
-    if (shelfBatchRecoveryRequired.value || searchResultBatchBusy.value || searchStartPending) return;
+    if (shelfBatchRecoveryRequired.value || searchStartPending) return;
     const restoreRevision = getRestoreRevision();
     const keyword = (page === undefined ? searchKeyword.value : displayedQuery?.keyword ?? searchKeyword.value).trim();
     const nextPage = Math.max(1, page ?? 1);
@@ -158,7 +151,6 @@ export function useSearchWorkflow({
     // 新的一次交互立即离开上一轮展示；旧结果在 Rust 接受新搜索后即失效。
     snapshotRead?.abort();
     snapshotRead = null;
-    resetSearchResultState();
     searchResults.value = [];
     searchResourceErrors.value = [];
     searchResponseErrors.value = [];
@@ -248,7 +240,6 @@ export function useSearchWorkflow({
     searchResponseErrors.value = [];
     searchResourceErrors.value = [];
     searchResults.value = [];
-    resetSearchResultState();
   }
 
   return {

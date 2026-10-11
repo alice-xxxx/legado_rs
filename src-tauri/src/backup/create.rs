@@ -13,7 +13,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::models::{
-    BookDocument, CURRENT_SCHEMA_VERSION, ProgressDocument, SettingsDocument, ShelfDocument,
+    BookDocument, CURRENT_SCHEMA_VERSION, SettingsDocument, ShelfDocument,
 };
 use crate::resources::ResourceStore;
 
@@ -122,7 +122,7 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
 
 pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
     let mut files = Vec::new();
-    for required in ["shelf.json", "settings.json", "http-tts.json"] {
+    for required in ["shelf.json", "settings.json", "http-tts.json", "history.json"] {
         let path = root.join(required);
         if !path.is_file() {
             return Err(format!("Required app data file is missing: {required}"));
@@ -131,9 +131,11 @@ pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, S
     }
     for required in [
         "sources.json",
-        "bookmarks.json",
-        "reading-history.json",
         "replacement-rules.json",
+        "txt-toc-rules.json",
+        "tasks.json",
+        "rss-state.json",
+        "source-revisions.json",
     ] {
         let path = root.join(required);
         match fs::symlink_metadata(&path) {
@@ -146,42 +148,18 @@ pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, S
             }
         }
     }
-    for directory in ["books", "progress", "search", "discovery", "reading"] {
+    for directory in ["books"] {
         collect_tree(root, &root.join(directory), directory, &mut files)?;
-    }
-
-    let private_root = root.join("private-data");
-    ensure_regular_directory_if_present(root, &private_root, "private-data")?;
-    let source_revisions = private_root.join("source-revisions.json");
-    match fs::symlink_metadata(&source_revisions) {
-        Ok(_) => add_snapshot_file(
-            &mut files,
-            root,
-            &source_revisions,
-            "private-data/source-revisions.json".to_owned(),
-        )?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => {
-            return Err(format!(
-                "Cannot inspect private source revisions file: {error}"
-            ));
-        }
-    }
-    for directory in [
-        "books",
-        "discovery-categories",
-        "media-maps",
-    ] {
-        collect_tree(
-            root,
-            &private_root.join(directory),
-            &format!("private-data/{directory}"),
-            &mut files,
-        )?;
     }
 
     let source_engine = root.join("source-engine");
     ensure_regular_directory_if_present(root, &source_engine, "source-engine")?;
+    collect_tree(
+        root,
+        &source_engine.join("discovery-categories"),
+        "source-engine/discovery-categories",
+        &mut files,
+    )?;
     let storage_dir = source_engine.join("storage");
     ensure_regular_directory_if_present(root, &storage_dir, "source-engine/storage")?;
     for namespace in BACKED_SOURCE_STORAGE {
@@ -342,51 +320,38 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                     .map_err(|error| format!("Invalid shelf JSON: {error}"))?;
             }
             "settings.json" => {
-                serde_json::from_slice::<SettingsDocument>(&bytes)
+                let document: SettingsDocument = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid settings JSON: {error}"))?;
+                crate::discovery::home_config::validate_home_document(&document.home)?;
             }
-            "bookmarks.json" => {
-                let _: crate::reading_tools::BookmarkDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid bookmarks JSON: {error}"))?;
-            }
-            "reading-history.json" => {
-                let _: crate::reading_tools::ReadingHistoryDocument =
-                    serde_json::from_slice(&bytes)
-                        .map_err(|error| format!("Invalid reading history JSON: {error}"))?;
+            "history.json" => {
+                let document: Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
+                crate::reading_tools::validate_history_document(&document)
+                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
             }
             "replacement-rules.json" => {
                 let _: crate::reading_tools::ReplacementRuleDocument =
                     serde_json::from_slice(&bytes)
                         .map_err(|error| format!("Invalid replacement rules JSON: {error}"))?;
             }
-            "reading/txt-toc-rules.json" => {
+            "txt-toc-rules.json" => {
                 let document: crate::local_books::txt_toc_rules::TxtTocRulesDocument =
                     serde_json::from_slice(&bytes)
                         .map_err(|error| format!("Invalid TXT TOC rules JSON: {error}"))?;
                 crate::local_books::txt_toc_rules::validate_document(&document)?;
             }
-            "reading/home-tabs.json" => {
-                let document: Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid home tabs JSON: {error}"))?;
-                crate::discovery::home_config::validate_home_document(&document)?;
-            }
-            "reading/rss-state.json" => {
+            "rss-state.json" => {
                 let document: Value = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
                 crate::rss::validate_rss_state(&document)?;
-            }
-            "reading/search-history.json" => {
-                let document: Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid search history JSON: {error}"))?;
-                crate::search_history::validate_document(&document)
-                    .map_err(|error| format!("Invalid search history JSON: {error}"))?;
             }
             "sources.json" => {
                 let records: Vec<crate::application::SourceRecord> = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid source JSON: {error}"))?;
                 crate::application::validate_source_records(&records)?;
             }
-            "private-data/source-revisions.json" => {
+            "source-revisions.json" => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct SourceRevisions {
@@ -416,19 +381,6 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                     return Err(format!("Book id does not match resource path: {path}"));
                 }
             }
-            path if path.starts_with("progress/") && path.ends_with(".json") => {
-                let progress: ProgressDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid progress JSON at {path}: {error}"))?;
-                let expected_id = path
-                    .strip_prefix("progress/")
-                    .and_then(|value| value.strip_suffix(".json"))
-                    .ok_or_else(|| format!("Invalid progress resource path: {path}"))?;
-                if progress.book_id != expected_id {
-                    return Err(format!(
-                        "Progress book id does not match resource path: {path}"
-                    ));
-                }
-            }
             path if path.starts_with("search/") && path.ends_with(".json") => {
                 let document: crate::models::SearchResultsDocument = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid search resource at {path}: {error}"))?;
@@ -436,51 +388,14 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                     return Err(format!("Search resource has an unsupported schema: {path}"));
                 }
             }
-            path if path.starts_with("discovery/") && path.ends_with(".json") => {
-                let document: crate::discovery::DiscoveryCategoriesDocument =
-                    serde_json::from_slice(&bytes).map_err(|error| {
-                        format!("Invalid discovery resource at {path}: {error}")
-                    })?;
-                let expected_source = path
-                    .strip_prefix("discovery/")
-                    .and_then(|value| value.strip_suffix(".json"))
-                    .ok_or_else(|| format!("Invalid discovery resource path: {path}"))?;
-                if document.source_id != expected_source {
-                    return Err(format!(
-                        "Discovery source id does not match its resource path: {path}"
-                    ));
+            "tasks.json" => {
+                let document: Value = serde_json::from_slice(&bytes)
+                    .map_err(|error| format!("Invalid tasks JSON: {error}"))?;
+                if !document["tasks"].is_array() || document["schemaVersion"].as_u64() != Some(CURRENT_SCHEMA_VERSION as u64) {
+                    return Err("Invalid tasks document".into());
                 }
             }
-            path if path.starts_with("reading/") && path.ends_with(".json") => {
-                let document: serde_json::Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid reading resource at {path}: {error}"))?;
-                if !document.is_object() {
-                    return Err(format!("Reading resource must be an object: {path}"));
-                }
-                if path == "reading/tasks.json"
-                    && (!document["tasks"].is_array()
-                        || document["schemaVersion"].as_u64()
-                            != Some(CURRENT_SCHEMA_VERSION as u64))
-                {
-                    return Err("Task state has an invalid schema or task list".to_owned());
-                }
-                if path == "reading/tasks.json" {
-                    for (index, task) in document["tasks"].as_array().unwrap().iter().enumerate() {
-                        let valid = task.is_object()
-                            && task["id"].as_str().is_some_and(valid_resource_id)
-                            && task["kind"].as_str().is_some_and(|value| !value.is_empty())
-                            && task["status"]
-                                .as_str()
-                                .is_some_and(|value| !value.is_empty())
-                            && task["createdAtMs"].as_u64().is_some()
-                            && task["updatedAtMs"].as_u64().is_some();
-                        if !valid {
-                            return Err(format!("Task record {index} has invalid fields"));
-                        }
-                    }
-                }
-            }
-            path if path.starts_with("private-data/media-maps/") && path.ends_with(".json") => {
+            path if path.starts_with("books/") && path.contains("/media-maps/") && path.ends_with(".json") => {
                 #[derive(Deserialize)]
                 #[serde(rename_all = "camelCase", deny_unknown_fields)]
                 struct MediaMapping {
@@ -498,7 +413,7 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                 let mapping: MediaMapping = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid private media mapping at {path}: {error}"))?;
                 let expected_id = path
-                    .strip_prefix("private-data/media-maps/")
+                    .rsplit('/').next()
                     .and_then(|value| value.strip_suffix(".json"))
                     .ok_or_else(|| format!("Invalid private media mapping path: {path}"))?;
                 let upstream_url = reqwest::Url::parse(&mapping.upstream_url)
@@ -552,7 +467,8 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                 }
                 crate::http_tts_config::list_configs(&value)?;
             }
-            path if path.starts_with("private-data/") && path.ends_with(".json") => {
+            path if (path.starts_with("books/") && path.ends_with("/source-state.json"))
+                || (path.starts_with("source-engine/discovery-categories/") && path.ends_with(".json")) => {
                 let value: serde_json::Value = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid private JSON data at {path}: {error}"))?;
                 if !value.is_object() {
@@ -666,17 +582,19 @@ pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
         "shelf.json"
             | "settings.json"
             | "http-tts.json"
-            | "bookmarks.json"
-            | "reading-history.json"
+            | "history.json"
             | "replacement-rules.json"
             | "sources.json"
-            | "private-data/source-revisions.json"
+            | "txt-toc-rules.json"
+            | "tasks.json"
+            | "rss-state.json"
+            | "source-revisions.json"
     ) {
         return true;
     }
     let parts = path.split('/').collect::<Vec<_>>();
     match parts.as_slice() {
-        ["books", book_id, "book.json"] => valid_resource_id(book_id),
+        ["books", book_id, "book.json" | "source-state.json"] => valid_resource_id(book_id),
         ["books", book_id, original_file] => {
             valid_resource_id(book_id) && valid_local_original_file(original_file)
         }
@@ -692,27 +610,10 @@ pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
         ["books", book_id, "assets", asset_file] => {
             valid_resource_id(book_id) && valid_asset_file(asset_file)
         }
-        ["progress", progress_file] => progress_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["search", search_file] => search_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["discovery", discovery_file] => discovery_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["reading", state_file] => state_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["private-data", "books", private_book_file] => private_book_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["private-data", "discovery-categories", source_file] => source_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
-        ["private-data", "media-maps", media_file] => media_file
-            .strip_suffix(".json")
-            .is_some_and(valid_resource_id),
+        ["books", book_id, "media-maps", media_file] => valid_resource_id(book_id)
+            && media_file.strip_suffix(".json").is_some_and(valid_resource_id),
+        ["source-engine", "discovery-categories", source_file] => source_file
+            .strip_suffix(".json").is_some_and(valid_source_record_id),
         ["source-engine", "storage", storage_file] => BACKED_SOURCE_STORAGE
             .iter()
             .any(|namespace| storage_file == &format!("{namespace}.json")),

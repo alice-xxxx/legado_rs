@@ -1,17 +1,12 @@
 import type { Ref } from "vue";
-import { mutateHttpTtsConfigs } from "../../api/settings";
-import { readResource } from "../../api/resources";
-import { type AppSettingsResource, type HttpTtsConfigEditorFields, type HttpTtsConfigEntry, type HttpTtsConfigMetadata, type HttpTtsConfigResource, type ResourceDescriptor } from "../../api/types";
-import { beginReaderHttpTtsConfigRefresh, publishReaderHttpTtsConfigs } from "../reader/readerTtsConfigService";
+import { prepareConfigurationImport } from "../../api/settings";
+import { httpTtsStore } from "./configurationStores";
+import { type AppSettingsResource, type HttpTtsConfigEditorFields, type HttpTtsConfigEntry, type HttpTtsConfigMetadata, type HttpTtsConfigResource } from "../../api/types";
 
 interface HttpTtsConfigActionOptions {
   configs: Ref<HttpTtsConfigMetadata[]>;
-  busy: Ref<boolean>;
   error: Ref<string>;
   importBusy: Ref<boolean>;
-  editBusy: Ref<boolean>;
-  deleteBusyId: Ref<string | null>;
-  resource: Ref<ResourceDescriptor | null>;
   settings: Ref<AppSettingsResource>;
   selectConfig: (id: string) => void;
   getRestoreRevision: () => number;
@@ -19,17 +14,9 @@ interface HttpTtsConfigActionOptions {
   errorText: (error: unknown) => string;
 }
 
-/** Read/export the resource and serialize form edits before calling Rust's JSON save command. */
+/** The form edits a draft; save writes one complete entry to the shared state. */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isConfigEntry(value: unknown): value is HttpTtsConfigEntry {
-  return isRecord(value)
-    && typeof value.id === "string"
-    && typeof value.name === "string"
-    && typeof value.enabled === "boolean"
-    && isRecord(value.config);
 }
 
 function optionalText(value: unknown): string | null {
@@ -152,83 +139,25 @@ function editorConfigJson(
 }
 
 export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
-  let refreshGeneration = 0;
-  let document: HttpTtsConfigResource | null = null;
-
-  async function refreshHttpTtsConfigs(resource?: ResourceDescriptor): Promise<void> {
-    if (resource) options.resource.value = resource;
-    const generation = ++refreshGeneration;
-    const readerGeneration = beginReaderHttpTtsConfigRefresh();
-    const restoreRevision = options.getRestoreRevision();
-    const isCurrent = () => generation === refreshGeneration && restoreRevision === options.getRestoreRevision();
-    const descriptor = options.resource.value;
-    options.busy.value = true;
-    options.error.value = "";
-    try {
-      if (!descriptor) throw new Error("HTTP TTS 配置资源尚未就绪");
-      const response = await readResource<HttpTtsConfigResource>(descriptor);
-      if (!response || !Array.isArray(response.configs)) throw new Error("HTTP TTS 配置资源格式无效");
-      if (!isCurrent()) return;
-      document = { ...response, configs: response.configs.filter(isConfigEntry) };
-      options.configs.value = document.configs.map(({ id, name, enabled }) => ({ id, name, enabled }));
-      publishReaderHttpTtsConfigs(readerGeneration, options.configs.value);
-      const selectedId = options.settings.value.reader.httpTtsConfigId;
-      if (selectedId && !options.configs.value.some((item) => item.id === selectedId && item.enabled)) {
-        options.selectConfig("");
-      }
-    } catch (error) {
-      if (isCurrent()) options.error.value = `读取 HTTP TTS 配置失败：${options.errorText(error)}`;
-    } finally {
-      // An obsolete restore-era read still owns this loading indicator until a newer read starts.
-      if (isCurrent()) options.busy.value = false;
-    }
+  function loadHttpTtsConfigEditorFields(configId: string): HttpTtsConfigEditorFields | null {
+    const entry = httpTtsStore.items.value.find(item => item.id === configId);
+    return entry ? editorFields(entry.config) : null;
   }
 
-  async function loadHttpTtsConfigEditorFields(configId: string): Promise<HttpTtsConfigEditorFields | null> {
-    if (!configId || options.editBusy.value) return null;
-    const revision = options.getRestoreRevision();
-    const isCurrent = () => revision === options.getRestoreRevision();
-    options.editBusy.value = true;
+  function saveHttpTtsConfigFromEditor(configId: string | null, fields: HttpTtsConfigEditorFields): boolean {
     options.error.value = "";
     try {
-      await refreshHttpTtsConfigs();
-      if (!isCurrent() || options.error.value) return null;
-      const entry = document?.configs.find((item) => item.id === configId);
-      return isCurrent() && entry ? editorFields(entry.config) : null;
-    } catch (error) {
-      if (isCurrent()) options.error.value = `读取 HTTP TTS 配置失败：${options.errorText(error)}`;
-      return null;
-    } finally {
-      if (isCurrent()) options.editBusy.value = false;
-    }
-  }
-
-  async function saveHttpTtsConfigFromEditor(
-    configId: string | null,
-    fields: HttpTtsConfigEditorFields,
-  ): Promise<boolean> {
-    if (options.editBusy.value) return false;
-    const revision = options.getRestoreRevision();
-    const isCurrent = () => revision === options.getRestoreRevision();
-    options.editBusy.value = true;
-    options.error.value = "";
-    try {
-      const configJson = editorConfigJson(configId, fields, document?.configs ?? []);
-      const saved = await mutateHttpTtsConfigs({ kind: "save", id: configId, json: configJson });
-      if ("cancelled" in saved) return false;
-      if (!isCurrent()) return false;
-      await refreshHttpTtsConfigs(saved.resource);
-      if (!isCurrent()) return false;
-      const item = saved.items[0];
-      if (!item) throw new Error("保存没有返回 HTTP TTS 配置");
-      if (!configId) options.selectConfig(item.id);
-      options.notify(`${configId ? "已保存" : "已创建"} HTTP TTS 配置“${item.name}”。`);
+      const config = JSON.parse(editorConfigJson(configId, fields, httpTtsStore.items.value)) as Record<string, unknown>;
+      const id = configId ?? crypto.randomUUID().replace(/-/g, "");
+      const enabled = configId ? httpTtsStore.items.value.find(item => item.id === configId)!.enabled : true;
+      const entry: HttpTtsConfigEntry = { id, name: String(config.name), enabled, config };
+      httpTtsStore.update(entry);
+      if (!configId) options.selectConfig(id);
+      options.notify("HTTP TTS 配置已更新。");
       return true;
     } catch (error) {
-      if (isCurrent()) options.error.value = `保存 HTTP TTS 配置失败：${options.errorText(error)}`;
+      options.error.value = options.errorText(error);
       return false;
-    } finally {
-      if (isCurrent()) options.editBusy.value = false;
     }
   }
 
@@ -248,12 +177,10 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
     options.importBusy.value = true;
     options.error.value = "";
     try {
-      const result = await mutateHttpTtsConfigs({ kind: "local" });
-      if ("cancelled" in result) return false;
-      if (!isCurrent()) return false;
-      await refreshHttpTtsConfigs(result.resource);
-      if (!isCurrent()) return false;
-      applyImportedItems(result.items);
+      const result = await prepareConfigurationImport<HttpTtsConfigResource>("httpTtsConfigs", { kind: "local" });
+      if (!result || !isCurrent()) return false;
+      result.configs.forEach(entry => httpTtsStore.update(entry));
+      applyImportedItems(result.configs);
       return true;
     } catch (error) {
       if (isCurrent()) options.error.value = `本地导入 HTTP TTS 配置失败：${options.errorText(error)}`;
@@ -271,12 +198,10 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
     options.importBusy.value = true;
     options.error.value = "";
     try {
-      const result = await mutateHttpTtsConfigs({ kind: "url", url: sourceUrl });
-      if ("cancelled" in result) return false;
-      if (!isCurrent()) return false;
-      await refreshHttpTtsConfigs(result.resource);
-      if (!isCurrent()) return false;
-      applyImportedItems(result.items);
+      const result = await prepareConfigurationImport<HttpTtsConfigResource>("httpTtsConfigs", { kind: "url", url: sourceUrl });
+      if (!result || !isCurrent()) return false;
+      result.configs.forEach(entry => httpTtsStore.update(entry));
+      applyImportedItems(result.configs);
       return true;
     } catch (error) {
       if (isCurrent()) options.error.value = `从链接导入 HTTP TTS 配置失败：${options.errorText(error)}`;
@@ -286,61 +211,28 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
     }
   }
 
-  async function removeHttpTtsConfigs(configIds: string[]): Promise<void> {
-    if (options.deleteBusyId.value || options.importBusy.value || options.editBusy.value) return;
-    const ids = [...new Set(configIds)];
-    const targets = options.configs.value.filter((item) => ids.includes(item.id));
-    if (!targets.length || targets.length !== ids.length) return;
-    const revision = options.getRestoreRevision();
-    const isCurrent = () => revision === options.getRestoreRevision();
-    options.deleteBusyId.value = targets[0].id;
-    options.error.value = "";
-    try {
-      const result = await mutateHttpTtsConfigs({ kind: "delete", configIds: ids });
-      if ("cancelled" in result) return;
-      if (!isCurrent()) return;
-      const activeConfigId = options.settings.value.reader.httpTtsConfigId;
-      if (result.deleted && activeConfigId && ids.includes(activeConfigId)) {
-        options.selectConfig("");
-      }
-      await refreshHttpTtsConfigs(result.resource);
-      if (isCurrent() && result.deleted) {
-        options.notify(targets.length === 1
-          ? `已删除 HTTP TTS 配置“${targets[0].name}”。`
-          : `已删除 ${targets.length} 个 HTTP TTS 配置。`);
-      }
-    } catch (error) {
-      if (isCurrent()) options.error.value = `删除 HTTP TTS 配置失败：${options.errorText(error)}`;
-    } finally {
-      if (isCurrent()) options.deleteBusyId.value = null;
-    }
+  function removeHttpTtsConfigs(configIds: string[]): void {
+    configIds.forEach(id => httpTtsStore.remove(id));
+    if (configIds.includes(options.settings.value.reader.httpTtsConfigId ?? "")) options.selectConfig("");
+    options.notify("HTTP TTS 配置已移除。");
   }
 
-  function removeHttpTtsConfig(item: HttpTtsConfigMetadata): Promise<void> {
-    return removeHttpTtsConfigs([item.id]);
+  function removeHttpTtsConfig(item: HttpTtsConfigMetadata): void {
+    removeHttpTtsConfigs([item.id]);
   }
 
   function removeSelectedHttpTtsConfig(configIds: string[]): void {
-    // Playback selection is not the editor selection: disabled engines still
-    // need to be editable and removable without becoming the active player.
-    void removeHttpTtsConfigs(configIds);
+    removeHttpTtsConfigs(configIds);
   }
 
   function resetForRestore(): void {
-    refreshGeneration += 1;
-    document = null;
-    options.resource.value = null;
-    options.configs.value = [];
-    options.busy.value = false;
     options.importBusy.value = false;
-    options.editBusy.value = false;
-    options.deleteBusyId.value = null;
     options.error.value = "";
   }
 
   function exportHttpTtsConfig(configIds: string | string[]): void {
     const ids = typeof configIds === "string" ? [configIds] : [...new Set(configIds)];
-    const entries = ids.map((id) => document?.configs.find((item) => item.id === id));
+    const entries = ids.map((id) => httpTtsStore.items.value.find((item) => item.id === id));
     if (!entries.length || entries.some((entry) => !entry)) {
       options.error.value = "HTTP TTS 配置尚未加载，无法导出。";
       return;
@@ -365,7 +257,6 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
 
   return {
     resetForRestore,
-    refreshHttpTtsConfigs,
     loadHttpTtsConfigEditorFields,
     exportHttpTtsConfig,
     saveHttpTtsConfigFromEditor,

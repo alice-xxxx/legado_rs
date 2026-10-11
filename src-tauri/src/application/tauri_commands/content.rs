@@ -4,25 +4,6 @@ use super::*;
 use serde::Deserialize;
 
 #[tauri::command]
-pub async fn get_home_config(service: State<'_, ApplicationService>) -> Result<Value, String> {
-    service.get_home_config().await
-}
-
-#[tauri::command]
-pub async fn save_home_config(
-    app: tauri::AppHandle,
-    config: crate::discovery::home_config::HomeConfigDocument,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let resource = service.save_home_config(config).await?;
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "homeConfig", "resource": resource }),
-    );
-    Ok(resource)
-}
-
-#[tauri::command]
 pub async fn get_rss_state(service: State<'_, ApplicationService>) -> Result<Value, String> {
     service.get_rss_state().await
 }
@@ -84,171 +65,37 @@ pub async fn unsubscribe_rss(
 }
 
 #[derive(Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum TxtTocRulesMutation {
-    Local,
-    Url {
-        url: String,
-    },
-    Save { id: Option<String>, json: String },
-    Reorder {
-        ordered_ids: Vec<String>,
-    },
-    Delete {
-        rule_ids: Vec<String>,
-    },
-}
-
-#[tauri::command]
-pub async fn mutate_txt_toc_rules(
-    app: tauri::AppHandle,
-    mutation: TxtTocRulesMutation,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let response = match mutation {
-        TxtTocRulesMutation::Local => {
-            let Some(file) = pick_file_with_limit(
-                &app,
-                "TXT TOC rule JSON",
-                &["json"],
-                crate::local_books::txt_toc_rules::MAX_IMPORT_BODY_BYTES as u64,
-            )
-            .await?
-            else {
-                return Ok(json!({ "cancelled": true }));
-            };
-            let source_json = tokio::fs::read_to_string(&file.path)
-                .await
-                .map_err(|error| format!("Cannot read selected TXT TOC rule file: {error}"))?;
-            service.import_txt_toc_rules_json(&source_json).await?
-        }
-        TxtTocRulesMutation::Url { url } => {
-            service.import_txt_toc_rules_from_url(&url).await?
-        }
-        TxtTocRulesMutation::Save { id, json } => {
-            if json.len() > crate::local_books::txt_toc_rules::MAX_IMPORT_BODY_BYTES {
-                return Err("TXT TOC rule JSON exceeds the 1 MiB limit".to_owned());
-            }
-            let mut rule_json: Value = serde_json::from_str(&json)
-                .map_err(|error| format!("Invalid TXT TOC rule JSON: {error}"))?;
-            let object = rule_json
-                .as_object_mut()
-                .ok_or_else(|| "TXT TOC rule JSON must be an object".to_owned())?;
-            object.insert("id".to_owned(), Value::String(id.clone().unwrap_or_default()));
-            let rule = serde_json::from_value(rule_json)
-                .map_err(|error| format!("Invalid TXT TOC rule JSON: {error}"))?;
-            service
-                .mutate_txt_toc_rules(crate::local_books::txt_toc_rules::TxtTocRulesEdit::Save {
-                    id,
-                    rule,
-                })
-                .await?
-        }
-        TxtTocRulesMutation::Reorder { ordered_ids } => {
-            service
-                .mutate_txt_toc_rules(
-                    crate::local_books::txt_toc_rules::TxtTocRulesEdit::Reorder { ordered_ids },
-                )
-                .await?
-        }
-        TxtTocRulesMutation::Delete { rule_ids } => {
-            service
-                .mutate_txt_toc_rules(crate::local_books::txt_toc_rules::TxtTocRulesEdit::Delete {
-                    rule_ids,
-                })
-                .await?
-        }
-    };
-    if let Some(resource) = response.get("resource") {
-        let _ = app.emit(
-            "resource-updated",
-            json!({ "kind": "txtTocRules", "resource": resource }),
-        );
-    }
-    Ok(response)
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ReplacementRulesMutation {
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConfigurationImportSource {
     Local,
     Url { url: String },
-    Save { id: Option<String>, json: String },
-    Delete { rule_ids: Vec<String> },
 }
 
 #[tauri::command]
-pub async fn mutate_replacement_rules(
+pub async fn prepare_configuration_import(
     app: tauri::AppHandle,
-    mutation: ReplacementRulesMutation,
+    kind: String,
+    source: ConfigurationImportSource,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    let response = match mutation {
-        ReplacementRulesMutation::Local => {
-            let Some(file) = pick_file_with_limit(
-                &app,
-                "显示替换 JSON",
-                &["json"],
-                MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES as u64,
-            )
-            .await?
-            else {
+    let (limit, label) = match kind.as_str() {
+        "replacementRules" => (MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES, "显示替换规则 JSON"),
+        "txtTocRules" => (crate::local_books::txt_toc_rules::MAX_IMPORT_BODY_BYTES, "TXT 目录规则 JSON"),
+        "httpTtsConfigs" => (crate::http_tts_config::MAX_CONFIG_BYTES, "HTTP TTS JSON"),
+        _ => return Err("Unknown configuration kind".into()),
+    };
+    let source_json = match source {
+        ConfigurationImportSource::Local => {
+            let Some(file) = pick_file_with_limit(&app, label, &["json"], limit as u64).await? else {
                 return Ok(json!({ "cancelled": true }));
             };
-            let rules_json = tokio::fs::read_to_string(&file.path)
-                .await
-                .map_err(|error| format!("无法读取所选显示替换规则文件：{error}"))?;
-            let (resource, imported_count) = {
-                let _operation = service.operation_read().await;
-                crate::reading_tools::import_replacement_rules_json(
-                    service.resource_store(),
-                    &rules_json,
-                )
-                .await?
-            };
-            json!({
-                "resource": service.resource_descriptor(&resource),
-                "importedCount": imported_count,
-            })
+            tokio::fs::read_to_string(&file.path).await.map_err(|error| error.to_string())?
         }
-        ReplacementRulesMutation::Url { url } => {
-            service.import_replacement_rules_from_url(&url).await?
-        }
-        ReplacementRulesMutation::Save { id, json: rule_json } => {
-            if rule_json.len() > MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES {
-                return Err("Replacement rule JSON exceeds the import size limit".to_owned());
-            }
-            let mut input: crate::reading_tools::DisplayReplacementRuleInput =
-                serde_json::from_str(&rule_json)
-                    .map_err(|error| format!("Invalid replacement rule JSON: {error}"))?;
-            input.id = id;
-            let _operation = service.operation_read().await;
-            let (resource, saved_id) =
-                crate::reading_tools::upsert_replacement_rule(service.resource_store(), input)
-                    .await?;
-            json!({ "resource": service.resource_descriptor(&resource), "savedId": saved_id })
-        }
-        ReplacementRulesMutation::Delete { rule_ids } => {
-            let _operation = service.operation_read().await;
-            let resource = crate::reading_tools::delete_replacement_rules(
-                service.resource_store(),
-                rule_ids,
-            )
-            .await?;
-            json!({ "resource": service.resource_descriptor(&resource) })
+        ConfigurationImportSource::Url { url } => {
+            download_json_url(&url, limit, Duration::from_secs(30), label).await?
         }
     };
-    if let Some(resource) = response.get("resource") {
-        let _ = app.emit(
-            "resource-updated",
-            json!({ "kind": "replacementRules", "resource": resource }),
-        );
-    }
-    Ok(response)
+    service.prepare_configuration_import(&kind, &source_json).await
 }
 
 #[tauri::command]

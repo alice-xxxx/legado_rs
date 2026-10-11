@@ -1,35 +1,26 @@
 <script setup lang="ts">
 // 页面拥有备份 UI 与动作；阅读器只通过窄 session 暴露备份所需能力。
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { saveWebDavAutoBackupInterval } from "../../api/backup";
-import type { AppBootstrap, ResourceDescriptor } from "../../api/types";
-import { getReaderBackupSession } from "../reader/readerBackupSession";
+import { computed, ref, watch } from "vue";
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { notify } from "../../app/notifications";
 import { useBackupActions } from "./useBackupActions";
+import { settings as sharedSettings } from "./settingsStore";
 import router, { routeNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 
-const readerSession = getReaderBackupSession();
 const {
-  applyBackupSettingsSnapshot,
   webDavBackupConfig: webDavConfig,
-  webDavConfigLoading,
   webDavBackupError: webDavError,
   createBackup,
   restoreBackup,
-  reloadWebDavBackupConfig,
   saveWebDavConfig,
   clearWebDavPassword,
   uploadWebDavBackupManually,
   restoreWebDavBackupManually,
 } = useBackupActions();
 const busy = backupBusy;
-const settingsSnapshot = readerSession.settings;
-const settingsBusy = computed(() => readerSession.saveSettingsBusy.value);
+const settings = sharedSettings;
 const locked = computed(() => shelfBatchRecoveryRequired.value);
 
 function returnToSettings(): void {
@@ -39,9 +30,7 @@ function returnToSettings(): void {
 const webDavUrl = ref("");
 const webDavUsername = ref("");
 const webDavPassword = ref("");
-const autoIntervalHours = ref<number | null>(null);
-const autoScheduleBusy = ref(false);
-const autoScheduleError = ref("");
+const autoIntervalHours = computed(() => webDavConfig.value?.autoIntervalHours ?? null);
 const configRefreshConflict = ref(false);
 
 function resetWebDavDraft(): void {
@@ -49,7 +38,6 @@ function resetWebDavDraft(): void {
   webDavUrl.value = config?.url ?? "";
   webDavUsername.value = config?.username ?? "";
   webDavPassword.value = "";
-  autoIntervalHours.value = config?.autoIntervalHours ?? null;
   configRefreshConflict.value = false;
 }
 watch(() => webDavConfig.value, (config, previous) => {
@@ -59,7 +47,9 @@ watch(() => webDavConfig.value, (config, previous) => {
     webDavUsername.value.trim() !== previous.username ||
     webDavPassword.value.length > 0
   );
-  if (dirty && busy.value !== "webdav-save") {
+  const matchesDraft = webDavUrl.value.trim() === config.url
+    && webDavUsername.value.trim() === config.username && !webDavPassword.value;
+  if (dirty && !matchesDraft) {
     configRefreshConflict.value = true;
     return;
   }
@@ -75,70 +65,29 @@ const sameWebDavIdentity = computed(() => Boolean(webDavConfig.value)
   && webDavUsername.value.trim() === webDavConfig.value?.username);
 const canEditAutoSchedule = computed(() => Boolean(webDavConfig.value?.url)
   && webDavConfigMatches.value
-  && !webDavConfigLoading.value
   && !locked.value
-  && !busy.value
-  && !settingsBusy.value
-  && !autoScheduleBusy.value);
+  && !busy.value);
 
-const lastBackup = computed(() => settingsSnapshot.value.lastBackupAtMs
-  ? new Date(settingsSnapshot.value.lastBackupAtMs).toLocaleString() : "尚未备份");
+const lastBackup = computed(() => settings.value.lastBackupAtMs
+  ? new Date(settings.value.lastBackupAtMs).toLocaleString() : "尚未备份");
 
-const settingsUnlisteners: UnlistenFn[] = [];
-let disposed = false;
-
-onBeforeUnmount(() => {
-  disposed = true;
-  for (const unlisten of settingsUnlisteners.splice(0)) unlisten();
-});
-
-async function changeAutoBackupInterval(event: Event): Promise<void> {
-  if (!canEditAutoSchedule.value) {
-    autoIntervalHours.value = webDavConfig.value?.autoIntervalHours ?? null;
-    return;
-  }
+function changeAutoBackupInterval(event: Event): void {
+  if (!canEditAutoSchedule.value || !settings.value.webdavBackup) return;
   const raw = (event.target as HTMLSelectElement).value;
-  const interval = raw ? Number(raw) : null;
-  autoScheduleBusy.value = true;
-  autoScheduleError.value = "";
-  try {
-    const config = await saveWebDavAutoBackupInterval(interval);
-    webDavConfig.value = config;
-    autoIntervalHours.value = config.autoIntervalHours ?? null;
-  } catch (error) {
-    autoIntervalHours.value = webDavConfig.value?.autoIntervalHours ?? null;
-    autoScheduleError.value = error instanceof Error ? error.message : String(error);
-  } finally {
-    autoScheduleBusy.value = false;
+  settings.value.webdavBackup.autoIntervalHours = raw ? Number(raw) : null;
+}
+
+function saveWebDavDraft(): void {
+  if (saveWebDavConfig({ url: webDavUrl.value.trim(), username: webDavUsername.value.trim(), password: webDavPassword.value })) {
+    webDavPassword.value = "";
+    webDavUrl.value = webDavConfig.value?.url ?? "";
   }
 }
-onMounted(async () => {
-  void reloadWebDavBackupConfig();
-  try {
-    const unlistenSettings = await listen<ResourceDescriptor>("settings-updated", (event) => {
-      void applyBackupSettingsSnapshot(event.payload).catch((error) => {
-        if (!disposed) notify(`备份页面读取更新后的设置失败：${error instanceof Error ? error.message : String(error)}`, "error");
-      });
-    });
-    if (disposed) unlistenSettings();
-    else settingsUnlisteners.push(unlistenSettings);
-
-    const unlistenRestore = await listen<AppBootstrap>("app-state-updated", (event) => {
-      void applyBackupSettingsSnapshot(event.payload.settings).catch((error) => {
-        if (!disposed) notify(`备份页面读取恢复后的设置失败：${error instanceof Error ? error.message : String(error)}`, "error");
-      });
-    });
-    if (disposed) unlistenRestore();
-    else settingsUnlisteners.push(unlistenRestore);
-  } catch (error) {
-    if (!disposed) notify(`备份设置更新监听注册失败：${error instanceof Error ? error.message : String(error)}`, "error");
-  }
-});
 </script>
 
 <template>
   <section class="backup-settings-page my-settings-subpage">
-    <header class="backup-topbar">
+    <header class="backup-topbar safe-area-top">
       <BackButton label="返回我的" @click="returnToSettings" />
       <div class="backup-page-title"><strong>数据与同步</strong></div>
       <span></span>
@@ -150,17 +99,17 @@ onMounted(async () => {
         <strong>最近备份</strong><span>{{ lastBackup }}</span>
         <small>包含书架、阅读记录、书签、设置、缓存、来源与登录状态</small>
       </div>
-      <button type="button" class="button primary small" :disabled="!!busy || settingsBusy || locked"
+      <button type="button" class="button primary small" :disabled="!!busy || locked"
         @click="createBackup">{{ busy === 'create' ? '正在备份…' : '立即备份' }}</button>
     </header>
 
     <section class="backup-local-section">
       <header><h3>本地</h3></header>
-      <button type="button" class="backup-action-link" :disabled="!!busy || settingsBusy || locked" @click="createBackup">
+      <button type="button" class="backup-action-link" :disabled="!!busy || locked" @click="createBackup">
         <span class="backup-row-icon"><PrototypeIcon name="export"/></span>
         <span><strong>导出备份文件</strong><small>备份内容库、阅读数据和本地资源</small></span><PrototypeIcon name="right"/>
       </button>
-      <button type="button" class="backup-action-link" :disabled="!!busy || settingsBusy || locked" @click="restoreBackup">
+      <button type="button" class="backup-action-link" :disabled="!!busy || locked" @click="restoreBackup">
         <span class="backup-row-icon"><PrototypeIcon name="import"/></span>
         <span><strong>从备份恢复</strong><small>选择已有备份，会替换当前本地数据</small></span><PrototypeIcon name="right"/>
       </button>
@@ -173,33 +122,32 @@ onMounted(async () => {
           <h3 id="webdav-backup-heading">WebDAV</h3>
           <p>远程同步与恢复</p>
         </div>
-        <button type="button" class="text-button" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy" @click="reloadWebDavBackupConfig">{{ webDavConfigLoading ? '读取中…' : '重新读取配置' }}</button>
       </header>
 
-      <form class="webdav-config-form" @submit.prevent="saveWebDavConfig({ url: webDavUrl.trim(), username: webDavUsername.trim(), password: webDavPassword })">
+      <form class="webdav-config-form" @submit.prevent="saveWebDavDraft">
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>地址</strong><small>远程目录 URL</small></span>
-          <input v-model="webDavUrl" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/remote.php/dav/files/user/" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy" required />
+          <input v-model="webDavUrl" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/remote.php/dav/files/user/" :disabled="!!busy || locked" required />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>用户名</strong><small>WebDAV 账号</small></span>
-          <input v-model="webDavUsername" autocomplete="username" maxlength="512" placeholder="WebDAV 用户名" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy" />
+          <input v-model="webDavUsername" autocomplete="username" maxlength="512" placeholder="WebDAV 用户名" :disabled="!!busy || locked" />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>密码</strong><small>密码不会回填到页面</small></span>
-          <input v-model="webDavPassword" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.hasPassword ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy" />
+          <input v-model="webDavPassword" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.password ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked" />
         </label>
         <div v-if="configRefreshConflict" class="webdav-draft-warning">
           已保存的 WebDAV 配置发生变化。当前输入仍保留，若要放弃草稿请点击重新读取表单。
           <button type="button" :disabled="!!busy || locked" @click="resetWebDavDraft">重新读取表单</button>
         </div>
         <div class="webdav-config-actions">
-          <button type="submit" class="button primary small" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy || !webDavUrl.trim()">{{ busy === 'webdav-save' ? '正在保存…' : '保存连接设置' }}</button>
-          <button v-if="webDavConfig?.hasPassword" type="button" class="text-button" :disabled="!!busy || locked || webDavConfigLoading || autoScheduleBusy || !webDavConfigMatches" @click="clearWebDavPassword">清除已保存密码</button>
+          <button type="submit" class="button primary small" :disabled="!!busy || locked || !webDavUrl.trim()">保存连接设置</button>
+          <button v-if="webDavConfig?.password" type="button" class="text-button" :disabled="!!busy || locked || !webDavConfigMatches" @click="clearWebDavPassword">清除已保存密码</button>
         </div>
       </form>
 
-      <p v-if="webDavConfig && webDavConfig.url" class="webdav-config-state">当前目录：{{ webDavConfig.url }}<span v-if="webDavConfig.username"> · 用户：{{ webDavConfig.username }}</span> · {{ webDavConfig.hasPassword ? '密码已保存' : '未保存密码' }}</p>
+      <p v-if="webDavConfig && webDavConfig.url" class="webdav-config-state">当前目录：{{ webDavConfig.url }}<span v-if="webDavConfig.username"> · 用户：{{ webDavConfig.username }}</span> · {{ webDavConfig?.password ? '密码已保存' : '未保存密码' }}</p>
       <p class="webdav-directory-note">远程目录必须已存在，应用不会创建目录或列出远程文件。密码不会回填；目录和用户名留空可保留已存密码，更换目录或用户名时留空会清除旧密码。</p>
 
       <div class="webdav-setting-row webdav-auto-setting">
@@ -208,12 +156,10 @@ onMounted(async () => {
           <option value="">关闭</option><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="72">每 3 天</option>
         </select>
       </div>
-      <p v-if="autoScheduleBusy" class="backup-status-note">正在保存自动备份设置…</p>
-      <p v-if="autoScheduleError" class="webdav-error">自动备份设置失败：{{ autoScheduleError }}</p>
 
       <div class="webdav-actions">
-        <button type="button" class="button secondary small" :disabled="!!busy || settingsBusy || locked || webDavConfigLoading || autoScheduleBusy || !webDavConfigMatches" @click="uploadWebDavBackupManually">{{ busy === 'webdav-upload' ? '正在上传…' : '上传备份' }}</button>
-        <button type="button" class="button danger-outline small" :disabled="!!busy || settingsBusy || locked || webDavConfigLoading || autoScheduleBusy || !webDavConfigMatches" @click="restoreWebDavBackupManually">{{ busy === 'restore' ? '正在恢复…' : '从 WebDAV 恢复' }}</button>
+        <button type="button" class="button secondary small" :disabled="!!busy || locked || !webDavConfigMatches" @click="uploadWebDavBackupManually">{{ busy === 'webdav-upload' ? '正在上传…' : '上传备份' }}</button>
+        <button type="button" class="button danger-outline small" :disabled="!!busy || locked || !webDavConfigMatches" @click="restoreWebDavBackupManually">{{ busy === 'restore' ? '正在恢复…' : '从 WebDAV 恢复' }}</button>
       </div>
       <p v-if="webDavError" class="webdav-error">{{ webDavError }}</p>
     </section>
@@ -223,7 +169,7 @@ onMounted(async () => {
 
 <style scoped>
 .backup-settings-page{width:100%;min-width:0;color:#363742}
-.backup-topbar{position:sticky;top:0;z-index:35;box-sizing:border-box;height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding:0 max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:#f6f7f9ed;backdrop-filter:blur(18px)}
+.backup-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:#f6f7f9ed;backdrop-filter:blur(18px)}
 .backup-page-title{min-width:0}
 .backup-page-title strong{font-size:14px;color:#242631;font-weight:750}
 .backup-content{box-sizing:border-box;width:min(820px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px}
@@ -272,7 +218,7 @@ onMounted(async () => {
 .webdav-draft-warning button{padding:6px 8px;border:0;border-radius:7px;background:#fff;color:var(--app-accent);cursor:pointer}
 .webdav-error{margin:0;padding:9px 0;color:#b0525d;font-size:10px;line-height:1.55}
 @media(max-width:660px){
-  .backup-topbar{padding:0 18px}
+  .backup-topbar{padding-inline:18px}
   .backup-content{width:calc(100% - 36px)}
   .backup-hero{grid-template-columns:40px minmax(0,1fr);gap:10px}
   .backup-hero>.button{grid-column:1/-1;justify-self:stretch}

@@ -45,6 +45,11 @@ body,
   margin: 0;
 }
 
+/* Shared top inset; each bar's content and normal min-height determine its final height. */
+:root .safe-area-top {
+  padding-top: var(--safe-top);
+}
+
 body {
   min-height: 100dvh;
 }

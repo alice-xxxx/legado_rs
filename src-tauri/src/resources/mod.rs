@@ -19,6 +19,7 @@ pub use store::ResourceStore;
 pub(crate) use store::ResourceStoreWriterGuard;
 
 use validation::validate_public_path;
+pub(crate) use validation::check_path_no_symlink;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceRef(String);

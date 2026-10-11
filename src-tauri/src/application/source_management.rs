@@ -386,35 +386,6 @@ impl ApplicationService {
         self.import_sources(&source_json).await
     }
 
-    /// Fetch a TXT TOC rule JSON file before atomic import.
-    pub async fn fetch_txt_toc_rule_json(&self, input: &str) -> Result<String, String> {
-        download_json_url(
-            input,
-            crate::local_books::txt_toc_rules::MAX_IMPORT_BODY_BYTES,
-            Duration::from_secs(20),
-            "TXT 目录规则 JSON",
-        )
-        .await
-    }
-
-    pub async fn import_replacement_rules_from_url(&self, input: &str) -> Result<Value, String> {
-        let rules_json = download_json_url(
-            input,
-            MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES,
-            Duration::from_secs(20),
-            "显示替换规则 JSON",
-        )
-        .await?;
-        let _operation = self.operation_read().await;
-        let (resource, imported_count) =
-            crate::reading_tools::import_replacement_rules_json(self.resource_store(), &rules_json)
-                .await?;
-        Ok(json!({
-            "resource": self.resource_descriptor(&resource),
-            "importedCount": imported_count,
-        }))
-    }
-
     pub async fn remove_sources(&self, source_ids: &[String]) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let _lock = self.sources_lock.lock().await;
@@ -604,7 +575,7 @@ impl ApplicationService {
                 *revision = revision.saturating_add(1);
             }
         }
-        self.write_private_json(
+        self.write_internal_json(
             Path::new("source-revisions.json"),
             &json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "revisions": revisions }),
         )
@@ -620,7 +591,7 @@ impl ApplicationService {
     }
 
     async fn read_source_revisions(&self) -> Result<HashMap<String, u64>, String> {
-        let path = self.private_root.join("source-revisions.json");
+        let path = self.root.join("source-revisions.json");
         let Some(bytes) = read_private_state_file(&path, "source revisions").await? else {
             return Ok(HashMap::new());
         };

@@ -159,7 +159,6 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
         if (options.readingBook.value?.id === book.id && options.getProgressRevision() === saveRevision) {
           options.readerProgressDirty.value = false;
           options.progressSaveState.value = "saved";
-          options.readingBook.value.progress = { ...progress };
         }
       } catch (error) {
         if (options.readingBook.value?.id === book.id && options.getProgressRevision() === saveRevision) {

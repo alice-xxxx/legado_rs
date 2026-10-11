@@ -4,8 +4,6 @@ pub mod application;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
-#[path = "books/book_commit.rs"]
-pub(crate) mod book_commit;
 #[path = "books/book_display_metadata.rs"]
 pub(crate) mod book_display_metadata;
 #[path = "books/book_metadata.rs"]
@@ -14,8 +12,6 @@ pub(crate) mod book_metadata;
 pub(crate) mod catalog;
 #[path = "books/local_books.rs"]
 pub mod local_books;
-#[path = "shelf/batch.rs"]
-pub mod shelf_batch;
 
 // 发现页、来源引擎和 RSS 内容。
 #[path = "discovery/mod.rs"]
@@ -134,6 +130,10 @@ pub fn run() {
                 application::ApplicationService::open_with_executor(data_dir, executor),
             )
             .map_err(std::io::Error::other)?;
+            let book_app = app.handle().clone();
+            service.set_book_notifier(std::sync::Arc::new(move |payload| {
+                let _ = book_app.emit("book-updated", payload);
+            }));
             let task_app = app.handle().clone();
             service.set_task_notifier(std::sync::Arc::new(move |payload| {
                 let _ = task_app.emit("task-updated", payload);
@@ -177,12 +177,8 @@ pub fn run() {
         });
     let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         application::app_bootstrap,
-        application::mutate_http_tts_configs,
         application::request_http_tts_audio,
         application::release_http_tts_audio,
-        application::get_search_history,
-        application::delete_search_history,
-        application::clear_search_history,
         application::get_source_login_state,
         application::get_source_login_form,
         application::mutate_source,
@@ -200,7 +196,6 @@ pub fn run() {
         application::pause_task,
         application::resume_task,
         application::cancel_task,
-        application::add_book,
         application::prepare_search_result_book,
         application::change_book_source,
         application::change_chapter_source,
@@ -211,49 +206,28 @@ pub fn run() {
         application::import_protected_pdf,
         application::cancel_pending_pdf_import,
         application::get_book,
+        application::save_book,
         application::refresh_book_info,
-        application::update_book_display_metadata,
         application::pick_book_cover,
         application::pick_reader_background_image,
-        application::clear_reader_background_image,
         application::discard_book_cover_asset,
         application::prepare_chapters,
         application::refresh_chapter_content,
-        application::remove_book,
         application::save_progress,
         application::reset_book_progress,
         application::clear_book_chapter_cache,
         application::get_chapter_cache_usage,
         application::save_settings,
-        application::get_home_config,
-        application::save_home_config,
         application::get_rss_state,
         application::set_rss_filter,
         application::set_rss_article_state,
         application::unsubscribe_rss,
-        application::mutate_txt_toc_rules,
-        application::list_bookmarks,
-        application::upsert_bookmark,
-        application::delete_bookmark,
-        application::reading_history_resource,
-        application::get_reading_statistics,
-        application::record_reading_session,
-        application::delete_reading_history_for_book,
-        application::clear_reading_history,
-        application::mutate_replacement_rules,
-        application::set_book_groups,
-        shelf_batch::batch_set_book_groups,
-        shelf_batch::batch_remove_books,
-        application::create_shelf_group,
-        application::rename_shelf_group,
-        application::delete_shelf_group,
-        application::set_shelf_sort,
-        application::set_shelf_order,
+        application::save_history,
+        application::save_shelf,
+        application::save_configuration_rule,
+        application::prepare_configuration_import,
         application::create_backup_from_picker,
         application::restore_backup_from_picker,
-        application::get_webdav_backup_config,
-        application::save_webdav_auto_backup_interval,
-        application::save_webdav_backup_config,
         application::upload_webdav_backup,
         application::restore_webdav_backup,
         application::list_discovery_categories,

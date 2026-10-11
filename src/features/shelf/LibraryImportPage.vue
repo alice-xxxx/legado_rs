@@ -1,13 +1,13 @@
 <script setup lang="ts">
+import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
+import { shelfBooks as shelf } from "./shelfBooks";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { readResource } from "../../api/resources";
 import { getLocalBookImportSession } from "../import/localBookImportSession";
 import type { LocalImportFormat } from "../../api/books";
-import type { AppBootstrap, BookResource, ResourceDescriptor, ShelfResource } from "../../api/types";
+import type { AppBootstrap, ShelfResource } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
@@ -21,15 +21,11 @@ const linkOpening = ref(false);
 
 const pageDataLoading = ref(true);
 const pageDataError = ref("");
-const shelf = ref<ShelfResource>({ schemaVersion: 1, groups: [], books: [] });
 const localBooks = computed(() => shelf.value.books.filter((book) => book.id.startsWith("local-")).slice(0, 12));
 const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
 const actionsBlocked = computed(() => localBookImport.localBookImportBusy.value || pageDataLoading.value || !!pageDataError.value
   || recoveryRequired.value || localBookImport.pdfPasswordPromptOpen.value
   || localBookImport.externalFileRequestBusy.value || localBookImport.backupBusy.value !== null || linkOpening.value);
-const restoreRevision = ref(0);
-let shelfReadRevision = 0;
-let bootstrapReadRevision = 0;
 let disposed = false;
 const eventUnlisteners: UnlistenFn[] = [];
 
@@ -37,53 +33,11 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function normalizeShelf(next: ShelfResource): ShelfResource {
-  return { ...next, groups: next.groups ?? [], books: next.books ?? [] };
-}
 
-async function refreshShelf(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++shelfReadRevision;
-  const currentRestoreRevision = restoreRevision.value;
-  const next = normalizeShelf(await readResource<ShelfResource>(descriptor));
-  if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== shelfReadRevision) return;
-  shelf.value = next;
-  pageDataError.value = "";
-}
 
-async function loadShelf(): Promise<void> {
-  const requestRevision = ++bootstrapReadRevision;
-  const currentRestoreRevision = restoreRevision.value;
-  pageDataLoading.value = true;
+function loadShelf(): void {
+  pageDataLoading.value = false;
   pageDataError.value = "";
-  try {
-    const snapshot = await appBootstrap();
-    if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== bootstrapReadRevision) return;
-    await refreshShelf(snapshot.shelf);
-  } catch (error) {
-    if (disposed || currentRestoreRevision !== restoreRevision.value || requestRevision !== bootstrapReadRevision) return;
-    pageDataError.value = errorText(error);
-  } finally {
-    if (!disposed && currentRestoreRevision === restoreRevision.value && requestRevision === bootstrapReadRevision) {
-      pageDataLoading.value = false;
-    }
-  }
-}
-
-async function refreshRestoredShelf(snapshot: AppBootstrap): Promise<void> {
-  restoreRevision.value += 1;
-  bootstrapReadRevision += 1;
-  const currentRestoreRevision = restoreRevision.value;
-  pageDataLoading.value = true;
-  pageDataError.value = "";
-  try {
-    await refreshShelf(snapshot.shelf);
-  } catch (error) {
-    if (disposed || currentRestoreRevision !== restoreRevision.value) return;
-    pageDataError.value = errorText(error);
-    notify(`书架恢复后刷新失败：${pageDataError.value}`, "error");
-  } finally {
-    if (!disposed && currentRestoreRevision === restoreRevision.value) pageDataLoading.value = false;
-  }
 }
 
 async function setupEvents(): Promise<void> {
@@ -92,11 +46,9 @@ async function setupEvents(): Promise<void> {
     else eventUnlisteners.push(unlisten);
   }
   try {
-    register(await listen<ResourceDescriptor>("shelf-updated", (event) => {
-      void refreshShelf(event.payload).catch((error) => notify(`书架刷新失败：${errorText(error)}`, "error"));
-    }));
     register(await listen<AppBootstrap>("app-state-updated", (event) => {
-      void refreshRestoredShelf(event.payload);
+      void event;
+      loadShelf();
     }));
   } catch (error) {
     console.debug("Native shelf event subscription unavailable:", errorText(error));
@@ -112,9 +64,6 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   disposed = true;
-  restoreRevision.value += 1;
-  shelfReadRevision += 1;
-  bootstrapReadRevision += 1;
   for (const unlisten of eventUnlisteners.splice(0)) unlisten();
 });
 
@@ -196,7 +145,9 @@ async function openLocalBook(bookId: string): Promise<void> {
     return;
   }
   try {
-    await readerSession.startReading(await readResource<BookResource>(book.bookSrc));
+    openedBookFromShelf.value = false;
+    const current = await switchOpenedBook(bookId);
+    if (current) await readerSession.startReading(current);
   } catch (error) {
     notify(`打开阅读失败：${errorText(error)}`, "error");
   }
@@ -211,7 +162,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 
 <template>
   <section class="library-import-page">
-    <header class="import-subpage-header">
+    <header class="import-subpage-header safe-area-top">
       <BackButton label="返回内容库" @click="router.push({ name: routeNames.shelf })" />
       <div class="import-subpage-title"><strong>导入</strong></div>
       <span></span>
@@ -278,7 +229,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 
 <style scoped>
 .library-import-page{width:100%;min-height:100%;color:#262832}
-.import-subpage-header{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:44px 1fr 38px;align-items:center;gap:12px;min-height:64px;padding:0 20px;border-bottom:1px solid var(--app-line);background:#f6f7f9f5;backdrop-filter:blur(14px)}
+.import-subpage-header{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:44px 1fr 38px;align-items:center;gap:12px;min-height:64px;padding-inline:20px;border-bottom:1px solid var(--app-line);background:#f6f7f9f5;backdrop-filter:blur(14px)}
 .import-subpage-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px}
 .import-subpage-title strong{font-size:14px;font-weight:750}
 .library-import-body{width:min(860px,calc(100% - 36px));margin:0 auto;padding:24px 0 48px}
@@ -311,7 +262,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 .library-import-recent-list article>button{padding:9px 12px;border:0;border-radius:9px;background:#edeef2;color:#636977;font-size:11px;cursor:pointer}
 .library-import-empty{padding:19px 0;color:#9195a0;font-size:11px}
 @media(max-width:640px){
-.import-subpage-header{min-height:55px;padding:0 12px}
+.import-subpage-header{min-height:55px;padding-inline:12px}
 .library-import-body{width:calc(100% - 28px);padding:16px 0 32px}
 .library-import-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
 .library-import-grid button{min-height:112px;padding:12px}

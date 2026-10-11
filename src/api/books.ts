@@ -1,5 +1,5 @@
 import { command } from "./ipc";
-import type { ResourceDescriptor, BookDisplayMetadataPatch, BookCoverPickerResponse, BookDisplayMetadataUpdateResponse, RemoveBookResponse, ResetBookProgressResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, BookMutationResponse, RefreshBookInfoResponse, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
+import type { ResourceDescriptor, BookMetadataUpdate, BookCoverPickerResponse, ResetBookProgressResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, RefreshBookInfoResponse, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
 
 export type LocalImportFormat = "txt" | "epub" | "cbz" | "pdf";
 export const importBookFromPicker = (options: LocalBookImportOptions = {}, format?: LocalImportFormat) =>
@@ -20,19 +20,16 @@ export const importProtectedPdf = (importToken: string, password: string) =>
 export const cancelPendingPdfImport = (importToken: string) =>
   command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
 
-export const addBook = (resultId: string) =>
-  command<BookMutationResponse>("add_book", { resultId });
-
 export const prepareSearchResultBook = (resultId: string) =>
   command<{ book: ResourceDescriptor }>("prepare_search_result_book", { resultId });
 
 export const getBook = (bookId: string) => command<ResourceDescriptor>("get_book", { bookId });
 
+export const saveBook = (book: BookMetadataUpdate, requestId: number) =>
+  command<{ requestId: number; resource: ResourceDescriptor }>("save_book", { book, requestId });
+
 export const refreshBookInfo = (bookId: string) =>
   command<RefreshBookInfoResponse>("refresh_book_info", { bookId });
-
-export const updateBookDisplayMetadata = (bookId: string, patch: BookDisplayMetadataPatch) =>
-  command<BookDisplayMetadataUpdateResponse>("update_book_display_metadata", { bookId, patch });
 
 export const pickBookCover = (bookId: string) =>
   command<BookCoverPickerResponse>("pick_book_cover", { bookId });
@@ -58,9 +55,6 @@ export const refreshChapterContent = (bookId: string, chapterId: string) =>
     fromIndex?: number;
     prepared?: number;
   }>("refresh_chapter_content", { bookId, chapterId });
-
-export const removeBook = (bookId: string) =>
-  command<RemoveBookResponse>("remove_book", { bookId });
 
 export const resetBookProgress = (bookId: string) =>
   command<ResetBookProgressResponse>("reset_book_progress", { bookId });
