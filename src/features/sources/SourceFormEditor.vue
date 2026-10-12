@@ -1,164 +1,151 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import { bookSourceTypeOptions } from "./sourceTypeOptions";
-import { setSourceJsonValue, sourceJsonValue, sourceFormFieldJsonValue } from "./sourceJsonEdits";
-type Field={key:string;label:string;hint:string;wide?:boolean};
-const props=defineProps<{jsonText:string;enabled:boolean;disabled:boolean}>();
-const emit=defineEmits<{"update:jsonText":[value:string];pending:[value:boolean]}>();
-const groups:ReadonlyArray<{title:string;fields:readonly Field[]}>= [
- {title:"基本信息",fields:[
-   {key:"bookSourceName",label:"名称",hint:"bookSourceName"},
-   {key:"bookSourceType",label:"内容类型",hint:"Legado 内容类型代码"},
-   {key:"bookSourceGroup",label:"分组",hint:"bookSourceGroup · 可选"},
-   {key:"bookSourceUrl",label:"基础地址",hint:"bookSourceUrl · 必填"},
-   {key:"bookSourceComment",label:"备注",hint:"bookSourceComment · 可选",wide:true}
- ]},
- {title:"网络请求",fields:[
-   {key:"legadoRsUserAgentOverride",label:"User-Agent",hint:"应用专用的 UA 覆盖 · 留空跟随来源原始 header"},
-   {key:"header",label:"请求头 JSON / 规则",hint:"header · 原值为对象或数组时保留其 JSON 类型",wide:true},
-   {key:"loginUrl",label:"登录地址",hint:"loginUrl · 可选"}
- ]},
- {title:"解析能力",fields:[
-   {key:"searchUrl",label:"搜索 URL",hint:"searchUrl",wide:true},
-   {key:"ruleSearch",label:"搜索规则",hint:"ruleSearch",wide:true},
-   {key:"ruleBookInfo",label:"详情规则",hint:"ruleBookInfo",wide:true},
-   {key:"ruleToc",label:"目录规则",hint:"ruleToc",wide:true},
-   {key:"ruleContent",label:"正文规则",hint:"ruleContent",wide:true},
-   {key:"ruleExplore",label:"发现规则",hint:"ruleExplore · 可选",wide:true}
- ]}
-];
-const fields=groups.flatMap(group=>group.fields);
-const root=computed<Record<string,unknown>|null>(()=> {
- try {const v:unknown=JSON.parse(props.jsonText);return v && typeof v==="object"&&!Array.isArray(v)?v as Record<string,unknown>:null;}
- catch{return null;}
-});
-const enableKey=computed(()=>root.value && Object.prototype.hasOwnProperty.call(root.value,"bookSourceEnabled")?"bookSourceEnabled":
-  root.value && Object.prototype.hasOwnProperty.call(root.value,"enabled")?"enabled":"bookSourceEnabled");
-function display(key:string):string {
- const value=key==="bookSourceEnabled"?root.value?.[enableKey.value]:root.value?.[key];
- if(key==="bookSourceEnabled")return String(value===undefined?props.enabled:value!==false);
- if(value===null||value===undefined)return "";
- // Keep the original object/array/number/bool JSON token as the form baseline.
- // String fields are text inputs and deliberately show their decoded text.
- return typeof value==="string"?value:sourceJsonValue(props.jsonText,[key]);
+import type { SourceEditorField } from "./sourceEditorFields";
+import { readSourceEditorDraft, serializeSourceEditorDraft, sourceEditorTabs } from "./sourceEditorDraft";
+
+const props = defineProps<{ jsonText: string; enabled: boolean; disabled: boolean }>();
+const emit = defineEmits<{ pending: [value: boolean] }>();
+const activeTab = ref("basic");
+const tabs = computed(() => sourceEditorTabs(props.jsonText));
+const fields = computed(() => tabs.value.flatMap(tab => tab.fields));
+const currentTab = computed(() => tabs.value.find(tab => tab.id === activeTab.value) ?? tabs.value[0]!);
+const draft = ref<Record<string, string>>({});
+const baseline = ref<Record<string, string>>({});
+const error = ref("");
+const editingField = ref<SourceEditorField | null>(null);
+const longInput = ref<HTMLTextAreaElement | null>(null);
+let originalLongValue = "";
+let returnFocus: HTMLElement | null = null;
+let baselineJson = props.jsonText;
+function reset(json = props.jsonText): void {
+  baselineJson = json;
+  draft.value = readSourceEditorDraft(json, sourceEditorTabs(json).flatMap(tab => tab.fields), props.enabled);
+  baseline.value = { ...draft.value };
+  editingField.value = null;
+  error.value = "";
 }
-const draft=ref<Record<string,string>>({});
-const baselineDraft=ref<Record<string,string>>({});
-const error=ref("");
-const upstreamChanged=ref(false);
-let baselineJsonText=props.jsonText;
-let expectedAppliedJson:string|null=null;
-function init():void {
- const next:Record<string,string>={};
- for(const field of fields)next[field.key]=display(field.key);
- next.bookSourceEnabled=display("bookSourceEnabled");
- draft.value=next;
- baselineDraft.value={...next};
- baselineJsonText=props.jsonText;
- upstreamChanged.value=false;
- error.value="";
+reset();
+const pending = computed(() => fields.value.some(field => draft.value[field.key] !== baseline.value[field.key]));
+watch(() => props.jsonText, json => reset(json));
+watch(pending, value => emit("pending", value), { immediate: true, flush: "sync" });
+onUnmounted(() => emit("pending", false));
+
+function serialize(): string | null {
+  try {
+    const json = serializeSourceEditorDraft(baselineJson, fields.value, baseline.value, draft.value);
+    error.value = "";
+    return json;
+  } catch (cause) {
+    error.value = cause instanceof Error ? cause.message : String(cause);
+    return null;
+  }
 }
-init();
-const pending=computed(()=>fields.some(field=>draft.value[field.key]!==baselineDraft.value[field.key])
-  ||draft.value.bookSourceEnabled!==baselineDraft.value.bookSourceEnabled);
-watch(()=>props.jsonText,newJson=>{
- if(newJson===baselineJsonText)return;
- if(newJson===expectedAppliedJson){
-   expectedAppliedJson=null;
-   init();
-   return;
- }
- if(pending.value){
-   upstreamChanged.value=true;
-   return;
- }
- init();
-});
-watch(pending,value=>emit("pending",value),{immediate:true,flush:"sync"});
-onUnmounted(()=>emit("pending",false));
-function apply():void {
- if(props.disabled||!root.value)return;
- if(upstreamChanged.value){
-   error.value="原始 JSON 已在表单编辑期间更新，请先重新读取字段并确认修改。";
-   return;
- }
- let next=props.jsonText;
- try {
-   for(const field of fields){
-     const key=field.key,text=draft.value[key]??"";
-     if(text===display(key))continue;
-     const raw=sourceFormFieldJsonValue(key,field.label,root.value[key],text);
-     next=setSourceJsonValue(next,[key],raw);
-   }
-   if(draft.value.bookSourceEnabled!==display("bookSourceEnabled")){
-     const enabled=draft.value.bookSourceEnabled==="true";
-     next=setSourceJsonValue(next,[enableKey.value],enabled?"true":"false");
-     if(Object.prototype.hasOwnProperty.call(root.value,"enabled") && enableKey.value!=="enabled")
-       next=setSourceJsonValue(next,["enabled"],enabled?"true":"false");
-     if(Object.prototype.hasOwnProperty.call(root.value,"bookSourceEnabled") && enableKey.value!=="bookSourceEnabled")
-       next=setSourceJsonValue(next,["bookSourceEnabled"],enabled?"true":"false");
-   }
-   error.value="";
-   expectedAppliedJson=next;
-   emit("update:jsonText",next);
- } catch (cause) { error.value=cause instanceof Error?cause.message:String(cause); }
+function preview(field: SourceEditorField): string {
+  return draft.value[field.key]?.replace(/\s+/g, " ").trim() || "未设置";
 }
+async function openField(field: SourceEditorField): Promise<void> {
+  if (props.disabled) return;
+  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  editingField.value = field;
+  originalLongValue = draft.value[field.key] ?? "";
+  await nextTick();
+  longInput.value?.focus();
+}
+function closeField(discard = false): void {
+  if (props.disabled) return;
+  if (discard && editingField.value) draft.value[editingField.value.key] = originalLongValue;
+  editingField.value = null;
+  void nextTick(() => returnFocus?.focus());
+}
+function trapFieldFocus(event: KeyboardEvent): void {
+  if (event.key !== "Tab") return;
+  const controls = (event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>("button:not(:disabled),textarea:not(:disabled)");
+  const first = controls[0], last = controls[controls.length - 1];
+  if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+  else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+}
+defineExpose({ serialize, reset });
 </script>
+
 <template>
- <div class="source-visual-form">
-   <header class="source-visual-heading">
-     <div><strong>{{draft.bookSourceName||'内容引擎'}}</strong></div>
-     <label>启用 <input type="checkbox" :checked="draft.bookSourceEnabled==='true'" :disabled="disabled"
-       @change="draft.bookSourceEnabled=($event.target as HTMLInputElement).checked?'true':'false'"/></label>
-   </header>
-   <section v-for="group in groups" :key="group.title" class="source-visual-section">
-     <header><strong>{{group.title}}</strong></header>
-     <div class="source-visual-fields">
-       <label v-for="field in group.fields" :key="field.key" :class="{'wide':field.wide}">
-         <span>{{field.label}}</span>
-         <select v-if="field.key==='bookSourceType'" :value="draft.bookSourceType??''" :disabled="disabled"
-           @change="draft.bookSourceType=($event.target as HTMLSelectElement).value">
-           <option v-for="option in bookSourceTypeOptions(draft.bookSourceType??'')" :key="option.value" :value="option.value">{{ option.label }}</option>
-         </select>
-         <textarea v-else-if="field.wide" :value="draft[field.key]??''" spellcheck="false" :disabled="disabled"
-           @input="draft[field.key]=($event.target as HTMLTextAreaElement).value"></textarea>
-         <input v-else :value="draft[field.key]??''" :disabled="disabled" spellcheck="false" inputmode="text"
-           @input="draft[field.key]=($event.target as HTMLInputElement).value"/>
-         <small>{{field.hint}}</small>
-       </label>
-     </div>
-   </section>
-   <p v-if="upstreamChanged" class="source-visual-error">书源 JSON 在编辑过程中发生了外部更新。当前表单草稿仍保留，但不能直接覆盖新版本；请点击「重新读取字段」再继续编辑。</p>
-   <p v-if="error" class="source-visual-error">{{error}}</p>
-   <footer class="source-visual-actions">
-     <button type="button" class="button secondary small" :disabled="disabled||(!pending&&!upstreamChanged)" @click="init">{{ upstreamChanged ? '重新读取字段' : '撤销表单修改' }}</button>
-     <button type="button" class="button primary small"
-       :disabled="disabled||!pending||upstreamChanged" @click="apply"><PrototypeIcon name="right"/> 应用修改</button>
-   </footer>
- </div>
+  <div class="source-field-editor" :inert="!!editingField">
+    <nav class="source-field-tabs" aria-label="书源配置分类" role="tablist">
+      <button v-for="tab in tabs" :key="tab.id" type="button" role="tab"
+        :aria-selected="currentTab.id === tab.id" :class="{ active: currentTab.id === tab.id }"
+        @click="activeTab = tab.id">{{ tab.label }}</button>
+    </nav>
+    <div class="source-field-list" role="tabpanel" :aria-label="currentTab.label">
+      <div v-for="field in currentTab.fields" :key="field.key" class="source-field"
+        :class="{ 'source-field--compact': ['toggle', 'type', 'number'].includes(field.kind) }">
+        <label :for="`source-field-${field.key}`" class="source-field-label">
+          <span>{{ field.label }}</span><small>{{ field.key.split('.').slice(-1)[0] }}</small>
+        </label>
+        <button v-if="field.kind === 'long'" :id="`source-field-${field.key}`" type="button"
+          class="source-field-preview" :class="{ empty: !draft[field.key] }" :disabled="disabled" @click="openField(field)">
+          <span>{{ preview(field) }}</span><PrototypeIcon name="right" />
+        </button>
+        <label v-else-if="field.kind === 'toggle'" class="source-field-switch">
+          <input :id="`source-field-${field.key}`" type="checkbox" :checked="draft[field.key] === 'true'" :disabled="disabled"
+            @change="draft[field.key] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
+          <span aria-hidden="true"></span>
+        </label>
+        <select v-else-if="field.kind === 'type'" :id="`source-field-${field.key}`" v-model="draft[field.key]" :disabled="disabled">
+          <option v-for="option in bookSourceTypeOptions(draft[field.key] ?? '0')" :key="option.value" :value="option.value">{{ option.label }}</option>
+        </select>
+        <input v-else :id="`source-field-${field.key}`" v-model="draft[field.key]" :disabled="disabled"
+          :inputmode="field.kind === 'number' ? 'numeric' : 'text'" type="text" spellcheck="false" autocomplete="off" />
+      </div>
+    </div>
+    <p v-if="error" class="source-field-error" role="alert">{{ error }}</p>
+    <Teleport to="body">
+      <section v-if="editingField" class="source-field-overlay" role="dialog" aria-modal="true"
+        aria-labelledby="source-long-field-title" @keydown="trapFieldFocus" @keydown.esc.stop.prevent="closeField(true)">
+        <header>
+          <button type="button" :disabled="disabled" @click="closeField(true)">取消</button>
+          <div><strong id="source-long-field-title">{{ editingField.label }}</strong><small>{{ editingField.key }}</small></div>
+          <button type="button" :disabled="disabled" @click="closeField()">完成</button>
+        </header>
+        <textarea ref="longInput" v-model="draft[editingField.key]" :disabled="disabled"
+          :aria-label="editingField.label" spellcheck="false" autocapitalize="off" autocomplete="off" />
+      </section>
+    </Teleport>
+  </div>
 </template>
+
 <style scoped>
-.source-visual-form{display:grid;gap:0;min-width:0;color:#343640}
-.source-visual-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:2px 0 22px}
-.source-visual-heading>div{display:grid;min-width:0;gap:4px}
-.source-visual-heading strong{overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font-size:17px;color:#272934}
-.source-visual-heading>label{display:flex;align-items:center;gap:8px;white-space:nowrap;color:#6b707b;font-size:9px}
-.source-visual-heading input{width:18px;height:18px;accent-color:var(--app-accent)}
-.source-visual-section{padding:17px 0 18px;margin:0;border:0;border-top:1px solid var(--app-line);border-radius:0;background:transparent}
-.source-visual-section>header{display:grid;gap:4px;margin:0 0 14px;padding:0;border:0}
-.source-visual-section>header strong{font-size:11px;color:#343640}
-.source-visual-fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
-.source-visual-fields>label{display:grid;align-content:start;gap:6px;min-width:0}
-.source-visual-fields>label.wide{grid-column:1/-1}
-.source-visual-fields>label>span{color:#777c85;font-size:9px;font-weight:600}
-.source-visual-fields>label>input,.source-visual-fields>label>textarea,.source-visual-fields>label>select{box-sizing:border-box;width:100%;min-width:0;min-height:36px;padding:8px 9px;border:1px solid #e1e4eb;border-radius:9px;background:#fff;color:#353743;font-family:inherit;font-size:10px;line-height:1.5}
-.source-visual-fields>label>select{cursor:pointer}
-.source-visual-fields>label>textarea{min-height:82px;resize:vertical;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
-.source-visual-fields>label>input:focus,.source-visual-fields>label>textarea:focus,.source-visual-fields>label>select:focus{outline:2px solid #6757d644;outline-offset:1px;border-color:var(--app-accent)}
-.source-visual-fields>label>small{font-size:8px;line-height:1.5;color:#a1a5ae}
-.source-visual-error{margin:10px 0;padding:10px 12px;border-radius:9px;background:#fff0f2;color:#b0525c;font-size:12px}
-.source-visual-actions{display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap;padding:17px 0;border-top:1px solid var(--app-line)}
-.source-visual-actions .button{min-height:36px;border-radius:9px;font-size:12px}
-@media(max-width:700px){.source-visual-heading{padding:5px 0 17px}.source-visual-heading strong{font-size:17px}.source-visual-fields{grid-template-columns:1fr}.source-visual-actions>small{flex-basis:100%}}
+.source-field-editor{min-width:0;color:var(--app-text,#343640)}
+.source-field-tabs{position:sticky;top:0;z-index:5;display:flex;overflow-x:auto;background:#fff;border-bottom:1px solid var(--app-line);scrollbar-width:none}
+.source-field-tabs>button{flex:1 0 auto;min-height:48px;padding:0 18px;border:0;border-bottom:3px solid transparent;background:transparent;color:#737887;font:inherit;font-size:15px;cursor:pointer}
+.source-field-tabs>button.active{border-bottom-color:var(--app-accent);color:var(--app-accent);font-weight:650}
+.source-field-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 22px;padding:24px 0}
+.source-field{display:grid;gap:8px;min-width:0;grid-column:1/-1}
+.source-field--compact{grid-column:auto}
+.source-field-label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:15px;line-height:1.4;color:#565e6b}
+.source-field-label small{font-size:12px;font-weight:400;color:#9298a3;overflow-wrap:anywhere}
+.source-field input:not([type=checkbox]),.source-field select,.source-field-preview{box-sizing:border-box;width:100%;min-width:0;min-height:46px;padding:11px 13px;border:1px solid #e4e7ef;border-radius:8px;background:#f1f4fa;color:#303b4b;font:inherit;font-size:16px;line-height:1.5}
+.source-field-preview{display:flex;align-items:center;gap:12px;text-align:left;cursor:pointer}
+.source-field-preview>span{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:14px/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
+.source-field-preview.empty>span{color:#989eaa;font-family:inherit}
+.source-field-preview :deep(svg){flex:none;width:18px;height:18px;color:#8d96a7}
+.source-field-switch{position:relative;display:flex;align-items:center;min-height:46px;cursor:pointer;width:max-content}
+.source-field-switch input{position:absolute;width:1px;height:1px;opacity:0}
+.source-field-switch>span{position:relative;width:48px;height:28px;border-radius:16px;background:#cbd1dd;transition:background .15s}
+.source-field-switch>span::after{content:'';position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 3px #0002;transition:transform .15s}
+.source-field-switch input:checked+span{background:var(--app-accent)}
+.source-field-switch input:checked+span::after{transform:translateX(20px)}
+.source-field-switch input:focus-visible+span,.source-field input:focus-visible,.source-field select:focus-visible,.source-field-preview:focus-visible,.source-field-tabs>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
+.source-field-switch input:disabled+span,.source-field :disabled{opacity:.55;cursor:default}
+.source-field-error{padding:12px;background:#fff0f2;color:#ac4454;border-radius:8px;font-size:14px}
+.source-field-overlay{position:fixed;z-index:120;inset:0;display:flex;flex-direction:column;padding:var(--safe-top,env(safe-area-inset-top)) 0 env(safe-area-inset-bottom);background:#f7f9fc}
+.source-field-overlay>header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:62px;padding:0 20px;border-bottom:1px solid var(--app-line);background:#fff}
+.source-field-overlay>header>div{display:grid;min-width:0;gap:3px;text-align:center}
+.source-field-overlay strong{font-size:16px;color:#343c4a}
+.source-field-overlay small{font-size:12px;color:#8e96a2;overflow:hidden;text-overflow:ellipsis}
+.source-field-overlay button{min-height:44px;padding:0 10px;border:0;background:transparent;color:var(--app-accent);font-size:15px;cursor:pointer}
+.source-field-overlay textarea{flex:1;min-height:0;resize:none;margin:16px;padding:16px;border:1px solid #e1e5ed;border-radius:8px;background:#fff;color:#303b4b;font:15px/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2;outline-offset:2px}
+@media(min-width:1100px){.source-field-overlay{inset:5vh 12vw;border:1px solid #e4e7ef;border-radius:12px;box-shadow:0 0 0 100vmax #18203466;overflow:hidden}}
+@media(max-width:700px){.source-field-tabs>button{padding:0 15px}.source-field-list{gap:19px 14px;padding:22px 0}.source-field-label{font-size:14px;gap:5px}.source-field-overlay>header{padding:0 10px}.source-field-overlay textarea{margin:10px;padding:12px}}
+@media(prefers-reduced-motion:reduce){.source-field-switch>span,.source-field-switch>span::after{transition:none}}
 </style>

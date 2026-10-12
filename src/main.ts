@@ -12,6 +12,7 @@ import { loadHistory } from "./features/settings/historyStore";
 import { loadConfigurations } from "./features/settings/configurationStores";
 import { initializeBookStore } from "./features/books/bookDetailState";
 import { loadShelf } from "./features/shelf/shelfStore";
+import { loadSources } from "./features/sources/sourcesStore";
 import "./style.css";
 
 const mountedApps: Array<{ unmount: () => void }> = [];
@@ -75,6 +76,7 @@ void appBootstrap().then((bootstrap) => Promise.all([
   loadSettings(bootstrap.settings),
   loadHistory(bootstrap.history),
   loadShelf(bootstrap.shelf),
+  loadSources(bootstrap.sources),
   loadConfigurations(bootstrap),
   initializeBookStore(bootstrap.shelf),
 ])).then(() => {

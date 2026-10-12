@@ -26,6 +26,7 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
     let valid = match path_components.as_slice() {
         ["shelf.json"]
         | ["sources.json"]
+        | ["source-list.json"]
         | ["settings.json"]
         | ["http-tts.json"]
         | ["history.json"]
@@ -34,6 +35,7 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
         | ["tasks.json"]
         | ["rss-state.json"] => true,
         ["search", name] => filename_id(name, ".json").is_some(),
+        ["sources", name] => filename_id(name, ".json").is_some(),
         ["dictionary", name] => filename_id(name, ".html").is_some(),
         ["media", id] => valid_id(id),
         ["books", book_id, "book.json"] => valid_id(book_id),

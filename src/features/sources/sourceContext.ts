@@ -64,7 +64,6 @@ export type SourceManagementContract = UnwrapNestedRefs<
   Pick<
     ReturnType<typeof useSourceManagementActions>,
     | "changeSourceEnabled"
-    | "refreshSourceList"
     | "setSelectedSourcesEnabled"
     | "setSelectedSourcesGroup"
     | "beginSourceEdit"
@@ -72,7 +71,6 @@ export type SourceManagementContract = UnwrapNestedRefs<
     | "saveSourceDefinitionJson"
     | "sourceEditJson"
     | "sourceEditOriginalJson"
-    | "sourceEditInitialUrl"
     | "sourceEditBusy"
     | "sourceRemovalBusy"
     | "importSourceFileFromPicker"

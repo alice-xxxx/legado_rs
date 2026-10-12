@@ -1,5 +1,6 @@
 import { type Ref } from "vue";
-import { getSourceLoginForm, getSourceLoginState, mutateSource } from "../../api/sources";
+import { getSourceLoginForm, getSourceLoginState } from "../../api/sources";
+import { mutateSources as mutateSource } from "./sourcesStore";
 import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {

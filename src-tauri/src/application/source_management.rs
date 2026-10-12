@@ -43,6 +43,13 @@ pub(crate) fn validate_source_records(records: &[SourceRecord]) -> Result<(), St
     Ok(())
 }
 
+pub(crate) fn source_list_document(document: Value) -> Result<Value, String> {
+    let records: Vec<SourceRecord> = serde_json::from_value(document)
+        .map_err(|error| format!("Cannot decode saved source definitions: {error}"))?;
+    validate_source_records(&records)?;
+    Ok(json!({ "schemaVersion": 1, "sources": metadata(&records) }))
+}
+
 impl ApplicationService {
     pub async fn get_source_login_state(&self, source_id: &str) -> Result<Value, String> {
         validate_id(source_id, "sourceId")?;
@@ -371,8 +378,8 @@ impl ApplicationService {
                 records.push(record);
             }
         }
-        self.write_sources(&records).await?;
-        Ok(json!({ "sources": metadata(&records) }))
+        let list_changed = self.write_sources(&records).await?;
+        Ok(json!({ "listChanged": list_changed }))
     }
 
     pub async fn import_sources_from_url(&self, input: &str) -> Result<Value, String> {
@@ -402,8 +409,8 @@ impl ApplicationService {
             .map(|source| source.id.clone())
             .collect::<Vec<_>>();
         records.retain(|source| !remove.contains(source.id.as_str()));
-        self.write_sources(&records).await?;
-        let mut result = json!({ "sources": metadata(&records) });
+        let list_changed = self.write_sources(&records).await?;
+        let mut result = json!({ "listChanged": list_changed });
         let mut rss_state = None;
         let mut cleanup_pending = false;
         for source_id in rss_source_ids {
@@ -423,50 +430,6 @@ impl ApplicationService {
             result["rssState"] = self.resource_descriptor(&resource);
         }
         Ok(result)
-    }
-
-    /// Publish the complete definitions as a browser-readable resource. The
-    /// source JSON stays a string inside the resource so JavaScript does not
-    /// round 64-bit numeric fields while parsing the outer document.
-    pub(super) async fn source_definitions_resource(&self) -> Result<ResourceRef, String> {
-        let _lock = self.sources_lock.lock().await;
-        let records = self.read_sources().await?;
-        self.publish_source_definitions(&records).await
-    }
-
-    async fn publish_source_definitions(
-        &self,
-        records: &[SourceRecord],
-    ) -> Result<ResourceRef, String> {
-        let mut entries = Vec::with_capacity(records.len());
-        for (record, metadata) in records.iter().zip(metadata(records)) {
-            let mut entry = serde_json::to_value(metadata)
-                .map_err(|error| format!("Cannot encode source metadata: {error}"))?;
-            let definition_json = serde_json::to_string_pretty(&record.source)
-                .map_err(|error| format!("Cannot encode source definition: {error}"))?;
-            entry["definitionJson"] = Value::String(definition_json);
-            entries.push(entry);
-        }
-        let document = json!({ "schemaVersion": 1, "sources": entries });
-        let document_bytes = serde_json::to_vec(&document)
-            .map_err(|error| format!("Cannot encode source resource: {error}"))?;
-        let content_hash = format!("{:x}", Sha256::digest(&document_bytes));
-        let resource = self
-            .store
-            .source_definitions_ref(&content_hash)
-            .map_err(|error| error.to_string())?;
-        let exists = self
-            .store
-            .regular_file_exists(&resource)
-            .await
-            .map_err(|error| error.to_string())?;
-        if !exists {
-            self.store
-                .write_json_ref(&resource, &document)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        Ok(resource)
     }
 
     /// Atomically replace one source definition. The internal source ID remains
@@ -502,8 +465,8 @@ impl ApplicationService {
         record.group = group;
         record.enabled = enabled;
         record.source = definition;
-        self.write_sources(&records).await?;
-        Ok(json!({ "sources": metadata(&records) }))
+        let list_changed = self.write_sources(&records).await?;
+        Ok(json!({ "listChanged": list_changed }))
     }
 
     pub(super) async fn find_source(&self, id: &str) -> Result<SourceRecord, String> {
@@ -536,17 +499,20 @@ impl ApplicationService {
         Ok(records)
     }
 
+    /// Session revisions reject delayed results, including an edit followed by
+    /// reverting to the same definition. Track queried IDs for restore invalidation.
     pub(super) async fn source_revision(&self, source_id: &str) -> Result<u64, String> {
-        Ok(self
-            .read_source_revisions()
-            .await?
-            .get(source_id)
-            .copied()
-            .unwrap_or_default())
+        Ok(*self
+            .source_revisions
+            .lock()
+            .await
+            .entry(source_id.to_owned())
+            .or_default())
     }
 
-    pub(super) async fn write_sources(&self, sources: &[SourceRecord]) -> Result<(), String> {
+    pub(super) async fn write_sources(&self, sources: &[SourceRecord]) -> Result<bool, String> {
         let previous = self.read_sources().await?;
+        let list_changed = json!(metadata(&previous)) != json!(metadata(sources));
         let previous_by_id = previous
             .iter()
             .map(|record| {
@@ -563,64 +529,150 @@ impl ApplicationService {
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<HashMap<_, _>, _>>()?;
-        let mut revisions = self.read_source_revisions().await?;
         let changed = previous_by_id
             .keys()
             .chain(next_by_id.keys())
             .copied()
             .collect::<HashSet<_>>();
-        for source_id in changed {
-            if previous_by_id.get(source_id) != next_by_id.get(source_id) {
-                let revision = revisions.entry(source_id.to_owned()).or_default();
-                *revision = revision.saturating_add(1);
-            }
-        }
-        self.write_internal_json(
-            Path::new("source-revisions.json"),
-            &json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "revisions": revisions }),
-        )
-        .await?;
         let reference = ResourceRef::new("resource://sources.json")
             .map_err(|error| error.to_string())?;
         self.store
             .write_json_ref(&reference, &json!(sources))
             .await
             .map_err(|error| error.to_string())?;
-        self.publish_source_definitions(sources).await?;
-        Ok(())
-    }
-
-    async fn read_source_revisions(&self) -> Result<HashMap<String, u64>, String> {
-        let path = self.root.join("source-revisions.json");
-        let Some(bytes) = read_private_state_file(&path, "source revisions").await? else {
-            return Ok(HashMap::new());
-        };
-        #[derive(Deserialize)]
-        #[serde(rename_all = "camelCase")]
-        struct RevisionsDocument {
-            schema_version: u32,
-            revisions: HashMap<String, u64>,
-        }
-        let document: RevisionsDocument = match serde_json::from_slice::<RevisionsDocument>(&bytes)
         {
-            Ok(document) if document.schema_version == CURRENT_SCHEMA_VERSION => document,
-            _ => return Ok(HashMap::new()),
-        };
-        Ok(document.revisions)
+            let mut revisions = self.source_revisions.lock().await;
+            for source_id in changed {
+                if previous_by_id.get(source_id) != next_by_id.get(source_id) {
+                    let revision = revisions.entry(source_id.to_owned()).or_default();
+                    *revision = revision.saturating_add(1);
+                }
+            }
+        }
+        Ok(list_changed)
     }
 }
 
-async fn read_private_state_file(path: &Path, label: &str) -> Result<Option<Vec<u8>>, String> {
-    match tokio::fs::symlink_metadata(path).await {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(format!(
-            "Cannot read {label}: symbolic links are not allowed"
-        )),
-        Ok(metadata) if !metadata.is_file() => Err(format!("Cannot read {label}: not a file")),
-        Ok(_) => tokio::fs::read(path)
-            .await
-            .map(Some)
-            .map_err(|error| format!("Cannot read {label}: {error}")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("Cannot inspect {label}: {error}")),
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct UnusedExecutor;
+
+    impl SourceExecutor for UnusedExecutor {
+        fn execute<'a>(&'a self, _request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async { Err("This test must not execute source rules".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn source_resources_are_lightweight_and_definitions_load_individually() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(
+            directory.path(), Arc::new(UnusedExecutor),
+        ).await.unwrap();
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        async fn read_json(response: reqwest::Response) -> Value {
+            let bytes = response.error_for_status().unwrap().bytes().await.unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        }
+        let list_ref = service.store.source_list_ref().unwrap();
+        let list_url = service.resource_server().url_for(&list_ref);
+        let empty = read_json(client.get(&list_url).send().await.unwrap()).await;
+        assert_eq!(empty["sources"], json!([]));
+
+        let mut source = SourceRecord {
+            id: "source-test".into(), name: "Test".into(), group: None, enabled: true,
+            source: json!({
+                "bookSourceName": "Test", "bookSourceUrl": "https://example.invalid",
+                "enabled": true, "lastUpdateTime": 9_007_199_254_740_993_u64,
+                "ruleSearch": { "name": "original", "bookList": "x".repeat(100_000) },
+            }),
+        };
+        assert!(service.write_sources(&[source.clone()]).await.unwrap());
+        let summary = read_json(client.get(&list_url).send().await.unwrap()).await;
+        assert_eq!(summary["sources"][0]["id"], source.id);
+        assert!(summary["sources"][0].get("definitionJson").is_none());
+        assert!(serde_json::to_vec(&summary).unwrap().len() < 1024);
+
+        let definition_ref = ResourceRef::new("resource://sources/source-test.json").unwrap();
+        let definition_url = service.resource_server().url_for(&definition_ref);
+        let definition = read_json(client.get(&definition_url).send().await.unwrap()).await;
+        let original: Value = serde_json::from_str(definition["definitionJson"].as_str().unwrap()).unwrap();
+        assert_eq!(original["lastUpdateTime"].as_u64(), Some(9_007_199_254_740_993));
+        assert_eq!(original, source.source);
+
+        source.source["ruleSearch"]["name"] = json!("edited");
+        assert!(!service.write_sources(&[source.clone()]).await.unwrap());
+        let edited = read_json(client.get(&definition_url).send().await.unwrap()).await;
+        assert!(edited["definitionJson"].as_str().unwrap().contains("edited"));
+        source.group = Some("Group".into());
+        source.source["bookSourceGroup"] = json!("Group");
+        assert!(service.write_sources(&[source.clone()]).await.unwrap());
+        assert!(!service.write_sources(&[source]).await.unwrap());
+        assert!(!directory.path().join("source-list.json").exists());
+        assert!(!directory.path().join("sources").exists());
+        let canonical = ResourceRef::new("resource://sources.json").unwrap();
+        assert_eq!(client.get(service.resource_server().url_for(&canonical)).send().await.unwrap().status(), 404);
+        assert!(service.write_sources(&[]).await.unwrap());
+        assert_eq!(client.get(&definition_url).send().await.unwrap().status(), 404);
+    }
+
+    #[tokio::test]
+    async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(
+            directory.path(),
+            Arc::new(UnusedExecutor),
+        )
+        .await
+        .unwrap();
+        service.bootstrap().await.unwrap();
+        let source = SourceRecord {
+            id: "source-test".into(),
+            name: "Original".into(),
+            group: None,
+            enabled: true,
+            source: json!({
+                "bookSourceName": "Original",
+                "bookSourceUrl": "https://example.invalid",
+                "enabled": true,
+            }),
+        };
+        service.write_sources(&[source.clone()]).await.unwrap();
+        let initial = service.source_revision(&source.id).await.unwrap();
+        service.write_sources(&[source.clone()]).await.unwrap();
+        assert_eq!(service.source_revision(&source.id).await.unwrap(), initial);
+
+        let backup_directory = tempfile::tempdir().unwrap();
+        let archive = backup_directory.path().join("backup.zip");
+        crate::backup::create_backup(&service.store, &archive).await.unwrap();
+        let mut edited = source.clone();
+        edited.source["ruleSearch"] = json!({ "name": "changed" });
+        service.write_sources(&[edited]).await.unwrap();
+        service.write_sources(&[source.clone()]).await.unwrap();
+        let reverted = service.source_revision(&source.id).await.unwrap();
+        assert!(reverted > initial);
+
+        service.write_sources(&[]).await.unwrap();
+        service.write_sources(&[source.clone()]).await.unwrap();
+        let reimported = service.source_revision(&source.id).await.unwrap();
+        assert!(reimported > reverted);
+        service.restore_backup(&archive).await.unwrap();
+        assert!(service.source_revision(&source.id).await.unwrap() > reimported);
+        assert!(!directory.path().join("source-revisions.json").exists());
+        let file = std::fs::File::open(archive).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("source-revisions.json").is_err());
+
+        drop(service);
+        let reopened = ApplicationService::open_with_executor(
+            directory.path(),
+            Arc::new(UnusedExecutor),
+        )
+        .await
+        .unwrap();
+        assert_eq!(reopened.source_revision(&source.id).await.unwrap(), 0);
+        assert_eq!(reopened.read_sources().await.unwrap()[0].source, source.source);
     }
 }

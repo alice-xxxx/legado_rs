@@ -303,8 +303,56 @@ async fn get_resource(
         Err(_) => return empty_response(StatusCode::NOT_FOUND),
     };
 
-    // The mutable canonical source file is backend-owned. Source management
-    // receives immutable definitionJson snapshots, never this working file.
+    if reference.path() == "source-list.json" {
+        let canonical = match ResourceRef::new("resource://sources.json") {
+            Ok(reference) => reference,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        let records = match state.store.read_json_ref_or_default(&canonical, serde_json::json!([])).await {
+            Ok(records) => records,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        let document = match crate::application::source_list_document(records) {
+            Ok(document) => document,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        let bytes = match serde_json::to_vec(&document) {
+            Ok(bytes) => bytes,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        return byte_response(bytes, "application/json; charset=utf-8", &headers);
+    }
+
+    // Serve one definition on demand; complete source definitions never enter
+    // the shared list resource or a second set of persistent files.
+    if let Some(source_id) = reference.path().strip_prefix("sources/")
+        .and_then(|name| name.strip_suffix(".json"))
+    {
+        let canonical = match ResourceRef::new("resource://sources.json") {
+            Ok(reference) => reference,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        let records = match state.store.read_json_ref(&canonical).await {
+            Ok(records) => records,
+            Err(_) => return empty_response(StatusCode::NOT_FOUND),
+        };
+        let Some(source) = records.as_array().and_then(|records| records.iter()
+            .find(|record| record["id"].as_str() == Some(source_id)))
+        else { return empty_response(StatusCode::NOT_FOUND); };
+        let definition_json = match serde_json::to_string_pretty(&source["source"]) {
+            Ok(json) => json,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        let bytes = match serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1, "id": source_id, "definitionJson": definition_json,
+        })) {
+            Ok(bytes) => bytes,
+            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        return byte_response(bytes, "application/json; charset=utf-8", &headers);
+    }
+
+    // The canonical file remains backend-owned.
     if reference.path() == "sources.json" {
         return empty_response(StatusCode::NOT_FOUND);
     }

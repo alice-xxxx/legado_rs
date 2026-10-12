@@ -81,9 +81,9 @@ impl ApplicationService {
         let resource = crate::rss::remove_subscription_data(self, source_id).await?;
         let mut records = self.read_sources().await?;
         records.retain(|source| source.id != source_id);
-        self.write_sources(&records).await?;
+        let list_changed = self.write_sources(&records).await?;
         Ok(json!({
-            "sources": metadata(&records),
+            "listChanged": list_changed,
             "resource": self.resource_descriptor(&resource),
         }))
     }
@@ -122,12 +122,9 @@ impl ApplicationService {
         let history = crate::reading_tools::history_resource(&self.store).await?;
         let replacement_rules =
             crate::reading_tools::replacement_rules_resource(&self.store).await?;
-        let txt_toc_document =
-            crate::local_books::txt_toc_rules::read_document(&self.store).await?;
-        let txt_toc_rules =
-            crate::local_books::txt_toc_rules::publish_snapshot(&self.store, &txt_toc_document)
-                .await?;
-        let sources = self.source_definitions_resource().await?;
+        crate::local_books::txt_toc_rules::read_document(&self.store).await?;
+        let txt_toc_rules = crate::local_books::txt_toc_rules::resource_ref(&self.store)?;
+        let sources = self.store.source_list_ref().map_err(|error| error.to_string())?;
         Ok(json!({
             "shelf": self.resource_descriptor(&self.store.shelf_ref()),
             "settings": self.resource_descriptor(&self.store.settings_ref()),

@@ -13,7 +13,6 @@ app-data/
 ├─ txt-toc-rules.json
 ├─ http-tts.json
 ├─ sources.json
-├─ source-revisions.json
 ├─ tasks.json
 ├─ rss-state.json
 ├─ books/
@@ -49,11 +48,12 @@ source-engine/ 保留现有引擎数据的位置和存储逻辑，并保存书�
 | books/{缓存书ID}/media-maps/ | 本书音视频资源 ID 对应的真实 URL 和请求头；仅由 Rust 读取，不向 WebView 发布。 |
 | source-engine/discovery-categories/ | 按书源 ID 保存分类 ID 与发现 URL 的映射；仅供 Rust 执行发现请求。 |
 | sources.json | 根目录的权威书源定义；位置不变。 |
-| source-revisions.json | 书源修改版本号，用于拒绝来自旧定义的异步结果。 |
 | transactions/ | 多文件写入事务的恢复日志，不包含在备份中。 |
 | books/{缓存书ID}/chapters/ | 这本缓存书的章节数据。 |
 | books/{缓存书ID}/assets/ | 这本缓存书使用的本地资源，例如封面。 |
 | search/ | 临时搜索结果快照，提供给 WebView 按资源描述读取，不作为搜索历史。 |
+
+书源修改计数只保存在 Rust 当前进程的内存中，用于拒绝搜索、换源、章节加载和网页登录的旧异步结果，不单独持久化或备份。修改、删除或重新导入书源会推进对应计数；恢复备份后推进已记录的所有计数。它与前端轻量列表的更新通知无关。
 
 settings.json 的字段沿用现有设置类型：应用级设置在根对象中，阅读器设置放在 reader，主页配置放在 home。这里不额外造 app 子对象或重复字段。
 WebDAV 完整配置保存在 settings.json.webdavBackup 中，与其他设置一起读取到唯一的全局 settings。连接表单只复制地址、用户名和输入密码的草稿，保存后回写 settings；自动备份间隔直接修改 settings。两者都由 settings 的 watch 提交完整 JSON，不另设保存命令。密码输入框不回填；备份包含这份 settings，恢复时沿用现有的本机 WebDAV 连接保留行为。
@@ -100,6 +100,16 @@ history.json 中，reading 保存阅读会话、按书和按日期的统计及�
 ### shelf
 - shelf.json 也由一个专属 TypeScript store 提供全局响应式 shelf；页面共用同一份状态。
 - 修改由 store 监听并统一保存；Rust 更新时由同一套通知和回读流程更新 Vue 状态。
+
+### sources
+
+- sourcesStore.ts 集中管理书源列表读取、更新通知、单条定义读取、保存、导入和导出。main.ts 在启动时只加载一次轻量列表，页面共享 sources，不自行读取或维护另一份列表。
+- sources 只包含 ID、名称、分组、启用状态、类型和能力等列表字段，不包含完整规则或脚本，也不安装自动保存的深度 watch。
+- Rust 比较保存前后的列表字段，只有字段变化或列表增删时才发送 sources-updated。sourcesStore.ts 收到通知后回读轻量列表；只修改规则正文不刷新列表。备份恢复通过 app-state-updated 回读列表。
+- source-list.json 是 HTTP 按需生成的轻量资源地址，不对应额外的磁盘文件。单条 sources/{书源ID}.json 同样按请求从权威 sources.json 生成，完整定义用 definitionJson 字符串传输，保留 64 位数字。
+- 编辑器按 ID 向 sourcesStore.ts 请求一条定义，保存在页面局部草稿中；保存也交给同一入口提交 Rust。关闭或切换编辑器后释放草稿，不建立全局 openedSource 或完整规则缓存。保存方法在有列表变化时等待对应更新通知完成，页面无需再次刷新列表。
+- 新建和编辑共用分类字段表单，嵌套规则展开成具体字段，不提供完整 JSON 编辑入口。缺失字段仍显示空值或默认值；仅修改过的字段在点击保存时写入定义，按需补齐规则对象。切换分类不提交或丢弃草稿，长脚本在独立编辑区域修改。
+- Rust 的权威 sources.json 仍保存全部原始定义；单条读取减少前端的数据传输和解析，Rust 端仍需读取这个完整文件。
 
 ### openedBook
 
@@ -163,7 +173,7 @@ history.json 中，reading 保存阅读会话、按书和按日期的统计及�
 
 ## Vue 代码的可读性和精简要求
 - 可以合并重复代码、采用直接写法并删除没有实际作用的判断和中转层。不要为了“健壮”额外增加不必要的状态、等待 Promise、队列、兼容分支或多套事件入口。
-- 全局 settings/history/shelf/book 和三类规则状态按本文约定集中管理。不要让各页面重复读取，也不要为同一 JSON 维护彼此分离的 Vue 更新路径。
+- 全局 settings/history/shelf/book、三类规则状态和轻量书源列表按本文约定集中管理。不要让各页面重复读取，也不要为同一 JSON 维护彼此分离的 Vue 更新路径。
 - requestId 只用于区分 Rust 返回的保存结果是否仍对应最新一次修改；不再叠加 revision、waiter、latestSave 等等待系统。
 - 编辑书籍信息的草稿只复制表单涉及的字段，不复制整本 openedBook；保存时也只回写这些字段。
 - backgroundBusy 是外观设置页面的局部状态：选择或清除阅读背景图片期间禁用相关操作，避免同一异步操作重复启动。它不是 settings 全局保存状态。类似状态只有在确实保护异步操作时才保留。

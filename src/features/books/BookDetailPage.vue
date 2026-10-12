@@ -2,11 +2,11 @@
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
+import { sources, bookSourceCandidates } from "../sources/sourcesStore";
 import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
 import { readResource } from "../../api/resources";
 import { checkNewChapters, refreshChapters, startBookDownload, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor,  SourceDefinitionsResource, SourceMetadata, TasksResource } from "../../api/types";
+import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor, TasksResource } from "../../api/types";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -25,8 +25,6 @@ import { getFrontendRestoreRevision, lockShelfBatchRecovery, shelfBatchRecoveryM
 
 type BookTaskKind = "refreshChapters" | "checkNewChapters";
 type BookTaskAction = "download" | "refresh" | "check";
-const sources = shallowRef<SourceMetadata[]>([]);
-const bookSourceCandidates = computed(() => sources.value.filter((source) => source.enabled && source.isRss !== true));
 const tasks = shallowRef<AppTask[]>([]);
 const sourceName = (id: string): string => sources.value.find((source) => source.id === id)?.name ?? id;
 const readerSession = getReaderSession();
@@ -46,23 +44,12 @@ const pendingRemoval = ref<{ id: string; title: string } | null>(null);
 const bookChapterCacheClearBusy = ref(false);
 const bookChapterCacheClearError = ref("");
 const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(null);
-let sourceDefinitionsResource: ResourceDescriptor | null = null;
-let sourcesReadRevision = 0;
 let tasksReadRevision = 0;
 let pageResourceRevision = 0;
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
-async function refreshSources(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getRestoreRevision();
-  const requestRevision = ++sourcesReadRevision;
-  if (descriptor) sourceDefinitionsResource = descriptor;
-  if (!sourceDefinitionsResource) sourceDefinitionsResource = (await appBootstrap()).sources;
-  const document = await readResource<SourceDefinitionsResource>(sourceDefinitionsResource);
-  if (restoreRevision !== getRestoreRevision() || requestRevision !== sourcesReadRevision) return;
-  sources.value = (document.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
-}
 async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const restoreRevision = getRestoreRevision();
   const requestRevision = ++tasksReadRevision;
@@ -73,26 +60,10 @@ async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   for (const task of tasks.value) if (task.status === "recoveryRequired") byId.set(task.id, task);
   tasks.value = [...byId.values()];
 }
-async function loadPageResources(bootstrap?: AppBootstrap, expectedRevision = getRestoreRevision()): Promise<boolean> {
+async function loadPageResources(expectedRevision = getRestoreRevision()): Promise<boolean> {
   const requestRevision = ++pageResourceRevision;
-  const expectedSourcesRevision = ++sourcesReadRevision;
-  const expectedTasksRevision = ++tasksReadRevision;
-  const state = bootstrap ?? await appBootstrap();
-  if (expectedRevision !== getRestoreRevision() || requestRevision !== pageResourceRevision
-    || expectedSourcesRevision !== sourcesReadRevision
-    || expectedTasksRevision !== tasksReadRevision) return false;
-  sourceDefinitionsResource = state.sources;
-  const tasksResourceResponse = await tasksResource();
-  const [sourceDocument, taskDocument] = await Promise.all([
-    readResource<SourceDefinitionsResource>(state.sources),
-    readResource<TasksResource>(tasksResourceResponse.resource),
-  ]);
-  if (expectedRevision !== getRestoreRevision() || requestRevision !== pageResourceRevision
-    || expectedSourcesRevision !== sourcesReadRevision
-    || expectedTasksRevision !== tasksReadRevision) return false;
-  sources.value = (sourceDocument.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
-  tasks.value = taskDocument.tasks ?? [];
-  return true;
+  await refreshTasks();
+  return expectedRevision === getRestoreRevision() && requestRevision === pageResourceRevision;
 }
 const canRefreshOpenedBookInfo = computed(() => {
   const book = openedBook.value;
@@ -148,13 +119,6 @@ function retainUnlistener(unlisten: UnlistenFn): void {
 }
 async function setupPageEvents(): Promise<void> {
   try {
-    retainUnlistener(await listen<ResourceDescriptor>("sources-updated", async (event) => {
-      try {
-        await refreshSources(event.payload);
-      } catch (error) {
-        notify(`书源刷新失败：${errorText(error)}`, "error");
-      }
-    }));
     retainUnlistener(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
       if (event.payload.kind !== "tasks") return;
       try {
@@ -204,7 +168,7 @@ async function setupPageEvents(): Promise<void> {
         }
       }
     }));
-    retainUnlistener(await listen<AppBootstrap>("app-state-updated", async (event) => {
+    retainUnlistener(await listen<AppBootstrap>("app-state-updated", async () => {
       const revision = getRestoreRevision();
       const detailsWereOpen = Boolean(searchResultDetails.value);
       pageResourceLoading.value = true;
@@ -217,10 +181,9 @@ async function setupPageEvents(): Promise<void> {
       bookDisplayEditorBookId.value = null;
       pendingBookProgressReset.value = null;
       pendingRemoval.value = null;
-      sourcesReadRevision += 1;
       tasksReadRevision += 1;
       try {
-        const loaded = await loadPageResources(event.payload, revision);
+        const loaded = await loadPageResources(revision);
         if (!loaded || revision !== getRestoreRevision()) return;
         if (detailsWereOpen) await detailSession.retry();
         else await startOpenRequestOnce();
@@ -250,7 +213,7 @@ async function retryBookDetails(): Promise<void> {
   bookPanelBusy.value = true;
   pageResourceError.value = "";
   try {
-    if (await loadPageResources(undefined, revision)) await startOpenRequestOnce();
+    if (await loadPageResources(revision)) await startOpenRequestOnce();
   } catch (error) {
     if (revision === getRestoreRevision()) pageResourceError.value = errorText(error);
   } finally {
@@ -286,7 +249,6 @@ onBeforeUnmount(() => {
   disposed = true;
   bookCacheActionGeneration += 1;
   pageResourceRevision += 1;
-  sourcesReadRevision += 1;
   tasksReadRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
   detailSession.clear({ preserveOpenedBook: readerVisible.value });

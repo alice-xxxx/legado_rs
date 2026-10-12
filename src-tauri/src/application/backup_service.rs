@@ -484,6 +484,11 @@ impl ApplicationService {
             }
             return Err(error);
         }
+        // Restoring sources invalidates every revision captured in this process.
+        // Keep counters monotonic so a delayed result cannot match restored data.
+        for revision in self.source_revisions.lock().await.values_mut() {
+            *revision = revision.saturating_add(1);
+        }
         if let Err(error) = self.pending_pdf_imports.clear() {
             admission.release_on_drop = false;
             return Err(

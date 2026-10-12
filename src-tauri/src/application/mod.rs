@@ -67,7 +67,7 @@ mod source_change;
 mod source_executor;
 mod source_helpers;
 mod source_management;
-pub(crate) use source_management::validate_source_records;
+pub(crate) use source_management::{source_list_document, validate_source_records};
 mod source_search;
 mod state;
 
@@ -134,6 +134,7 @@ pub struct ApplicationService {
     book_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     chapter_locks: Arc<tokio::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     sources_lock: Arc<tokio::sync::Mutex<()>>,
+    source_revisions: Arc<tokio::sync::Mutex<HashMap<String, u64>>>,
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
     book_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,

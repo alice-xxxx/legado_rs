@@ -123,11 +123,8 @@ impl ResourceStore {
         ResourceRef::from_validated_path("http-tts.json")
     }
 
-    pub fn source_definitions_ref(
-        &self,
-        content_hash: &str,
-    ) -> Result<ResourceRef, ResourceError> {
-        self.search_ref(&format!("source-definitions-{content_hash}"))
+    pub fn source_list_ref(&self) -> Result<ResourceRef, ResourceError> {
+        self.document_ref("source-list")
     }
 
     pub fn history_ref(&self) -> ResourceRef {
@@ -276,22 +273,6 @@ impl ResourceStore {
     /// stable business identity and must not accumulate across app restarts.
     pub(crate) async fn remove_search_snapshots(&self) -> Result<usize, ResourceError> {
         self.remove_session_json_snapshots("search", "search-snapshot-")
-            .await
-    }
-
-    /// TXT rule versions are immutable browser resources for one WebView
-    /// session; the persisted current document remains at its stable ref.
-    pub(crate) async fn remove_txt_toc_rule_snapshots(&self) -> Result<usize, ResourceError> {
-        self.remove_session_json_snapshots("search", "txt-toc-rules-snapshot-")
-            .await
-    }
-
-    /// Source-definition resources are immutable snapshots scoped to one
-    /// WebView session; Rust's private source records remain authoritative.
-    pub(crate) async fn remove_source_definition_snapshots(
-        &self,
-    ) -> Result<usize, ResourceError> {
-        self.remove_session_json_snapshots("search", "source-definitions-")
             .await
     }
 

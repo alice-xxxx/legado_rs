@@ -1,6 +1,5 @@
 // Keep the label mapping aligned with KMP's BookSourceType constants.
-// Imported values are never coerced or normalized: legacy/custom values remain editable
-// through the full JSON editor even when the form has no matching known type.
+// Imported custom values remain selectable alongside known types.
 export const knownBookSourceTypes = [
   { value: "0", label: "小说 / 文本" },
   { value: "1", label: "音频" },

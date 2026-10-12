@@ -135,7 +135,6 @@ pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, S
         "txt-toc-rules.json",
         "tasks.json",
         "rss-state.json",
-        "source-revisions.json",
     ] {
         let path = root.join(required);
         match fs::symlink_metadata(&path) {
@@ -228,12 +227,9 @@ fn collect_tree(
             .file_name()
             .into_string()
             .map_err(|_| "App data contains a non-UTF-8 filename".to_owned())?;
-        if (archive_prefix == "search"
+        if archive_prefix == "search"
             && name.starts_with("search-snapshot-")
-            && name.ends_with(".json"))
-            || (archive_prefix == "reading"
-                && name.starts_with("txt-toc-rules-snapshot-")
-                && name.ends_with(".json"))
+            && name.ends_with(".json")
         {
             continue;
         }
@@ -350,25 +346,6 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                 let records: Vec<crate::application::SourceRecord> = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid source JSON: {error}"))?;
                 crate::application::validate_source_records(&records)?;
-            }
-            "source-revisions.json" => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase", deny_unknown_fields)]
-                struct SourceRevisions {
-                    schema_version: u32,
-                    revisions: HashMap<String, u64>,
-                }
-                let revisions: SourceRevisions = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid private source revisions JSON: {error}"))?;
-                if revisions.schema_version != 1
-                    || revisions.revisions.len() > 100_000
-                    || revisions
-                        .revisions
-                        .keys()
-                        .any(|id| !valid_source_record_id(id))
-                {
-                    return Err("Private source revisions have invalid fields".to_owned());
-                }
             }
             path if path.starts_with("books/") && path.ends_with("/book.json") => {
                 let book: BookDocument = serde_json::from_slice(&bytes)
@@ -588,7 +565,6 @@ pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
             | "txt-toc-rules.json"
             | "tasks.json"
             | "rss-state.json"
-            | "source-revisions.json"
     ) {
         return true;
     }

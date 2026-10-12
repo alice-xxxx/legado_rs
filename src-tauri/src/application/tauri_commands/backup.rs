@@ -80,7 +80,6 @@ pub async fn restore_webdav_backup(
             "settings-updated",
             json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
         );
-        let _ = app.emit("sources-updated", bootstrap["sources"].clone());
     }
     Ok(result)
 }
@@ -118,7 +117,6 @@ pub async fn restore_backup_from_picker(
         "settings-updated",
         json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
     );
-    let _ = app.emit("sources-updated", bootstrap["sources"].clone());
     Ok(json!({
         "restored": true,
         "commitState": "committed",

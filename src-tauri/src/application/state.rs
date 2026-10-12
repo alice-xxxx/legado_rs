@@ -32,14 +32,6 @@ impl ApplicationService {
             .remove_search_snapshots()
             .await
             .map_err(|error| error.to_string())?;
-        store
-            .remove_txt_toc_rule_snapshots()
-            .await
-            .map_err(|error| error.to_string())?;
-        store
-            .remove_source_definition_snapshots()
-            .await
-            .map_err(|error| error.to_string())?;
         let http_tts_ref = store.http_tts_configs_ref();
         let empty_http_tts = crate::http_tts_config::empty_document();
         let http_tts_configs = store
@@ -204,6 +196,7 @@ impl ApplicationService {
             book_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             chapter_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sources_lock: Arc::new(tokio::sync::Mutex::new(())),
+            source_revisions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
             book_notifier: Arc::new(std::sync::RwLock::new(None)),

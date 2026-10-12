@@ -6,18 +6,15 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, react
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { listDiscoveryBooks } from "../../api/discovery";
 import { readResource } from "../../api/resources";
-import { appBootstrap } from "../../api/core";
+import { sources } from "../sources/sourcesStore";
 import { settings as sharedSettings } from "../settings/settingsStore";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import type {
   AppBootstrap,
-  ResourceDescriptor,
   SearchBookResult,
   SearchResource,
-
-  SourceDefinitionsResource,
-  SourceMetadata } from "../../api/types";
+ } from "../../api/types";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import router, { routeNames, settingsRouteNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -34,10 +31,7 @@ function manageHome(): void {
 // 栏目内容按 ID 缓存；书源元数据只用于判断内容类型。
 const homeConfig = computed(() => sharedSettings.value.home);
 const sectionResources = ref<Record<string, SearchResource>>({});
-const sources = ref<SourceMetadata[]>([]);
-const sourcesLoading = ref(true);
 const loadError = ref("");
-let sourceRequestRevision = 0;
 let unlisteners: UnlistenFn[] = [];
 // 记录每个栏目当前正在执行的请求，避免重复加载。
 const sectionRequests = reactive(new Map<string, { sourceId: string; categoryId: string; token: symbol }>());
@@ -102,8 +96,7 @@ function contentType(result: SearchBookResult): "novel" | "comic" | "video" | "a
 const visibleResults = computed(() => gridResults.value.filter(
   (item) => activeType.value === "all" || contentType(item) === activeType.value,
 ));
-const gridLoading = computed(() => sourcesLoading.value
-  || orderedSections.value.some((section) => sectionRequests.has(section.id)));
+const gridLoading = computed(() => orderedSections.value.some((section) => sectionRequests.has(section.id)));
 const pullRefreshThreshold = 72;
 const pullDistance = ref(0);
 const pullRefreshing = ref(false);
@@ -171,15 +164,13 @@ watch(() => orderedSections.value.map(section =>
 
 // 应用恢复备份或页面销毁时，让未完成的旧请求失效并清空页面缓存。
 function resetForRestore(): void {
-  sourceRequestRevision += 1;
   sectionRequests.clear();
   sectionResources.value = {};
 }
 
 // 后端通知应用状态已恢复后，重新读取书源、栏目配置和书架。
-async function handleAppStateUpdated(bootstrap: AppBootstrap): Promise<void> {
+function handleAppStateUpdated(): void {
   resetForRestore();
-  await refreshSources(bootstrap.sources);
 }
 function selectTab(id: string): void {
   activeTabId.value = id;
@@ -336,33 +327,12 @@ watch(orderedTabs, (tabs) => {
 }, { immediate: true });
 
 // 读取书源的轻量元数据，并移除不需要放在页面状态里的完整规则 JSON。
-async function refreshSources(descriptor: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++sourceRequestRevision;
-  sourcesLoading.value = true;
-  try {
-    const document = await readResource<SourceDefinitionsResource>(descriptor);
-    if (requestRevision !== sourceRequestRevision) return;
-    sources.value = (document.sources ?? []).map(({ definitionJson: _definition, ...source }) => source);
-  } finally {
-    if (requestRevision === sourceRequestRevision) sourcesLoading.value = false;
-  }
-}
-
 // 订阅数据更新和恢复事件，再读取启动数据。
 onMounted(async () => {
   try {
-    unlisteners.push(await listen<ResourceDescriptor>("sources-updated", (event) => {
-      void refreshSources(event.payload).catch((error) => { loadError.value = errorText(error); });
+    unlisteners.push(await listen<AppBootstrap>("app-state-updated", () => {
+      handleAppStateUpdated();
     }));
-    unlisteners.push(await listen<AppBootstrap>("app-state-updated", (event) => {
-      void handleAppStateUpdated(event.payload).catch((error) => { loadError.value = errorText(error); });
-    }));
-  } catch (error) {
-    loadError.value = errorText(error);
-  }
-  try {
-    const bootstrap = await appBootstrap();
-    await refreshSources(bootstrap.sources);
   } catch (error) {
     loadError.value = errorText(error);
   }

@@ -27,7 +27,6 @@ const emit = defineEmits<{
   "create-open": [];
   "import-local": [];
   "import-url-open": [];
-  refresh: [];
   login: [];
   debug: [];
   "set-group": [group: string | null];
@@ -192,8 +191,6 @@ useOutsidePointerDismiss(
           </template>
           <template #actions-menu>
             <div v-if="actionsMenuOpen" class="source-toolbar-actions-menu">
-              <button type="button" :disabled="writeLocked || editorOpen"
-                @click="actionsMenuOpen = false; emit('refresh')">刷新</button>
               <button type="button" :disabled="toolbarBusy || editorOpen"
                 @click="batchMode = !batchMode; emit('selection-change', []); actionsMenuOpen = false">
                 {{ batchMode ? '退出批量管理' : '批量管理' }}
@@ -404,7 +401,7 @@ useOutsidePointerDismiss(
   .source-manager-page--editing > :deep(.subpage-header),
   .source-manager-page--editing .source-recovery-notice,
   .source-manager-page--editing .source-master{display:none}
-  .source-manager-page--editing .source-workbench{display:block;height:auto;min-height:calc(100dvh - var(--safe-top));overflow:visible;border:0}
+  .source-manager-page--editing .source-workbench{display:flex;flex:1 1 auto;height:auto;min-height:0;overflow:hidden;border:0}
   .source-manager-page--editing :deep(.source-edit-screen){width:100%;min-width:0}
   .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px - var(--safe-top));grid-template-columns:1fr}
   .source-manager-page:not(.source-manager-page--editing) .source-master{border:0}

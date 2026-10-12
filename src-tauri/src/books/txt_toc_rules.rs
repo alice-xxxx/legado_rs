@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::resources::{ResourceRef, ResourceStore};
 
@@ -73,26 +72,6 @@ pub fn resource_ref(store: &ResourceStore) -> Result<ResourceRef, String> {
     store
         .document_ref(RESOURCE_NAME)
         .map_err(|error| error.to_string())
-}
-
-/// Publish a content-addressed rule snapshot so a browser descriptor can never
-/// resolve to a later edit of the mutable settings document.
-pub async fn publish_snapshot(
-    store: &ResourceStore,
-    document: &TxtTocRulesDocument,
-) -> Result<ResourceRef, String> {
-    let bytes = serde_json::to_vec(document)
-        .map_err(|error| format!("Cannot encode TXT TOC rules snapshot: {error}"))?;
-    let digest = Sha256::digest(bytes);
-    let name = format!("txt-toc-rules-snapshot-{digest:x}");
-    let reference = store
-        .search_ref(&name)
-        .map_err(|error| error.to_string())?;
-    store
-        .write_serializable(&reference, document)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
 }
 
 /// Load the user's rules. An absent file is initialized atomically as an empty

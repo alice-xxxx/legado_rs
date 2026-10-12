@@ -23,7 +23,7 @@ JS/WebView 读取最终资源并展示
 | Rust | 承接全部业务状态的写入与中间业务：来源选择、请求和任务调度、引擎调用、存储、缓存、资源准备及变更通知。每份持久化或业务状态只有一个权威写入者。 |
 | KMP 引擎 | 执行书源定义、规则和脚本；宿主能力经 Rust 协调。当前尚未接通的规则能力必须如实记录。 |
 
-书源定义的权威文件保存在应用数据根目录 `sources.json`，导入、编辑、启停、搜索和备份恢复统一使用这个位置；来源修订号保存在根目录 `source-revisions.json`，书籍解析缓存和媒体请求映射放在所属 `books/{缓存书ID}/`，书源分类 URL 映射放在 `source-engine/discovery-categories/`；不再创建 `private-data`。书源管理界面可以收集用户输入，并通过 AppBootstrap 的 `sources` 资源读取包含原始定义字符串的不可变快照；可变的权威文件不直接通过 HTTP 发布。导入、校验和保存由 Rust 处理，原始 Legado 字段不会被应用资源 URL 校验或物化改写。Vue 不执行书源规则，KMP 仍是书源规则唯一执行端。其他展示页面只消费 Rust 发布的处理结果和资源。
+书源定义的权威文件保存在应用数据根目录 `sources.json`，导入、编辑、启停、搜索和备份恢复统一使用这个位置；来源修改计数只保存在 Rust 当前进程的内存中，用于拒绝旧异步结果，恢复备份后推进已记录的所有计数；书籍解析缓存和媒体请求映射放在所属 `books/{缓存书ID}/`，书源分类 URL 映射放在 `source-engine/discovery-categories/`；不再创建 `private-data`。sourcesStore.ts 在启动时读取 AppBootstrap 的轻量书源列表，所有页面共享列表状态；编辑、保存和导出通过同一 TS 入口按 ID 读取单条完整定义，不常驻全部规则。Rust 只在列表字段变化或增删时发送 sources-updated；source-list.json 和 sources/{书源ID}.json 均为 HTTP 按需生成的资源，不额外落盘，权威文件不直接通过 HTTP 发布。完整定义以字符串传输，导入、校验和保存由 Rust 处理，原始 Legado 字段不会被应用资源 URL 校验或物化改写。Vue 不执行书源规则，KMP 仍是书源规则唯一执行端。其他展示页面只消费 Rust 发布的处理结果和资源。
 
 各类状态的唯一权威归属如下：
 

@@ -7,12 +7,10 @@ import type {
   AppTask,
   BookResource,
   ResourceDescriptor,
-  SourceDefinitionsResource,
-  SourceMetadata,
   TasksResource } from "../../api/types";
 import { replacementRules } from "../settings/configurationStores";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { appBootstrap } from "../../api/core";
+import { sources, bookSourceCandidates as sourceCandidates } from "../sources/sourcesStore";
 import { refreshChapterContent } from "../../api/books";
 import { readResource } from "../../api/resources";
 import { startChapterDownload, tasksResource as loadTasksResource } from "../../api/tasks";
@@ -42,28 +40,14 @@ watch(() => settings.value.reader.backgroundImageSrc, (next, previous) => {
 });
 
 
-const sources = shallowRef<SourceMetadata[]>([]);
 const tasks = shallowRef<AppTask[]>([]);
-const sourceCandidates = computed(() => sources.value.filter((source) => source.enabled && source.isRss !== true));
 
-let sourceDescriptor: ResourceDescriptor | null = null;
 let tasksDescriptor: ResourceDescriptor | null = null;
 let disposed = false;
-let sourceReadRevision = 0;
 let tasksReadRevision = 0;
 let readerDataRefreshPending = false;
 const unlisteners: UnlistenFn[] = [];
 const readerImportPasswords = getLocalBookImportSession().pdfImportPasswords;
-
-async function refreshSources(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const requestRevision = ++sourceReadRevision;
-  if (descriptor) sourceDescriptor = descriptor;
-  if (!sourceDescriptor) sourceDescriptor = (await appBootstrap()).sources;
-  const document = await readResource<SourceDefinitionsResource>(sourceDescriptor);
-  if (restoreRevision !== getFrontendRestoreRevision() || requestRevision !== sourceReadRevision) return;
-  sources.value = (document.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
-}
 
 async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const restoreRevision = getFrontendRestoreRevision();
@@ -177,23 +161,14 @@ const disposeBackupSession = installReaderBackupSession({
 });
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
 
-async function bootstrap(snapshot?: AppBootstrap): Promise<void> {
+async function bootstrap(): Promise<void> {
   const restoreRevision = getFrontendRestoreRevision();
 
-  const sourceRequestRevision = ++sourceReadRevision;
   const tasksRequestRevision = ++tasksReadRevision;
-  const current = snapshot ?? await appBootstrap();
-  const [taskDescriptor, sourceDocument] = await Promise.all([
-    loadTasksResource(),
-    readResource<SourceDefinitionsResource>(current.sources),
-  ]);
+  const taskDescriptor = await loadTasksResource();
   if (restoreRevision !== getFrontendRestoreRevision()) return;
   const nextTasks = await readResource<TasksResource>(taskDescriptor.resource);
   if (restoreRevision !== getFrontendRestoreRevision()) return;
-  if (sourceRequestRevision === sourceReadRevision) {
-    sourceDescriptor = current.sources;
-    sources.value = (sourceDocument.sources ?? []).map(({ definitionJson: _definitionJson, ...source }) => source);
-  }
   if (tasksRequestRevision === tasksReadRevision) {
     tasksDescriptor = taskDescriptor.resource;
     tasks.value = nextTasks.tasks ?? [];
@@ -240,9 +215,6 @@ async function setupReaderEvents(): Promise<void> {
         if (revision === getFrontendRestoreRevision()) notify(`阅读器数据更新失败：${errorText(error)}`, "error");
       }
     }));
-    retain(await listen<ResourceDescriptor>("sources-updated", (event) => refreshSources(event.payload).catch((error) => {
-      notify(`书源刷新失败：${errorText(error)}`, "error");
-    })));
     retain(await listen<{ taskId: string; resource: ResourceDescriptor }>("task-updated", async (event) => {
       const revision = getFrontendRestoreRevision();
       try {
@@ -258,17 +230,14 @@ async function setupReaderEvents(): Promise<void> {
     retain(await listen<Partial<AppTask>>("task-recovery-required", async (event) => {
       await bookSourceSwitchActions.syncBookSourceCandidateTask(event.payload);
     }));
-    retain(await listen<AppBootstrap>("app-state-updated", async (event) => {
+    retain(await listen<AppBootstrap>("app-state-updated", async () => {
       const revision = getFrontendRestoreRevision();
       tasks.value = [];
-      sources.value = [];
-      sourceDescriptor = null;
       tasksDescriptor = null;
       bookSourceSwitchActions.resetForRestore();
       try {
-        await bootstrap(event.payload);
+        await bootstrap();
         if (revision !== getFrontendRestoreRevision()) return;
-        void refreshSources(event.payload.sources);
       } catch (error) {
         if (revision !== getFrontendRestoreRevision()) return;
         const detail = errorText(error);

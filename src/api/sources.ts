@@ -5,8 +5,8 @@ import type {
   SourceMutationResponse,
 } from "./types";
 
-export const mutateSource = (mutation: SourceMutation) =>
-  command<SourceMutationResponse>("mutate_source", { mutation });
+export const mutateSource = (mutation: SourceMutation, requestId = 0) =>
+  command<SourceMutationResponse>("mutate_source", { mutation, requestId });
 
 export const getSourceLoginState = (sourceId: string) =>
   command<{ hasLoginState: boolean }>("get_source_login_state", { sourceId });

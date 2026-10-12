@@ -209,6 +209,7 @@ async fn clear_source_login_state(
 pub async fn mutate_source(
     app: tauri::AppHandle,
     mutation: SourceMutation,
+    request_id: Option<u64>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let updates_sources = matches!(
@@ -255,13 +256,19 @@ pub async fn mutate_source(
         }
     }?;
     if updates_sources && result.get("cancelled").and_then(Value::as_bool) != Some(true) {
-        let resource = service.source_definitions_resource().await?;
-        let descriptor = service.resource_descriptor(&resource);
+        let list_changed = result["listChanged"].as_bool().unwrap_or(false);
         if let Some(object) = result.as_object_mut() {
-            object.remove("sources");
-            object.insert("resource".to_owned(), descriptor.clone());
+            object.remove("listChanged");
+            object.insert("saved".to_owned(), json!(true));
         }
-        let _ = app.emit("sources-updated", descriptor);
+        if list_changed {
+            let resource = service.store.source_list_ref().map_err(|error| error.to_string())?;
+            let descriptor = service.resource_descriptor(&resource);
+            result["resource"] = descriptor.clone();
+            app.emit("sources-updated", json!({
+                "requestId": request_id.unwrap_or_default(), "resource": descriptor,
+            })).map_err(|error| error.to_string())?;
+        }
     }
     Ok(result)
 }

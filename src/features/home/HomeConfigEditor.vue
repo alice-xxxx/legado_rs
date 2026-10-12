@@ -2,21 +2,17 @@
 // 首页栏目直接编辑全局设置中的 home 配置。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
-import { readResource } from "../../api/resources";
+import { sources } from "../sources/sourcesStore";
 import router, { routeNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { useHomeConfig } from "./useHomeConfig";
-import type { AppBootstrap, DiscoveryCategory, HomeConfigDocument, HomeSection, HomeTab, ResourceDescriptor, SourceDefinitionsResource, SourceMetadata } from "../../api/types";
+import type { AppBootstrap, DiscoveryCategory, HomeConfigDocument, HomeSection, HomeTab } from "../../api/types";
 
 function returnToHome(): void {
   void router.push({ name: routeNames.home });
 }
 
-const sources = ref<SourceMetadata[]>([]);
-const sourcesLoading = ref(true);
-const sourcesError = ref("");
 const restoreRevision = ref(0);
 const activeTabId = ref("");
 const expandedSectionId = ref<string | null>(null);
@@ -26,10 +22,8 @@ const addingSection = ref(false);
 const newSectionSourceId = ref("");
 const newSectionCategoryId = ref("");
 const newSectionTitle = ref("");
-let unlistenSourcesUpdated: UnlistenFn | undefined;
 let unlistenAppStateUpdated: UnlistenFn | undefined;
 let isUnmounted = false;
-let sourcesRequestRevision = 0;
 
 const enabledNovelSources = computed(() => sources.value
   .filter((source) => source.enabled && source.isRss !== true)
@@ -48,7 +42,6 @@ const {
   resetForRestore,
 } = homeConfigFeature;
 const draft = homeConfig;
-const busy = computed(() => sourcesLoading.value);
 const categoryErrors = homeEditorCategoryErrors;
 const orderedTabs = computed(() => [...draft.value.tabs].sort((left, right) => left.sortOrder - right.sortOrder));
 const activeTab = computed(() => orderedTabs.value.find((tab) => tab.id === activeTabId.value) ?? orderedTabs.value[0]);
@@ -57,9 +50,7 @@ const categoriesForNewSection = computed(() => selectableCategories(newSectionSo
 onBeforeUnmount(() => {
   isUnmounted = true;
   restoreRevision.value += 1;
-  sourcesRequestRevision += 1;
   resetForRestore();
-  unlistenSourcesUpdated?.();
   unlistenAppStateUpdated?.();
 });
 
@@ -125,51 +116,14 @@ watch(() => newSectionSourceId.value, (sourceId) => {
   if (sourceId) void loadHomeEditorCategories(sourceId);
 });
 
-async function refreshSources(descriptor?: ResourceDescriptor, expectedRestoreRevision = restoreRevision.value): Promise<void> {
-  const requestRevision = ++sourcesRequestRevision;
-  sourcesLoading.value = true;
-  try {
-    const sourceDescriptor = descriptor ?? (await appBootstrap()).sources;
-    const document = await readResource<SourceDefinitionsResource>(sourceDescriptor);
-    if (isUnmounted || expectedRestoreRevision !== restoreRevision.value || requestRevision !== sourcesRequestRevision) return;
-    sources.value = Array.isArray(document.sources) ? document.sources : [];
-    sourcesError.value = "";
-    sourcesLoading.value = false;
-  } catch (error) {
-    if (isUnmounted || expectedRestoreRevision !== restoreRevision.value || requestRevision !== sourcesRequestRevision) return;
-    sourcesError.value = error instanceof Error ? error.message : String(error);
-    sourcesLoading.value = false;
-  }
-}
-
-function handleAppStateUpdated(snapshot: AppBootstrap): void {
+function handleAppStateUpdated(): void {
   restoreRevision.value += 1;
-  sourcesRequestRevision += 1;
-  sources.value = [];
-  sourcesLoading.value = true;
-  sourcesError.value = "";
   resetForRestore();
-  void refreshSources(snapshot.sources, restoreRevision.value);
 }
 
 onMounted(async () => {
-  const register = async <T,>(event: string, handler: (payload: T) => void | Promise<void>): Promise<UnlistenFn> => {
-    const unlisten = await listen<T>(event, (entry) => { void handler(entry.payload); });
-    if (isUnmounted) unlisten();
-    return unlisten;
-  };
-  try {
-    unlistenSourcesUpdated = await register<ResourceDescriptor>("sources-updated", (descriptor) => refreshSources(descriptor));
-  } catch (error) {
-    sourcesError.value = error instanceof Error ? error.message : String(error);
-  }
-  try {
-    unlistenAppStateUpdated = await register<AppBootstrap>("app-state-updated", (snapshot) => handleAppStateUpdated(snapshot));
-  } catch (error) {
-    sourcesError.value = error instanceof Error ? error.message : String(error);
-  }
-  if (isUnmounted) return;
-  await refreshSources();
+  unlistenAppStateUpdated = await listen<AppBootstrap>("app-state-updated", () => handleAppStateUpdated());
+  if (isUnmounted) unlistenAppStateUpdated();
 });
 
 function normalizeDraft(value: HomeConfigDocument): HomeConfigDocument {
@@ -199,14 +153,14 @@ function nextUniqueTabTitle(): string {
 }
 
 function addTab(): void {
-  if (busy.value || draft.value.tabs.length >= 32) return;
+  if (draft.value.tabs.length >= 32) return;
   const tab: HomeTab = { id: nextId("tab"), title: nextUniqueTabTitle(), sortOrder: draft.value.tabs.length, sections: [] };
   draft.value.tabs.push(tab);
   activeTabId.value = tab.id;
 }
 
 function deleteActiveTab(): void {
-  if (busy.value || !activeTab.value || draft.value.tabs.length <= 1) return;
+  if (!activeTab.value || draft.value.tabs.length <= 1) return;
   const index = orderedTabs.value.findIndex((tab) => tab.id === activeTab.value?.id);
   draft.value.tabs = orderedTabs.value.filter((tab) => tab.id !== activeTab.value?.id);
   draft.value.tabs.forEach((tab, order) => { tab.sortOrder = order; });
@@ -214,7 +168,6 @@ function deleteActiveTab(): void {
 }
 
 function moveTab(tabId: string, direction: -1 | 1): void {
-  if (busy.value) return;
   const tabs = orderedTabs.value;
   const index = tabs.findIndex((tab) => tab.id === tabId);
   const target = index + direction;
@@ -260,7 +213,6 @@ function categoryChoices(section: HomeSection): DiscoveryCategory[] {
 }
 
 function changeSectionSource(section: HomeSection, sourceId: string): void {
-  if (busy.value) return;
   section.sourceId = sourceId;
   section.categoryId = "";
   void loadHomeEditorCategories(sourceId);
@@ -278,7 +230,7 @@ function updateSectionStyle(section: HomeSection, event: Event): void {
 function addSection(): void {
   const tab = activeTab.value;
   const category = selectedCategory(newSectionSourceId.value, newSectionCategoryId.value);
-  if (busy.value || !tab || !category?.categoryId || tab.sections.length >= 64) return;
+  if (!tab || !category?.categoryId || tab.sections.length >= 64) return;
   const name = newSectionTitle.value.trim() || category.title;
   tab.sections.push({
     id: nextId("section"),
@@ -295,13 +247,13 @@ function addSection(): void {
 }
 
 function removeSection(sectionId: string): void {
-  if (busy.value || !activeTab.value) return;
+  if (!activeTab.value) return;
   activeTab.value.sections = activeTab.value.sections.filter((section) => section.id !== sectionId);
   activeTab.value.sections.forEach((section, sortOrder) => { section.sortOrder = sortOrder; });
 }
 
 function moveSection(sectionId: string, direction: -1 | 1): void {
-  if (busy.value || !activeTab.value) return;
+  if (!activeTab.value) return;
   const sections = orderedSections.value;
   const index = sections.findIndex((section) => section.id === sectionId);
   const target = index + direction;
@@ -314,14 +266,14 @@ function moveSection(sectionId: string, direction: -1 | 1): void {
  *  Mobile / keyboard ordering keeps using the accessible move buttons.
  */
 function beginSectionDrag(event: DragEvent, sectionId: string): void {
-  if (busy.value || !event.dataTransfer) { event.preventDefault(); return; }
+  if (!event.dataTransfer) { event.preventDefault(); return; }
   draggingSectionId.value = sectionId;
   dropSectionId.value = null;
   event.dataTransfer.effectAllowed = "move";
   event.dataTransfer.setData("text/plain", sectionId);
 }
 function trackSectionDrop(event: DragEvent, targetId: string): void {
-  if (!draggingSectionId.value || busy.value) return;
+  if (!draggingSectionId.value) return;
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
   dropSectionId.value = targetId === draggingSectionId.value ? null : targetId;
@@ -334,7 +286,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   if (!draggingSectionId.value) return;
   event.preventDefault();
   const movedId = draggingSectionId.value;
-  if (!movedId || busy.value || !activeTab.value || movedId === targetId) { finishSectionDrag(); return; }
+  if (!movedId || !activeTab.value || movedId === targetId) { finishSectionDrag(); return; }
   const sections = orderedSections.value;
   const origin = sections.findIndex((section) => section.id === movedId);
   const target = sections.findIndex((section) => section.id === targetId);
@@ -358,10 +310,6 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
       <span class="home-config-editor__save-hint">修改会自动保存</span>
     </header>
     <div class="home-config-editor__body">
-      <div v-if="sourcesError" class="home-config-editor__validation" role="alert">
-        读取书源失败：{{ sourcesError }}
-        <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="sourcesLoading" @click="refreshSources()">重新读取书源</button>
-      </div>
       <div class="home-config-editor__tabs-row">
         <div class="home-config-editor__tabs">
           <button
@@ -371,7 +319,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
             :class="{ active: activeTab?.id === tab.id }"
             @click="activeTabId = tab.id"
           >{{ tab.title }}</button>
-          <button type="button" class="home-config-editor__tab-add" :disabled="busy || draft.tabs.length >= 32"
+          <button type="button" class="home-config-editor__tab-add" :disabled="draft.tabs.length >= 32"
             @click="addTab"><PrototypeIcon name="plus"/><span>添加</span></button>
         </div>
       </div>
@@ -381,12 +329,12 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
         <section class="home-config-editor__tab-settings">
         <label class="home-config-editor__field home-config-editor__tab-name">
           <span>标签页名称</span>
-          <input v-model="activeTab.title" maxlength="128" :disabled="busy" />
+          <input v-model="activeTab.title" maxlength="128" />
         </label>
         <div class="home-config-editor__tab-actions">
-          <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="busy || orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === 0" @click="moveTab(activeTab.id, -1)">上移</button>
-          <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="busy || orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === orderedTabs.length - 1" @click="moveTab(activeTab.id, 1)">下移</button>
-          <button type="button" class="home-config-editor__button home-config-editor__button--danger" :disabled="busy || draft.tabs.length <= 1" @click="deleteActiveTab">删除标签页</button>
+          <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === 0" @click="moveTab(activeTab.id, -1)">上移</button>
+          <button type="button" class="home-config-editor__button home-config-editor__button--secondary" :disabled="orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === orderedTabs.length - 1" @click="moveTab(activeTab.id, 1)">下移</button>
+          <button type="button" class="home-config-editor__button home-config-editor__button--danger" :disabled="draft.tabs.length <= 1" @click="deleteActiveTab">删除标签页</button>
         </div>
         </section>
       </details>
@@ -402,16 +350,16 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           :class="{ 'is-drop-target': dropSectionId === section.id }"
           @dragover="trackSectionDrop($event, section.id)" @drop="applySectionDrop($event, section.id)">
           <div class="home-config-editor__section-title-row">
-            <span class="home-config-editor__order-grip" :draggable="!busy"
+            <span class="home-config-editor__order-grip" draggable="true"
               title="拖动排序；移动端可使用右侧上下按钮"
               @dragstart="beginSectionDrag($event, section.id)" @dragend="finishSectionDrag"><i></i><i></i><i></i></span>
             <label class="home-config-editor__field home-config-editor__section-title">
-              <input v-model="section.title" maxlength="128" :disabled="busy"
+              <input v-model="section.title" maxlength="128"
                 />
               <small :title="sourceName(section.sourceId) + ' · ' + categoryName(section)">{{ sourceName(section.sourceId) }} · {{ categoryName(section) }}</small>
             </label>
             <label class="home-config-editor__compact-style">
-              <select :value="section.style" :disabled="busy"
+              <select :value="section.style"
 @change="updateSectionStyle(section, $event)">
                 <option :value="0">横向封面</option><option :value="1">排行列表</option><option :value="2">无限网格</option><option :value="3">四列卡片</option>
               </select>
@@ -425,34 +373,34 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           <div v-if="expandedSectionId === section.id" class="home-config-editor__section-fields">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <select :value="section.sourceId" :disabled="busy" @change="changeSectionSource(section, ($event.target as HTMLSelectElement).value)">
+              <select :value="section.sourceId" @change="changeSectionSource(section, ($event.target as HTMLSelectElement).value)">
                 <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
               </select>
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <select :value="section.categoryId" :disabled="busy || !section.sourceId" @focus="loadHomeEditorCategories(section.sourceId)" @change="changeSectionCategory(section, ($event.target as HTMLSelectElement).value)">
+              <select :value="section.categoryId" :disabled="!section.sourceId" @focus="loadHomeEditorCategories(section.sourceId)" @change="changeSectionCategory(section, ($event.target as HTMLSelectElement).value)">
                 <option value="" disabled>{{ categoryPlaceholder(section.sourceId) }}</option>
                 <option v-for="category in categoryChoices(section)" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
               </select>
-              <small v-if="categoryErrors[section.sourceId]" class="home-config-editor__category-error">{{ categoryErrors[section.sourceId] }} <button type="button" :disabled="busy" @click="loadHomeEditorCategories(section.sourceId)">重新读取</button></small>
+              <small v-if="categoryErrors[section.sourceId]" class="home-config-editor__category-error">{{ categoryErrors[section.sourceId] }} <button type="button" @click="loadHomeEditorCategories(section.sourceId)">重新读取</button></small>
               <small v-else-if="!categoriesLoaded(section.sourceId)">聚焦分类框可读取此来源的其他分类。</small>
             </label>
             <label class="home-config-editor__checkbox-field">
-              <input v-model="section.coverVideo" type="checkbox" :disabled="busy" />
+              <input v-model="section.coverVideo" type="checkbox" />
               <span>展示封面动画</span>
             </label>
             <div class="home-config-editor__section-actions">
               <button type="button" class="home-config-editor__icon-button"
-                :disabled="busy || index === 0" @click="moveSection(section.id, -1)">
+                :disabled="index === 0" @click="moveSection(section.id, -1)">
                 <PrototypeIcon class="section-arrow-up" name="right"/>
               </button>
               <button type="button" class="home-config-editor__icon-button"
-                :disabled="busy || index === orderedSections.length - 1" @click="moveSection(section.id, 1)">
+                :disabled="index === orderedSections.length - 1" @click="moveSection(section.id, 1)">
                 <PrototypeIcon class="section-arrow-down" name="right"/>
               </button>
               <button type="button" class="home-config-editor__button home-config-editor__button--danger"
-                :disabled="busy" @click="removeSection(section.id)">
+                @click="removeSection(section.id)">
                 移除栏目
               </button>
             </div>
@@ -461,30 +409,30 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 
         <section class="home-config-editor__add-section">
           <button type="button" class="home-config-editor__add-toggle"
-            :disabled="busy || !enabledNovelSources.length"
+            :disabled="!enabledNovelSources.length"
             @click="addingSection = !addingSection">{{ addingSection ? '收起添加栏目' : '+ 添加栏目' }}</button>
           <div v-if="addingSection" class="home-config-editor__add-grid">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <select v-model="newSectionSourceId" :disabled="busy || !enabledNovelSources.length">
+              <select v-model="newSectionSourceId" :disabled="!enabledNovelSources.length">
                 <option value="" disabled>选择书籍来源</option>
                 <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
               </select>
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <select v-model="newSectionCategoryId" :disabled="busy || !newSectionSourceId">
+              <select v-model="newSectionCategoryId" :disabled="!newSectionSourceId">
                 <option value="" disabled>{{ categoryPlaceholder(newSectionSourceId) }}</option>
                 <option v-for="category in categoriesForNewSection" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
               </select>
             </label>
             <label class="home-config-editor__field">
               <span>栏目名称（可选）</span>
-              <input v-model="newSectionTitle" maxlength="128" :disabled="busy" placeholder="默认使用分类名称" />
+              <input v-model="newSectionTitle" maxlength="128" placeholder="默认使用分类名称" />
             </label>
-            <button type="button" class="home-config-editor__button home-config-editor__button--primary" :disabled="busy || !activeTab || activeTab.sections.length >= 64 || !selectedCategory(newSectionSourceId, newSectionCategoryId)" @click="addSection">添加栏目</button>
+            <button type="button" class="home-config-editor__button home-config-editor__button--primary" :disabled="!activeTab || activeTab.sections.length >= 64 || !selectedCategory(newSectionSourceId, newSectionCategoryId)" @click="addSection">添加栏目</button>
           </div>
-          <p v-if="categoryErrors[newSectionSourceId]" class="home-config-editor__category-error">{{ categoryErrors[newSectionSourceId] }} <button type="button" :disabled="busy || !newSectionSourceId" @click="loadHomeEditorCategories(newSectionSourceId)">重新读取分类</button></p>
+          <p v-if="categoryErrors[newSectionSourceId]" class="home-config-editor__category-error">{{ categoryErrors[newSectionSourceId] }} <button type="button" :disabled="!newSectionSourceId" @click="loadHomeEditorCategories(newSectionSourceId)">重新读取分类</button></p>
           <p v-if="!enabledNovelSources.length" class="home-config-editor__hint">没有已启用的书籍来源可供选择。</p>
         </section>
       </section>

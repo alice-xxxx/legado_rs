@@ -9,7 +9,7 @@ import { useSourceManagementActions } from "./useSourceManagementActions";
 import type { AppBootstrap, AppTask, ResourceDescriptor, SourceMetadata, SourceLoginForm, TasksResource } from "../../api/types";
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { appBootstrap } from "../../api/core";
+import { sources, enabledSources, bookSourceCandidates } from "./sourcesStore";
 import { readResource } from "../../api/resources";
 import { tasksResource } from "../../api/tasks";
 import { notify } from "../../app/notifications";
@@ -23,9 +23,7 @@ import router, { routeNames } from "../../router";
 
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
-const sources = ref<SourceMetadata[]>([]);
-const sourceDefinitionsResource = ref<ResourceDescriptor | null>(null);
-const selectedSourceIds = ref<string[]>([]);
+const selectedSourceIds = ref<string[]>(bookSourceCandidates.value.map(source => source.id));
 const selectedSourceRows = ref<string[]>([]);
 const pendingSourceRemoval = ref<string[]>([]);
 const editingSource = ref<SourceMetadata | null>(null);
@@ -34,30 +32,21 @@ const sourceExportBusy = ref(false);
 const sourceImportBusy = ref(false);
 const sourceImportOpen = ref(false);
 const sourceImportUrl = ref("");
-const sourceLoading = ref(true);
-const sourceLoaded = ref(false);
-const sourceLoadError = ref("");
 const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
 const taskList = ref<AppTask[]>([]);
 const taskListLoaded = ref(false);
 const searchBusy = computed(() => !taskListLoaded.value || taskList.value.some(task => task.kind === "search"
   && ["queued", "running", "pausing", "cancelling"].includes(task.status)));
 const searchResultBatchBusy = ref(false);
-let sourceSnapshotRevision = 0;
 let restoreFrontendRevision = 0;
-let sourceRefreshRequestRevision = 0;
 let taskRefreshRequestRevision = 0;
 let unlisteners: UnlistenFn[] = [];
 let pageDisposed = false;
 
-const enabledSources = computed(() => sources.value.filter(source => source.enabled));
-const bookSourceCandidates = computed(() => enabledSources.value.filter(source => source.isRss !== true));
-function applySourcesSnapshot(nextSources: SourceMetadata[]): void {
-  sourceSnapshotRevision += 1;
-  sources.value = nextSources;
+watch(sources, () => {
   selectedSourceIds.value = selectedSourceIds.value.filter(id => bookSourceCandidates.value.some(source => source.id === id));
   selectedSourceRows.value = selectedSourceRows.value.filter(id => sources.value.some(source => source.id === id));
-}
+});
 
 const sourceManagementActions = useSourceManagementActions({
   sources,
@@ -71,12 +60,8 @@ const sourceManagementActions = useSourceManagementActions({
   sourceImportUrl,
   pendingSourceRemoval,
   editingSource,
-  sourceDefinitionsResource,
   recoveryRequired,
-  advanceSourceSnapshotRevision: () => ++sourceSnapshotRevision,
-  getSourceSnapshotRevision: () => sourceSnapshotRevision,
   getRestoreFrontendRevision: () => restoreFrontendRevision,
-  applySourcesSnapshot,
   errorText,
   notify,
 });
@@ -139,27 +124,6 @@ function sourceName(id: string): string {
   return sources.value.find(source => source.id === id)?.name ?? id;
 }
 
-async function refreshSources(descriptor?: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++sourceRefreshRequestRevision;
-  const restoreRevision = restoreFrontendRevision;
-  sourceLoading.value = true;
-  sourceLoadError.value = "";
-  try {
-    await sourceManagementActions.refreshSources(descriptor);
-    if (requestRevision !== sourceRefreshRequestRevision || restoreRevision !== restoreFrontendRevision) return;
-    sourceLoaded.value = true;
-  } catch (error) {
-    if (requestRevision === sourceRefreshRequestRevision && restoreRevision === restoreFrontendRevision) {
-      sourceLoadError.value = errorText(error);
-    }
-    throw error;
-  } finally {
-    if (requestRevision === sourceRefreshRequestRevision && restoreRevision === restoreFrontendRevision) {
-      sourceLoading.value = false;
-    }
-  }
-}
-
 async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
   const requestRevision = ++taskRefreshRequestRevision;
   const restoreRevision = restoreFrontendRevision;
@@ -174,44 +138,8 @@ function reportTaskRefreshError(error: unknown): void {
   if (!pageDisposed) notify(`浠诲姟鐘舵€佸埛鏂板け璐ワ細${errorText(error)}`, "error");
 }
 
-async function loadSourcesFromBootstrap(): Promise<void> {
-  const restoreRevision = restoreFrontendRevision;
-  const requestRevision = ++sourceRefreshRequestRevision;
-  sourceLoading.value = true;
-  sourceLoadError.value = "";
-  try {
-    const bootstrap = await appBootstrap();
-    if (restoreRevision !== restoreFrontendRevision || requestRevision !== sourceRefreshRequestRevision) return;
-    await refreshSources(bootstrap.sources);
-    if (restoreRevision === restoreFrontendRevision) {
-      selectedSourceIds.value = bookSourceCandidates.value.map(source => source.id);
-    }
-  } catch (error) {
-    if (restoreRevision === restoreFrontendRevision && requestRevision === sourceRefreshRequestRevision) {
-      sourceLoadError.value = errorText(error);
-    }
-  } finally {
-    if (restoreRevision === restoreFrontendRevision && requestRevision === sourceRefreshRequestRevision) {
-      sourceLoading.value = false;
-    }
-  }
-}
-
-async function refreshSourceList(): Promise<void> {
-  try {
-    if (!sourceDefinitionsResource.value) {
-      await loadSourcesFromBootstrap();
-      return;
-    }
-    await refreshSources();
-  } catch (error) {
-    sourceLoadError.value = errorText(error);
-  }
-}
-
 const management = proxyRefs({
   ...sourceManagementActions,
-  refreshSourceList,
   sources,
   enabledSources,
   bookSourceCandidates,
@@ -240,32 +168,23 @@ const login = proxyRefs({
   sourceLoginFeedback,
 });
 
-async function handleAppStateUpdated(bootstrap: AppBootstrap): Promise<void> {
+async function handleAppStateUpdated(): Promise<void> {
   const restoreRevision = ++restoreFrontendRevision;
-  sourceRefreshRequestRevision += 1;
   taskRefreshRequestRevision += 1;
   taskListLoaded.value = false;
-  sourceSnapshotRevision += 1;
-  sourceDefinitionsResource.value = null;
-  sourceLoaded.value = false;
   selectedSourceIds.value = [];
   selectedSourceRows.value = [];
   pendingSourceRemoval.value = [];
   editingSource.value = null;
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
-  await Promise.all([refreshSources(bootstrap.sources), refreshTasks()]);
+  await refreshTasks();
   if (pageDisposed || restoreRevision !== restoreFrontendRevision) return;
   selectedSourceIds.value = bookSourceCandidates.value.map(source => source.id);
 }
 
 onMounted(async () => {
   try {
-    const unlistenSources = await listen<ResourceDescriptor>("sources-updated", event => {
-      void refreshSources(event.payload).catch(error => { sourceLoadError.value = errorText(error); });
-    });
-    if (pageDisposed) unlistenSources();
-    else unlisteners.push(unlistenSources);
     const unlistenTaskResource = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", event => {
       if (event.payload.kind === "tasks") {
         void refreshTasks(event.payload.resource).catch(reportTaskRefreshError);
@@ -278,17 +197,16 @@ onMounted(async () => {
     });
     if (pageDisposed) unlistenTask();
     else unlisteners.push(unlistenTask);
-    const unlistenAppState = await listen<AppBootstrap>("app-state-updated", event => {
-      void handleAppStateUpdated(event.payload).catch(error => { sourceLoadError.value = errorText(error); });
+    const unlistenAppState = await listen<AppBootstrap>("app-state-updated", () => {
+      void handleAppStateUpdated().catch(reportTaskRefreshError);
     });
     if (pageDisposed) unlistenAppState();
     else unlisteners.push(unlistenAppState);
   } catch (error) {
-    sourceLoadError.value = errorText(error);
+    reportTaskRefreshError(error);
   }
   if (pageDisposed) return;
   await Promise.all([
-    loadSourcesFromBootstrap(),
     refreshTasks().catch(error => {
       if (!pageDisposed) notify(`浠诲姟鐘舵€佽鍙栧け璐ワ細${errorText(error)}`, "error");
     }),
@@ -297,8 +215,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   pageDisposed = true;
-  sourceRefreshRequestRevision += 1;
-  sourceSnapshotRevision += 1;
   taskRefreshRequestRevision += 1;
   restoreFrontendRevision += 1;
   sourceDebugActions.closeSourceDebug();
@@ -358,30 +274,30 @@ watch(sourceImportOpen, (opened, wasOpen) => {
   if (opened) syncSourceImportRoute(true);
   else if (wasOpen) syncSourceImportRoute(false);
 }, { flush: "sync" });
-const newSourceTemplate = `{
-  "bookSourceName": "",
-  "bookSourceUrl": "",
-  "bookSourceEnabled": true,
-  "bookSourceType": 0
-}`;
+const newSourceTemplate = "{}";
 const newSourceJson = ref(newSourceTemplate);
-const newSourceEditorMode = ref<"form" | "json">("form");
+const newSourceForm = ref<InstanceType<typeof SourceFormEditor> | null>(null);
 const newSourceFormPending = ref(false);
 const newSourceDiscardOpen = ref(false);
 const hasNewSourceDraft = computed(() => newSourceFormPending.value || newSourceJson.value !== newSourceTemplate);
 let pendingSourceImportNavigation: ((allow: boolean) => void) | null = null;
-const newSourceError = computed(() => {
-  try {
-    const parsed: unknown = JSON.parse(newSourceJson.value);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "配置必须是 JSON 对象";
-    const source = parsed as Record<string, unknown>;
-    if (typeof source.bookSourceName !== "string" || !source.bookSourceName.trim()) return "需要填写 bookSourceName（来源名称）";
-    if (typeof source.bookSourceUrl !== "string" || !source.bookSourceUrl.trim()) return "需要填写 bookSourceUrl（来源地址）";
-    return "";
-  } catch (error) { return error instanceof Error ? error.message : String(error); }
-});
+const newSourceError = ref("");
 async function submitNewSource(): Promise<void> {
-  if (importLocked.value || newSourceError.value || newSourceFormPending.value) return;
+  if (importLocked.value) return;
+  const json = newSourceForm.value?.serialize();
+  if (!json) return;
+  try {
+    const parsed: unknown = JSON.parse(json);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是对象");
+    const source = parsed as Record<string, unknown>;
+    if (typeof source.bookSourceName !== "string" || !source.bookSourceName.trim()) throw new Error("请填写来源名称");
+    if (typeof source.bookSourceUrl !== "string" || !source.bookSourceUrl.trim()) throw new Error("请填写来源地址");
+  } catch (error) {
+    newSourceError.value = errorText(error);
+    return;
+  }
+  newSourceError.value = "";
+  newSourceJson.value = json;
   const created = await management.createSourceFromJson(newSourceJson.value);
   if (created) {
     newSourceJson.value = newSourceTemplate;
@@ -427,7 +343,8 @@ function abandonNewSource(): void {
   if (importLocked.value) return;
   newSourceDiscardOpen.value = false;
   newSourceJson.value = newSourceTemplate;
-  newSourceEditorMode.value = "form";
+  newSourceError.value = "";
+  newSourceForm.value?.reset(newSourceTemplate);
   newSourceFormPending.value = false;
   requestedSourceImportMode = null;
   const resume = pendingSourceImportNavigation;
@@ -541,18 +458,6 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section v-if="!sourceLoaded" class="source-data-state">
-    <h2>{{ sourceLoading ? '正在读取书源' : '暂时无法读取书源' }}</h2>
-    <p>{{ sourceLoading ? '正在读取书源列表和配置。' : sourceLoadError || '请检查应用状态后重试。' }}</p>
-    <button type="button" class="button primary" :disabled="sourceLoading" @click="loadSourcesFromBootstrap">
-      {{ sourceLoading ? '加载中…' : '重新加载' }}
-    </button>
-  </section>
-  <template v-else>
-  <p v-if="sourceLoadError" class="source-load-warning">
-    书源刷新失败：{{ sourceLoadError }}
-    <button type="button" class="text-button" :disabled="sourceLoading" @click="refreshSourceList">重试</button>
-  </p>
   <div class="source-workspace-frame" :class="{ 'source-workspace-frame--editing': !!management.editingSource }">
   <SourceManagerPage
     :editor-open="!!management.editingSource"
@@ -566,7 +471,6 @@ onBeforeUnmount(() => {
     @selection-change="management.selectedSourceRows = $event"
     @toggle-source="management.toggleSourceRow"
     @change-enabled="management.changeSourceEnabled"
-    @refresh="management.refreshSourceList"
     @create-open="openSourceImport('new')"
     @import-local="management.importSourceFileFromPicker()"
     @import-url-open="openSourceImport('url')"
@@ -587,7 +491,6 @@ onBeforeUnmount(() => {
         :source="management.editingSource"
         v-model:json-text="management.sourceEditJson"
         :original-json="management.sourceEditOriginalJson"
-        :original-url="management.sourceEditInitialUrl"
         :busy="management.sourceEditBusy"
         :locked="recoveryRequired"
         @save="management.saveSourceDefinitionJson"
@@ -606,7 +509,7 @@ onBeforeUnmount(() => {
 >
       <article class="app-modal">
         <h2>{{ pendingSourceSwitch ? '切换编辑来源？' : '放弃书源修改？' }}</h2>
-        <p class="modal-description">当前 JSON 有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
+        <p class="modal-description">当前书源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
         <div class="modal-actions">
           <button type="button" class="button secondary" @click="chooseRouteLeave(false)">继续编辑</button>
           <button type="button" class="button danger" @click="chooseRouteLeave(true)">{{ pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</button>
@@ -623,26 +526,14 @@ onBeforeUnmount(() => {
             :disabled="importLocked" @click="closeSourceImport"><PrototypeIcon name="close"/></button>
         </header>
         <div v-if="sourceImportMode==='new'" class="source-import-new">
-          <div class="source-import-new-tabs">
-            <button type="button" :class="{active:newSourceEditorMode==='form'}"
-              :disabled="importLocked || newSourceFormPending" @click="newSourceEditorMode='form'">配置表单</button>
-            <button type="button" :class="{active:newSourceEditorMode==='json'}"
-              :disabled="importLocked || newSourceFormPending" @click="newSourceEditorMode='json'">完整 JSON</button>
-          </div>
-          <SourceFormEditor v-if="newSourceEditorMode==='form'" :json-text="newSourceJson" :enabled="true"
-            :disabled="importLocked" @update:json-text="newSourceJson = $event" @pending="newSourceFormPending = $event" />
-          <label v-else for="source-import-new-json">书源定义 JSON
-            <textarea id="source-import-new-json" v-model="newSourceJson"
-              spellcheck="false" autocapitalize="off" autocomplete="off" :disabled="importLocked" rows="12"></textarea>
-          </label>
-          <p class="source-import-hint">所有 Legado 字段和嵌套解析规则均保留原始类型。配置表单里的修改需先点击「应用修改」，再保存来源。</p>
+          <SourceFormEditor ref="newSourceForm" :json-text="newSourceJson" :enabled="true"
+            :disabled="importLocked" @pending="newSourceFormPending = $event" />
           <p v-if="newSourceError" class="source-import-error">{{ newSourceError }}</p>
-          <p v-if="newSourceFormPending" class="source-import-hint">表单有尚未应用的修改，请先应用或撤销。</p>
           <p class="source-import-hint">与现有来源地址相同时将更新已有配置，而不是生成重复来源。</p>
           <div class="source-import-actions">
             <button type="button" class="button secondary" :disabled="importLocked" @click="closeSourceImport">取消</button>
             <button type="button" class="button primary"
-              :disabled="importLocked || !!newSourceError || newSourceFormPending" @click="submitNewSource">
+              :disabled="importLocked" @click="submitNewSource">
               {{ management.sourceImportBusy ? '正在保存…' : '保存来源配置' }}
             </button>
           </div>
@@ -752,24 +643,14 @@ onBeforeUnmount(() => {
 
 
     <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些书源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
-  </template>
 </template>
 <style scoped>
-.source-data-state{display:grid;min-height:100%;place-content:center;justify-items:center;gap:10px;padding:24px;text-align:center}
-.source-data-state h2,.source-data-state p{margin:0}
-.source-data-state p{color:var(--app-muted)}
-.source-load-warning{margin:0;padding:8px 18px;color:#9e5d2b;background:#fff4e8;font-size:12px}
-.source-workspace-frame{min-width:0;width:100%}
-.source-workspace-frame:not(.source-workspace-frame--editing){display:flex;flex:1 1 auto;flex-direction:column;min-height:0;height:100%;overflow:hidden}
-.source-workspace-frame--editing{width:100%;min-width:0}
-.source-workspace-frame :deep(.source-edit-screen){min-height:0;overflow:auto}
+.source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}
+.source-workspace-frame :deep(.source-edit-screen){min-height:0;overflow:hidden}
 @media(min-width:861px){
- .source-workspace-frame--editing{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;height:100%;overflow:hidden}
- .source-workspace-frame :deep(.source-edit-bar){display:none}
- .source-workspace-frame :deep(.source-edit-screen){padding:28px 34px 48px}
+ .source-workspace-frame :deep(.source-edit-screen){--source-editor-inset:24px}
 }
-@media(max-width:860px){.source-workspace-frame--editing :deep(.source-edit-screen){overflow:visible}}
-.source-leave-guard{z-index:120}
+.source-leave-guard{z-index:150}
 .source-confirm{color:#9d7952;background:#f7f0e6}
 .source-confirm svg{width:22px;height:22px}
 .detail-close svg{width:18px;height:18px}
@@ -785,14 +666,7 @@ onBeforeUnmount(() => {
 .source-import-new{display:grid;gap:11px;margin-top:22px}
 .source-import-modal--url .source-import-heading h2{font-size:17px}
 .source-import-url label,.source-import-new label{font-size:12px;font-weight:650;color:#4c4e5c}
-.source-import-new textarea{box-sizing:border-box;min-width:0;width:100%;min-height:205px;max-height:42dvh;resize:vertical;padding:12px 13px;border:1px solid #e0e2eb;border-radius:9px;background:#fff;color:#393846;font:12px/1.55 ui-monospace,SFMono-Regular,Consolas,monospace}
 .source-import-modal--new{width:min(820px,100%)}
-.source-import-new-tabs{display:flex;gap:7px;border-bottom:1px solid #e6e7ee}
-.source-import-new-tabs>button{padding:9px 14px 11px;border:0;border-bottom:2px solid transparent;background:transparent;color:#777d8c;font-size:12px;cursor:pointer}
-.source-import-new-tabs>button.active{color:var(--app-accent);border-bottom-color:var(--app-accent);font-weight:700}
-.source-import-new-tabs>button:disabled{opacity:.55;cursor:default}
-.source-import-new>label{display:grid;gap:9px}
-.source-import-new :deep(.source-visual-section){padding:15px}
 .source-new-discard-mask{z-index:150}
 .source-import-hint{margin:0;color:#9194a0;font-size:11px;line-height:1.65}
 .source-import-url input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid #dfe1e9;border-radius:9px;background:#fff;color:#323643;font:inherit;font-size:12px}

@@ -29,13 +29,15 @@ export interface SourceMetadata {
   userAgentOverride?: string | null;
 }
 
-export interface SourceDefinitionEntry extends SourceMetadata {
+export interface SourceDefinitionResource {
+  schemaVersion: number;
+  id: string;
   definitionJson: string;
 }
 
-export interface SourceDefinitionsResource {
+export interface SourceListResource {
   schemaVersion: number;
-  sources: SourceDefinitionEntry[];
+  sources: SourceMetadata[];
 }
 
 export interface SourceLoginField {
@@ -464,7 +466,8 @@ export type SourceMutation =
 
 export type SourceMutationResponse =
   | {
-      resource: ResourceDescriptor;
+      saved: boolean;
+      resource?: ResourceDescriptor;
       cleanupPending?: boolean;
       cleanupWarning?: string;
       rssState?: ResourceDescriptor;
@@ -721,6 +724,5 @@ export interface DictionaryLookupResult {
   resource: ResourceDescriptor;
 }
 
-// Full book-source JSON stays separate from summary metadata and is read from
-// the AppBootstrap sources resource only by the source management feature.
+// Full book-source JSON is loaded by ID only while editing or exporting.
 export type SourceDefinition = Record<string, unknown>;

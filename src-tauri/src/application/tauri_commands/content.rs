@@ -53,13 +53,14 @@ pub async fn unsubscribe_rss(
         "resource-updated",
         json!({ "kind": "rssState", "resource": result["resource"] }),
     );
-    let sources = service.source_definitions_resource().await?;
-    let _ = app.emit(
-        "sources-updated",
-        service.resource_descriptor(&sources),
-    );
+    if result["listChanged"].as_bool() == Some(true) {
+        let sources = service.store.source_list_ref().map_err(|error| error.to_string())?;
+        let _ = app.emit("sources-updated", json!({
+            "requestId": 0, "resource": service.resource_descriptor(&sources),
+        }));
+    }
     if let Some(object) = result.as_object_mut() {
-        object.remove("sources");
+        object.remove("listChanged");
     }
     Ok(result)
 }
