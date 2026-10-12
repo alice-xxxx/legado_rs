@@ -9,8 +9,9 @@ import BackButton from "../../ui/BackButton.vue";
 import { useHomeConfig } from "./useHomeConfig";
 import type { AppBootstrap, DiscoveryCategory, HomeConfigDocument, HomeSection, HomeTab } from "../../api/types";
 
-function returnToHome(): void {
-  void router.push({ name: routeNames.home });
+function returnFromHomeConfig(): void {
+  if (router.options.history.state.back) void router.back();
+  else void router.replace({ name: routeNames.settingsOther });
 }
 
 const restoreRevision = ref(0);
@@ -303,7 +304,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 <template>
   <section class="home-config-editor my-settings-subpage">
     <header class="home-config-editor__topbar safe-area-top">
-      <BackButton label="返回发现" @click="returnToHome" />
+      <BackButton label="返回" @click="returnFromHomeConfig" />
       <div class="home-config-editor__top-title">
         <strong>发现页配置</strong>
       </div>
@@ -450,13 +451,13 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor{
   --hc-accent:var(--app-accent);
   --hc-line:var(--app-line);
-  --hc-muted:#999da5;
+  --hc-muted:var(--app-subtle);
   box-sizing:border-box;
   width:100%;
   min-width:0;
   min-height:100%;
-  background:#f6f7f9;
-  color:#343640;
+  background:var(--app-background);
+  color:var(--app-text);
 }
 .home-config-editor__topbar{
   position:sticky;
@@ -467,27 +468,27 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   grid-template-columns:44px minmax(0,1fr) auto;
   align-items:center;
   gap:10px;
-  min-height:64px;
-  padding-inline:max(18px,calc((100% - 1180px)/2));
+  min-height:var(--ui-header-height);
+  padding-inline:var(--ui-header-gutter);
   border-bottom:1px solid var(--hc-line);
-  background:#f6f7f9ee;
+  background:var(--app-header);
   backdrop-filter:blur(18px);
 }
 .home-config-editor__top-title{min-width:0}
-.home-config-editor__top-title strong{font-size:14px;font-weight:750;color:#242631}
+.home-config-editor__top-title strong{font-size:var(--ui-font-heading);font-weight:750;color:var(--app-text)}
 .home-config-editor__button{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   min-height:34px;padding:0 12px;
   border:1px solid transparent;border-radius:9px;
-  font-size:10px;font-weight:650;cursor:pointer;
+  font-size:var(--ui-font-body);font-weight:650;cursor:pointer;
 }
 .home-config-editor__button:disabled,.home-config-editor__icon-button:disabled{opacity:.45;cursor:default}
-.home-config-editor__button--primary{background:var(--hc-accent);color:#fff}
-.home-config-editor__button--secondary{border-color:var(--hc-line);background:#fff;color:#606571}
-.home-config-editor__button--danger{background:#fff0f1;color:#ae535b}
+.home-config-editor__button--primary{background:var(--hc-accent);color:var(--app-on-accent)}
+.home-config-editor__button--secondary{border-color:var(--hc-line);background:var(--app-surface);color:var(--app-muted)}
+.home-config-editor__button--danger{background:var(--app-danger-soft);color:var(--app-danger)}
 .home-config-editor__body{
-  box-sizing:border-box;width:min(820px,calc(100% - 36px));
-  margin:0 auto;padding:24px 0 26px;
+  box-sizing:border-box;width:100%;
+  margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width);
 }
 .home-config-editor__tabs-row{display:block;margin:0 0 12px}
 .home-config-editor__tabs{
@@ -499,12 +500,12 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   display:inline-flex;align-items:center;justify-content:center;
   flex:none;box-sizing:border-box;height:29px;min-height:29px;
   padding:0 10px;border:0;border-radius:999px;
-  background:#eceef2;color:#696e77;font-size:9px;
+  background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);
   font-weight:600;white-space:nowrap;cursor:pointer;
 }
-.home-config-editor__tabs button.active{background:#202126;color:#fff;font-weight:750}
+.home-config-editor__tabs button.active{background:var(--app-selected);color:var(--app-on-selected);font-weight:750}
 .home-config-editor__tabs .home-config-editor__tab-add{
-  gap:4px;border:1px dashed #c8c2dd;background:#faf9fd;color:var(--hc-accent);
+  gap:4px;border:1px dashed var(--app-accent-soft);background:var(--app-panel-soft);color:var(--hc-accent);
 }
 .home-config-editor__tab-add :deep(svg){width:13px;height:13px}
 .home-config-editor__tab-details{
@@ -513,11 +514,11 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__tab-details>summary{
   display:flex;align-items:center;gap:8px;
   min-height:34px;padding:0 4px;list-style:none;
-  color:#7b7e89;font-size:10px;cursor:pointer;
+  color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer;
 }
 .home-config-editor__tab-details>summary::-webkit-details-marker{display:none}
-.home-config-editor__tab-details>summary>.prototype-icon{width:15px;height:15px;color:#7c6bb4}
-.home-config-editor__tab-details>summary>.prototype-icon:last-child{margin-left:auto;color:#a3a6b0}
+.home-config-editor__tab-details>summary>.prototype-icon{width:15px;height:15px;color:var(--app-accent-ink)}
+.home-config-editor__tab-details>summary>.prototype-icon:last-child{margin-left:auto;color:var(--app-subtle)}
 .home-config-editor__tab-details[open]>summary>.prototype-icon:last-child{transform:rotate(90deg)}
 .home-config-editor__tab-settings{
   display:flex;align-items:end;gap:10px;
@@ -525,33 +526,33 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 }
 .home-config-editor__tab-name{flex:1}
 .home-config-editor__tab-actions{display:flex;align-items:center;gap:6px}
-.home-config-editor__field{display:flex;flex-direction:column;gap:4px;min-width:0;color:#777c85;font-size:9px}
+.home-config-editor__field{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--app-muted);font-size:var(--ui-font-caption)}
 .home-config-editor__field>span{font-weight:600}
 .home-config-editor__field input,.home-config-editor__field select{
   box-sizing:border-box;width:100%;min-width:0;height:36px;min-height:36px;
   padding:0 9px;border:1px solid var(--hc-line);border-radius:8px;
-  background:#fff;color:#343640;font:inherit;font-size:10px;
+  background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);
 }
-.home-config-editor__field small{color:var(--hc-muted);font-size:8px;line-height:1.45}
-.home-config-editor__category-error{color:#b0525d!important;font-size:9px}
+.home-config-editor__field small{color:var(--hc-muted);font-size:var(--ui-font-caption);line-height:1.45}
+.home-config-editor__category-error{color:var(--app-danger)!important;font-size:var(--ui-font-caption)}
 .home-config-editor__category-error button{
   margin-left:4px;border:0;background:transparent;color:var(--hc-accent);
-  font-size:9px;text-decoration:underline;cursor:pointer;
+  font-size:var(--ui-font-body);text-decoration:underline;cursor:pointer;
 }
 .home-config-editor__section-heading{
   display:flex;align-items:center;justify-content:space-between;
-  gap:10px;margin:3px 0 8px;color:var(--hc-muted);font-size:9px;
+  gap:10px;margin:3px 0 8px;color:var(--hc-muted);font-size:var(--ui-font-caption);
 }
 .home-config-editor__section-heading>span{white-space:nowrap}
 .home-config-editor__empty{
   display:grid;place-items:center;min-height:90px;
-  padding:16px 0;color:#999da5;font-size:10px;text-align:center;
+  padding:16px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);text-align:center;
 }
 .home-config-editor__sections{min-width:0}
 .home-config-editor__section-card{
   box-sizing:border-box;min-height:58px;
   margin:0 0 8px;padding:10px;
-  border:1px solid var(--hc-line);border-radius:11px;background:#fff;
+  border:1px solid var(--hc-line);border-radius:11px;background:var(--app-surface);
 }
 .home-config-editor__section-card.is-drop-target{border-color:var(--hc-accent);box-shadow:0 0 0 2px #6757d620}
 .home-config-editor__section-title-row{
@@ -566,28 +567,28 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 }
 .home-config-editor__order-grip:active{cursor:grabbing}
 .home-config-editor__order-grip i{
-  width:3px;height:13px;border-left:3px dotted #afb3bb;
+  width:3px;height:13px;border-left:3px dotted var(--app-line);
 }
 .home-config-editor__section-title{display:flex;flex-direction:column;gap:2px;min-width:0}
 .home-config-editor__section-title input{
   box-sizing:border-box;width:100%;height:20px;min-height:20px;
   padding:0;border:0;border-radius:0;outline-offset:2px;
-  background:transparent;color:#30323b;font-size:10px;font-weight:700;
+  background:transparent;color:var(--app-text);font-size:var(--ui-font-body);font-weight:700;
 }
 .home-config-editor__section-title small{
   min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
-  color:#999da5;font-size:7px;font-weight:400;
+  color:var(--app-subtle);font-size:var(--ui-font-caption);font-weight:400;
 }
 .home-config-editor__compact-style select{
   box-sizing:border-box;width:100%;height:31px;min-height:31px;
   padding:0 7px;border:1px solid var(--hc-line);border-radius:8px;
-  background:#fff;color:#545862;font-size:9px;
+  background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body);
 }
 .home-config-editor__expand{
   display:grid;place-items:center;width:36px;height:36px;
-  border:0;border-radius:9px;background:transparent;color:#777d8a;cursor:pointer;
+  border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer;
 }
-.home-config-editor__expand:hover,.home-config-editor__expand.is-open{background:#f1edff;color:var(--hc-accent)}
+.home-config-editor__expand.is-open{background:var(--app-accent-soft);color:var(--hc-accent)}
 .home-config-editor__expand :deep(svg){width:18px;height:18px}
 .home-config-editor__section-fields{
   display:grid;grid-template-columns:1fr 1fr auto;
@@ -596,7 +597,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 }
 .home-config-editor__checkbox-field{
   display:flex;align-items:center;gap:6px;min-height:36px;
-  color:#777b85;font-size:9px;white-space:nowrap;
+  color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;
 }
 .home-config-editor__checkbox-field input{width:16px;height:16px;accent-color:var(--hc-accent)}
 .home-config-editor__section-actions{
@@ -606,33 +607,32 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__icon-button{
   display:grid;place-items:center;width:32px;height:32px;padding:0;
   border:1px solid var(--hc-line);border-radius:8px;
-  background:#fff;color:#8175a2;cursor:pointer;
+  background:var(--app-surface);color:var(--app-accent-ink);cursor:pointer;
 }
-.home-config-editor__icon-button:hover:not(:disabled){background:#f2efff}
 .home-config-editor__icon-button :deep(svg){width:16px;height:16px}
 .home-config-editor__icon-button .section-arrow-up{transform:rotate(-90deg)}
 .home-config-editor__icon-button .section-arrow-down{transform:rotate(90deg)}
 .home-config-editor__add-section{margin-top:10px}
 .home-config-editor__add-toggle{
   box-sizing:border-box;width:100%;min-height:41px;
-  border:1px dashed #d6cdec;border-radius:11px;
-  background:#faf9ff;color:var(--hc-accent);
-  text-align:center;font-size:10px;font-weight:700;cursor:pointer;
+  border:1px dashed var(--app-accent-soft);border-radius:11px;
+  background:var(--app-panel-soft);color:var(--hc-accent);
+  text-align:center;font-size:var(--ui-font-caption);font-weight:700;cursor:pointer;
 }
 .home-config-editor__add-toggle:disabled{opacity:.5;cursor:default}
 .home-config-editor__add-grid{
   display:grid;grid-template-columns:1fr 1fr 1.1fr auto;
   align-items:end;gap:10px;margin-top:12px;padding:11px;
-  border:1px solid var(--hc-line);border-radius:10px;background:#fff;
+  border:1px solid var(--hc-line);border-radius:10px;background:var(--app-surface);
 }
-.home-config-editor__hint{margin:9px 0;color:var(--hc-muted);font-size:10px}
+.home-config-editor__hint{margin:9px 0;color:var(--hc-muted);font-size:var(--ui-font-caption)}
 .home-config-editor__validation{
-  margin-top:14px;padding:11px 12px;border:1px solid #edcfc9;
-  border-radius:9px;background:#fff4f3;color:#89564d;
-  font-size:10px;line-height:1.6;
+  margin-top:14px;padding:11px 12px;border:1px solid var(--app-danger-line);
+  border-radius:9px;background:var(--app-danger-soft);color:var(--app-danger);
+  font-size:var(--ui-font-caption);line-height:1.6;
 }
 .home-config-editor__validation ul{margin:7px 0 0;padding-left:17px}
-.home-config-editor__save-hint{color:var(--hc-muted);font-size:9px;white-space:nowrap}
+.home-config-editor__save-hint{color:var(--hc-muted);font-size:var(--ui-font-caption);white-space:nowrap}
 .home-config-editor__discard-mask{
   position:fixed;inset:0;z-index:120;
   display:grid;place-items:center;padding:16px;background:#191b2b88;
@@ -640,22 +640,22 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__discard-dialog{
   box-sizing:border-box;width:min(430px,100%);padding:22px;
   border:1px solid var(--hc-line);border-radius:14px;
-  background:#fff;box-shadow:0 16px 44px #11142822;
+  background:var(--app-surface);box-shadow:0 16px 44px #11142822;
 }
-.home-config-editor__discard-dialog h3{margin:0;color:#343640;font-size:15px}
-.home-config-editor__discard-dialog p{margin:10px 0;color:#888c97;font-size:11px;line-height:1.65}
+.home-config-editor__discard-dialog h3{margin:0;color:var(--app-text);font-size:var(--ui-font-title)}
+.home-config-editor__discard-dialog p{margin:10px 0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.65}
 .home-config-editor__discard-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}
 @media(max-width:860px){
-  .home-config-editor__topbar{padding-inline:14px}
-  .home-config-editor__body{padding:18px 0 22px}
+  .home-config-editor__topbar{padding-inline:var(--ui-header-gutter)}
+  .home-config-editor__body{padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}
   .home-config-editor__section-title-row{grid-template-columns:18px minmax(0,1fr) 100px 32px;gap:8px}
   .home-config-editor__expand{width:32px}
   .home-config-editor__section-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
   .home-config-editor__checkbox-field{grid-column:1/-1}
 }
 @media(max-width:560px){
-  .home-config-editor__body{width:calc(100% - 28px)}
-  .home-config-editor__topbar{padding-inline:12px}
+  .home-config-editor__body{width:100%}
+  .home-config-editor__topbar{padding-inline:var(--ui-header-gutter)}
   .home-config-editor__section-title-row{grid-template-columns:18px minmax(0,1fr) 32px}
   .home-config-editor__compact-style{grid-column:2;grid-row:2}
   .home-config-editor__expand{grid-column:3;grid-row:1/3}

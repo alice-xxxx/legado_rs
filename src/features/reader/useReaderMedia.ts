@@ -164,9 +164,6 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
     syncSession(audio);
   }
 
-  function isHlsMediaSource(element: Element): boolean {
-    return element.getAttribute("data-legado-media-format")?.trim().toLowerCase() === "hls";
-  }
 
   function destroyHlsInstance(): void {
     ++hlsLoadRevision;
@@ -246,7 +243,6 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
     syncSession,
     setSession,
     reportActionError,
-    isHlsMediaSource,
     destroyHlsInstance,
     loadSource,
   };

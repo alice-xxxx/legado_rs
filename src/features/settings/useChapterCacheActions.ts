@@ -1,7 +1,9 @@
 import { watch, type Ref } from "vue";
+import { shelfBooks as shelf } from "../shelf/shelfBooks";
+import { shelfBatchRecoveryRequired as recoveryRequired, shelfBatchRecoveryTitle as recoveryTitle, shelfBatchRecoveryMessage as recoveryMessage } from "../../app/recoveryState";
 import { clearBookChapterCache, getChapterCacheUsage } from "../../api/books";
-import { type BookPreview, type BookResource, type ChapterCacheUsage, type ClearBookChapterCacheResponse, type ShelfResource } from "../../api/types";
-import { loadBookPreview, refreshOpenedBook, replaceOpenedBook } from "../books/bookDetailState";
+import { type BookPreview, type BookResource, type ChapterCacheUsage, type ClearBookChapterCacheResponse } from "../../api/types";
+import { openedBook, loadBookPreview, refreshOpenedBook, replaceOpenedBook } from "../books/bookDetailState";
 
 type ClearResult = {
   clearedBooks: number;
@@ -12,8 +14,6 @@ type ClearResult = {
 };
 
 interface ChapterCacheActionOptions {
-  shelf: Ref<ShelfResource>;
-  openedBook: Ref<BookResource | null>;
   readingBook: Ref<BookResource | null>;
   readerVisible: Ref<boolean>;
   readerProgressDirty: Ref<boolean>;
@@ -26,9 +26,6 @@ interface ChapterCacheActionOptions {
   pendingBookClear: Ref<{ id: string; title: string } | null>;
   bookClearBusy: Ref<boolean>;
   bookClearError: Ref<string>;
-  recoveryRequired: Ref<boolean>;
-  recoveryTitle: Ref<string>;
-  recoveryMessage: Ref<string>;
   screen: { readonly value: string };
   bootstrapped: Ref<boolean>;
   hasConflictingOperation: () => boolean;
@@ -43,11 +40,11 @@ interface ChapterCacheActionOptions {
 /** 集中处理章节缓存统计、书架批量清理和详情页缓存清理。 */
 export function useChapterCacheActions(options: ChapterCacheActionOptions) {
   const {
-    shelf, openedBook, readingBook, readerVisible, readerProgressDirty,
+    readingBook, readerVisible, readerProgressDirty,
     chapterCacheUsage, chapterCacheUsageBusy, chapterCacheUsageError,
     pendingShelfClear, shelfClearBusy, shelfClearResult,
     pendingBookClear, bookClearBusy, bookClearError,
-    recoveryRequired, recoveryTitle, recoveryMessage,
+
     screen, bootstrapped, hasConflictingOperation, getRestoreRevision,
     saveCurrentProgress, finishReadingSession, closeReader, errorText, notify,
   } = options;

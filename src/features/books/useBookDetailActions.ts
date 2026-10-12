@@ -1,12 +1,11 @@
 import type { ComputedRef, Ref } from "vue";
 import { refreshBookInfo, resetBookProgress } from "../../api/books";
 import { type BookResource, type ResetBookProgressResponse } from "../../api/types";
-import { replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
+import { openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
 
 type PendingProgressReset = { id: string; title: string };
 
 export interface BookDetailActionsOptions {
-  openedBook: Ref<BookResource | null>;
   readingBook: Ref<BookResource | null>;
   panelBusy: Ref<boolean>;
   infoRefreshBusy: Ref<boolean>;
@@ -29,7 +28,6 @@ export interface BookDetailActionsOptions {
 /** 管理书籍详情载入、信息刷新和阅读进度重置。 */
 export function useBookDetailActions(options: BookDetailActionsOptions) {
   const {
-    openedBook,
     readingBook,
     panelBusy,
     infoRefreshBusy,

@@ -5,8 +5,8 @@ import { RouterView } from "vue-router";
 
 <template>
   <RouterView v-slot="{ Component }">
-    <!-- 只缓存首页；切换其它页面时保留首页内容，返回后不重复自动加载。 -->
-    <KeepAlive include="HomePage">
+    <!-- 保留首页和搜索页；查看详情期间继续接收搜索进度，返回时复用已有状态。 -->
+    <KeepAlive :include="['HomePage', 'SearchPage']">
       <component :is="Component" />
     </KeepAlive>
   </RouterView>

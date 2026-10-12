@@ -5,6 +5,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
+import { backupBusy } from "../settings/backupState";
 import { getLocalBookImportSession } from "../import/localBookImportSession";
 import type { LocalImportFormat } from "../../api/books";
 import type { AppBootstrap, ShelfResource } from "../../api/types";
@@ -25,7 +26,7 @@ const localBooks = computed(() => shelf.value.books.filter((book) => book.id.sta
 const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
 const actionsBlocked = computed(() => localBookImport.localBookImportBusy.value || pageDataLoading.value || !!pageDataError.value
   || recoveryRequired.value || localBookImport.pdfPasswordPromptOpen.value
-  || localBookImport.externalFileRequestBusy.value || localBookImport.backupBusy.value !== null || linkOpening.value);
+  || localBookImport.externalFileRequestBusy.value || backupBusy.value !== null || linkOpening.value);
 let disposed = false;
 const eventUnlisteners: UnlistenFn[] = [];
 
@@ -228,42 +229,41 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 </template>
 
 <style scoped>
-.library-import-page{width:100%;min-height:100%;color:#262832}
-.import-subpage-header{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:44px 1fr 38px;align-items:center;gap:12px;min-height:64px;padding-inline:20px;border-bottom:1px solid var(--app-line);background:#f6f7f9f5;backdrop-filter:blur(14px)}
+.library-import-page{width:100%;min-height:100%;color:var(--app-text)}
+.import-subpage-header{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:44px 1fr 38px;align-items:center;gap:12px;min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(14px)}
 .import-subpage-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px}
-.import-subpage-title strong{font-size:14px;font-weight:750}
-.library-import-body{width:min(860px,calc(100% - 36px));margin:0 auto;padding:24px 0 48px}
+.import-subpage-title strong{font-size:var(--ui-font-heading);font-weight:750}
+.library-import-body{width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
 .library-import-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-.library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:#fff;cursor:pointer;text-align:left}
-.library-import-grid button:hover:not(:disabled){border-color:#d2c9f5;background:#fbfaff}
-.library-import-grid button strong{font-size:12px}
-.library-import-grid button small{color:#999da6;font-size:10px;line-height:1.4}
-.library-import-file-icon{display:grid;place-items:center;width:38px;height:38px;margin-bottom:auto;border-radius:11px;background:#efebff;color:#6857c9}
+.library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface);cursor:pointer;text-align:left}
+.library-import-grid button strong{font-size:var(--ui-font-body)}
+.library-import-grid button small{color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.4}
+.library-import-file-icon{display:grid;place-items:center;width:38px;height:38px;margin-bottom:auto;border-radius:11px;background:var(--app-accent-soft);color:var(--app-accent-ink)}
 .library-import-file-icon :deep(svg){width:20px;height:20px}
 .library-import-section{margin-top:28px;padding-top:20px;border-top:1px solid var(--app-line)}
-.library-import-section h2{margin:0;font-size:13px}
+.library-import-section h2{margin:0;font-size:var(--ui-font-body)}
 .library-import-form{display:flex;gap:8px;margin-top:12px}
-.library-import-form input{flex:1;min-width:0;min-height:39px;padding:0 12px;border:1px solid #e1e4eb;border-radius:10px;background:#fff;font-size:12px}
-.library-import-primary{min-height:39px;padding:0 18px;border:0;border-radius:10px;background:var(--app-accent);color:#fff;font-size:12px;font-weight:700;cursor:pointer}
-.library-import-status,.library-import-warning{font-size:11px;line-height:1.6}
-.library-import-warning{color:#b0535b}
-.library-import-retry{margin-left:8px;padding:2px 7px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:10px;cursor:pointer}
-.library-import-link-recognized{display:grid;gap:6px;margin-top:12px;padding:11px;border:1px solid #dedaf4;border-radius:12px;background:#f7f5ff}
-.library-import-link-recognized p{margin:0 0 5px;color:#757281;font-size:11px}
-.library-import-link-recognized button{display:grid;grid-template-columns:1fr 20px;gap:4px 8px;min-height:45px;padding:8px 10px;border:1px solid #e6e3f3;border-radius:9px;background:#fff;text-align:left;cursor:pointer}
-.library-import-link-recognized button strong{font-size:11px}
-.library-import-link-recognized button small{color:#9498a1;font-size:10px;grid-column:1}
+.library-import-form input{flex:1;min-width:0;min-height:39px;padding:0 12px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface);font-size:var(--ui-font-body)}
+.library-import-primary{min-height:39px;padding:0 18px;border:0;border-radius:10px;background:var(--app-accent);color:var(--app-on-accent);font-size:var(--ui-font-caption);font-weight:700;cursor:pointer}
+.library-import-status,.library-import-warning{font-size:var(--ui-font-caption);line-height:1.6}
+.library-import-warning{color:var(--app-danger)}
+.library-import-retry{margin-left:8px;padding:2px 7px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:var(--ui-font-caption);cursor:pointer}
+.library-import-link-recognized{display:grid;gap:6px;margin-top:12px;padding:11px;border:1px solid var(--app-accent-soft);border-radius:12px;background:var(--app-accent-soft)}
+.library-import-link-recognized p{margin:0 0 5px;color:var(--app-muted);font-size:var(--ui-font-caption)}
+.library-import-link-recognized button{display:grid;grid-template-columns:1fr 20px;gap:4px 8px;min-height:45px;padding:8px 10px;border:1px solid var(--app-accent-soft);border-radius:9px;background:var(--app-surface);text-align:left;cursor:pointer}
+.library-import-link-recognized button strong{font-size:var(--ui-font-body)}
+.library-import-link-recognized button small{color:var(--app-subtle);font-size:var(--ui-font-caption);grid-column:1}
 .library-import-link-recognized button :deep(svg){grid-column:2;grid-row:1/3;align-self:center;width:17px;height:17px}
 .library-import-recent-list{margin-top:13px}
-.library-import-recent-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;min-height:62px;border-bottom:1px solid #e9eaf0}
+.library-import-recent-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;min-height:62px;border-bottom:1px solid var(--app-line)}
 .library-import-recent-detail{display:flex;flex-direction:column;gap:5px;min-width:0}
-.library-import-recent-detail strong{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.library-import-recent-detail small{font-size:10px;color:#9398a3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.library-import-recent-list article>button{padding:9px 12px;border:0;border-radius:9px;background:#edeef2;color:#636977;font-size:11px;cursor:pointer}
-.library-import-empty{padding:19px 0;color:#9195a0;font-size:11px}
+.library-import-recent-detail strong{font-size:var(--ui-font-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.library-import-recent-detail small{font-size:var(--ui-font-caption);color:var(--app-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.library-import-recent-list article>button{padding:9px 12px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
+.library-import-empty{padding:19px 0;color:var(--app-subtle);font-size:var(--ui-font-caption)}
 @media(max-width:640px){
-.import-subpage-header{min-height:55px;padding-inline:12px}
-.library-import-body{width:calc(100% - 28px);padding:16px 0 32px}
+.import-subpage-header{min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter)}
+.library-import-body{width:100%;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}
 .library-import-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
 .library-import-grid button{min-height:112px;padding:12px}
 .library-import-section{margin-top:22px;padding-top:18px}

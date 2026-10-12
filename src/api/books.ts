@@ -23,7 +23,6 @@ export const cancelPendingPdfImport = (importToken: string) =>
 export const prepareSearchResultBook = (resultId: string) =>
   command<{ book: ResourceDescriptor }>("prepare_search_result_book", { resultId });
 
-export const getBook = (bookId: string) => command<ResourceDescriptor>("get_book", { bookId });
 
 export const saveBook = (book: BookMetadataUpdate, requestId: number) =>
   command<{ requestId: number; resource: ResourceDescriptor }>("save_book", { book, requestId });

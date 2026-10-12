@@ -1,6 +1,8 @@
-import { computed, nextTick, onBeforeUnmount, ref, type ComponentPublicInstance, type ComputedRef, type Ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, type ComponentPublicInstance, type Ref } from "vue";
 import { releaseHttpTtsAudio, requestHttpTtsAudio } from "../../api/settings";
-import { type BookResource, type HttpTtsConfigMetadata, type ReaderSettings, type ResourceDescriptor } from "../../api/types";
+import { type BookResource, type ReaderSettings, type ResourceDescriptor } from "../../api/types";
+import { settings } from "../settings/settingsStore";
+import { httpTtsConfigs } from "../settings/configurationStores";
 import { clamp, type PdfPageResource } from "./readerContent";
 import { mapTtsSegmentChunks, splitTtsText, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
 
@@ -21,7 +23,6 @@ interface PreparedHttpTtsAudio {
 type HttpTtsChunkAudio = PreparedHttpTtsAudio | { kind: "empty" };
 
 export interface ReaderTtsContext {
-  settings: ComputedRef<ReaderSettings>;
   visible: Ref<boolean>;
   busy: Ref<boolean>;
   mediaChapter: Ref<boolean>;
@@ -34,7 +35,6 @@ export interface ReaderTtsContext {
 
 export interface UseReaderTtsOptions {
   reader: ReaderTtsContext;
-  httpTtsConfigs: Ref<HttpTtsConfigMetadata[]>;
   loadSegments: (fromCurrentPosition?: boolean) => Promise<ReaderTtsSegment[]>;
   changeChapter: (direction: -1 | 1) => Promise<void>;
   updateReaderSetting: <K extends "ttsEngine" | "ttsRate" | "ttsVoiceURI" | "httpTtsConfigId">(key: K, value: ReaderSettings[K]) => void;
@@ -94,17 +94,17 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     && !options.reader.pdfPage.value
     && !options.reader.imagePage.value);
 
-  const ttsEngineSelection = computed(() => options.reader.settings.value.ttsEngine === "http"
-    ? `http:${options.reader.settings.value.httpTtsConfigId ?? ""}`
-    : `system:${options.reader.settings.value.ttsVoiceURI}`);
-  const ttsControlPlayback = computed(() => options.reader.settings.value.ttsEngine === "http"
+  const ttsEngineSelection = computed(() => settings.value.reader.ttsEngine === "http"
+    ? `http:${settings.value.reader.httpTtsConfigId ?? ""}`
+    : `system:${settings.value.reader.ttsVoiceURI}`);
+  const ttsControlPlayback = computed(() => settings.value.reader.ttsEngine === "http"
     ? httpTtsAudioBusy.value ? "loading" : httpTtsAudioActive.value ? httpTtsAudioPaused.value ? "paused" : "speaking" : "idle"
     : ttsPlayback.value);
-  const ttsControlCanStart = computed(() => options.reader.settings.value.ttsEngine === "http"
+  const ttsControlCanStart = computed(() => settings.value.reader.ttsEngine === "http"
     ? options.reader.visible.value
       && !!options.reader.book.value
-      && !!options.reader.settings.value.httpTtsConfigId
-      && options.httpTtsConfigs.value.some((item) => item.id === options.reader.settings.value.httpTtsConfigId && item.enabled)
+      && !!settings.value.reader.httpTtsConfigId
+      && httpTtsConfigs.value.some((item) => item.id === settings.value.reader.httpTtsConfigId && item.enabled)
       && !options.reader.busy.value
       && !options.reader.mediaChapter.value
       && !options.reader.pdfPage.value
@@ -113,16 +113,16 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       && !httpTtsAudioActive.value
     : ttsCanStart.value);
   const ttsControlStatus = computed(() => {
-    if (options.reader.settings.value.ttsEngine !== "http") return ttsStatusMessage.value;
-    if (!options.reader.settings.value.httpTtsConfigId) return "请选择网络朗读引擎，或先添加一个配置。";
+    if (settings.value.reader.ttsEngine !== "http") return ttsStatusMessage.value;
+    if (!settings.value.reader.httpTtsConfigId) return "请选择网络朗读引擎，或先添加一个配置。";
     if (httpTtsAudioBusy.value) return httpTtsAudioNotice.value || "正在准备网络朗读…";
     if (httpTtsAudioPaused.value) return "网络朗读已暂停。";
     return httpTtsAudioNotice.value;
   });
-  const ttsControlError = computed(() => options.reader.settings.value.ttsEngine === "http"
+  const ttsControlError = computed(() => settings.value.reader.ttsEngine === "http"
     ? httpTtsAudioError.value
     : ttsError.value);
-  const ttsControlProgress = computed(() => options.reader.settings.value.ttsEngine === "http"
+  const ttsControlProgress = computed(() => settings.value.reader.ttsEngine === "http"
     ? httpTtsChunkProgress.value
     : ttsChunkProgress.value);
 
@@ -221,11 +221,11 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   }
 
   function selectHttpTtsConfig(configId: string): void {
-    const selected = configId && options.httpTtsConfigs.value.some((item) => item.id === configId && item.enabled)
+    const selected = configId && httpTtsConfigs.value.some((item) => item.id === configId && item.enabled)
       ? configId
       : null;
     options.updateReaderSetting("httpTtsConfigId", selected);
-    if (!selected && options.reader.settings.value.ttsEngine === "http") {
+    if (!selected && settings.value.reader.ttsEngine === "http") {
       options.updateReaderSetting("ttsEngine", "system");
     }
     httpTtsAudioError.value = "";
@@ -246,7 +246,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   }
 
   function startSelectedTts(selectedText?: string): void {
-    if (options.reader.settings.value.ttsEngine === "http") {
+    if (settings.value.reader.ttsEngine === "http") {
       void startHttpTtsAudio();
     } else {
       void startTts(selectedText);
@@ -254,17 +254,17 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   }
 
   function pauseSelectedTts(): void {
-    if (options.reader.settings.value.ttsEngine === "http") pauseHttpTtsAudio();
+    if (settings.value.reader.ttsEngine === "http") pauseHttpTtsAudio();
     else pauseTts();
   }
 
   function resumeSelectedTts(): void {
-    if (options.reader.settings.value.ttsEngine === "http") void resumeHttpTtsAudio();
+    if (settings.value.reader.ttsEngine === "http") void resumeHttpTtsAudio();
     else resumeTts();
   }
 
   function stopSelectedTts(): void {
-    if (options.reader.settings.value.ttsEngine === "http") stopHttpTtsAudio(true);
+    if (settings.value.reader.ttsEngine === "http") stopHttpTtsAudio(true);
     else stopTts();
   }
 
@@ -329,7 +329,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
         ttsChunks = splitTtsText(selected).map((chunk) => chunk.text);
         ttsChunkTargets = ttsChunks.map(() => ({ target: null, startNode: null, startOffset: 0, endNode: null, endOffset: 0 }));
       } else {
-        const segments = await options.loadSegments(options.reader.settings.value.ttsStartPosition === "current");
+        const segments = await options.loadSegments(settings.value.reader.ttsStartPosition === "current");
         if (generation !== ttsGeneration) return;
         setTtsSegments(segments);
       }
@@ -363,11 +363,11 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     const loadRevision = options.reader.getLoadRevision();
     try {
       const utterance = new SpeechSynthesisUtterance(text);
-      const selectedVoice = ttsVoices.value.find((voice) => voice.voiceURI === options.reader.settings.value.ttsVoiceURI);
+      const selectedVoice = ttsVoices.value.find((voice) => voice.voiceURI === settings.value.reader.ttsVoiceURI);
       if (ttsNotice.value.startsWith("声音将在当前片段结束后切换")) ttsNotice.value = "";
       if (selectedVoice) utterance.voice = selectedVoice;
-      else if (options.reader.settings.value.ttsVoiceURI) ttsNotice.value = "已保存的语音当前不可用，正在使用系统默认语音。";
-      utterance.rate = options.reader.settings.value.ttsRate;
+      else if (settings.value.reader.ttsVoiceURI) ttsNotice.value = "已保存的语音当前不可用，正在使用系统默认语音。";
+      utterance.rate = settings.value.reader.ttsRate;
       utterance.onstart = () => {
         if (generation !== ttsGeneration || loadRevision !== options.reader.getLoadRevision()) return;
         options.highlightChunk(target, loadRevision);
@@ -422,7 +422,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       ttsNotice.value = "选中文字朗读已完成。";
       return;
     }
-    if (!options.reader.settings.value.ttsContinueAcrossChapters) {
+    if (!settings.value.reader.ttsContinueAcrossChapters) {
       ttsSelectionPlayback.value = false;
       ttsExpectedChapterKey.value = null;
       ttsPlayback.value = "idle";
@@ -460,7 +460,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       }
       const segments = await options.loadSegments();
       if (generation !== ttsGeneration) return;
-      if (!options.reader.settings.value.ttsContinueAcrossChapters) {
+      if (!settings.value.reader.ttsContinueAcrossChapters) {
         ttsSelectionPlayback.value = false;
         ttsExpectedChapterKey.value = null;
         ttsPlayback.value = "idle";
@@ -548,14 +548,14 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   function requestHttpTtsChunkAudio(index: number, configId: string): Promise<HttpTtsChunkAudio> {
     const chunk = httpTtsChunks[index];
     if (!chunk) return Promise.reject(new Error("朗读段落已失效。"));
-    const legacyRate = Math.round(clamp(options.reader.settings.value.ttsRate * 10 - 5, 0, 45));
+    const legacyRate = Math.round(clamp(settings.value.reader.ttsRate * 10 - 5, 0, 45));
     return requestHttpTtsAudio(configId, chunk.text, legacyRate).then((result) => result.status === "empty"
       ? { kind: "empty" }
       : { kind: "audio", audioId: result.audioId, resource: result.resource });
   }
 
   function prefetchFollowingHttpTtsChunks(generation: number): void {
-    const configId = options.reader.settings.value.httpTtsConfigId;
+    const configId = settings.value.reader.httpTtsConfigId;
     if (generation !== httpTtsGeneration || !httpTtsAudioActive.value || !configId) return;
     const prefetchGeneration = httpTtsPrefetchGeneration;
     const lastIndex = Math.min(httpTtsChunks.length - 1, httpTtsChunkIndex + 2);
@@ -566,7 +566,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
           const stillNeeded = index >= httpTtsChunkIndex && index <= httpTtsChunkIndex + 2;
           if (generation !== httpTtsGeneration || prefetchGeneration !== httpTtsPrefetchGeneration
             || !httpTtsAudioActive.value || !stillNeeded
-            || options.reader.settings.value.httpTtsConfigId !== configId) {
+            || settings.value.reader.httpTtsConfigId !== configId) {
             if (prepared.kind === "audio") void releaseHttpTtsAudio(prepared.audioId).catch(() => undefined);
             return null;
           }
@@ -624,7 +624,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   }
 
   async function startHttpTtsAudio(): Promise<void> {
-    const configId = options.reader.settings.value.httpTtsConfigId;
+    const configId = settings.value.reader.httpTtsConfigId;
     if (!options.reader.visible.value || !options.reader.book.value || !configId || options.reader.busy.value
       || options.reader.mediaChapter.value || options.reader.pdfPage.value || options.reader.imagePage.value) {
       httpTtsAudioError.value = configId ? "当前章节暂不支持远程朗读。" : "请先在设置中选择 HTTP TTS 配置。";
@@ -641,7 +641,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     httpTtsSkippedChunks = 0;
     httpTtsLoadRevision = options.reader.getLoadRevision();
     try {
-      httpTtsChunks = await collectHttpTtsChunks(options.reader.settings.value.ttsStartPosition === "current");
+      httpTtsChunks = await collectHttpTtsChunks(settings.value.reader.ttsStartPosition === "current");
       if (generation !== httpTtsGeneration) return;
       if (!httpTtsChunks.length) throw new Error("当前章节没有可朗读的正文。");
       httpTtsChunkIndex = 0;
@@ -658,7 +658,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   async function requestNextHttpTtsChunk(generation: number): Promise<void> {
     if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) return;
-    const configId = options.reader.settings.value.httpTtsConfigId;
+    const configId = settings.value.reader.httpTtsConfigId;
     if (!configId) return;
     httpTtsAudioBusy.value = true;
     try {
@@ -764,7 +764,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   async function advanceHttpTtsChapter(generation: number): Promise<void> {
     if (generation !== httpTtsGeneration) return;
-    if (!options.reader.settings.value.ttsContinueAcrossChapters) {
+    if (!settings.value.reader.ttsContinueAcrossChapters) {
       const skippedChunks = httpTtsSkippedChunks;
       stopHttpTtsAudio(false);
       httpTtsAudioNotice.value = skippedChunks > 0

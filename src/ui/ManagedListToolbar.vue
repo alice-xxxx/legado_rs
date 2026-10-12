@@ -71,7 +71,7 @@ const emit = defineEmits<{
   padding: 0 10px;
   border: 1px solid var(--app-line);
   border-radius: 10px;
-  background: #fff;
+  background: var(--app-surface);
   color: var(--app-muted);
 }
 
@@ -89,7 +89,7 @@ const emit = defineEmits<{
   background: transparent;
   color: var(--app-text);
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-font-body);
 }
 
 .managed-list-toolbar__search input::placeholder {
@@ -112,11 +112,10 @@ const emit = defineEmits<{
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #343640;
+  color: var(--app-text);
   cursor: pointer;
 }
 
-.managed-list-toolbar__button:hover,
 .managed-list-toolbar__button.is-active,
 .managed-list-toolbar__button.is-open {
   background: var(--app-accent-soft);

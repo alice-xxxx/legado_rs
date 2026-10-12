@@ -43,7 +43,7 @@ defineProps<{
 .external-import-banner {
   position: fixed;
   z-index: 60;
-  top: max(12px, env(safe-area-inset-top));
+  top: max(12px, var(--safe-top));
   left: 50%;
   display: flex;
   width: min(540px, calc(100vw - 24px));

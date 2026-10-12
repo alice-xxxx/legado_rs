@@ -41,11 +41,11 @@ defineProps<{ context: PdfImportPromptContext }>();
 <style scoped>
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgb(25 27 35 / 36%); backdrop-filter: blur(3px); }
 .app-modal { width: min(560px, 100%); max-height: min(88dvh, 900px); overflow: auto; padding: 22px; border: 1px solid var(--app-line); border-radius: 16px; background: var(--app-surface); box-shadow: var(--app-shadow); }
-.eyebrow { margin: 0 0 6px; color: var(--app-muted); font-size: 11px; }
-h2 { margin: 0 0 10px; font-size: 18px; }
-.modal-description { color: var(--app-muted); font-size: 13px; line-height: 1.55; }
-.form-field { display: grid; gap: 7px; margin-top: 18px; font-size: 12px; }
+.eyebrow { margin: 0 0 6px; color: var(--app-muted); font-size: var(--ui-font-caption); }
+h2 { margin: 0 0 10px; font-size: var(--ui-font-heading); }
+.modal-description { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.55; }
+.form-field { display: grid; gap: 7px; margin-top: 18px; font-size: var(--ui-font-caption); }
 .form-field input { min-height: 40px; padding: 0 10px; border: 1px solid var(--app-line); border-radius: 9px; background: var(--app-surface); }
-.pdf-password-error { color: var(--app-danger); font-size: 12px; }
+.pdf-password-error { color: var(--app-danger); font-size: var(--ui-font-caption); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>

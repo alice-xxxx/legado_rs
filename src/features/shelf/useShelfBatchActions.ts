@@ -1,6 +1,8 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
 import { shelf as shelfPositions } from "./shelfStore";
-import type { AppTask, ResourceDescriptor, ShelfResource, TaskResponse } from "../../api/types";
+import { shelfBooks as shelf } from "./shelfBooks";
+import { tasks, refreshTasks } from "../tasks/tasksStore";
+import type { AppTask, ShelfResource, TaskResponse } from "../../api/types";
 
 type ShelfBook = ShelfResource["books"][number];
 type ShelfBatchRemovalTarget = Pick<ShelfBook, "id" | "title" | "author">;
@@ -17,16 +19,13 @@ export interface ShelfBatchTaskResult {
 }
 
 interface ShelfBatchActionsOptions {
-  shelf: Ref<ShelfResource>;
   visibleBooks: ComputedRef<ShelfResource["books"]>;
   groups: ComputedRef<string[]>;
-  tasks: Ref<AppTask[]>;
   recoveryRequired: Ref<boolean>;
   recoveryTitle: Ref<string>;
   recoveryMessage: Ref<string>;
   isShelfScreen: () => boolean;
   getRestoreRevision: () => number;
-  refreshTasks: (descriptor?: ResourceDescriptor) => Promise<void>;
   refreshChapters: (bookId: string) => Promise<TaskResponse>;
   startBookDownload: (bookId: string) => Promise<TaskResponse>;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -39,14 +38,11 @@ interface ShelfBatchActionsOptions {
  */
 export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
   const {
-    shelf,
     visibleBooks,
     groups,
-    tasks,
     recoveryRequired,
     isShelfScreen,
     getRestoreRevision,
-    refreshTasks,
     refreshChapters,
     startBookDownload,
     notify,
@@ -186,12 +182,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
             }
 
             started.push({ id: book.id, title: book.title, taskId: task.id });
-            tasks.value = [...tasks.value.filter((entry) => entry.id !== task.id), task];
-            try {
-              await refreshTasks(response.resource);
-            } catch (error) {
-              taskListWarnings.push({ id: book.id, title: book.title, message: errorText(error) });
-            }
           } catch (error) {
             if (!isCurrent()) return;
             let taskListRefreshed = false;

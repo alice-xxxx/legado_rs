@@ -68,7 +68,7 @@ function navigate(screen: MainScreen): void {
   width: 82px;
   padding: 18px 12px;
   border-right: 1px solid var(--app-line);
-  background: rgb(255 255 255 / 92%);
+  background: var(--app-header);
   backdrop-filter: blur(18px);
 }
 
@@ -91,13 +91,12 @@ function navigate(screen: MainScreen): void {
   border-radius: 16px;
   background: transparent;
   color: var(--app-muted);
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
   font-weight: 600;
   cursor: pointer;
   transition: color .18s ease, background .18s ease;
 }
 
-.rail-link:hover,
 .rail-link.active {
   color: var(--app-accent-ink);
   background: var(--app-accent-soft);
@@ -135,7 +134,7 @@ function navigate(screen: MainScreen): void {
     height: calc(67px + var(--safe-bottom));
     padding: 4px 24px var(--safe-bottom);
     border-top: 1px solid var(--app-line);
-    background: rgb(248 248 250 / 92%);
+    background: var(--app-header);
     backdrop-filter: blur(18px);
   }
 
@@ -161,7 +160,7 @@ function navigate(screen: MainScreen): void {
     border-radius: 0;
     background: transparent;
     color: var(--app-muted);
-    font-size: 10px;
+    font-size: var(--ui-font-body);
     font-weight: 650;
     cursor: pointer;
   }

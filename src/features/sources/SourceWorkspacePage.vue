@@ -7,15 +7,13 @@ import SourceLoginFormView from "./SourceLoginForm.vue";
 import { useSourceLoginActions } from "./useSourceLoginActions";
 import { useSourceDebugActions } from "./useSourceDebugActions";
 import { useSourceManagementActions } from "./useSourceManagementActions";
-import type { AppBootstrap, AppTask, ResourceDescriptor, SourceMetadata, SourceLoginForm, TasksResource } from "../../api/types";
+import type { AppBootstrap, SourceMetadata, SourceLoginForm } from "../../api/types";
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources, enabledSources, bookSourceCandidates } from "./sourcesStore";
-import { readResource } from "../../api/resources";
-import { tasksResource } from "../../api/tasks";
+import { tasks as taskList, tasksLoaded as taskListLoaded, tasksError, ensureTasksLoaded } from "../tasks/tasksStore";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { clearSourceDebugPreview, debugSearchResult, searchBooks } from "../../api/search";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import router, { routeNames } from "../../router";
@@ -33,14 +31,11 @@ const sourceExportBusy = ref(false);
 const sourceImportBusy = ref(false);
 const sourceImportOpen = ref(false);
 const sourceImportUrl = ref("");
-const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
-const taskList = ref<AppTask[]>([]);
-const taskListLoaded = ref(false);
-const searchBusy = computed(() => !taskListLoaded.value || taskList.value.some(task => task.kind === "search"
+const recoveryRequired = shelfBatchRecoveryRequired;
+const searchBusy = computed(() => !taskListLoaded.value || !!tasksError.value || taskList.value.some(task => task.kind === "search"
   && ["queued", "running", "pausing", "cancelling"].includes(task.status)));
 const searchResultBatchBusy = ref(false);
 let restoreFrontendRevision = 0;
-let taskRefreshRequestRevision = 0;
 let unlisteners: UnlistenFn[] = [];
 let pageDisposed = false;
 
@@ -50,10 +45,8 @@ watch(sources, () => {
 });
 
 const sourceManagementActions = useSourceManagementActions({
-  sources,
   selectedSourceIds,
   selectedSourceRows,
-  bookSourceCandidates,
   sourceBatchBusy,
   sourceExportBusy,
   sourceImportOpen,
@@ -61,24 +54,16 @@ const sourceManagementActions = useSourceManagementActions({
   sourceImportUrl,
   pendingSourceRemoval,
   editingSource,
-  recoveryRequired,
   getRestoreFrontendRevision: () => restoreFrontendRevision,
   errorText,
   notify,
 });
 const sourceDebugActions = useSourceDebugActions({
-  sources,
-  bookSourceCandidates,
   selectedSourceRows,
   sourceBatchBusy,
   sourceExportBusy,
   searchBusy,
   searchResultBatchBusy,
-  shelfBatchRecoveryRequired: recoveryRequired,
-  searchBooks,
-  debugSearchResult,
-  clearSourceDebugPreview,
-  readResource,
   notify,
   errorText,
 });
@@ -98,11 +83,9 @@ const sourceLoginCredentials = ref<Record<string, string>>(Object.create(null) a
 const sourceLoginFormError = ref("");
 const sourceLoginFeedback = ref("");
 const sourceLoginActions = useSourceLoginActions({
-  sources,
   selectedSourceRows,
   sourceBatchBusy,
   sourceExportBusy,
-  shelfBatchRecoveryRequired: recoveryRequired,
   sourceLoginTarget,
   sourceLoginBusy,
   sourceHasLoginState,
@@ -123,16 +106,6 @@ function toggleSourceRow(id: string): void {
 }
 function sourceName(id: string): string {
   return sources.value.find(source => source.id === id)?.name ?? id;
-}
-
-async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
-  const requestRevision = ++taskRefreshRequestRevision;
-  const restoreRevision = restoreFrontendRevision;
-  const resource = descriptor ?? (await tasksResource()).resource;
-  const document = await readResource<TasksResource>(resource);
-  if (pageDisposed || requestRevision !== taskRefreshRequestRevision || restoreRevision !== restoreFrontendRevision) return;
-  taskList.value = Array.isArray(document.tasks) ? document.tasks : [];
-  taskListLoaded.value = true;
 }
 
 function reportTaskRefreshError(error: unknown): void {
@@ -171,33 +144,19 @@ const login = proxyRefs({
 
 async function handleAppStateUpdated(): Promise<void> {
   const restoreRevision = ++restoreFrontendRevision;
-  taskRefreshRequestRevision += 1;
-  taskListLoaded.value = false;
   selectedSourceIds.value = [];
   selectedSourceRows.value = [];
   pendingSourceRemoval.value = [];
   editingSource.value = null;
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
-  await refreshTasks();
+  await ensureTasksLoaded();
   if (pageDisposed || restoreRevision !== restoreFrontendRevision) return;
   selectedSourceIds.value = bookSourceCandidates.value.map(source => source.id);
 }
 
 onMounted(async () => {
   try {
-    const unlistenTaskResource = await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", event => {
-      if (event.payload.kind === "tasks") {
-        void refreshTasks(event.payload.resource).catch(reportTaskRefreshError);
-      }
-    });
-    if (pageDisposed) unlistenTaskResource();
-    else unlisteners.push(unlistenTaskResource);
-    const unlistenTask = await listen<{ taskId: string; resource: ResourceDescriptor }>("task-updated", event => {
-      void refreshTasks(event.payload.resource).catch(reportTaskRefreshError);
-    });
-    if (pageDisposed) unlistenTask();
-    else unlisteners.push(unlistenTask);
     const unlistenAppState = await listen<AppBootstrap>("app-state-updated", () => {
       void handleAppStateUpdated().catch(reportTaskRefreshError);
     });
@@ -208,7 +167,7 @@ onMounted(async () => {
   }
   if (pageDisposed) return;
   await Promise.all([
-    refreshTasks().catch(error => {
+    ensureTasksLoaded().catch(error => {
       if (!pageDisposed) notify(`浠诲姟鐘舵€佽鍙栧け璐ワ細${errorText(error)}`, "error");
     }),
   ]);
@@ -216,7 +175,6 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   pageDisposed = true;
-  taskRefreshRequestRevision += 1;
   restoreFrontendRevision += 1;
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
@@ -651,53 +609,53 @@ onBeforeUnmount(() => {
 .source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);max-height:min(88dvh,800px);padding:0;overflow:hidden;border-radius:14px}
 .source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:14px;padding:22px 24px 18px;border-bottom:1px solid var(--app-line)}
 .source-login-heading>div{min-width:0}
-.source-login-heading h2{margin:0;color:var(--app-text);font-size:20px;font-weight:650}
-.source-login-heading p{margin:6px 0 0;color:#838c9b;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.source-login-heading>button{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:8px;background:#f1f3f8;color:#80899a;cursor:pointer}
+.source-login-heading h2{margin:0;color:var(--app-text);font-size:var(--ui-font-title);font-weight:650}
+.source-login-heading p{margin:6px 0 0;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.source-login-heading>button{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:8px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
 .source-login-heading svg{width:18px;height:18px}
 .source-login-body{min-height:0;padding:22px 24px;overflow-y:auto;overscroll-behavior:contain}
-.source-login-web-hint{margin:0;color:#818a99;font-size:14px;line-height:1.6}
+.source-login-web-hint{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
 .source-login-web-actions{display:flex;gap:10px;margin-top:18px}
 .source-login-web-actions>.primary{flex:1}
 .source-login-web-actions>.button{min-height:44px}
-.source-login-feedback,.source-login-error{margin:16px 0 0;padding:11px 13px;border-radius:8px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.source-login-feedback,.source-login-error{margin:16px 0 0;padding:11px 13px;border-radius:8px;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere}
 .source-login-feedback{background:var(--app-accent-soft);color:var(--app-accent-ink)}
-.source-login-error{background:#fff0f2;color:#ad4858}
+.source-login-error{background:var(--app-danger-soft);color:var(--app-danger)}
 .source-login-state{display:flex;align-items:center;gap:8px;margin-top:22px;padding-top:18px;border-top:1px solid var(--app-line)}
-.source-login-state>span{flex:none;width:7px;height:7px;border-radius:50%;background:#bdc4d0}
+.source-login-state>span{flex:none;width:7px;height:7px;border-radius:50%;background:var(--app-accent-soft)}
 .source-login-state>span.saved{background:var(--app-success)}
-.source-login-state>p{flex:1;margin:0;font-size:12px;color:#818a99}
-.source-login-state>button{min-height:36px;padding:0 8px;color:var(--app-accent);font-size:12px;cursor:pointer}
-.source-login-storage{margin-top:12px;color:#8a92a0;font-size:12px}
+.source-login-state>p{flex:1;margin:0;font-size:var(--ui-font-caption);color:var(--app-muted)}
+.source-login-state>button{min-height:36px;padding:0 8px;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
+.source-login-storage{margin-top:12px;color:var(--app-subtle);font-size:var(--ui-font-caption)}
 .source-login-storage>summary{width:max-content;padding:8px 0;cursor:pointer}
 .source-login-storage>p{margin:7px 0 12px;line-height:1.6}
-@media(max-width:550px){.source-login-heading{padding:19px 18px 16px}.source-login-body{padding:20px 18px}.source-login-heading h2{font-size:18px}}
-.source-confirm{color:#9d7952;background:#f7f0e6}
+@media(max-width:550px){.source-login-heading{padding:19px 18px 16px}.source-login-body{padding:20px 18px}.source-login-heading h2{font-size:var(--ui-font-heading)}}
+.source-confirm{color:var(--app-warning);background:var(--app-panel-soft)}
 .source-confirm svg{width:22px;height:22px}
 .detail-close svg{width:18px;height:18px}
 .source-import-modal{width:min(515px,100%);box-sizing:border-box;padding:25px}
 .source-import-modal--url{width:min(420px,100%);padding:22px}
 .source-import-modal--new{max-height:90dvh;overflow-y:auto}
 .source-import-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.source-import-heading h2{margin:0;font-size:21px;color:#343544}
-.source-import-close{display:grid;place-items:center;flex:none;width:33px;height:33px;border:0;border-radius:9px;background:#f4f4f7;color:#7b7e89;cursor:pointer}
+.source-import-heading h2{margin:0;font-size:var(--ui-font-title);color:var(--app-text)}
+.source-import-close{display:grid;place-items:center;flex:none;width:33px;height:33px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
 .source-import-close svg{width:18px;height:18px}
 .source-import-close:disabled{opacity:.45;cursor:default}
 .source-import-url{display:grid;gap:9px;margin-top:10px}
 .source-import-new{display:grid;gap:11px;margin-top:22px}
-.source-import-modal--url .source-import-heading h2{font-size:17px}
-.source-import-url label,.source-import-new label{font-size:12px;font-weight:650;color:#4c4e5c}
+.source-import-modal--url .source-import-heading h2{font-size:var(--ui-font-heading)}
+.source-import-url label,.source-import-new label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
 .source-import-modal--new{width:min(820px,100%)}
 .source-new-discard-mask{z-index:150}
-.source-import-hint{margin:0;color:#9194a0;font-size:11px;line-height:1.65}
-.source-import-url input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid #dfe1e9;border-radius:9px;background:#fff;color:#323643;font:inherit;font-size:12px}
-.source-import-url input.is-invalid{border-color:#c76b76}
-.source-import-url>small{font-size:11px;color:#9396a1;line-height:1.5}
+.source-import-hint{margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
+.source-import-url input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid var(--app-line);border-radius:9px;background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body)}
+.source-import-url input.is-invalid{border-color:var(--app-danger-line)}
+.source-import-url>small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
 .source-import-url>button{justify-self:start}
-.source-import-error{margin:0;color:#b55261;font-size:12px}
+.source-import-error{margin:0;color:var(--app-danger);font-size:var(--ui-font-caption)}
 .source-import-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px;padding-top:12px}
 .source-import-url .source-import-actions{padding-top:5px}
-.source-import-loading{margin:12px 0 0;font-size:12px;color:#6c5fbb}
+.source-import-loading{margin:12px 0 0;font-size:var(--ui-font-caption);color:var(--app-accent-ink)}
 @media(max-width:550px){.source-import-modal{padding:19px}.source-import-modal--url{padding:22px}}
 .source-new-discard-mask .app-modal{width:min(430px,100%);padding:22px;border-radius:14px}
 </style>

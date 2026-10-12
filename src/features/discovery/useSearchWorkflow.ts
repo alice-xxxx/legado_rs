@@ -1,11 +1,12 @@
 import { computed, ref, type Ref } from "vue";
-import { type AppTask, type BookResource, type ResourceDescriptor, type SearchBookResult, type SearchResource, type SourceMetadata, type TaskResponse } from "../../api/types";
-import { cancelTask, checkNewChapters, refreshChapters, startBookDownload } from "../../api/tasks";
+import { type ResourceDescriptor, type SearchBookResult, type SearchResource } from "../../api/types";
+import { cancelTask } from "../../api/tasks";
 import { readResource } from "../../api/resources";
 import { startSearch } from "../../api/search";
+import { bookSourceCandidates } from "../sources/sourcesStore";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 
 interface SearchWorkflowDependencies {
-  bookSourceCandidates: Readonly<Ref<SourceMetadata[]>>;
   selectedSourceIds: Ref<string[]>;
   searchKeyword: Ref<string>;
   searchPage: Ref<number>;
@@ -15,19 +16,9 @@ interface SearchWorkflowDependencies {
   searchResults: Ref<SearchBookResult[]>;
   searchResourceErrors: Ref<Array<{ sourceId?: string; message: string }>>;
   searchWasRun: Ref<boolean>;
-  shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
-  openedBook?: Ref<BookResource | null>;
-  refreshTasks?: (descriptor?: ResourceDescriptor) => Promise<void>;
-  reusedCatalogTaskNotice?: (task: AppTask) => string;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
   getRestoreRevision: () => number;
-  startSearch: typeof startSearch;
-  cancelTask: typeof cancelTask;
-  startBookDownload?: typeof startBookDownload;
-  refreshChapters?: typeof refreshChapters;
-  checkNewChapters?: typeof checkNewChapters;
-  readResource: typeof readResource;
 }
 
 /**
@@ -35,7 +26,6 @@ interface SearchWorkflowDependencies {
  * 新 descriptor 立即替换展示资源的读取，Rust 负责业务结果与发布权。
  */
 export function useSearchWorkflow({
-  bookSourceCandidates,
   selectedSourceIds,
   searchKeyword,
   searchPage,
@@ -45,19 +35,9 @@ export function useSearchWorkflow({
   searchResults,
   searchResourceErrors,
   searchWasRun,
-  shelfBatchRecoveryRequired,
-  openedBook,
-  refreshTasks,
-  reusedCatalogTaskNotice,
   notify,
   errorText,
   getRestoreRevision,
-  startSearch,
-  cancelTask,
-  startBookDownload,
-  refreshChapters,
-  checkNewChapters,
-  readResource,
 }: SearchWorkflowDependencies) {
   const activeSearchTaskId = ref<string | null>(null);
   const searchCancelRequestTaskId = ref<string | null>(null);
@@ -198,36 +178,6 @@ export function useSearchWorkflow({
     }
   }
 
-  async function enqueueBookTask(action: "download" | "refresh" | "check"): Promise<void> {
-    if (shelfBatchRecoveryRequired.value || !openedBook || !refreshTasks || !reusedCatalogTaskNotice
-      || !startBookDownload || !refreshChapters || !checkNewChapters) return;
-    const book = openedBook.value;
-    const restoreRevision = getRestoreRevision();
-    if (!book) return;
-    try {
-      let response: TaskResponse;
-      if (action === "download") {
-        response = await startBookDownload(book.id);
-      } else if (action === "refresh") {
-        response = await refreshChapters(book.id);
-      } else {
-        response = await checkNewChapters(book.id);
-      }
-      if (restoreRevision !== getRestoreRevision()) return;
-      await refreshTasks(response.resource);
-      if (restoreRevision !== getRestoreRevision()) return;
-      if (response.reused) {
-        notify(reusedCatalogTaskNotice(response.task));
-        return;
-      }
-      notify(action === "download" ? "整本缓存任务已加入。" : action === "refresh" ? "目录更新任务已加入。" : "新章节检查已加入。 ");
-    } catch (error) {
-      if (restoreRevision === getRestoreRevision()) {
-        notify(`无法创建任务：${errorText(error)}`, "error");
-      }
-    }
-  }
-
   function resetForRestore(): void {
     snapshotRead?.abort();
     snapshotRead = null;
@@ -249,6 +199,5 @@ export function useSearchWorkflow({
     consumeSearchSnapshot,
     runSearch,
     cancelActiveSearch,
-    enqueueBookTask,
   };
 }

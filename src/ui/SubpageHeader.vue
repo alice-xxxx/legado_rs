@@ -36,16 +36,16 @@ const emit = defineEmits<{ back: [] }>();
   top: 0;
   z-index: 30;
   display: flex;
-  min-height: 64px;
+  min-height: var(--ui-header-height);
   align-items: center;
   gap: 12px;
-  padding-inline: 16px;
+  padding-inline: var(--ui-header-gutter);
   border-bottom: 1px solid var(--app-line);
   background: var(--app-background);
 }
 
 .subpage-header--compact {
-  min-height: 48px;
+  min-height: var(--ui-header-height);
 }
 
 .subpage-header__copy {
@@ -56,7 +56,7 @@ const emit = defineEmits<{ back: [] }>();
 .subpage-header__copy h2 {
   margin: 0;
   color: var(--app-text);
-  font-size: 17px;
+  font-size: var(--ui-font-heading);
   font-weight: 700;
   line-height: 1.3;
 }
@@ -69,10 +69,6 @@ const emit = defineEmits<{ back: [] }>();
 
 .subpage-header__back {
   color: var(--app-muted);
-}
-
-.subpage-header__back:hover:not(:disabled) {
-  color: var(--app-accent);
 }
 
 </style>

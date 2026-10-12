@@ -9,7 +9,6 @@ export interface LocalBookImportSession {
   pdfPasswordError: Readonly<Ref<string>>;
   pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
   externalFileRequestBusy: Readonly<Ref<boolean>>;
-  backupBusy: Readonly<Ref<unknown>>;
   importLocalBook: (format?: LocalImportFormat) => Promise<void>;
   submitPdfPassword: (password: string) => Promise<void>;
   cancelPdfPasswordPrompt: () => Promise<void>;

@@ -114,32 +114,30 @@ const saveError = ref("");
  </section>
 </template>
 <style scoped>
-.source-edit-screen{--source-editor-inset:22px;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;padding:0;box-sizing:border-box;margin:0;background:#fff;overflow:hidden}
+.source-edit-screen{--source-editor-inset:22px;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;padding:0;box-sizing:border-box;margin:0;background:var(--app-surface);overflow:hidden}
 .source-edit-bar{flex:none;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:10px;min-height:58px;padding-inline:var(--source-editor-inset);border-bottom:1px solid var(--app-line)}
-.source-edit-back{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:#777b86;font-size:12px;cursor:pointer}
-.source-edit-back:hover{background:#ece9fb;color:var(--app-accent)}
+.source-edit-back{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 8px;border:0;border-radius:8px;background:transparent;color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
 .source-edit-back :deep(svg){width:16px;height:16px}
-.source-edit-bar>strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:16px;color:#414b5b}
+.source-edit-bar>strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;font-size:var(--ui-font-body);color:var(--app-text)}
 .source-edit-tools{display:flex;align-items:center;gap:4px}
-.source-edit-tools>.button{background:var(--app-accent);border-radius:8px;font-size:14px;min-height:40px}
+.source-edit-tools>.button{background:var(--app-accent);border-radius:8px;font-size:var(--ui-font-body);min-height:40px}
 .source-edit-menu{position:relative;z-index:8}
-.source-edit-menu>summary{display:grid;place-items:center;width:38px;height:44px;cursor:pointer;list-style:none;color:#656e7d}
+.source-edit-menu>summary{display:grid;place-items:center;width:38px;height:44px;cursor:pointer;list-style:none;color:var(--app-muted)}
 .source-edit-menu>summary::-webkit-details-marker{display:none}
 .source-edit-menu svg{width:20px;height:20px}
-.source-edit-menu>div{position:absolute;top:100%;right:0;display:grid;min-width:210px;padding:6px;border:1px solid var(--app-line);border-radius:9px;background:#fff;box-shadow:0 8px 24px #18203422}
-.source-edit-menu button{display:flex;align-items:center;gap:9px;min-height:44px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left;color:#485567;font-size:14px;cursor:pointer}
-.source-edit-menu button:hover:not(:disabled){background:#f1f4fa}
+.source-edit-menu>div{position:absolute;top:100%;right:0;display:grid;min-width:210px;padding:6px;border:1px solid var(--app-line);border-radius:9px;background:var(--app-surface);box-shadow:0 8px 24px #18203422}
+.source-edit-menu button{display:flex;align-items:center;gap:9px;min-height:44px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left;color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
 .source-edit-menu button:disabled{opacity:.4;cursor:default}
-.source-edit-menu button.danger{color:#b4515f}
-.source-edit-menu small{padding:8px 12px;font-size:12px;line-height:1.5;color:#8b929e}
+.source-edit-menu button.danger{color:var(--app-danger)}
+.source-edit-menu small{padding:8px 12px;font-size:var(--ui-font-caption);line-height:1.5;color:var(--app-subtle)}
 .source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0;padding:0;overscroll-behavior:contain}
 .source-edit-body :deep(.source-field-editor){padding-inline:var(--source-editor-inset)}
-.source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:14px;line-height:1.5}
-.source-edit-error{color:#b34954;background:#fff0f3}
+.source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:var(--ui-font-body);line-height:1.5}
+.source-edit-error{color:var(--app-danger);background:var(--app-danger-soft)}
 .source-discard-prompt{position:fixed;z-index:90;inset:0;display:grid;place-items:center;padding:16px;background:#191b2b88}
-.source-discard-prompt>div{width:min(440px,100%);box-sizing:border-box;padding:24px;border-radius:14px;background:#fff;box-shadow:0 18px 48px #1617242a}
-.source-discard-prompt strong{font-size:17px;color:#31313e}
-.source-discard-prompt p{font-size:13px;line-height:1.6;color:#7b7d89}
+.source-discard-prompt>div{width:min(440px,100%);box-sizing:border-box;padding:24px;border-radius:14px;background:var(--app-surface);box-shadow:0 18px 48px #1617242a}
+.source-discard-prompt strong{font-size:var(--ui-font-heading);color:var(--app-text)}
+.source-discard-prompt p{font-size:var(--ui-font-caption);line-height:1.6;color:var(--app-muted)}
 .source-discard-prompt .button{margin-right:8px}
-@media(max-width:860px){.source-edit-screen{--source-editor-inset:14px}.source-edit-body{padding-bottom:calc(18px + env(safe-area-inset-bottom))}.source-edit-back{font-size:0;padding:0 8px}.source-edit-back :deep(svg){width:22px;height:22px}}
+@media(max-width:860px){.source-edit-screen{--source-editor-inset:14px}.source-edit-body{padding-bottom:calc(18px + var(--safe-bottom))}.source-edit-back{font-size:0;padding:0 8px}.source-edit-back :deep(svg){width:22px;height:22px}}
 </style>

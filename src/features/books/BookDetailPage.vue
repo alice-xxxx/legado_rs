@@ -1,12 +1,11 @@
 <script setup lang="ts">
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources, bookSourceCandidates } from "../sources/sourcesStore";
 import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { checkNewChapters, refreshChapters, startBookDownload, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, BookResource, ResourceDescriptor, TasksResource } from "../../api/types";
+import { checkNewChapters, refreshChapters, startBookDownload } from "../../api/tasks";
+import type { AppBootstrap, BookResource } from "../../api/types";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -21,11 +20,11 @@ import { consumeBookDetailOpenRequest } from "./bookDetailOpenRequest";
 import { useBookDetailSession } from "./useBookDetailSession";
 import { clearOpenedBook, openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
 import { errorText, notify } from "../../app/notifications";
+import { tasks, ensureTasksLoaded, latestTaskUpdate } from "../tasks/tasksStore";
 import { getFrontendRestoreRevision, lockShelfBatchRecovery, shelfBatchRecoveryMessage, shelfBatchRecoveryRequired, shelfBatchRecoveryTitle } from "../../app/recoveryState";
 
 type BookTaskKind = "refreshChapters" | "checkNewChapters";
 type BookTaskAction = "download" | "refresh" | "check";
-const tasks = shallowRef<AppTask[]>([]);
 const sourceName = (id: string): string => sources.value.find((source) => source.id === id)?.name ?? id;
 const readerSession = getReaderSession();
 const { readerVisible, readingBook } = readerSession;
@@ -44,25 +43,14 @@ const pendingRemoval = ref<{ id: string; title: string } | null>(null);
 const bookChapterCacheClearBusy = ref(false);
 const bookChapterCacheClearError = ref("");
 const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(null);
-let tasksReadRevision = 0;
 let pageResourceRevision = 0;
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
-async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getRestoreRevision();
-  const requestRevision = ++tasksReadRevision;
-  const resource = descriptor ?? (await tasksResource()).resource;
-  const document = await readResource<TasksResource>(resource);
-  if (restoreRevision !== getRestoreRevision() || requestRevision !== tasksReadRevision) return;
-  const byId = new Map((document.tasks ?? []).map((task) => [task.id, task]));
-  for (const task of tasks.value) if (task.status === "recoveryRequired") byId.set(task.id, task);
-  tasks.value = [...byId.values()];
-}
 async function loadPageResources(expectedRevision = getRestoreRevision()): Promise<boolean> {
   const requestRevision = ++pageResourceRevision;
-  await refreshTasks();
+  await ensureTasksLoaded();
   return expectedRevision === getRestoreRevision() && requestRevision === pageResourceRevision;
 }
 const canRefreshOpenedBookInfo = computed(() => {
@@ -71,7 +59,7 @@ const canRefreshOpenedBookInfo = computed(() => {
     && sources.value.some((source) => source.id === book.sourceId && source.enabled === true);
 });
 const bookDetailActions = useBookDetailActions({
-  openedBook, readingBook, panelBusy: bookPanelBusy,
+  readingBook, panelBusy: bookPanelBusy,
   infoRefreshBusy: bookInfoRefreshBusy, canRefreshInfo: canRefreshOpenedBookInfo,
   progressResetBusy: bookProgressResetBusy,
   recoveryRequired, recoveryTitle: shelfBatchRecoveryTitle, recoveryMessage: shelfBatchRecoveryMessage,
@@ -84,11 +72,11 @@ const bookDetailActions = useBookDetailActions({
   notify, errorText,
 });
 const bookMetadataActions = useBookMetadataActions({
-  openedBook, editorBookId: bookDisplayEditorBookId, pendingRemoval, recoveryRequired,
+  editorBookId: bookDisplayEditorBookId, pendingRemoval, recoveryRequired,
   getRestoreRevision, notify,
 });
 const detailSession = useBookDetailSession({
-  openedBook, shelf, bookPanelBusy,
+  bookPanelBusy,
   isRecoveryRequired: () => recoveryRequired.value,
   getRestoreRevision,
   startReading: readerSession.startReading,
@@ -117,57 +105,30 @@ function retainUnlistener(unlisten: UnlistenFn): void {
   if (disposed) unlisten();
   else unlisteners.push(unlisten);
 }
+watch(latestTaskUpdate, async task => {
+  if (!task || disposed || !task.bookId || !["completed", "failed", "recoveryRequired"].includes(task.status ?? "")) return;
+  const revision = getRestoreRevision();
+  if (task.status === "recoveryRequired") {
+    const message = task.result?.warning || task.error || "请重启应用后完成目录恢复。";
+    lockShelfBatchRecovery("目录任务需要恢复", message);
+    notify(message, "error");
+    return;
+  }
+  if (openedBook.value?.id !== task.bookId) return;
+  if (task.status === "failed") {
+    notify(task.error || "目录任务失败。", "error");
+    return;
+  }
+  if (task.kind === "refreshChapters" || task.kind === "checkNewChapters") {
+    try { await bookMetadataActions.refreshOpenedBook(); }
+    catch (error) {
+      if (!disposed && revision === getRestoreRevision()) notify(`目录已更新，但书籍信息刷新失败：${errorText(error)}`, "error");
+    }
+  }
+}, { flush: "sync" });
+
 async function setupPageEvents(): Promise<void> {
   try {
-    retainUnlistener(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
-      if (event.payload.kind !== "tasks") return;
-      try {
-        await refreshTasks(event.payload.resource);
-      } catch (error) {
-        notify(`任务状态更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    retainUnlistener(await listen<{ taskId: string; resource: ResourceDescriptor }>("task-updated", async (event) => {
-      const revision = getRestoreRevision();
-      try {
-        await refreshTasks(event.payload.resource);
-        if (revision !== getRestoreRevision()) return;
-        const task = tasks.value.find((entry) => entry.id === event.payload.taskId);
-        if (!task || !task.bookId || !["completed", "failed", "recoveryRequired"].includes(task.status)) return;
-        if (task.status === "recoveryRequired") {
-          const message = task.result?.warning || task.error || "请重启应用后完成目录恢复。";
-          lockShelfBatchRecovery("目录任务需要恢复", message);
-          notify(message, "error");
-          return;
-        }
-        if (openedBook.value?.id !== task.bookId) return;
-        if (task.status === "failed") {
-          notify(task.error || "目录任务失败。", "error");
-          return;
-        }
-        if (task.kind === "refreshChapters" || task.kind === "checkNewChapters") {
-          try {
-            await bookMetadataActions.refreshOpenedBook();
-          } catch (error) {
-            if (revision === getRestoreRevision()) notify(`目录已更新，但书籍信息刷新失败：${errorText(error)}`, "error");
-          }
-        }
-      } catch (error) {
-        if (revision === getRestoreRevision()) notify(`任务状态更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    retainUnlistener(await listen<Partial<AppTask>>("task-recovery-required", async (event) => {
-      const task = event.payload;
-      if (task.id && task.status === "recoveryRequired") {
-        const existing = tasks.value.find((entry) => entry.id === task.id);
-        if (existing) tasks.value = tasks.value.map((entry) => entry.id === task.id ? { ...entry, ...task } : entry);
-        if (task.bookId === openedBook.value?.id) {
-          const message = task.result?.warning || task.error || "请重启应用后完成目录恢复。";
-          lockShelfBatchRecovery("目录任务需要恢复", message);
-          notify(message, "error");
-        }
-      }
-    }));
     retainUnlistener(await listen<AppBootstrap>("app-state-updated", async () => {
       const revision = getRestoreRevision();
       const detailsWereOpen = Boolean(searchResultDetails.value);
@@ -181,7 +142,6 @@ async function setupPageEvents(): Promise<void> {
       bookDisplayEditorBookId.value = null;
       pendingBookProgressReset.value = null;
       pendingRemoval.value = null;
-      tasksReadRevision += 1;
       try {
         const loaded = await loadPageResources(revision);
         if (!loaded || revision !== getRestoreRevision()) return;
@@ -249,7 +209,6 @@ onBeforeUnmount(() => {
   disposed = true;
   bookCacheActionGeneration += 1;
   pageResourceRevision += 1;
-  tasksReadRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
   detailSession.clear({ preserveOpenedBook: readerVisible.value });
   bookSourceSwitch.closeBookSourceSwitch();
@@ -327,8 +286,6 @@ async function enqueueBookTask(bookId: string, action: BookTaskAction): Promise<
     const response = action === "download"
       ? await startBookDownload(bookId)
       : action === "refresh" ? await refreshChapters(bookId) : await checkNewChapters(bookId);
-    if (revision !== getRestoreRevision()) return;
-    await refreshTasks(response.resource);
     if (revision !== getRestoreRevision()) return;
     if (response.reused) notify("已有相同的目录任务，已复用当前任务。");
     else notify(action === "download" ? "整本缓存任务已加入。"
@@ -863,7 +820,7 @@ loading="lazy" decoding="async"/>
   height: 100%;
   padding: 0 8px;
   color: var(--app-muted);
-  font-size: 10px;
+  font-size: var(--ui-font-body);
   cursor: pointer;
 }
 
@@ -905,11 +862,6 @@ loading="lazy" decoding="async"/>
   cursor: pointer;
 }
 
-.book-detail-icon-button:hover {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
-}
-
 .book-detail-menu {
   position: absolute;
   z-index: 5;
@@ -935,11 +887,6 @@ loading="lazy" decoding="async"/>
   color: var(--app-text);
   text-align: left;
   cursor: pointer;
-}
-
-.book-detail-menu-item:hover:not(:disabled) {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 
 .book-detail-menu-item--danger {
@@ -1014,12 +961,12 @@ loading="lazy" decoding="async"/>
 .prototype-overview-progress small,
 .book-detail-fact small {
   color: var(--app-muted);
-  font-size: 12px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-type-label {
   color: var(--app-accent);
-  font-size: 8px;
+  font-size: var(--ui-font-body);
   font-weight: 750;
 }
 
@@ -1033,7 +980,7 @@ loading="lazy" decoding="async"/>
 
 .detail-author {
   margin: 0;
-  font-size: 10px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-hero-actions {
@@ -1061,11 +1008,11 @@ loading="lazy" decoding="async"/>
 
 .prototype-overview-progress small,
 .book-detail-fact small {
-  font-size: 8px;
+  font-size: var(--ui-font-caption);
 }
 
 .prototype-overview-progress strong {
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-reading-track {
@@ -1090,7 +1037,7 @@ loading="lazy" decoding="async"/>
   justify-content: space-between;
   gap: 8px;
   color: var(--app-accent-ink);
-  font-size: 9px;
+  font-size: var(--ui-font-caption);
   cursor: pointer;
 }
 
@@ -1134,14 +1081,9 @@ loading="lazy" decoding="async"/>
   cursor: pointer;
 }
 
-.detail-fact-link:hover {
-  border-color: var(--app-accent);
-  background: var(--app-accent-soft);
-}
-
 .book-detail-fact strong {
   overflow: hidden;
-  font-size: 9px;
+  font-size: var(--ui-font-caption);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1173,13 +1115,13 @@ loading="lazy" decoding="async"/>
 .detail-section h3,
 .detail-source-block h2 {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--ui-font-body);
 }
 
 .detail-section p {
   margin: 0;
   color: var(--app-muted);
-  font-size: 10px;
+  font-size: var(--ui-font-caption);
   line-height: 1.85;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -1218,7 +1160,7 @@ loading="lazy" decoding="async"/>
   outline: 0;
   color: var(--app-text);
   background: transparent;
-  font-size: 9px;
+  font-size: var(--ui-font-body);
 }
 
 .catalog-search button {
@@ -1230,11 +1172,6 @@ loading="lazy" decoding="async"/>
   border-radius: 8px;
   color: var(--app-muted);
   cursor: pointer;
-}
-
-.catalog-search button:hover {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 
 .catalog-tools-actions {
@@ -1251,7 +1188,7 @@ loading="lazy" decoding="async"/>
   border-radius: 8px;
   color: var(--app-muted);
   background: var(--app-panel-soft);
-  font-size: 9px;
+  font-size: var(--ui-font-body);
 }
 
 .catalog-list {
@@ -1282,7 +1219,6 @@ loading="lazy" decoding="async"/>
   cursor: pointer;
 }
 
-.catalog-row:hover:not(:disabled),
 .catalog-row-wrap.current .catalog-row {
   background: var(--app-accent-soft);
 }
@@ -1305,7 +1241,7 @@ loading="lazy" decoding="async"/>
 .catalog-chapter-main strong {
   display: block;
   overflow: hidden;
-  font-size: 10px;
+  font-size: var(--ui-font-caption);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1313,7 +1249,7 @@ loading="lazy" decoding="async"/>
 
 .catalog-current-label {
   color: var(--app-accent-ink);
-  font-size: 9px;
+  font-size: var(--ui-font-body);
   white-space: nowrap;
 }
 
@@ -1339,11 +1275,6 @@ loading="lazy" decoding="async"/>
   color: var(--app-muted);
   background: transparent;
   cursor: pointer;
-}
-
-.catalog-replace-action:hover:not(:disabled) {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 
 .catalog-empty {
@@ -1384,7 +1315,7 @@ loading="lazy" decoding="async"/>
 .detail-alternates-empty,
 .detail-source-partial {
   color: var(--app-muted);
-  font-size: 8px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-source-block {
@@ -1414,7 +1345,7 @@ loading="lazy" decoding="async"/>
 }
 
 .detail-source-current strong {
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-source-glyph {
@@ -1456,7 +1387,7 @@ loading="lazy" decoding="async"/>
 }
 
 .detail-alternate-row strong {
-  font-size: 9px;
+  font-size: var(--ui-font-caption);
 }
 
 .detail-alternate-row > button {
@@ -1465,7 +1396,7 @@ loading="lazy" decoding="async"/>
   border: 0;
   border-radius: 8px;
   background: var(--app-panel-soft);
-  font-size: 8px;
+  font-size: var(--ui-font-body);
 }
 
 .detail-source-current-badge {
@@ -1521,7 +1452,7 @@ loading="lazy" decoding="async"/>
 
   .detail-title-copy h2 {
     margin-top: 6px;
-    font-size: 21px;
+    font-size: var(--ui-font-title);
   }
 
   .prototype-overview-progress {
@@ -1557,7 +1488,7 @@ loading="lazy" decoding="async"/>
   .detail-hero-actions .button {
     min-height: 36px;
     padding: 0 10px;
-    font-size: 10px;
+    font-size: var(--ui-font-body);
   }
 
   .prototype-catalog-tools {
@@ -1623,7 +1554,7 @@ loading="lazy" decoding="async"/>
   .book-detail-tabs button {
     min-width: 50px;
     padding: 0 4px;
-    font-size: 9px;
+    font-size: var(--ui-font-body);
   }
 
   .catalog-row {

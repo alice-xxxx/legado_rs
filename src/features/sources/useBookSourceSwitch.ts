@@ -1,18 +1,18 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue";
+import { computed, ref, type Ref } from "vue";
 import { shelf as shelfPositions } from "../shelf/shelfStore";
 import { cancelTask } from "../../api/tasks";
+import { tasks } from "../tasks/tasksStore";
+import { bookSourceCandidates } from "./sourcesStore";
+import { shelfBatchRecoveryRequired, shelfBatchRecoveryTitle, shelfBatchRecoveryMessage } from "../../app/recoveryState";
 import { changeBookSource, changeChapterSource, searchBookSourceCandidates } from "../../api/search";
 import { prepareSearchResultBook } from "../../api/books";
 import { readResource } from "../../api/resources";
-import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult, type SearchResource, type ShelfResource, type SourceMetadata } from "../../api/types";
+import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult, type SearchResource } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
-import { bookPreviews, loadBookPreview, loadBookPreviews, clearOpenedBook, switchOpenedBook, openedBookFromShelf } from "../books/bookDetailState";
+import { bookPreviews, loadBookPreview, loadBookPreviews, clearOpenedBook, switchOpenedBook, openedBookFromShelf, openedBook } from "../books/bookDetailState";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
-  bookSourceCandidates: ComputedRef<SourceMetadata[]>;
-  tasks: Ref<AppTask[]>;
-  openedBook: Ref<BookResource | null>;
   readingBook: Ref<BookResource | null>;
   readerVisible: Ref<boolean>;
   readingChapterIndex: Ref<number>;
@@ -20,12 +20,7 @@ interface BookSourceSwitchDependencies {
   readingContent: Ref<CachedChapterContent | null>;
   readerProgressDirty: Ref<boolean>;
   readerControlsOpen: Ref<boolean>;
-  shelf: Ref<ShelfResource>;
-  shelfBatchRecoveryRequired: Ref<boolean>;
-  shelfBatchRecoveryTitle: Ref<string>;
-  shelfBatchRecoveryMessage: Ref<string>;
   saveCurrentProgress: () => Promise<void>;
-  refreshTasks: () => Promise<void>;
   loadReaderChapter: (index: number) => Promise<boolean>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
@@ -34,9 +29,6 @@ interface BookSourceSwitchDependencies {
 
 /** 管理整书换源、单章正文替换和候选任务同步。 */
 export function useBookSourceSwitch({
-  bookSourceCandidates,
-  tasks,
-  openedBook,
   readingBook,
   readerVisible,
   readingChapterIndex,
@@ -44,11 +36,7 @@ export function useBookSourceSwitch({
   readingContent,
   readerProgressDirty,
   readerControlsOpen,
-  shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle,
-  shelfBatchRecoveryMessage,
   saveCurrentProgress,
-  refreshTasks,
   loadReaderChapter,
   notify,
   errorText,
@@ -218,7 +206,6 @@ export function useBookSourceSwitch({
         return;
       }
       bookSourceCandidateTaskId.value = taskId;
-      await refreshTasks();
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value) return;
       await syncBookSourceCandidateTask(response.task);
     } catch (error) {

@@ -21,11 +21,11 @@ const readerVisible = getReaderSession().readerVisible;
 </template>
 
 <style scoped>
-.shelf-batch-recovery{display:flex;align-items:flex-start;gap:10px;margin:12px auto;padding:12px 16px;border:1px solid #e8c5c8;border-radius:10px;color:#8d4b50;background:#fff7f7}
+.shelf-batch-recovery{display:flex;align-items:flex-start;gap:10px;margin:12px auto;padding:12px 16px;border:1px solid var(--app-danger-line);border-radius:10px;color:var(--app-danger);background:var(--app-panel-soft)}
 .shelf-batch-recovery>span{flex:1}
-.toast-message{position:fixed;z-index:90;top:max(12px,env(safe-area-inset-top));left:50%;display:flex;max-width:min(480px,calc(100vw - 24px));align-items:flex-start;gap:8px;padding:10px 14px;transform:translateX(-50%);border:1px solid var(--app-line);border-radius:12px;color:var(--app-text);background:var(--app-surface);box-shadow:var(--app-shadow);overflow-wrap:anywhere}
-.toast-message.error{border-color:#e8c5c8}.toast-message.success{border-color:#c7dfcf}
+.toast-message{position:fixed;z-index:90;top:calc(var(--safe-top) + (100dvh - var(--safe-top) - var(--safe-bottom)) * .65);left:50%;display:flex;max-width:min(480px,calc(100vw - 24px));align-items:flex-start;gap:8px;padding:10px 14px;transform:translate(-50%,-50%);border:1px solid var(--app-line);border-radius:12px;color:var(--app-text);background:var(--app-surface);box-shadow:var(--app-shadow);overflow-wrap:anywhere}
+.toast-message.error{border-color:var(--app-danger-line)}.toast-message.success{border-color:var(--app-success-line)}
 .toast-message button{border:0;background:transparent;color:inherit;cursor:pointer}
 .toast-enter-active,.toast-leave-active{transition:opacity 140ms ease,transform 140ms ease}
-.toast-enter-from,.toast-leave-to{opacity:0;transform:translate(-50%,-6px)}
+.toast-enter-from,.toast-leave-to{opacity:0;transform:translate(-50%,calc(-50% + 6px))}
 </style>

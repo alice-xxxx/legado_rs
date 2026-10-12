@@ -327,6 +327,7 @@ pub(super) fn reader_defaults(settings: Option<Value>) -> ReaderDefaults {
     let Some(mut value) = settings else {
         return ReaderDefaults::default();
     };
+    let mode = if value.get("theme").and_then(Value::as_str) == Some("dark") { "dark" } else { "light" };
     if value.get("reader").is_some() {
         value = value["reader"].clone();
     }
@@ -356,12 +357,6 @@ pub(super) fn reader_defaults(settings: Option<Value>) -> ReaderDefaults {
         }
         .to_owned();
     }
-    if let Some(color) = value.get("textColor").and_then(Value::as_str) {
-        defaults.text_color = reader_color(color, &defaults.text_color);
-    }
-    if let Some(color) = value.get("backgroundColor").and_then(Value::as_str) {
-        defaults.background_color = reader_color(color, &defaults.background_color);
-    }
     if let Some(align) = value.get("textAlign").and_then(Value::as_str) {
         if matches!(align, "left" | "right" | "center" | "justify") {
             defaults.text_align = align.to_owned();
@@ -372,28 +367,23 @@ pub(super) fn reader_defaults(settings: Option<Value>) -> ReaderDefaults {
             defaults.preload_count = preload_count as usize;
         }
     }
-    if let Some(theme) = value.get("theme").and_then(Value::as_str) {
+    if let Some(theme) = value["themes"].get(mode).and_then(Value::as_str) {
         defaults.theme = match theme {
             "sepia" => ReaderTheme::Sepia,
             "dark" => ReaderTheme::Dark,
-            "system" | "light" => ReaderTheme::System,
+            "white" => ReaderTheme::White,
             _ => ReaderTheme::Paper,
         };
     }
+    let (text, background) = match defaults.theme {
+        ReaderTheme::Paper => ("#3f3b34", "#f7f3e9"),
+        ReaderTheme::Sepia => ("#4e4131", "#eee1c8"),
+        ReaderTheme::Dark => ("#d1d0cb", "#17191c"),
+        ReaderTheme::White => ("#252525", "#ffffff"),
+    };
+    defaults.text_color = text.to_owned();
+    defaults.background_color = background.to_owned();
     defaults
-}
-
-pub(super) fn reader_color(value: &str, fallback: &str) -> String {
-    let hex = value.strip_prefix('#').unwrap_or("");
-    if matches!(hex.len(), 3 | 6) && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return format!("#{hex}");
-    }
-    match value.to_ascii_lowercase().as_str() {
-        "black" | "white" | "red" | "green" | "blue" | "gray" | "grey" | "transparent" => {
-            value.to_ascii_lowercase()
-        }
-        _ => fallback.to_owned(),
-    }
 }
 
 pub(super) fn text_at(value: &Value, keys: &[&str]) -> Option<String> {

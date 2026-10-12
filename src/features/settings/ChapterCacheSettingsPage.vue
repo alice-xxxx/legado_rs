@@ -1,14 +1,11 @@
 <script setup lang="ts">
-import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { errorText, notify } from "../../app/notifications";
 import {
   getFrontendRestoreRevision,
-  shelfBatchRecoveryMessage,
   shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle } from "../../app/recoveryState";
-import { openedBook } from "../books/bookDetailState";
+} from "../../app/recoveryState";
 import { getReaderSession } from "../reader/readerSession";
 import { backupBusy } from "./backupState";
 import { useChapterCacheActions } from "./useChapterCacheActions";
@@ -36,8 +33,6 @@ const bookChapterCacheClearBusy = ref(false);
 const bookChapterCacheClearError = ref("");
 const screen = computed(() => String(route.meta.screen ?? "home"));
 const cacheActions = useChapterCacheActions({
-  shelf,
-  openedBook,
   readingBook: reader.readingBook,
   readerVisible: reader.readerVisible,
   readerProgressDirty: reader.readerProgressDirty,
@@ -50,9 +45,6 @@ const cacheActions = useChapterCacheActions({
   pendingBookClear: pendingBookChapterCacheClear,
   bookClearBusy: bookChapterCacheClearBusy,
   bookClearError: bookChapterCacheClearError,
-  recoveryRequired: shelfBatchRecoveryRequired,
-  recoveryTitle: shelfBatchRecoveryTitle,
-  recoveryMessage: shelfBatchRecoveryMessage,
   screen,
   bootstrapped,
   hasConflictingOperation: () => backupBusy.value !== null,
@@ -144,8 +136,8 @@ onMounted(async () => {
 }
 
 .settings-detail-section-header strong {
-  color: #373a45;
-  font-size: 13px;
+  color: var(--app-text);
+  font-size: var(--ui-font-caption);
 }
 
 .settings-detail-panel .setting-control {
@@ -155,7 +147,7 @@ onMounted(async () => {
   gap: 12px;
   min-height: 68px;
   padding: 8px 4px;
-  border-bottom: 1px solid #e8eaf0;
+  border-bottom: 1px solid var(--app-line);
 }
 
 .settings-detail-panel .setting-control > div {
@@ -165,15 +157,15 @@ onMounted(async () => {
 }
 
 .settings-detail-panel .setting-control label {
-  color: #383a45;
-  font-size: 13px;
+  color: var(--app-text);
+  font-size: var(--ui-font-body);
   font-weight: 650;
 }
 
 .settings-detail-panel .setting-control small,
 .settings-detail-note {
-  color: #9196a1;
-  font-size: 11px;
+  color: var(--app-subtle);
+  font-size: var(--ui-font-caption);
   line-height: 1.5;
 }
 
@@ -181,9 +173,9 @@ onMounted(async () => {
   min-width: 105px;
   min-height: 36px;
   padding: 5px;
-  border: 1px solid #e4e5ec;
+  border: 1px solid var(--app-line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--app-surface);
 }
  
 @media (max-width: 640px) {
@@ -210,15 +202,15 @@ onMounted(async () => {
 .settings-detail-actions .button {
   min-height: 37px;
   border-radius: 9px;
-  font-size: 12px;
+  font-size: var(--ui-font-body);
 }
 
 .settings-detail-error {
   padding: 9px 11px;
   border-radius: 9px;
-  color: #aa4b56;
-  font-size: 12px;
-  background: #fff1f2;
+  color: var(--app-danger);
+  font-size: var(--ui-font-caption);
+  background: var(--app-danger-soft);
 }
 
 .settings-cache-hero {
@@ -230,7 +222,7 @@ onMounted(async () => {
   padding: 17px;
   border: 1px solid var(--app-line);
   border-radius: 14px;
-  background: #fff;
+  background: var(--app-surface);
 }
 
 .settings-cache-hero-icon {
@@ -255,14 +247,14 @@ onMounted(async () => {
 }
 
 .settings-cache-hero strong {
-  color: #343641;
-  font-size: 21px;
+  color: var(--app-text);
+  font-size: var(--ui-font-title);
   line-height: 1.25;
 }
 
 .settings-cache-hero small {
-  color: #989da6;
-  font-size: 11px;
+  color: var(--app-subtle);
+  font-size: var(--ui-font-caption);
 }
 
 .settings-detail-reload {
@@ -273,9 +265,9 @@ onMounted(async () => {
   padding: 0 9px;
   border: 0;
   border-radius: 9px;
-  color: #60646d;
-  font-size: 12px;
-  background: #eceef2;
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
+  background: var(--app-panel-soft);
   cursor: pointer;
 }
 
@@ -295,8 +287,8 @@ onMounted(async () => {
     padding: 12px;
   }
   .settings-cache-hero-icon { width: 37px; height: 37px; }
-  .settings-cache-hero strong { font-size: 17px; }
-  .settings-detail-reload { padding: 0 7px; font-size: 11px; }
+  .settings-cache-hero strong { font-size: var(--ui-font-heading); }
+  .settings-detail-reload { padding: 0 7px; font-size: var(--ui-font-caption); }
 }
 
 </style>

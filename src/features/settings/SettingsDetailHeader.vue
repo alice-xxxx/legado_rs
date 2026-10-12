@@ -26,11 +26,11 @@ function returnToAdvancedSettings(): void {
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   gap: 12px;
-  min-height: 64px;
-  padding-inline: 20px;
+  min-height: var(--ui-header-height);
+  padding-inline: var(--ui-header-gutter);
   border-bottom: 1px solid var(--app-line);
-  background: #f6f7f9f5;
+  background: var(--app-header);
   backdrop-filter: blur(14px);
 }
-.settings-detail-topbar > strong { font-size: 14px; }
+.settings-detail-topbar > strong { font-size: var(--ui-font-heading); }
 </style>

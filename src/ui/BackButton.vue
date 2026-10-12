@@ -17,10 +17,11 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
     type="button"
     class="back-button"
     :title="label"
+    :aria-label="label"
     :disabled="disabled"
     @click="emit('click', $event)"
   >
-    <svg class="back-button__icon" viewBox="0 0 24 24">
+    <svg class="back-button__icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="m14.5 5-7 7 7 7" />
     </svg>
     <span v-if="showLabel">{{ label }}</span>
@@ -30,37 +31,32 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
 <style scoped>
 .back-button {
   display: inline-flex;
-  width: 44px;
-  height: 44px;
-  min-width: 44px;
-  min-height: 44px;
+  width: var(--ui-control-height);
+  height: var(--ui-control-height);
+  min-width: var(--ui-control-height);
+  min-height: var(--ui-control-height);
   flex: none;
   align-items: center;
   justify-content: center;
   gap: 5px;
   padding: 0;
   border: 0;
-  border-radius: 12px;
+  border-radius: var(--ui-radius);
   color: var(--app-muted);
-  background: var(--app-panel-soft);
+  background: transparent;
   font: inherit;
   cursor: pointer;
 }
 
 .back-button__icon {
-  width: 20px;
-  height: 20px;
+  width: var(--ui-icon-size);
+  height: var(--ui-icon-size);
   flex: none;
   fill: none;
   stroke: currentColor;
   stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
-}
-
-.back-button:hover:not(:disabled) {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 
 .back-button:disabled {

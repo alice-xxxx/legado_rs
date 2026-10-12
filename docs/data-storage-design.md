@@ -187,19 +187,20 @@ history.json 中，reading 保存阅读会话、按书和按日期的统计及�
 
 应用级设置放根对象；reader 只放阅读和播放设置；home 放主页标签及栏目配置。
 
+theme 为 light（白天）、dark（夜间）或 system（跟随系统）。reader.themes.light 和 reader.themes.dark 分别保存两种应用模式绑定的阅读配色，取值为 white、paper、sepia 或 dark。切换应用模式时，App 和阅读器一起切换；system 根据系统外观自动使用对应配置，不显示阅读配色选择。前端从全局响应式 settings 派生生效主题，CSS 消费统一变量；系统外观变化不写回 JSON、不重读章节。Rust 在启动和恢复旧备份时补齐缺失设置并迁移旧主题字段，保存升级后的 JSON。
+
 ~~~json
 {
   "schemaVersion": 1,
+  "theme": "system",
   "sourceHttpTimeoutSeconds": 15,
   "reader": {
     "fontSizePx": 19,
     "lineHeight": 1.8,
     "fontFamily": "serif",
-    "textColor": "#3f3b34",
-    "backgroundColor": "#f7f3e9",
     "backgroundImageOpacity": 20,
     "textAlign": "justify",
-    "theme": "paper",
+    "themes": { "light": "paper", "dark": "dark" },
     "preloadCount": 5,
     "verticalScroll": false,
     "audioPlaybackRate": 1,

@@ -1,33 +1,21 @@
 <script setup lang="ts">
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, onMounted, ref } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
-import { readResource } from "../../api/resources";
-import { cancelTask, clearFinishedTasks, pauseTask, resumeTask, retryTask, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, ResourceDescriptor,  TasksResource } from "../../api/types";
+import { cancelTask, clearFinishedTasks, pauseTask, resumeTask, retryTask } from "../../api/tasks";
+import type { AppTask } from "../../api/types";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
+import { tasks, tasksLoading as loading, tasksError as dataError, taskRecoveryRequired, refreshTasks, ensureTasksLoaded } from "./tasksStore";
 
-const tasks = ref<AppTask[]>([]);
 const shelfBooks = computed(() => shelf.value.books);
-const loading = ref(true);
-const dataError = ref("");
-const recoveryTaskSignaled = ref(false);
-const taskRecoveryRequired = computed(() => recoveryTaskSignaled.value
-  || tasks.value.some((task) => task.status === "recoveryRequired"));
 const mutationLocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRequired.value
   || taskRecoveryRequired.value);
 const bookTitles = computed(() => new Map(shelfBooks.value.map((book) => [book.id, book.title])));
-const unlisteners: UnlistenFn[] = [];
-let isUnmounted = false;
-let restoreRevision = 0;
-let tasksReadRevision = 0;
-const recoveryTasks = new Map<string, AppTask>();
 
 const retryingTaskIds = ref<string[]>([]);
 const commandingTaskIds = ref<string[]>([]);
@@ -37,98 +25,12 @@ const clearBusy = ref(false);
 const clearResult = ref("");
 const actionError = ref("");
 
+onMounted(() => { void ensureTasksLoaded().catch(() => {}); });
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-
-async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
-  const revision = ++tasksReadRevision;
-  const restoreAtStart = restoreRevision;
-  const resource = descriptor ?? (await tasksResource()).resource;
-  const document = await readResource<TasksResource>(resource);
-  if (isUnmounted || revision !== tasksReadRevision || restoreAtStart !== restoreRevision) return;
-  const byId = new Map((document.tasks ?? []).map((task) => [task.id, task]));
-  for (const task of recoveryTasks.values()) byId.set(task.id, task);
-  tasks.value = [...byId.values()];
-}
-
-function applyRecoveryTask(summary: Partial<AppTask>): void {
-  if (!summary.id || summary.status !== "recoveryRequired") return;
-  recoveryTaskSignaled.value = true;
-  const previous = tasks.value.find((task) => task.id === summary.id);
-  const candidate = {
-    ...previous,
-    ...summary,
-    page: previous?.page ?? 1,
-    fromIndex: previous?.fromIndex ?? 0,
-    status: "recoveryRequired",
-    error: summary.error ?? previous?.error,
-    result: { ...previous?.result, ...summary.result, recoveryRequired: true },
-  };
-  if (!candidate.kind || candidate.completed === undefined || candidate.total === undefined
-    || candidate.createdAtMs === undefined || candidate.updatedAtMs === undefined) return;
-  const task = candidate as AppTask;
-  recoveryTasks.set(task.id, task);
-  tasks.value = previous
-    ? tasks.value.map((entry) => entry.id === task.id ? task : entry)
-    : [...tasks.value, task];
-}
-
-async function loadBootstrap(_snapshot?: AppBootstrap): Promise<void> {
-  const restoreAtStart = restoreRevision;
-  loading.value = true;
-  dataError.value = "";
-  try {
-    if (isUnmounted || restoreAtStart !== restoreRevision) return;
-    await Promise.all([refreshTasks()]);
-  } catch (error) {
-    if (!isUnmounted && restoreAtStart === restoreRevision) dataError.value = errorText(error);
-  } finally {
-    if (!isUnmounted && restoreAtStart === restoreRevision) loading.value = false;
-  }
-}
-
-async function registerListener<T>(event: string, handler: (payload: T) => void): Promise<void> {
-  const unlisten = await listen<T>(event, (eventData) => handler(eventData.payload));
-  if (isUnmounted) unlisten();
-  else unlisteners.push(unlisten);
-}
-
-async function listenForUpdates(): Promise<void> {
-  await registerListener<{ kind: string; resource: ResourceDescriptor }>("resource-updated", ({ kind, resource }) => {
-    if (kind === "tasks") void refreshTasks(resource).catch((error) => { dataError.value = errorText(error); });
-  });
-  await registerListener<{ taskId: string; resource: ResourceDescriptor }>("task-updated", ({ resource }) => {
-    void refreshTasks(resource).catch((error) => { dataError.value = errorText(error); });
-  });
-  await registerListener<Partial<AppTask>>("task-recovery-required", applyRecoveryTask);
-  await registerListener<AppBootstrap>("app-state-updated", (snapshot) => {
-    restoreRevision += 1;
-    tasksReadRevision += 1;
-    recoveryTasks.clear();
-    tasks.value = [];
-    recoveryTaskSignaled.value = false;
-    void loadBootstrap(snapshot);
-  });
-}
-
-onMounted(() => {
-  void (async () => {
-    try {
-      await listenForUpdates();
-      await loadBootstrap();
-    } catch (error) {
-      dataError.value = errorText(error);
-      loading.value = false;
-    }
-  })();
-});
-
-onUnmounted(() => {
-  isUnmounted = true;
-  for (const unlisten of unlisteners) unlisten();
-});
 
 function returnToSettings(): void {
   void router.push({ name: routeNames.settings });
@@ -316,12 +218,11 @@ async function command(action: "pause" | "resume" | "cancel", taskId: string): P
   commandingTaskIds.value = [...commandingTaskIds.value, taskId];
   actionError.value = "";
   try {
-    const response = action === "pause"
-      ? await pauseTask(taskId)
+    await (action === "pause"
+      ? pauseTask(taskId)
       : action === "resume"
-        ? await resumeTask(taskId)
-        : await cancelTask(taskId);
-    void refreshTasks(response.resource).catch((error) => { dataError.value = errorText(error); });
+        ? resumeTask(taskId)
+        : cancelTask(taskId));
   } catch (error) {
     actionError.value = `任务操作失败：${errorText(error)}`;
   } finally {
@@ -339,19 +240,15 @@ async function runBatch(action: "pause" | "resume"): Promise<void> {
   actionError.value = "";
   let completed = 0;
   const failures: string[] = [];
-  let latestResource: ResourceDescriptor | null = null;
   try {
     for (const taskId of taskIds) {
       try {
-        const response = action === "pause" ? await pauseTask(taskId) : await resumeTask(taskId);
-        latestResource = response.resource;
+        if (action === "pause") await pauseTask(taskId);
+        else await resumeTask(taskId);
         completed += 1;
       } catch (error) {
         failures.push(errorText(error));
       }
-    }
-    if (latestResource) {
-      void refreshTasks(latestResource).catch((error) => { dataError.value = errorText(error); });
     }
     batchResult.value = failures.length
       ? `已${action === "pause" ? "暂停" : "继续"} ${completed} 个任务，${failures.length} 个未完成操作。`
@@ -367,8 +264,7 @@ async function retry(taskId: string): Promise<void> {
   retryingTaskIds.value = [...retryingTaskIds.value, taskId];
   actionError.value = "";
   try {
-    const response = await retryTask(taskId);
-    void refreshTasks(response.resource).catch((error) => { dataError.value = errorText(error); });
+    await retryTask(taskId);
   } catch (error) {
     actionError.value = `重试任务失败：${errorText(error)}`;
   } finally {
@@ -549,67 +445,63 @@ function hasTaskDetails(task: AppTask): boolean {
 </template>
 
 <style scoped>
-.tasks-workspace{width:100%;min-height:100%;color:#282b33}
-.tasks-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:rgb(246 247 249 / 92%);backdrop-filter:blur(18px)}
+.tasks-workspace{width:100%;min-height:100%;color:var(--app-text)}
+.tasks-topbar{position:sticky;top:0;z-index:35;min-height:var(--ui-header-height);display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
 .tasks-title{min-width:0}
-.tasks-title strong{font-size:14px;color:#18191d;font-weight:750;line-height:1.25}
+.tasks-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750;line-height:1.25}
 .task-center{box-sizing:border-box;width:min(860px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px}
 .task-toolbar{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 18px}
 .task-filter-tabs{display:flex;align-items:center;gap:4px;overflow-x:auto;scrollbar-width:none}
-.task-filter-tabs button{flex:none;box-sizing:border-box;height:30px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:#7e838b;font-size:9px;cursor:pointer}
-.task-filter-tabs button.active{background:#202126;color:white;font-weight:750}
+.task-filter-tabs button{flex:none;box-sizing:border-box;height:30px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
+.task-filter-tabs button.active{background:var(--app-selected);color:var(--app-on-selected);font-weight:750}
 .task-batch-menu{position:relative;margin-left:auto}
-.task-batch-menu summary{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:#9296a0;list-style:none;cursor:pointer}
+.task-batch-menu summary{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;color:var(--app-subtle);list-style:none;cursor:pointer}
 .task-batch-menu summary::-webkit-details-marker{display:none}
 .task-batch-menu summary :deep(svg){width:18px;height:18px}
-.task-batch-menu summary:hover{background:#ececf2}
-.task-batch-menu>div{position:absolute;z-index:40;right:0;top:36px;min-width:185px;display:grid;gap:3px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:#fff;box-shadow:0 16px 40px #20203322}
-.task-batch-menu>div>small{padding:7px 9px;color:#9a9fa7;font-size:9px}
-.task-batch-menu button{min-height:33px;padding:6px 9px;border:0;border-radius:7px;text-align:left;background:transparent;color:#6c687f;font-size:11px;cursor:pointer}
-.task-batch-menu button:hover{background:#f3f0ff}
-.task-batch-menu button.task-menu-danger{color:#b25962}
+.task-batch-menu>div{position:absolute;z-index:40;right:0;top:36px;min-width:185px;display:grid;gap:3px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
+.task-batch-menu>div>small{padding:7px 9px;color:var(--app-subtle);font-size:var(--ui-font-caption)}
+.task-batch-menu button{min-height:33px;padding:6px 9px;border:0;border-radius:7px;text-align:left;background:transparent;color:var(--app-accent-ink);font-size:var(--ui-font-body);cursor:pointer}
+.task-batch-menu button.task-menu-danger{color:var(--app-danger)}
 .task-batch-menu button:disabled{opacity:.5;cursor:default}
-.task-batch-result,.task-locked{padding:10px 12px;border-radius:9px;background:#f3f0ff;color:#6b5db4;font-size:11px}
-.task-batch-result.task-action-error{background:#fff0f1;color:#ac535c}
-.task-locked{background:#fff0f1;color:#ac535c}
+.task-batch-result,.task-locked{padding:10px 12px;border-radius:9px;background:var(--app-accent-soft);color:var(--app-accent-ink);font-size:var(--ui-font-caption)}
+.task-batch-result.task-action-error{background:var(--app-danger-soft);color:var(--app-danger)}
+.task-locked{background:var(--app-danger-soft);color:var(--app-danger)}
 .task-list{border-top:0}
 .task-card{display:grid;grid-template-columns:38px minmax(0,1fr) 80px 36px;align-items:center;gap:10px;min-height:78px;box-sizing:border-box;border-bottom:1px solid var(--app-line)}
 .task-type-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent)}
 .task-type-icon :deep(svg){width:19px;height:19px}
 .task-card-copy{display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:4px;min-width:0}
-.task-name{display:block;min-width:0;overflow:hidden;padding:0;border:0;background:none;color:#282b33;font-size:10px;font-weight:750;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
-.task-name:hover{color:var(--app-accent)}
-.task-status-line{font-size:8px;color:#999da5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.task-track{position:relative;height:4px;width:100%;overflow:hidden;border-radius:99px;background:#e7e9ee}
+.task-name{display:block;min-width:0;overflow:hidden;padding:0;border:0;background:none;color:var(--app-text);font-size:var(--ui-font-body);font-weight:750;text-align:left;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.task-status-line{font-size:var(--ui-font-caption);color:var(--app-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.task-track{position:relative;height:4px;width:100%;overflow:hidden;border-radius:99px;background:var(--app-panel-soft)}
 .task-track>span{display:block;height:100%;border-radius:inherit;background:var(--app-accent);transition:width .2s}
 .task-track>span.indeterminate{position:absolute;top:0;left:0;width:36%!important;transform:translateX(-110%);animation:task-shimmer 1.4s ease-in-out infinite}
 .task-failed .task-track>span,.task-recoveryRequired .task-track>span{background:#b85f69}
 @keyframes task-shimmer{to{transform:translateX(305%)}}
-.task-updated{font-size:8px;line-height:1.35;color:#999da5;text-align:right;white-space:nowrap}
+.task-updated{font-size:var(--ui-font-caption);line-height:1.35;color:var(--app-subtle);text-align:right;white-space:nowrap}
 .task-actions{display:flex;align-items:center;justify-content:center;width:36px}
-.task-primary-action{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:10px;background:transparent;color:#777d89;cursor:pointer}
-.task-primary-action:hover:not(:disabled){background:#ececf2;color:var(--app-accent)}
+.task-primary-action{display:grid;place-items:center;width:36px;height:36px;padding:0;border:0;border-radius:10px;background:transparent;color:var(--app-muted);cursor:pointer}
 .task-primary-action:disabled{opacity:.45;cursor:default}
 .task-primary-action :deep(svg){width:18px;height:18px}
 .task-details{grid-column:2/-1;display:flex;flex-direction:column;gap:8px;padding:0 0 13px;min-width:0}
-.task-detail-meta{margin:0;color:#9a9fa9;font-size:9px}
+.task-detail-meta{margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption)}
 .task-detail-actions{display:flex;flex-wrap:wrap;gap:7px}
-.task-detail-actions button{min-height:31px;padding:5px 10px;border:1px solid #e5e6ec;border-radius:8px;background:#fff;color:#6c648b;font-size:10px;cursor:pointer}
-.task-detail-actions button.task-detail-danger{color:#aa4a57;background:#fff7f7}
+.task-detail-actions button{min-height:31px;padding:5px 10px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-surface);color:var(--app-accent-ink);font-size:var(--ui-font-body);cursor:pointer}
+.task-detail-actions button.task-detail-danger{color:var(--app-danger);background:var(--app-panel-soft)}
 .task-detail-actions button:disabled{opacity:.5;cursor:default}
-.task-retry-message,.task-error{grid-column:2/-1;margin:0;padding:0 0 6px;color:#838895;font-size:10px;line-height:1.5;overflow-wrap:anywhere}
-.task-error{color:#ad535d}
+.task-retry-message,.task-error{grid-column:2/-1;margin:0;padding:0 0 6px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5;overflow-wrap:anywhere}
+.task-error{color:var(--app-danger)}
 .task-recovery-summary{padding:0 0 8px}
-.task-empty{display:flex;align-items:center;justify-content:center;min-height:170px;color:#999da6;text-align:center;font-size:11px}
+.task-empty{display:flex;align-items:center;justify-content:center;min-height:170px;color:var(--app-subtle);text-align:center;font-size:var(--ui-font-caption)}
 .task-confirm-backdrop{position:fixed;inset:0;z-index:95;display:grid;place-items:center;padding:16px;background:#20223377}
-.task-confirm{box-sizing:border-box;width:min(400px,100%);padding:21px;border-radius:13px;background:#fff;box-shadow:0 18px 50px #1112222b}
-.task-confirm strong{font-size:14px}
-.task-confirm p{margin:12px 0;color:#747a86;font-size:11px;line-height:1.65}
+.task-confirm{box-sizing:border-box;width:min(400px,100%);padding:21px;border-radius:13px;background:var(--app-surface);box-shadow:0 18px 50px #1112222b}
+.task-confirm strong{font-size:var(--ui-font-body)}
+.task-confirm p{margin:12px 0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.65}
 .task-confirm footer{display:flex;justify-content:flex-end;gap:8px}
-.task-confirm footer button{min-height:35px;padding:0 13px;border:0;border-radius:9px;background:#eceef2;color:#525966;font-size:11px;cursor:pointer}
+.task-confirm footer button{min-height:35px;padding:0 13px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
 .task-confirm footer .task-confirm-danger{background:#b95b68;color:#fff}
 @media(max-width:860px){
-  .tasks-topbar{padding-inline:18px}
+  .tasks-topbar{padding-inline:var(--ui-header-gutter)}
   .task-center{width:calc(100% - 36px)}
   .task-card{grid-template-columns:36px minmax(0,1fr) 34px;gap:10px}
   .task-updated{display:none}

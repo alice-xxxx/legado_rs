@@ -373,18 +373,19 @@ export interface HistoryResource {
   bookmarks: Record<string, BookmarkRecord[]>;
 }
 
+export type AppTheme = "light" | "dark" | "system";
+export type ReadingTheme = "white" | "paper" | "sepia" | "dark";
+
 export interface ReaderSettings {
   fontSizePx: number;
   lineHeight: number;
   fontFamily: string;
-  textColor: string;
-  backgroundColor: string;
   /** Runtime URL materialized by the resource server from a stable resource ref. */
   backgroundImageSrc?: string;
   /** Visible opacity of the reader background image, from 0 to 100 percent. */
   backgroundImageOpacity: number;
   textAlign: string;
-  theme: string;
+  themes: Record<Exclude<AppTheme, "system">, ReadingTheme>;
   preloadCount: number;
   verticalScroll: boolean;
   audioPlaybackRate: number;
@@ -488,6 +489,7 @@ export type SourceMutationResponse =
 export interface AppSettingsResource {
   webdavBackup?: WebDavBackupConfig;
   schemaVersion: number;
+  theme: AppTheme;
   sourceHttpTimeoutSeconds: number;
   reader: ReaderSettings;
   home: HomeConfigDocument;

@@ -17,8 +17,6 @@ const readerStyle = computed(() => ({
   "--novel-font-size": `${settings.value.reader.fontSizePx}px`,
   "--novel-line-height": settings.value.reader.lineHeight,
   "--novel-font-family": settings.value.reader.fontFamily || "system-ui",
-  "--novel-text-color": settings.value.reader.textColor,
-  "--novel-background": settings.value.reader.backgroundColor,
   "--novel-text-align": settings.value.reader.textAlign,
   "--novel-background-image": settings.value.reader.backgroundImageSrc
     ? `url(${JSON.stringify(settings.value.reader.backgroundImageSrc)})` : "none",
@@ -67,8 +65,8 @@ onBeforeUnmount(() => {
   column-count: 1;
   column-gap: calc(2 * var(--gutter));
   column-fill: auto;
-  color: var(--novel-text-color);
-  background-color: var(--novel-background);
+  color: var(--reader-text);
+  background-color: var(--reader-background);
   font-family: var(--novel-font-family);
   font-size: var(--novel-font-size);
   line-height: var(--novel-line-height);

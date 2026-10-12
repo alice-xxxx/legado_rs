@@ -132,7 +132,7 @@ function selectSource(event: Event): void {
   display: grid;
   gap: 6px;
   margin: 12px 0;
-  color: #a34f46;
+  color: var(--app-danger);
 }
 
 .source-debug-errors p,

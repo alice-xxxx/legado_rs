@@ -1,12 +1,11 @@
 import type { Ref } from "vue";
 import { shelf as shelfPositions } from "../shelf/shelfStore";
-import { type BookDisplayMetadataPatch, type BookResource, type ResourceDescriptor } from "../../api/types";
-import { refreshOpenedBook as refreshBookResource } from "./bookDetailState";
+import { type BookDisplayMetadataPatch, type ResourceDescriptor } from "../../api/types";
+import { openedBook, refreshOpenedBook as refreshBookResource } from "./bookDetailState";
 
 type PendingBookRemoval = { id: string; title: string };
 
 export interface BookMetadataActionsOptions {
-  openedBook: Ref<BookResource | null>;
   editorBookId: Ref<string | null>;
   pendingRemoval: Ref<PendingBookRemoval | null>;
   recoveryRequired: Ref<boolean>;
@@ -17,7 +16,6 @@ export interface BookMetadataActionsOptions {
 /** 管理书籍展示信息编辑、资源重载和从书架移除。 */
 export function useBookMetadataActions(options: BookMetadataActionsOptions) {
   const {
-    openedBook,
     editorBookId,
     pendingRemoval,
     recoveryRequired,

@@ -65,12 +65,14 @@ impl ApplicationService {
             .read_json_ref_or_default(&settings_ref, empty_settings.clone())
             .await
             .map_err(|error| error.to_string())?;
+        let previous_settings = startup_settings.clone();
+        crate::models::upgrade_settings_document(&mut startup_settings);
         if !valid_startup_settings(&startup_settings) {
-            store
-                .write_json_ref(&settings_ref, &empty_settings)
-                .await
-                .map_err(|error| error.to_string())?;
             startup_settings = empty_settings;
+        }
+        if startup_settings != previous_settings {
+            store.write_json_ref(&settings_ref, &startup_settings).await
+                .map_err(|error| error.to_string())?;
         }
         crate::source_http::set_network_timeout_seconds(configured_source_http_timeout_seconds(
             Some(&startup_settings),
@@ -381,4 +383,47 @@ fn valid_startup_shelf(value: &Value) -> bool {
         .books
         .iter()
         .all(|book| validate_id(&book.id, "bookId").is_ok() && ids.insert(book.id.as_str()))
+}
+
+#[cfg(test)]
+mod settings_startup_tests {
+    use super::*;
+
+    struct UnusedExecutor;
+    impl SourceExecutor for UnusedExecutor {
+        fn execute<'a>(&'a self, _request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async { Err("Settings initialization must not execute a source".into()) })
+        }
+    }
+
+    #[tokio::test]
+    async fn startup_persists_complete_settings_and_saves_both_reading_profiles() {
+        let fresh = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(fresh.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let settings = service.store.read_json_ref(&service.store.settings_ref()).await.unwrap();
+        assert_eq!(settings["theme"], "system");
+        assert_eq!(settings["reader"]["themes"], json!({"light":"paper","dark":"dark"}));
+        assert_eq!(settings["reader"]["audioPlaybackRate"], 1.0);
+        assert_eq!(settings["reader"]["audioSkipSeconds"], 15);
+
+        let legacy = tempfile::tempdir().unwrap();
+        let mut settings = serde_json::to_value(crate::models::SettingsDocument::default()).unwrap();
+        settings.as_object_mut().unwrap().remove("theme");
+        settings["reader"] = json!({"theme":"sepia","fontSizePx":25,"ttsRate":1.75});
+        std::fs::write(legacy.path().join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
+        let service = ApplicationService::open_with_executor(legacy.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let mut persisted: Value = serde_json::from_slice(&std::fs::read(legacy.path().join("settings.json")).unwrap()).unwrap();
+        assert_eq!(persisted["theme"], "light");
+        assert_eq!(persisted["reader"]["themes"]["light"], "sepia");
+        assert_eq!(persisted["reader"]["fontSizePx"], 25);
+        assert_eq!(persisted["reader"]["ttsRate"], 1.75);
+        assert_eq!(persisted["reader"]["audioSkipSeconds"], 15);
+        persisted["theme"] = json!("dark");
+        persisted["reader"]["themes"]["dark"] = json!("paper");
+        service.save_settings(persisted).await.unwrap();
+        let saved = service.store.read_json_ref(&service.store.settings_ref()).await.unwrap();
+        assert_eq!(saved["theme"], "dark");
+        assert_eq!(saved["reader"]["themes"], json!({"light":"sepia","dark":"paper"}));
+        assert_eq!(saved["reader"]["fontSizePx"], 25);
+    }
 }

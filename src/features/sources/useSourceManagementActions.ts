@@ -1,12 +1,11 @@
 import { ref, type Ref } from "vue";
-import { mutateSources as mutateSource, readSourceDefinitionJson, saveSourceMetadata, saveSourceDefinition, exportSourceDefinitions, type SourceMetadataChanges } from "./sourcesStore";
+import { sources, bookSourceCandidates, mutateSources as mutateSource, readSourceDefinitionJson, saveSourceMetadata, saveSourceDefinition, exportSourceDefinitions, type SourceMetadataChanges } from "./sourcesStore";
 import type { SourceMetadata } from "../../api/types";
+import { shelfBatchRecoveryRequired as recoveryRequired } from "../../app/recoveryState";
 
 interface SourceManagementOptions {
-  sources: Ref<SourceMetadata[]>;
   selectedSourceIds: Ref<string[]>;
   selectedSourceRows: Ref<string[]>;
-  bookSourceCandidates: { readonly value: SourceMetadata[] };
   sourceBatchBusy: Ref<boolean>;
   sourceExportBusy: Ref<boolean>;
   sourceImportOpen: Ref<boolean>;
@@ -14,7 +13,6 @@ interface SourceManagementOptions {
   sourceImportUrl: Ref<string>;
   pendingSourceRemoval: Ref<string[]>;
   editingSource: Ref<SourceMetadata | null>;
-  recoveryRequired: Readonly<Ref<boolean>>;
   getRestoreFrontendRevision: () => number;
   errorText: (error: unknown) => string;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -23,10 +21,9 @@ interface SourceManagementOptions {
 /** 处理书源列表、批量维护、导入导出、移除和元数据编辑。 */
 export function useSourceManagementActions(options: SourceManagementOptions) {
   const {
-    sources, selectedSourceIds, selectedSourceRows, bookSourceCandidates,
+    selectedSourceIds, selectedSourceRows,
     sourceBatchBusy, sourceExportBusy, editingSource,
     sourceImportOpen, sourceImportBusy, sourceImportUrl, pendingSourceRemoval,
-    recoveryRequired,
     getRestoreFrontendRevision, errorText, notify,
   } = options;
   const sourceEditBusy = ref(false);

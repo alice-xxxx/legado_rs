@@ -421,7 +421,7 @@ onBeforeUnmount(() => {
 
 <style scoped>
 
-.pdf-reader-stage { position: absolute; inset: 0; overflow: hidden; background: #fff; }
+.pdf-reader-stage { position: absolute; inset: 0; overflow: hidden; background: var(--app-surface); }
 .pdf-canvas-scroll {
   position: absolute; inset: 0;
   display: flex; align-items: flex-start;
@@ -435,7 +435,7 @@ onBeforeUnmount(() => {
   position: absolute; z-index: 3;
   inset: 0 auto 0 0; display: flex;
   width: 82px; flex-direction: column; gap: 6px;
-  overflow: hidden; padding: 10px 6px;
+  overflow: hidden; padding: calc(10px + var(--safe-top)) 6px var(--safe-bottom);
 }
 .pdf-thumb-window-control { min-height: 32px; flex: none; }
 .pdf-thumb-list { display: flex; min-height: 0; flex: 1; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; }
@@ -446,7 +446,7 @@ onBeforeUnmount(() => {
 .pdf-reader-status { position: absolute; z-index: 2; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
 .pdf-reader-status p { margin: 0; }
 .pdf-reader-error { justify-items: center; }
-.pdf-page-label { position: absolute; right: 10px; bottom: 10px; padding: 4px 8px; background: #fff; }
+.pdf-page-label { position: absolute; right: 10px; bottom: calc(10px + var(--safe-bottom)); padding: 4px 8px; background: var(--app-surface); }
 .pdf-password-backdrop {
   position: absolute; z-index: 4;
   inset: 0; display: grid;
@@ -460,9 +460,9 @@ onBeforeUnmount(() => {
 
 .pdf-find-panel {
   position: absolute; z-index: 8;
-  top: 10px; right: 11px;
+  top: calc(10px + var(--safe-top)); right: 11px;
   display: grid; width: min(310px, calc(100% - 72px));
-  max-height: calc(100% - 70px); gap: 8px;
+  max-height: calc(100% - 70px - var(--safe-top) - var(--safe-bottom)); gap: 8px;
   overflow: auto; padding: 13px;
   background: var(--app-surface);
 }

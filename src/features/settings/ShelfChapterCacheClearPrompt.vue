@@ -27,8 +27,8 @@ defineProps<{
 <style scoped>
 .modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgb(25 27 35 / 36%); backdrop-filter: blur(3px); }
 .app-modal { width: min(560px, 100%); max-height: min(88dvh, 900px); overflow: auto; padding: 22px; border: 1px solid var(--app-line); border-radius: 16px; background: var(--app-surface); box-shadow: var(--app-shadow); }
-.confirm-symbol { display: grid; width: 38px; height: 38px; place-items: center; margin-bottom: 12px; border-radius: 12px; color: var(--app-danger); background: #f8ebed; }
-h2 { margin: 0 0 10px; font-size: 18px; }
-p { color: var(--app-muted); font-size: 13px; line-height: 1.55; }
+.confirm-symbol { display: grid; width: 38px; height: 38px; place-items: center; margin-bottom: 12px; border-radius: 12px; color: var(--app-danger); background: var(--app-danger-soft); }
+h2 { margin: 0 0 10px; font-size: var(--ui-font-heading); }
+p { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.55; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 </style>

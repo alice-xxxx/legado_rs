@@ -31,14 +31,14 @@ function navigate(destination: Item["destination"]): void {
   <div class="me-page-layout">
     <PrimaryNavigation />
     <main class="me-page-main">
-      <div class="me-prototype-list">
+      <div class="ui-page-content settings-menu">
     <section v-for="group in ([{ title: '内容', items: contentItems }, { title: '应用', items: appItems }])"
-      :key="group.title" class="me-prototype-section">
-      <small class="me-prototype-section-label">{{ group.title }}</small>
-      <button v-for="entry in group.items" :key="entry.destination" type="button" class="me-prototype-list-row"
+      :key="group.title" class="settings-menu-section">
+      <small class="settings-menu-label">{{ group.title }}</small>
+      <button v-for="entry in group.items" :key="entry.destination" type="button" class="settings-menu-row"
         @click="navigate(entry.destination)">
-        <span class="me-prototype-list-icon"><PrototypeIcon :name="entry.icon" /></span>
-        <span class="me-prototype-list-copy">
+        <span class="settings-menu-icon"><PrototypeIcon :name="entry.icon" /></span>
+        <span class="settings-menu-copy">
           <strong>{{ entry.title }}</strong>
         </span>
         <PrototypeIcon name="right"/>
@@ -64,68 +64,11 @@ function navigate(destination: Item["destination"]): void {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 clamp(20px, 3.6vw, 56px) var(--safe-bottom);
-}
-.me-prototype-list {
-  width: min(var(--app-content-width), calc(100% - 40px));
-  margin: 0 auto;
-  padding: 24px 0 54px;
-}
-.me-prototype-section {
-  margin-bottom: 24px;
-}
-.me-prototype-section-label {
-  display: block;
-  margin: 0 4px 6px;
-  color: var(--app-muted);
-  font-size: 10px;
-  font-weight: 650;
-}
-.me-prototype-list-row {
-  display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 20px;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 66px;
-  padding: 11px 8px;
-  border: 0;
-  border-bottom: 1px solid var(--app-line);
-  background: transparent;
-  color: var(--app-text);
-  text-align: left;
-  cursor: pointer;
-}
-.me-prototype-list-row:hover {
-  background: var(--app-accent-soft);
-}
-.me-prototype-list-icon {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  background: var(--app-icon-background);
-  color: var(--app-icon-ink);
-}
-.me-prototype-list-icon :deep(svg),
-.me-prototype-list-row > .prototype-icon {
-  width: 18px;
-  height: 18px;
-}
-.me-prototype-list-row > .prototype-icon {
-  color: var(--app-subtle);
-}
-.me-prototype-list-copy {
-  min-width: 0;
-}
-.me-prototype-list-copy strong {
-  font-size: 12px;
-  font-weight: 650;
+  padding: 0 0 var(--safe-bottom);
 }
 @media (max-width: 860px) {
   .me-page-main {
-    padding: 0 14px calc(67px + var(--safe-bottom));
+    padding: 0 0 calc(var(--ui-nav-height) + var(--safe-bottom));
   }
 }
 </style>

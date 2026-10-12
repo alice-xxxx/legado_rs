@@ -121,7 +121,7 @@ function clearAll(): void {
 .search-history__header h2 {
   margin: 0;
   color: var(--app-text);
-  font-size: 14px;
+  font-size: var(--ui-font-heading);
   font-weight: 700;
   line-height: 1.3;
 }
@@ -134,7 +134,7 @@ function clearAll(): void {
   color: var(--app-text);
   background: var(--app-surface);
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-font-body);
   cursor: pointer;
 }
 
@@ -176,7 +176,7 @@ function clearAll(): void {
   color: var(--app-muted);
   background: transparent;
   font: inherit;
-  font-size: 12px;
+  font-size: var(--ui-font-body);
   cursor: pointer;
 }
 
@@ -189,7 +189,7 @@ function clearAll(): void {
 
 .search-history__count {
   color: var(--app-muted);
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
   white-space: nowrap;
 }
 
@@ -198,8 +198,8 @@ function clearAll(): void {
   padding: 8px 10px;
   border-radius: 9px;
   color: var(--app-danger);
-  background: #fff3f4;
-  font-size: 12px;
+  background: var(--app-danger-soft);
+  font-size: var(--ui-font-caption);
   line-height: 1.4;
 }
 
@@ -238,10 +238,6 @@ function clearAll(): void {
   cursor: pointer;
 }
 
-.search-history__query:hover .search-history__query-copy strong {
-  color: var(--app-accent-ink);
-}
-
 .search-history__query-copy {
   min-width: 0;
 }
@@ -249,7 +245,7 @@ function clearAll(): void {
 .search-history__query-copy strong {
   overflow: hidden;
   color: var(--app-text);
-  font-size: 12px;
+  font-size: var(--ui-font-body);
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -264,13 +260,9 @@ function clearAll(): void {
   color: var(--app-danger);
   background: transparent;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
   line-height: 1;
   cursor: pointer;
-}
-
-.search-history__delete:hover:not(:disabled) {
-  background: #fff3f4;
 }
 
 .search-history__confirm-backdrop {
@@ -295,13 +287,13 @@ function clearAll(): void {
 
 .search-history__confirm h3 {
   margin: 0;
-  font-size: 16px;
+  font-size: var(--ui-font-title);
 }
 
 .search-history__confirm p {
   margin: 9px 0 18px;
   color: var(--app-muted);
-  font-size: 13px;
+  font-size: var(--ui-font-caption);
   line-height: 1.55;
 }
 
@@ -312,9 +304,9 @@ function clearAll(): void {
 }
 
 .search-history__button--danger {
-  border-color: #e7c8cc;
+  border-color: var(--app-danger-line);
   color: var(--app-danger);
-  background: #fff7f8;
+  background: var(--app-panel-soft);
 }
 
 @media (max-width: 560px) {

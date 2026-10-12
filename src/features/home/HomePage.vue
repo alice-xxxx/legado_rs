@@ -425,31 +425,29 @@ onBeforeUnmount(() => {
 .home-page-layout { display:flex; width:100%; height:100dvh; min-height:0; overflow:hidden; padding-top:var(--safe-top); background:var(--app-background); }
 .home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 clamp(20px,3.6vw,56px) var(--safe-bottom); }
 /* 下拉时显示的提示条和图标状态。 */
-.home-pull-refresh { display:flex; align-items:center; justify-content:center; gap:8px; overflow:hidden; color:var(--app-muted); font-size:12px; transition:height .12s ease; }
+.home-pull-refresh { display:flex; align-items:center; justify-content:center; gap:8px; overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); transition:height .12s ease; }
 .home-pull-refresh-icon { display:grid; width:16px; height:16px; place-items:center; }
 .home-pull-refresh-icon svg { width:16px; height:16px; transition:transform .15s ease; }
 .home-pull-refresh-icon.ready svg { transform:rotate(180deg); }
 .home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
 /* 标签靠左，分类筛选和操作按钮靠右排列。 */
 .home-discovery { width:100%; max-width:1180px; min-width:0; margin:0 auto; padding:10px 0 26px; }
-.discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid #eceef2; }
+.discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
 .home-tabs { display:flex; min-width:0; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .home-tabs::-webkit-scrollbar { display:none; }
-.home-tabs button { flex:none; padding:5px 2px; border:0; background:transparent; color:#787e89; cursor:pointer; font-size:15px; }
+.home-tabs button { flex:none; padding:5px 2px; border:0; background:transparent; color:var(--app-muted); cursor:pointer; font-size:var(--ui-font-body); }
 .home-tabs button.active { color:var(--app-text); font-weight:600; }
 .discover-controls { display:flex; flex:none; align-items:center; gap:12px; }
-.discover-type-picker { position:relative; display:flex; align-items:center; gap:3px; color:#565b65; }
-.discover-type-picker select { appearance:none; max-width:100px; padding:5px 0; border:0; outline:0; background:transparent; color:inherit; cursor:pointer; font:inherit; font-size:14px; }
+.discover-type-picker { position:relative; display:flex; align-items:center; gap:3px; color:var(--app-muted); }
+.discover-type-picker select { appearance:none; max-width:100px; padding:5px 0; border:0; outline:0; background:transparent; color:inherit; cursor:pointer; font:inherit; font-size:var(--ui-font-body); }
 .discover-type-picker svg { width:14px; height:14px; transform:rotate(90deg); pointer-events:none; }
-.discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; border:0; border-radius:8px; background:transparent; color:#565b65; cursor:pointer; }
-.discover-icon-button:hover { background:#f0f1f4; color:var(--app-accent); }
+.discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; border:0; border-radius:8px; background:transparent; color:var(--app-muted); cursor:pointer; }
 .discover-icon-button:disabled { opacity:.5; cursor:default; }
 .discover-icon-button svg { width:18px; height:18px; }
 .discovery-content-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:29px 24px; }
 .discovery-cover-card { min-width:0; }
 .discovery-cover-action { display:block; width:100%; padding:0; border:0; background:transparent; text-align:left; cursor:pointer; }
 .discovery-cover-art { position:relative; display:block; width:100%; overflow:hidden; aspect-ratio:3/4; border-radius:13px; background:linear-gradient(140deg,#466f6d,#1b3235); transition:transform .15s,box-shadow .15s; }
-.discovery-cover-action:hover .discovery-cover-art { transform:translateY(-2px); box-shadow:0 12px 30px #25263919; }
 .discovery-cover-art img { width:100%; height:100%; object-fit:cover; display:block; }
 .discovery-cover-placeholder { position:absolute; inset:0; overflow:hidden; }
 .discovery-cover-placeholder::before { content:""; position:absolute; width:76%; height:72%; right:-28%; top:15%; border-radius:50%; background:#fff2; filter:blur(1px); }
@@ -460,14 +458,14 @@ onBeforeUnmount(() => {
 .cover-tone-4 { background:linear-gradient(145deg,#8b657d,#342232); }
 /* 封面卡片文字、加载/空状态和错误提示。 */
 .discovery-cover-copy { display:flex; flex-direction:column; min-width:0; padding:8px 1px 0; gap:3px; }
-.discovery-cover-copy strong { overflow:hidden; color:#24252d; font-size:13px; white-space:nowrap; text-overflow:ellipsis; }
-.discovery-cover-copy small { overflow:hidden; color:#838896; font-size:11px; white-space:nowrap; text-overflow:ellipsis; }
-.discovery-cover-copy>span { overflow:hidden; color:#959aa5; font-size:10px; white-space:nowrap; text-overflow:ellipsis; }
-.discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; color:#828896; }
+.discovery-cover-copy strong { overflow:hidden; color:var(--app-text); font-size:var(--ui-font-body); white-space:nowrap; text-overflow:ellipsis; }
+.discovery-cover-copy small { overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
+.discovery-cover-copy>span { overflow:hidden; color:var(--app-subtle); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
+.discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; color:var(--app-muted); }
 .discover-grid-empty { min-height:0; padding:24px 0; }
-.discover-grid-empty strong { font-size:15px; color:#40444f; }
-.discover-grid-warning { font-size:11px; color:#af6555; overflow-wrap:anywhere; }
-.mini-loader { display:inline-block; width:16px; height:16px; border:2px solid #ddd8fb; border-top-color:var(--app-accent); border-radius:50%; animation:home-spin .8s linear infinite; }
+.discover-grid-empty strong { font-size:var(--ui-font-body); color:var(--app-text); }
+.discover-grid-warning { font-size:var(--ui-font-caption); color:var(--app-warning); overflow-wrap:anywhere; }
+.mini-loader { display:inline-block; width:16px; height:16px; border:2px solid var(--app-accent-soft); border-top-color:var(--app-accent); border-radius:50%; animation:home-spin .8s linear infinite; }
 @keyframes home-spin { to {transform:rotate(360deg)} }
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:29px 12px; } }
@@ -480,9 +478,9 @@ onBeforeUnmount(() => {
   .discovery-content-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 11px; }
   .discover-filter-bar { gap:8px; margin-bottom:16px; padding-bottom:10px; }
   .home-tabs { gap:8px; }
-  .home-tabs button { font-size:13px; }
+  .home-tabs button { font-size:var(--ui-font-body); }
   .discover-controls { gap:5px; }
-  .discover-type-picker select { max-width:72px; font-size:12px; }
+  .discover-type-picker select { max-width:72px; font-size:var(--ui-font-body); }
   .discover-icon-button { width:28px; height:28px; }
 }
 </style>

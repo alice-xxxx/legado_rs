@@ -168,58 +168,57 @@ function saveWebDavDraft(): void {
 </template>
 
 <style scoped>
-.backup-settings-page{width:100%;min-width:0;color:#363742}
-.backup-topbar{position:sticky;top:0;z-index:35;min-height:64px;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:#f6f7f9ed;backdrop-filter:blur(18px)}
+.backup-settings-page{width:100%;min-width:0;color:var(--app-text)}
+.backup-topbar{position:sticky;top:0;z-index:35;min-height:var(--ui-header-height);display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
 .backup-page-title{min-width:0}
-.backup-page-title strong{font-size:14px;color:#242631;font-weight:750}
-.backup-content{box-sizing:border-box;width:min(820px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px}
-.backup-hero{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;box-sizing:border-box;min-height:82px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:#fff}
+.backup-page-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750}
+.backup-content{box-sizing:border-box;width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
+.backup-hero{display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:12px;box-sizing:border-box;min-height:82px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface)}
 .backup-hero-icon{display:grid;place-items:center;width:40px;height:40px;border-radius:11px;background:var(--app-accent-soft);color:var(--app-accent)}
 .backup-hero-icon :deep(svg){width:21px;height:21px}
 .backup-hero-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
-.backup-hero-copy strong{font-size:11px;color:#383945}
-.backup-hero-copy>span{font-size:9px;color:#7e8290}
-.backup-hero-copy small{font-size:8px;color:#9497a2;line-height:1.45}
-.backup-hero>.button{justify-self:end;white-space:nowrap;min-height:36px;font-size:10px}
+.backup-hero-copy strong{font-size:var(--ui-font-body);color:var(--app-text)}
+.backup-hero-copy>span{font-size:var(--ui-font-caption);color:var(--app-muted)}
+.backup-hero-copy small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.45}
+.backup-hero>.button{justify-self:end;white-space:nowrap;min-height:36px;font-size:var(--ui-font-body)}
 .backup-local-section{margin-top:22px}
 .backup-local-section>header,.webdav-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px}
-.backup-local-section>header h3,.webdav-heading h3{margin:0;color:#888d97;font-size:9px;font-weight:650}
-.backup-local-section>header p,.webdav-heading p{margin:0;color:#9296a2;font-size:9px;line-height:1.45}
-.backup-action-link{width:100%;display:grid;grid-template-columns:37px minmax(0,1fr) 16px;gap:10px;align-items:center;min-height:58px;padding:6px;border:0;border-bottom:1px solid #e9eaf0;background:transparent;text-align:left;cursor:pointer}
-.backup-action-link:hover:not(:disabled){background:#f8f6ff}
+.backup-local-section>header h3,.webdav-heading h3{margin:0;color:var(--app-muted);font-size:var(--ui-font-body);font-weight:650}
+.backup-local-section>header p,.webdav-heading p{margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.45}
+.backup-action-link{width:100%;display:grid;grid-template-columns:37px minmax(0,1fr) 16px;gap:10px;align-items:center;min-height:58px;padding:6px;border:0;border-bottom:1px solid var(--app-line);background:transparent;text-align:left;cursor:pointer}
 .backup-action-link:disabled{opacity:.5;cursor:default}
 .backup-row-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent)}
 .backup-row-icon :deep(svg){width:19px;height:19px}
 .backup-action-link>span:nth-child(2){display:flex;flex-direction:column;gap:3px}
-.backup-action-link strong{font-size:10px;color:#3b3c48}
-.backup-action-link small{font-size:8px;color:#999da5;line-height:1.45}
-.backup-action-link>.prototype-icon{width:16px;height:16px;color:#a6a9b2}
-.restore-note{margin:10px 0 0;color:#956b57;font-size:9px;line-height:1.55}
+.backup-action-link strong{font-size:var(--ui-font-body);color:var(--app-text)}
+.backup-action-link small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.45}
+.backup-action-link>.prototype-icon{width:16px;height:16px;color:var(--app-subtle)}
+.restore-note{margin:10px 0 0;color:var(--app-warning);font-size:var(--ui-font-caption);line-height:1.55}
 .webdav-settings{margin-top:22px;padding:15px 0;border-top:1px solid var(--app-line);background:transparent}
 .webdav-heading{align-items:center}
 .webdav-heading>div{display:flex;align-items:center;gap:8px}
-.webdav-heading h3{font-size:10px}
-.webdav-heading .text-button{font-size:9px}
+.webdav-heading h3{font-size:var(--ui-font-caption)}
+.webdav-heading .text-button{font-size:var(--ui-font-body)}
 .webdav-config-form{display:grid;margin-top:12px}
-.webdav-setting-row{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;min-height:0;padding:9px 0;border-bottom:1px solid #eef0f3}
+.webdav-setting-row{display:grid;grid-template-columns:minmax(0,1fr);align-items:start;gap:6px;min-height:0;padding:9px 0;border-bottom:1px solid var(--app-line)}
 .backup-row-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
-.backup-row-copy strong{font-size:9px;color:#50545e}
-.backup-row-copy small{font-size:8px;color:#999da5;line-height:1.45}
-.webdav-setting-row input,.webdav-setting-row select{box-sizing:border-box;min-width:0;width:min(100%,520px);min-height:33px;padding:0 9px;border:1px solid var(--app-line);border-radius:8px;background:#fff;color:#454651;font-size:9px}
+.backup-row-copy strong{font-size:var(--ui-font-body);color:var(--app-text)}
+.backup-row-copy small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.45}
+.webdav-setting-row input,.webdav-setting-row select{box-sizing:border-box;min-width:0;width:min(100%,520px);min-height:33px;padding:0 9px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
 .webdav-setting-row input:disabled,.webdav-setting-row select:disabled{opacity:.6}
 .webdav-config-actions,.webdav-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:8px;padding:12px 0}
-.webdav-config-actions .button,.webdav-actions .button{min-height:33px;font-size:10px}
-.webdav-config-state,.webdav-directory-note,.backup-status-note{margin:0;padding:8px 0;color:#858996;font-size:9px;line-height:1.65;overflow-wrap:anywhere}
-.webdav-config-state{color:#675aab}
-.webdav-directory-note{border-bottom:1px solid #eef0f3}
-.webdav-actions{border-top:1px solid #eef0f3;margin-top:12px;padding-bottom:0}
+.webdav-config-actions .button,.webdav-actions .button{min-height:33px;font-size:var(--ui-font-body)}
+.webdav-config-state,.webdav-directory-note,.backup-status-note{margin:0;padding:8px 0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.65;overflow-wrap:anywhere}
+.webdav-config-state{color:var(--app-accent-ink)}
+.webdav-directory-note{border-bottom:1px solid var(--app-line)}
+.webdav-actions{border-top:1px solid var(--app-line);margin-top:12px;padding-bottom:0}
 .webdav-auto-setting select{min-width:125px}
-.webdav-draft-warning{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:10px 0;padding:9px;border:1px solid #eed6b5;border-radius:9px;background:#fff8ed;color:#855f31;font-size:10px}
-.webdav-draft-warning button{padding:6px 8px;border:0;border-radius:7px;background:#fff;color:var(--app-accent);cursor:pointer}
-.webdav-error{margin:0;padding:9px 0;color:#b0525d;font-size:10px;line-height:1.55}
+.webdav-draft-warning{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:10px 0;padding:9px;border:1px solid var(--app-warning-line);border-radius:9px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption)}
+.webdav-draft-warning button{padding:6px 8px;border:0;border-radius:7px;background:var(--app-surface);color:var(--app-accent);cursor:pointer}
+.webdav-error{margin:0;padding:9px 0;color:var(--app-danger);font-size:var(--ui-font-caption);line-height:1.55}
 @media(max-width:660px){
-  .backup-topbar{padding-inline:18px}
-  .backup-content{width:calc(100% - 36px)}
+  .backup-topbar{padding-inline:var(--ui-header-gutter)}
+  .backup-content{width:100%}
   .backup-hero{grid-template-columns:40px minmax(0,1fr);gap:10px}
   .backup-hero>.button{grid-column:1/-1;justify-self:stretch}
   .webdav-heading{flex-wrap:wrap}

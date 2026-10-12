@@ -491,6 +491,12 @@ fn validate_extracted_snapshot(stage: &Path) -> Result<(), String> {
             return Err(format!("Backup is missing required app data: {required}"));
         }
     }
+    let settings_path = stage.join("settings.json");
+    let bytes = fs::read(&settings_path).map_err(|error| format!("Cannot read restored settings: {error}"))?;
+    let mut settings: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| format!("Invalid restored settings: {error}"))?;
+    crate::models::upgrade_settings_document(&mut settings);
+    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
+    fs::write(&settings_path, bytes).map_err(|error| format!("Cannot upgrade restored settings: {error}"))?;
     let files = collect_snapshot_files(stage)?;
     validate_snapshot_json(&files)
 }

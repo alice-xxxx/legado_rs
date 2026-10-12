@@ -1,28 +1,22 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs,  shallowRef, watch } from "vue";
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { useRoute } from "vue-router";
 import type {
   AppBootstrap,
   AppTask,
-  BookResource,
-  ResourceDescriptor,
-  TasksResource } from "../../api/types";
+  BookResource } from "../../api/types";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { sources, bookSourceCandidates as sourceCandidates } from "../sources/sourcesStore";
-import { readResource } from "../../api/resources";
-import { startChapterDownload, tasksResource as loadTasksResource } from "../../api/tasks";
+import { startChapterDownload } from "../../api/tasks";
 import { notify, errorText } from "../../app/notifications";
+import { tasks, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
 import {
   getFrontendRestoreRevision,
   lockShelfBatchRecovery,
-  shelfBatchRecoveryMessage,
-  shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle } from "../../app/recoveryState";
+  shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { getLocalBookImportSession } from "../import/localBookImportSession";
-import { backupBusy } from "../settings/backupState";
-import { settings as sharedSettings } from "../settings/settingsStore";
-import { clearOpenedBook, openedBook } from "../books/bookDetailState";
+import { clearOpenedBook } from "../books/bookDetailState";
 import { installReaderBackupSession } from "./readerBackupSession";
 import { installReaderSession } from "./readerSession";
 import { useAppReaderFeatures } from "./useAppReaderFeatures";
@@ -36,28 +30,11 @@ const AudioReader = defineAsyncComponent(() => import("./AudioReader.vue"));
 const VideoReader = defineAsyncComponent(() => import("./VideoReader.vue"));
 const PdfReader = defineAsyncComponent(() => import("./PdfReader.vue"));
 const route = useRoute();
-const settings = sharedSettings;
 
 
-const tasks = shallowRef<AppTask[]>([]);
-
-let tasksDescriptor: ResourceDescriptor | null = null;
 let disposed = false;
-let tasksReadRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 const readerImportPasswords = getLocalBookImportSession().pdfImportPasswords;
-
-async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-  const requestRevision = ++tasksReadRevision;
-  if (descriptor) tasksDescriptor = descriptor;
-  if (!tasksDescriptor) tasksDescriptor = (await loadTasksResource()).resource;
-  const document = await readResource<TasksResource>(tasksDescriptor);
-  if (restoreRevision !== getFrontendRestoreRevision() || requestRevision !== tasksReadRevision) return;
-  const byId = new Map((document.tasks ?? []).map((task) => [task.id, task]));
-  for (const task of tasks.value) if (task.status === "recoveryRequired") byId.set(task.id, task);
-  tasks.value = [...byId.values()];
-}
 
 function reusedCatalogTaskNotice(task: AppTask): string {
   const status = task.status === "paused" ? "已暂停" : task.status === "interrupted" ? "已中断"
@@ -83,14 +60,11 @@ function lockReaderRecovery(title: string, message: string): void {
 }
 
 const readerFeatures = useAppReaderFeatures({
-  shelfBatchRecoveryRequired,
-  backupBusy,
   pdfImportPasswords: readerImportPasswords,
   getRestoreRevision: getFrontendRestoreRevision,
   notify,
   errorText,
   startChapterDownload,
-  refreshTasks,
   reusedCatalogTaskNotice,
   openOtherSettings: () => {
     void router.push({ name: routeNames.settingsOther });
@@ -99,9 +73,6 @@ const readerFeatures = useAppReaderFeatures({
 });
 
 const bookSourceSwitchActions = useBookSourceSwitch({
-  bookSourceCandidates: sourceCandidates,
-  tasks,
-  openedBook,
   readingBook: readerFeatures.readingBook,
   readerVisible: readerFeatures.readerVisible,
   readingChapterIndex: readerFeatures.readingChapterIndex,
@@ -109,18 +80,20 @@ const bookSourceSwitchActions = useBookSourceSwitch({
   readingContent: readerFeatures.readingContent,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   readerControlsOpen: readerFeatures.readerControlsOpen,
-  shelf,
-  shelfBatchRecoveryRequired,
-  shelfBatchRecoveryTitle,
-  shelfBatchRecoveryMessage,
   saveCurrentProgress: readerFeatures.saveCurrentProgress,
-  refreshTasks: () => refreshTasks(),
   loadReaderChapter: readerFeatures.loadReaderChapter,
   notify,
   errorText,
   getRestoreRevision: getFrontendRestoreRevision,
 });
 const bookSourceSwitch = proxyRefs(bookSourceSwitchActions);
+watch(tasks, () => {
+  void bookSourceSwitchActions.syncBookSourceCandidateTask().catch(error => notify(errorText(error), "error"));
+});
+watch(latestTaskUpdate, task => {
+  if (task) void bookSourceSwitchActions.syncBookSourceCandidateTask(task).catch(error => notify(errorText(error), "error"));
+}, { flush: "sync" });
+
 
 async function closeReaderForNavigation(discardProgress = false): Promise<void> {
   await readerFeatures.closeReader(discardProgress);
@@ -139,7 +112,6 @@ const disposeReaderSession = installReaderSession({
   openBookmark: readerFeatures.openBookmark,
 });
 const disposeBackupSession = installReaderBackupSession({
-  settings,
   readingBook: readerFeatures.readingBook,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   hasActiveReaderMedia: readerFeatures.hasActiveReaderMedia,
@@ -148,21 +120,6 @@ const disposeBackupSession = installReaderBackupSession({
   closeReaderAfterRestore: readerFeatures.closeReaderAfterRestore,
 });
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
-
-async function bootstrap(): Promise<void> {
-  const restoreRevision = getFrontendRestoreRevision();
-
-  const tasksRequestRevision = ++tasksReadRevision;
-  const taskDescriptor = await loadTasksResource();
-  if (restoreRevision !== getFrontendRestoreRevision()) return;
-  const nextTasks = await readResource<TasksResource>(taskDescriptor.resource);
-  if (restoreRevision !== getFrontendRestoreRevision()) return;
-  if (tasksRequestRevision === tasksReadRevision) {
-    tasksDescriptor = taskDescriptor.resource;
-    tasks.value = nextTasks.tasks ?? [];
-  }
-}
-
 
 function retain(unlisten: UnlistenFn): void {
   if (disposed) unlisten();
@@ -179,40 +136,11 @@ async function setupReaderEvents(): Promise<void> {
       if (readerFeatures.readerBusy.value && readerFeatures.readingChapterIndex.value === payload.chapterIndex) readerFeatures.readerChapterLoading.failPending(payload.error);
       else notify(payload.error, "error");
     }));
-    retain(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
-      const revision = getFrontendRestoreRevision();
-      try {
-        if (event.payload.kind === "tasks") {
-          await refreshTasks(event.payload.resource);
-          await bookSourceSwitchActions.syncBookSourceCandidateTask();
-
-        }
-      } catch (error) {
-        if (revision === getFrontendRestoreRevision()) notify(`阅读器数据更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    retain(await listen<{ taskId: string; resource: ResourceDescriptor }>("task-updated", async (event) => {
-      const revision = getFrontendRestoreRevision();
-      try {
-        await refreshTasks(event.payload.resource);
-        if (revision === getFrontendRestoreRevision()) {
-          const task = tasks.value.find((item) => item.id === event.payload.taskId);
-          await bookSourceSwitchActions.syncBookSourceCandidateTask(task);
-        }
-      } catch (error) {
-        if (revision === getFrontendRestoreRevision()) notify(`候选搜索状态更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    retain(await listen<Partial<AppTask>>("task-recovery-required", async (event) => {
-      await bookSourceSwitchActions.syncBookSourceCandidateTask(event.payload);
-    }));
     retain(await listen<AppBootstrap>("app-state-updated", async () => {
       const revision = getFrontendRestoreRevision();
-      tasks.value = [];
-      tasksDescriptor = null;
       bookSourceSwitchActions.resetForRestore();
       try {
-        await bootstrap();
+        await ensureTasksLoaded();
         if (revision !== getFrontendRestoreRevision()) return;
       } catch (error) {
         if (revision !== getFrontendRestoreRevision()) return;
@@ -273,7 +201,6 @@ watch(screen, (next, previous) => {
 onMounted(() => {
   readerFeatures.setupTts();
   void setupReaderEvents();
-  void bootstrap().catch((error) => notify(`阅读器初始化失败：${errorText(error)}`, "error"));
   window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("pagehide", onPageHide);
   window.addEventListener("resize", readerFeatures.handleReaderResize);

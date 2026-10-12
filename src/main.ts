@@ -8,15 +8,18 @@ import ReaderHost from "./features/reader/ReaderHost.vue";
 import GlobalNoticeHost from "./app/GlobalNoticeHost.vue";
 import RecoveryRuntime from "./app/RecoveryRuntime.vue";
 import { loadSettings } from "./features/settings/settingsStore";
+import { initializeTheme } from "./features/settings/themeState";
 import { loadHistory } from "./features/settings/historyStore";
 import { loadConfigurations } from "./features/settings/configurationStores";
 import { initializeBookStore } from "./features/books/bookDetailState";
 import { loadShelf } from "./features/shelf/shelfStore";
 import { loadSources } from "./features/sources/sourcesStore";
+import { initializeTaskStore, disposeTaskStore } from "./features/tasks/tasksStore";
 import "./style.css";
 
 const mountedApps: Array<{ unmount: () => void }> = [];
 let startupDisposed = false;
+const disposeTheme = initializeTheme();
 const preventIosZoomGesture = (event: Event) => event.preventDefault();
 window.addEventListener("gesturestart", preventIosZoomGesture, { passive: false });
 window.addEventListener("gesturechange", preventIosZoomGesture, { passive: false });
@@ -79,6 +82,7 @@ void appBootstrap().then((bootstrap) => Promise.all([
   loadSources(bootstrap.sources),
   loadConfigurations(bootstrap),
   initializeBookStore(bootstrap.shelf),
+  initializeTaskStore(),
 ])).then(() => {
   if (startupDisposed) return;
   // The import host installs its session before ReaderHost consumes it.
@@ -92,6 +96,8 @@ void appBootstrap().then((bootstrap) => Promise.all([
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     startupDisposed = true;
+    disposeTheme();
+    disposeTaskStore();
     window.removeEventListener("gesturestart", preventIosZoomGesture);
     window.removeEventListener("gesturechange", preventIosZoomGesture);
     window.removeEventListener("unhandledrejection", onUnhandledRejection);

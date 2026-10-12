@@ -1,5 +1,6 @@
 import type { Ref } from "vue";
-import type { BookResource, ReaderSettings } from "../../api/types";
+import type { BookResource } from "../../api/types";
+import { settings } from "../settings/settingsStore";
 import type { PdfPageResource } from "./readerContent";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
@@ -35,7 +36,6 @@ interface ReaderPageInteractionOptions {
     imagePage: ReadonlyRef<boolean>;
     pdfPage: ReadonlyRef<PdfPageResource | null>;
     sourceRefreshBusy: ReadonlyRef<boolean>;
-    settings: ReadonlyRef<ReaderSettings>;
     menuOpen: Ref<boolean>;
     controlsOpen: Ref<boolean>;
     directoryOpen: Ref<boolean>;
@@ -134,7 +134,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     const viewport = reader.viewport.value;
     if (viewport) {
       const bounds = viewport.getBoundingClientRect();
-      return reader.settings.value.verticalScroll
+      return settings.value.reader.verticalScroll
         ? Math.floor(Math.max(0, rect.top - bounds.top + viewport.scrollTop) / Math.max(1, viewport.clientHeight))
         : Math.floor(Math.max(0, rect.left - bounds.left + viewport.scrollLeft) / Math.max(1, viewport.clientWidth));
     }

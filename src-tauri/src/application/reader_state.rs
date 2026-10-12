@@ -678,6 +678,9 @@ impl ApplicationService {
         if !document.is_object() {
             return Err("Settings must be a JSON object".into());
         }
+        crate::models::upgrade_settings_document(&mut document);
+        serde_json::from_value::<crate::models::SettingsDocument>(document.clone())
+            .map_err(|error| format!("Invalid settings: {error}"))?;
         let home_value = document
             .get("home")
             .cloned()
@@ -744,12 +747,6 @@ impl ApplicationService {
         }
         if reader.contains_key("videoPlaybackRate") {
             validate_number_range(reader, "videoPlaybackRate", 0.5, 3.0)?;
-        }
-        if let Some(theme) = reader.get("theme") {
-            match theme.as_str() {
-                Some("paper" | "sepia" | "dark" | "system") => {}
-                _ => return Err("Settings theme must be paper, sepia, dark, or system".into()),
-            }
         }
         let reader = document
             .get_mut("reader")

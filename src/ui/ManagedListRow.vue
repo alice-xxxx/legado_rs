@@ -76,7 +76,6 @@ const emit = defineEmits<{
   grid-template-columns: minmax(0, 1fr);
 }
 
-.managed-list-row:hover,
 .managed-list-row.is-active {
   background: var(--app-accent-soft);
 }
@@ -126,7 +125,7 @@ const emit = defineEmits<{
 }
 
 .managed-list-row__status.is-disabled {
-  background: #c7cad0;
+  background: var(--app-track);
 }
 
 .managed-list-row__copy {
@@ -144,13 +143,13 @@ const emit = defineEmits<{
 }
 
 .managed-list-row__copy strong {
-  font-size: 11px;
+  font-size: var(--ui-font-body);
   font-weight: 650;
 }
 
 .managed-list-row__copy small {
   color: var(--app-muted);
-  font-size: 9px;
+  font-size: var(--ui-font-caption);
 }
 
 .managed-list-row__menu-wrap {
@@ -168,11 +167,10 @@ const emit = defineEmits<{
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #858997;
+  color: var(--app-muted);
   cursor: pointer;
 }
 
-.managed-list-row__menu-button:hover,
 .managed-list-row__menu-button.is-open {
   background: var(--app-accent-soft);
   color: var(--app-accent-ink);
@@ -200,7 +198,7 @@ const emit = defineEmits<{
   padding: 6px;
   border: 1px solid var(--app-line);
   border-radius: 10px;
-  background: #fff;
+  background: var(--app-surface);
   box-shadow: 0 12px 30px #22223824;
 }
 
@@ -213,12 +211,8 @@ const emit = defineEmits<{
   color: var(--app-text);
   text-align: left;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--ui-font-body);
   cursor: pointer;
-}
-
-.managed-list-row__menu :slotted(button:hover:not(:disabled)) {
-  background: var(--app-panel-softer);
 }
 
 .managed-list-row__menu :slotted(button.is-danger) {

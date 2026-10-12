@@ -1,9 +1,8 @@
 import type { Ref } from "vue";
-import type { AppSettingsResource, BookResource } from "../../api/types";
+import type { BookResource } from "../../api/types";
 
 /** Reader capabilities required by the backup feature, without exposing reader UI state. */
 export interface ReaderBackupSession {
-  settings: Ref<AppSettingsResource>;
   readingBook: Ref<BookResource | null>;
   readerProgressDirty: Ref<boolean>;
   hasActiveReaderMedia: () => boolean;

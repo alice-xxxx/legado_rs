@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 import { pickReaderBackgroundImage } from "../../api/settings";
 import type { ReaderSettings } from "../../api/types";
 import { settings } from "./settingsStore";
+import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "./themeState";
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
@@ -11,34 +12,19 @@ import router, { routeNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 
-type AppearanceTheme = ReaderSettings["theme"];
 type AppearanceSettingKey = "backgroundImageOpacity" | "fontSizePx" | "lineHeight" | "fontFamily" | "preloadCount" | "verticalScroll" | "audioPlaybackRate" | "videoPlaybackRate" | "audioSkipSeconds";
 
-const readerSettings = computed(() => settings.value.reader);
 const backgroundBusy = ref(false);
 const backgroundError = ref("");
 const operationBlocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRequired.value);
 const blocked = operationBlocked;
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3] as const;
-const themes: ReadonlyArray<readonly [AppearanceTheme, string]> = [
-  ["paper", "纸张"], ["sepia", "护眼"], ["dark", "夜间"], ["system", "系统"],
-];
 function returnToSettings(): void {
   void router.push({ name: routeNames.settings });
 }
 
 function changeSetting<K extends AppearanceSettingKey>(key: K, value: ReaderSettings[K]): void {
   settings.value.reader[key] = value;
-}
-
-function changeTheme(theme: AppearanceTheme): void {
-  const colors: Record<AppearanceTheme, { textColor: string; backgroundColor: string }> = {
-    paper: { textColor: "#3f3b34", backgroundColor: "#f7f3e9" },
-    sepia: { textColor: "#4e4131", backgroundColor: "#eee1c8" },
-    dark: { textColor: "#d1d0cb", backgroundColor: "#17191c" },
-    system: { textColor: "#252525", backgroundColor: "#ffffff" },
-  };
-  Object.assign(settings.value.reader, { theme, ...colors[theme] });
 }
 
 async function chooseBackground(): Promise<void> {
@@ -77,11 +63,40 @@ function clearBackground(): void {
 
       <main class="appearance-settings-stack">
       <section class="appearance-workspace-group">
+        <header><h2>应用主题</h2></header>
+    <div class="appearance-setting-row appearance-theme-row">
+      <div class="appearance-theme-options app-theme-options">
+        <button
+          v-for="theme in appThemes"
+          :key="theme[0]"
+          type="button"
+          class="appearance-theme-option"
+          :class="[`theme-${theme[0]}`, { selected: settings.theme === theme[0] }]"
+          :aria-pressed="settings.theme === theme[0]"
+          :disabled="blocked"
+          @click="settings.theme = theme[0]"
+        ><span></span>{{ theme[1] }}</button>
+      </div>
+    </div>
+    <template v-if="settings.theme !== 'system'">
+      <header class="reading-theme-heading"><h2>{{ settings.theme === 'light' ? '白天' : '夜间' }}阅读主题</h2>
+        <small>切换应用主题时，同时使用这里保存的阅读配色。</small></header>
+      <div class="appearance-theme-options">
+        <button v-for="theme in readingThemes" :key="theme[0]" type="button"
+          class="appearance-theme-option" :class="[`theme-${theme[0]}`, { selected: resolvedReadingTheme === theme[0] }]"
+          :aria-pressed="resolvedReadingTheme === theme[0]" :disabled="blocked" @click="setReaderTheme(theme[0])">
+          <span></span>{{ theme[1] }}
+        </button>
+      </div>
+    </template>
+    <p v-else class="appearance-theme-note">随系统自动切换应用配色和对应的阅读主题。</p>
+      </section>
+      <section class="appearance-workspace-group">
         <header><h2>文字阅读</h2></header>
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
         <label for="reader-font-size">字体大小</label>
-        <small>当前 {{ readerSettings.fontSizePx }} px</small>
+        <small>当前 {{ settings.reader.fontSizePx }} px</small>
       </div>
       <div class="appearance-range-control">
         <input
@@ -89,7 +104,7 @@ function clearBackground(): void {
           type="range"
           min="12"
           max="36"
-          :value="readerSettings.fontSizePx"
+          :value="settings.reader.fontSizePx"
           :disabled="blocked"
           @input="changeSetting('fontSizePx', Number(($event.target as HTMLInputElement).value))"
         />
@@ -99,7 +114,7 @@ function clearBackground(): void {
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
         <label for="reader-line-height">行间距</label>
-        <small>{{ readerSettings.lineHeight.toFixed(1) }}</small>
+        <small>{{ settings.reader.lineHeight.toFixed(1) }}</small>
       </div>
       <input
         id="reader-line-height"
@@ -108,7 +123,7 @@ function clearBackground(): void {
         min="1.2"
         max="2.8"
         step="0.1"
-        :value="readerSettings.lineHeight"
+        :value="settings.reader.lineHeight"
         :disabled="blocked"
         @input="changeSetting('lineHeight', Number(($event.target as HTMLInputElement).value))"
       />
@@ -121,7 +136,7 @@ function clearBackground(): void {
       </div>
       <select
         id="reader-font-family"
-        :value="readerSettings.fontFamily"
+        :value="settings.reader.fontFamily"
         :disabled="blocked"
         @change="changeSetting('fontFamily', ($event.target as HTMLSelectElement).value)"
       >
@@ -138,29 +153,11 @@ function clearBackground(): void {
         <label for="reader-turn-style">翻页方式</label>
         <small>正文左右翻页或上下滚动</small>
       </div>
-      <select id="reader-turn-style" :value="readerSettings.verticalScroll ? 'scroll' : 'page'"
+      <select id="reader-turn-style" :value="settings.reader.verticalScroll ? 'scroll' : 'page'"
         :disabled="blocked" @change="changeSetting('verticalScroll', ($event.target as HTMLSelectElement).value === 'scroll')">
         <option value="page">左右翻页</option><option value="scroll">连续滚动</option>
       </select>
     </div>
-      </section>
-      <section class="appearance-workspace-group">
-        <header><h2>主题</h2></header>
-    <div class="appearance-setting-row appearance-theme-row">
-      <div class="appearance-theme-options">
-        <button
-          v-for="theme in themes"
-          :key="theme[0]"
-          type="button"
-          class="appearance-theme-option"
-          :class="[`theme-${theme[0]}`, { selected: readerSettings.theme === theme[0] }]"
-          :disabled="blocked"
-          @click="changeTheme(theme[0])"
-        ><span></span>{{ theme[1] }}</button>
-      </div>
-    </div>
-
-
       </section>
       <section class="appearance-workspace-group">
         <header><h2>音频</h2></header>
@@ -169,7 +166,7 @@ function clearBackground(): void {
         <label for="reader-default-audio-speed">音频默认倍速</label>
         <small>播放音频章节时使用的默认速度</small>
       </div>
-      <select id="reader-default-audio-speed" :value="readerSettings.audioPlaybackRate"
+      <select id="reader-default-audio-speed" :value="settings.reader.audioPlaybackRate"
         :disabled="blocked" @change="changeSetting('audioPlaybackRate', Number(($event.target as HTMLSelectElement).value))">
         <option v-for="speed in playbackRates" :key="speed" :value="speed">{{ speed }}×</option>
       </select>
@@ -179,7 +176,7 @@ function clearBackground(): void {
         <label for="reader-audio-skip">跳过时长</label>
         <small>音频播放页快进与后退按钮，系统媒体控制也使用此时长</small>
       </div>
-      <select id="reader-audio-skip" :value="readerSettings.audioSkipSeconds"
+      <select id="reader-audio-skip" :value="settings.reader.audioSkipSeconds"
         :disabled="blocked" @change="changeSetting('audioSkipSeconds', Number(($event.target as HTMLSelectElement).value))">
         <option :value="10">10 秒</option>
         <option :value="15">15 秒</option>
@@ -195,7 +192,7 @@ function clearBackground(): void {
             <small>打开新视频时使用；与音频倍速分开保存</small>
           </div>
           <select id="reader-default-video-speed"
-            :value="readerSettings.videoPlaybackRate" :disabled="blocked"
+            :value="settings.reader.videoPlaybackRate" :disabled="blocked"
             @change="changeSetting('videoPlaybackRate', Number(($event.target as HTMLSelectElement).value))">
             <option v-for="speed in playbackRates" :key="speed" :value="speed">{{ speed }}×</option>
           </select>
@@ -209,7 +206,7 @@ function clearBackground(): void {
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
         <label for="preload-count">预读章节</label>
-        <small>提前准备 {{ readerSettings.preloadCount }} 章</small>
+        <small>提前准备 {{ settings.reader.preloadCount }} 章</small>
       </div>
       <div class="appearance-range-control">
         <input
@@ -218,7 +215,7 @@ function clearBackground(): void {
           min="1"
           max="20"
           step="1"
-          :value="readerSettings.preloadCount"
+          :value="settings.reader.preloadCount"
           :disabled="blocked"
           @input="changeSetting('preloadCount', Number(($event.target as HTMLInputElement).value))"
         />
@@ -237,16 +234,16 @@ function clearBackground(): void {
         <small>选择 JPEG、PNG 或 WebP 图片</small>
       </div>
       <div class="appearance-image-controls">
-        <img v-if="readerSettings.backgroundImageSrc" :src="readerSettings.backgroundImageSrc"/>
+        <img v-if="settings.reader.backgroundImageSrc" :src="settings.reader.backgroundImageSrc"/>
         <span v-else class="appearance-unset">未设置</span>
         <button
           type="button"
           class="button secondary small"
           :disabled="backgroundBusy || blocked"
           @click="chooseBackground"
-        >{{ backgroundBusy ? '处理中…' : readerSettings.backgroundImageSrc ? '更换图片' : '选择图片' }}</button>
+        >{{ backgroundBusy ? '处理中…' : settings.reader.backgroundImageSrc ? '更换图片' : '选择图片' }}</button>
         <button
-          v-if="readerSettings.backgroundImageSrc"
+          v-if="settings.reader.backgroundImageSrc"
           type="button"
           class="text-button"
           :disabled="backgroundBusy || blocked"
@@ -267,11 +264,11 @@ function clearBackground(): void {
           min="0"
           max="100"
           step="1"
-          :value="readerSettings.backgroundImageOpacity"
+          :value="settings.reader.backgroundImageOpacity"
           :disabled="backgroundBusy || blocked"
           @input="changeSetting('backgroundImageOpacity', Number(($event.target as HTMLInputElement).value))"
         />
-        <strong>{{ readerSettings.backgroundImageOpacity }}%</strong>
+        <strong>{{ settings.reader.backgroundImageOpacity }}%</strong>
       </div>
     </div>
     <p v-if="backgroundError" class="appearance-error">{{ backgroundError }}</p>
@@ -287,49 +284,54 @@ function clearBackground(): void {
 </template>
 
 <style scoped>
-.appearance-settings-page{width:100%;min-width:0;color:#353643}
-.appearance-topbar{position:sticky;top:0;z-index:35;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;min-height:64px;padding-inline:max(18px,calc((100% - 1180px)/2));border-bottom:1px solid var(--app-line);background:#f6f7f9ec;backdrop-filter:blur(18px)}
+.appearance-settings-page{width:100%;min-width:0;color:var(--app-text)}
+.appearance-topbar{position:sticky;top:0;z-index:35;display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
 .appearance-page-title{min-width:0}
-.appearance-page-title strong{font-size:14px;color:#242631;font-weight:750}
-.appearance-workspace{box-sizing:border-box;width:min(820px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px}
+.appearance-page-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750}
+.appearance-workspace{box-sizing:border-box;width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
 .appearance-settings-stack{display:grid;gap:0;min-width:0}
 .appearance-workspace-group{padding:15px 0;border:0;border-top:1px solid var(--app-line);background:transparent}
 .appearance-workspace-group:first-child{border-top:0;padding-top:0}
 .appearance-workspace-group>header{margin:0 0 8px}
-.appearance-workspace-group h2{margin:0;color:#343642;font-size:11px;font-weight:750}
-.appearance-setting-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:10px;min-height:58px;padding:9px 0;border-bottom:1px solid #eef0f3}
+.appearance-workspace-group h2{margin:0;color:var(--app-text);font-size:var(--ui-font-body);font-weight:750}
+.appearance-setting-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:10px;min-height:58px;padding:9px 0;border-bottom:1px solid var(--app-line)}
 .appearance-workspace-group .appearance-setting-row:last-child{border-bottom:0}
 .appearance-setting-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
-.appearance-setting-copy label{font-size:10px;font-weight:650;color:#41434d}
-.appearance-setting-copy small{font-size:8px;line-height:1.45;color:#999da5}
-.appearance-setting-row>select{justify-self:end;width:min(100%,250px);min-height:33px;padding:0 8px;border:1px solid var(--app-line);border-radius:8px;background:#fff;color:#555864;font-size:9px}
+.appearance-setting-copy label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
+.appearance-setting-copy small{font-size:var(--ui-font-caption);line-height:1.45;color:var(--app-subtle)}
+.appearance-setting-row>select{justify-self:end;width:min(100%,250px);min-height:33px;padding:0 8px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-surface);color:var(--app-muted);font-size:var(--ui-font-body)}
 .appearance-range-control{display:flex;align-items:center;gap:8px;min-width:0}
 .appearance-range-control input,.appearance-single-range{width:100%;min-width:0;accent-color:var(--app-accent)}
-.appearance-range-control strong{min-width:38px;text-align:right;color:#5955a9;font-size:10px;font-variant-numeric:tabular-nums}
+.appearance-range-control strong{min-width:38px;text-align:right;color:var(--app-accent-ink);font-size:var(--ui-font-caption);font-variant-numeric:tabular-nums}
 .appearance-image-controls{display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px}
 .appearance-image-controls img{width:42px;height:42px;object-fit:cover;border-radius:8px}
-.appearance-unset{font-size:10px;color:#9699a3}
+.appearance-unset{font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .appearance-theme-row{display:block;padding:8px 0 2px}
 .appearance-theme-options{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:7px;width:100%}
-.appearance-theme-option{min-width:0;display:flex;flex-direction:column;gap:5px;padding:7px;border:1px solid #e5e6ed;border-radius:10px;background:#fff;color:#777c85;font-size:8px;text-align:center;cursor:pointer}
+.app-theme-options{grid-template-columns:repeat(3,minmax(0,1fr))}
+.reading-theme-heading{margin:16px 0 8px}
+.reading-theme-heading small,.appearance-theme-note{color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
+.appearance-theme-option{min-width:0;display:flex;flex-direction:column;gap:8px;padding:9px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface);color:var(--app-muted);font-size:var(--ui-font-caption);text-align:center;cursor:pointer}
 .appearance-theme-option>span{display:block;width:100%;height:50px;border:0;border-radius:7px;background:#f4eee2}
 .appearance-theme-option.theme-sepia>span{background:#e5cfaa}
+.appearance-theme-option.theme-light>span,.appearance-theme-option.theme-white>span{background:#fff;border:1px solid #e5e6ed}
 .appearance-theme-option.theme-dark>span{background:#25272c}
-.appearance-theme-option.theme-system>span{background:linear-gradient(135deg,#f4eee2 50%,#25272c 50%)}
-.appearance-theme-option.selected{border-color:#dcd5fa;color:var(--app-accent);background:#f4f1ff;font-weight:750}
+.appearance-theme-option.theme-system>span{background:linear-gradient(135deg,#fff 50%,#25272c 50%)}
+.appearance-theme-option:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
+.appearance-theme-option.selected{border-color:var(--app-accent);color:var(--app-accent-ink);background:var(--app-accent-soft);font-weight:750}
 .appearance-theme-option.selected>span{box-shadow:0 0 0 1px #b9aef0}
-.appearance-video-note{margin:8px 0;color:#9296a1;font-size:9px;line-height:1.65}
+.appearance-video-note{margin:8px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
 .appearance-advanced{border-top:1px solid var(--app-line)}
-.appearance-advanced>summary{display:flex;align-items:center;gap:9px;min-height:43px;color:#4f5360;font-size:10px;font-weight:650;cursor:pointer;list-style:none}
+.appearance-advanced>summary{display:flex;align-items:center;gap:9px;min-height:43px;color:var(--app-text);font-size:var(--ui-font-caption);font-weight:650;cursor:pointer;list-style:none}
 .appearance-advanced>summary::-webkit-details-marker{display:none}
-.appearance-advanced>summary span{margin-left:auto;color:#9a9da6;font-size:9px;font-weight:400}
+.appearance-advanced>summary span{margin-left:auto;color:var(--app-subtle);font-size:var(--ui-font-caption);font-weight:400}
 .appearance-advanced>summary :deep(svg){width:16px;height:16px;transform:rotate(90deg)}
 .appearance-advanced[open]>summary :deep(svg){transform:rotate(-90deg)}
 .appearance-advanced .appearance-workspace-group:first-of-type{border-top:1px solid var(--app-line);padding-top:15px}
-.appearance-error{margin:0;padding:10px 0;color:#ac5458;font-size:11px}
+.appearance-error{margin:0;padding:10px 0;color:var(--app-danger);font-size:var(--ui-font-caption)}
 @media(max-width:660px){
-  .appearance-topbar{padding-inline:18px}
-  .appearance-workspace{width:calc(100% - 36px)}
+  .appearance-topbar{padding-inline:var(--ui-header-gutter)}
+  .appearance-workspace{width:100%}
   .appearance-setting-row{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr);gap:8px}
   .appearance-theme-options{gap:5px}
   .appearance-theme-option{padding:5px}

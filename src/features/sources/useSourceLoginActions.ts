@@ -1,14 +1,13 @@
 import { type Ref } from "vue";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { getSourceLoginForm, getSourceLoginState } from "../../api/sources";
-import { mutateSources as mutateSource } from "./sourcesStore";
+import { sources, mutateSources as mutateSource } from "./sourcesStore";
 import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {
-  sources: Ref<SourceMetadata[]>;
   selectedSourceRows: Ref<string[]>;
   sourceBatchBusy: Ref<boolean>;
   sourceExportBusy: Ref<boolean>;
-  shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
   sourceLoginTarget: Ref<SourceMetadata | null>;
   sourceLoginBusy: Ref<boolean>;
   sourceHasLoginState: Ref<boolean | null>;
@@ -24,11 +23,9 @@ interface SourceLoginActionDependencies {
 
 /** 管理选中书源的登录表单、Cookie 状态和私有网页登录会话。 */
 export function useSourceLoginActions({
-  sources,
   selectedSourceRows,
   sourceBatchBusy,
   sourceExportBusy,
-  shelfBatchRecoveryRequired,
   sourceLoginTarget,
   sourceLoginBusy,
   sourceHasLoginState,

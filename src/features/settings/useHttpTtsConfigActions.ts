@@ -1,13 +1,12 @@
 import type { Ref } from "vue";
 import { prepareConfigurationImport } from "../../api/settings";
 import { httpTtsStore } from "./configurationStores";
-import { type AppSettingsResource, type HttpTtsConfigEditorFields, type HttpTtsConfigEntry, type HttpTtsConfigMetadata, type HttpTtsConfigResource } from "../../api/types";
+import { settings } from "./settingsStore";
+import { type HttpTtsConfigEditorFields, type HttpTtsConfigEntry, type HttpTtsConfigMetadata, type HttpTtsConfigResource } from "../../api/types";
 
 interface HttpTtsConfigActionOptions {
-  configs: Ref<HttpTtsConfigMetadata[]>;
   error: Ref<string>;
   importBusy: Ref<boolean>;
-  settings: Ref<AppSettingsResource>;
   selectConfig: (id: string) => void;
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -213,13 +212,10 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
 
   function removeHttpTtsConfigs(configIds: string[]): void {
     configIds.forEach(id => httpTtsStore.remove(id));
-    if (configIds.includes(options.settings.value.reader.httpTtsConfigId ?? "")) options.selectConfig("");
+    if (configIds.includes(settings.value.reader.httpTtsConfigId ?? "")) options.selectConfig("");
     options.notify("HTTP TTS 配置已移除。");
   }
 
-  function removeHttpTtsConfig(item: HttpTtsConfigMetadata): void {
-    removeHttpTtsConfigs([item.id]);
-  }
 
   function removeSelectedHttpTtsConfig(configIds: string[]): void {
     removeHttpTtsConfigs(configIds);
@@ -262,7 +258,6 @@ export function useHttpTtsConfigActions(options: HttpTtsConfigActionOptions) {
     saveHttpTtsConfigFromEditor,
     importHttpTtsConfigFromLocal,
     importHttpTtsConfigFromLink,
-    removeHttpTtsConfig,
     removeSelectedHttpTtsConfig,
   };
 }

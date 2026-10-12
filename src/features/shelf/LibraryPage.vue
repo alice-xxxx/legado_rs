@@ -1,12 +1,12 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
-import { readResource } from "../../api/resources";
-import { refreshChapters, startBookDownload, tasksResource } from "../../api/tasks";
-import type { AppBootstrap, AppTask, ResourceDescriptor, ShelfResource, ShelfSortKey, ShelfSortOrder, TasksResource } from "../../api/types";
+import { refreshChapters, startBookDownload } from "../../api/tasks";
+import type { AppBootstrap, ShelfResource, ShelfSortKey, ShelfSortOrder } from "../../api/types";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
+import { taskRecoveryRequired, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
 import ShelfLoadState from "./ShelfLoadState.vue";
 import { shelf as shelfPositions } from "./shelfStore";
 import { shelfBooks as shelf } from "./shelfBooks";
@@ -24,7 +24,6 @@ import { useShelfGroupActions } from "./useShelfGroupActions";
 
 const route = useRoute();
 const readerSession = getReaderSession();
-const tasks = ref<AppTask[]>([]);
 const activeGroup = ref("");
 const loading = ref(true);
 const loadError = ref("");
@@ -33,8 +32,14 @@ const mutationLocked = computed(() => shelfBatchRecoveryRequired.value || recove
 const recoveryTitle = ref("需要重启应用完成恢复");
 const recoveryMessage = ref("");
 let restoreRevision = 0;
-let tasksReadRevision = 0;
 const unlisteners: UnlistenFn[] = [];
+watch(taskRecoveryRequired, required => {
+  if (!required) return;
+  recoveryRequired.value = true;
+  recoveryTitle.value = "目录任务需要恢复";
+  recoveryMessage.value = latestTaskUpdate.value?.error || "请重启应用完成任务恢复后，再继续修改书架。";
+}, { immediate: true });
+
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -67,37 +72,19 @@ async function openBookInfo(bookId: string): Promise<void> {
   }
 }
 
-async function refreshTasks(descriptor?: ResourceDescriptor): Promise<void> {
-  const currentRestoreRevision = restoreRevision;
-  const requestRevision = ++tasksReadRevision;
-  const resource = descriptor ?? (await tasksResource()).resource;
-  const document = await readResource<TasksResource>(resource);
-  if (currentRestoreRevision !== restoreRevision || requestRevision !== tasksReadRevision) return;
-  const byId = new Map((document.tasks ?? []).map((task) => [task.id, task]));
-  for (const task of tasks.value) if (task.status === "recoveryRequired") byId.set(task.id, task);
-  tasks.value = [...byId.values()];
-  if (tasks.value.some((task) => task.status === "recoveryRequired")) {
-    recoveryRequired.value = true;
-    recoveryTitle.value = "目录任务需要恢复";
-    recoveryMessage.value = "请重启应用完成任务恢复后，再继续修改书架。";
-  }
-}
-
 async function loadShelf(): Promise<void> {
   loading.value = false;
-  void refreshTasks().catch((error) => notify(errorText(error), "error"));
+  void ensureTasksLoaded().catch((error) => notify(errorText(error), "error"));
 }
 
 async function loadRestoredState(): Promise<void> {
   restoreRevision += 1;
   const currentRestoreRevision = restoreRevision;
-  tasksReadRevision += 1;
   try {
     if (currentRestoreRevision !== restoreRevision) return;
-    tasks.value = [];
     recoveryRequired.value = false;
     recoveryMessage.value = "";
-    await refreshTasks();
+    await ensureTasksLoaded();
   } catch (error) {
     if (currentRestoreRevision !== restoreRevision) return;
     recoveryRequired.value = true;
@@ -109,29 +96,6 @@ async function loadRestoredState(): Promise<void> {
 
 async function setupEvents(): Promise<void> {
   try {
-    unlisteners.push(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
-      if (event.payload.kind !== "tasks") return;
-      const currentRestoreRevision = restoreRevision;
-      try {
-        await refreshTasks(event.payload.resource);
-      } catch (error) {
-        if (currentRestoreRevision === restoreRevision) notify(`任务列表更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    unlisteners.push(await listen<{ taskId: string; resource: ResourceDescriptor }>("task-updated", async (event) => {
-      const currentRestoreRevision = restoreRevision;
-      try {
-        await refreshTasks(event.payload.resource);
-      } catch (error) {
-        if (currentRestoreRevision === restoreRevision) notify(`任务状态更新失败：${errorText(error)}`, "error");
-      }
-    }));
-    unlisteners.push(await listen<Partial<AppTask>>("task-recovery-required", (event) => {
-      if (event.payload.status !== "recoveryRequired") return;
-      recoveryRequired.value = true;
-      recoveryTitle.value = "目录任务需要恢复";
-      recoveryMessage.value = event.payload.error || "请重启应用完成任务恢复后，再继续修改书架。";
-    }));
     unlisteners.push(await listen<AppBootstrap>("app-state-updated", () => {
       void loadRestoredState();
     }));
@@ -155,16 +119,13 @@ function changeShelfSort(key: ShelfSortKey, order = shelfSortOrder.value): void 
 }
 
 const shelfBatch = reactive(useShelfBatchActions({
-  shelf,
   visibleBooks,
   groups,
-  tasks,
   recoveryRequired,
   recoveryTitle,
   recoveryMessage,
   isShelfScreen: () => route.name === routeNames.shelf,
   getRestoreRevision: () => restoreRevision,
-  refreshTasks,
   refreshChapters,
   startBookDownload,
   notify,
@@ -449,8 +410,8 @@ title="整理内容库"
               <button class="button secondary" @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">显示全部内容</button>
             </div>
             <div v-else-if="!shelfBatch.selectionMode" class="library-filter-empty library-empty">
-              <strong>内容库还没有书籍</strong>
-              <p>可从本地导入 TXT、EPUB、CBZ 或 PDF，或从书源中查找内容。</p>
+              <strong>内容库还没有内容</strong>
+              <p>可从本地导入或从源中查找内容。</p>
               <div><button class="button secondary"
                 :disabled="mutationLocked" @click.stop="openImport()">导入本地内容</button>
                 <button class="button primary" @click.stop="openSearch()">搜索内容</button></div>
@@ -588,7 +549,7 @@ title="整理内容库"
   gap: 7px;
   overflow: hidden;
   margin-top: 4px;
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
 }
 .library-cover-control {
   flex: 1 1 100%;
@@ -634,14 +595,14 @@ title="整理内容库"
   border: 0;
   border-radius: 999px;
   background: transparent;
-  color: #7a7f88;
-  font-size: 12px;
+  color: var(--app-muted);
+  font-size: var(--ui-font-body);
   font-weight: 650;
   cursor: pointer;
 }
 .library-type-filter button.active {
-  background: #202126;
-  color: #fff;
+  background: var(--app-selected);
+  color: var(--app-on-selected);
 }
 .library-top-actions {
   display: flex;
@@ -656,13 +617,9 @@ title="整理内容库"
   height: 42px;
   border: 0;
   border-radius: 12px;
-  background: #eceef2;
-  color: #858b98;
+  background: var(--app-panel-soft);
+  color: var(--app-muted);
   cursor: pointer;
-}
-.library-round-action:hover:not(:disabled) {
-  color: var(--app-accent);
-  background: #eae7f9;
 }
 .library-round-action:disabled {
   opacity: .5;
@@ -679,17 +636,17 @@ title="整理内容库"
   gap: 3px;
 }
 .library-cardcopy .book-title-button {
-  font-size: 13px;
+  font-size: var(--ui-font-body);
   font-weight: 750;
 }
 .library-cardcopy .book-author {
   margin: 0;
-  font-size: 10px;
+  font-size: var(--ui-font-caption);
 }
 .library-cardcopy .book-card-meta {
   margin: 0;
-  font-size: 9px;
-  color: #a0a4ac;
+  font-size: var(--ui-font-caption);
+  color: var(--app-subtle);
 }
 .library-cardcopy .book-card-meta span+span::before {
   display: none;
@@ -742,15 +699,15 @@ title="整理内容库"
   min-height: 210px;
   padding: 36px 18px;
   text-align: center;
-  color: #8c9099;
+  color: var(--app-muted);
 }
 .library-filter-empty strong {
-  color: #484a54;
-  font-size: 15px;
+  color: var(--app-text);
+  font-size: var(--ui-font-body);
 }
 .library-filter-empty p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--ui-font-caption);
   line-height: 1.7;
 }
 .library-filter-empty>div {
@@ -770,7 +727,7 @@ title="整理内容库"
   }
   .library-type-filter button {
     padding: 0 9px;
-    font-size: 11px;
+    font-size: var(--ui-font-body);
   }
   .library-top-actions {
     gap: 4px;
@@ -803,8 +760,8 @@ title="整理内容库"
   min-height: 64px;
   padding: 0 max(18px,calc((100% - 1180px)/2));
   margin: 0;
-  border-bottom: 1px solid #e7e8ef;
-  background: #f6f7f9f5;
+  border-bottom: 1px solid var(--app-line);
+  background: var(--app-header);
   backdrop-filter: blur(12px);
 }
 .library-manage-title {
@@ -818,13 +775,13 @@ title="整理内容库"
   gap: 3px;
 }
 .library-manage-title strong {
-  color: #31333c;
-  font-size: 14px;
+  color: var(--app-text);
+  font-size: var(--ui-font-heading);
   font-weight: 750;
 }
 .library-manage-title small {
-  color: #989ca7;
-  font-size: 10px;
+  color: var(--app-subtle);
+  font-size: var(--ui-font-caption);
 }
 .library-done-button {
   min-height: 36px;
@@ -832,8 +789,8 @@ title="整理内容库"
   border: 0;
   border-radius: 10px;
   background: var(--app-accent);
-  color: #fff;
-  font-size: 11px;
+  color: var(--app-on-accent);
+  font-size: var(--ui-font-body);
   font-weight: 750;
   cursor: pointer;
 }
@@ -869,17 +826,14 @@ title="整理内容库"
   border: 0;
   border-radius: 9px;
   background: transparent;
-  color: #777d8a;
-  font-size: 11px;
+  color: var(--app-muted);
+  font-size: var(--ui-font-body);
   text-align: left;
   cursor: pointer;
 }
 .library-manage-group-list button.active {
-  background: #ece9fb;
-  color: #5f53ad;
-}
-.library-manage-group-list button:hover:not(.active) {
-  background: #eaeaf0;
+  background: var(--app-accent-soft);
+  color: var(--app-accent-ink);
 }
 .library-manage-group-list button:disabled {
   opacity: .55;
@@ -892,7 +846,7 @@ title="整理内容库"
 }
 .library-manage-group-list button small {
   color: inherit;
-  font-size: 10px;
+  font-size: var(--ui-font-caption);
   opacity: .75;
 }
 .library-manage-groups-button {
@@ -901,9 +855,9 @@ title="整理内容库"
   padding: 0 9px;
   border: 0;
   border-radius: 8px;
-  background: #f0edfa;
+  background: var(--app-accent-soft);
   color: var(--app-accent);
-  font-size: 10px;
+  font-size: var(--ui-font-body);
   cursor: pointer;
 }
 .library-manage-rail :deep(.shelf-organizer) {
@@ -920,7 +874,7 @@ title="整理内容库"
   gap: 8px;
   margin: 0;
   padding: 10px;
-  border: 1px solid #e4e1ef;
+  border: 1px solid var(--app-line);
   border-radius: 10px;
 }
 .library-manage-rail :deep(.managed-groups) {
@@ -952,7 +906,7 @@ title="整理内容库"
   min-height: 42px;
   margin: 0;
   border: 0;
-  border-bottom: 1px solid #e6e8ee;
+  border-bottom: 1px solid var(--app-line);
   border-radius: 0;
   padding: 0 3px 8px;
   background: transparent;
@@ -962,8 +916,8 @@ title="整理内容库"
   display: flex;
   align-items: center;
   gap: 7px;
-  color: #646a74;
-  font-size: 11px;
+  color: var(--app-muted);
+  font-size: var(--ui-font-body);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -976,8 +930,8 @@ title="整理内容库"
 }
 .library-selection-count {
   margin-right: auto;
-  color: #999da6;
-  font-size: 10px;
+  color: var(--app-subtle);
+  font-size: var(--ui-font-caption);
   font-weight: 500;
   white-space: nowrap;
 }
@@ -991,24 +945,17 @@ title="整理内容库"
   padding: 0 12px;
   border: 0;
   border-radius: 10px;
-  font-size: 11px;
+  font-size: var(--ui-font-body);
   font-weight: 700;
   cursor: pointer;
 }
 .library-move-button {
-  background: #eceef2;
-  color: #636976;
+  background: var(--app-panel-soft);
+  color: var(--app-muted);
 }
 .library-remove-button {
-  background: #fff0f1;
-  color: #b4535f;
-}
-.library-move-button:hover:not(:disabled) {
-  background: #e5e0fa;
-  color: var(--app-accent);
-}
-.library-remove-button:hover:not(:disabled) {
-  background: #ffe4e8;
+  background: var(--app-danger-soft);
+  color: var(--app-warning);
 }
 .library-move-button:disabled,.library-remove-button:disabled {
   opacity: .45;
@@ -1103,7 +1050,7 @@ title="整理内容库"
   color: white;
 }
 .library-manage-tick {
-  font-size: 14px;
+  font-size: var(--ui-font-body);
   font-weight: 800;
 }
 .library-manage-book.selected .library-manage-tick {
@@ -1121,17 +1068,17 @@ title="整理内容库"
 }
 .library-manage-book>strong {
   margin-top: 2px;
-  color: #34363e;
-  font-size: 11px;
+  color: var(--app-text);
+  font-size: var(--ui-font-caption);
 }
 .library-manage-book>small {
-  color: #9da1aa;
-  font-size: 9px;
+  color: var(--app-subtle);
+  font-size: var(--ui-font-caption);
 }
 .library-manage-more {
   margin-top: 9px;
-  color: #7e8490;
-  font-size: 11px;
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
 }
 .library-manage-more summary {
   display: inline-block;
@@ -1139,7 +1086,7 @@ title="整理内容库"
   cursor: pointer;
 }
 .library-manage-more summary::marker {
-  color: #7d75be;
+  color: var(--app-accent-ink);
 }
 .library-manage-extra-actions {
   display: flex;
@@ -1151,10 +1098,10 @@ title="整理内容库"
 .library-manage-extra-actions button {
   min-height: 30px;
   padding: 0 8px;
-  border: 1px solid #e1e2ea;
+  border: 1px solid var(--app-line);
   border-radius: 8px;
-  background: #fff;
-  color: #656b78;
+  background: var(--app-surface);
+  color: var(--app-muted);
   cursor: pointer;
 }
 .library-manage-extra-actions button:disabled {
@@ -1162,24 +1109,24 @@ title="整理内容库"
   cursor: default;
 }
 .library-manage-extra-actions span {
-  color: #a08164;
-  font-size: 10px;
+  color: var(--app-danger);
+  font-size: var(--ui-font-body);
 }
 .library-manage-sort-label {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 10px;
+  font-size: var(--ui-font-body);
 }
 .library-manage-sort-label select {
   height: 30px;
   min-width: 110px;
   padding: 0 7px;
-  border: 1px solid #e1e2ea;
+  border: 1px solid var(--app-line);
   border-radius: 8px;
-  background: #fff;
-  color: #646a77;
-  font-size: 10px;
+  background: var(--app-surface);
+  color: var(--app-muted);
+  font-size: var(--ui-font-body);
 }
 .library-manage-empty {
   display: flex;
@@ -1189,23 +1136,23 @@ title="整理内容库"
   gap: 10px;
   min-height: 220px;
   padding: 18px;
-  color: #8e929d;
+  color: var(--app-subtle);
   text-align: center;
 }
 .library-manage-empty strong {
-  color: #555763;
-  font-size: 13px;
+  color: var(--app-text);
+  font-size: var(--ui-font-caption);
 }
 .library-manage-empty p {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
 }
 .library-manage-empty button {
   padding: 8px 12px;
   border: 0;
   border-radius: 9px;
-  color: #6254bc;
-  background: #efebff;
+  color: var(--app-accent-ink);
+  background: var(--app-accent-soft);
   cursor: pointer;
 }
 @media (max-width:860px) {

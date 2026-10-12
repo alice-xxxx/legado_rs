@@ -1,3 +1,5 @@
+import { backupBusy } from "../settings/backupState";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { ref, type Ref } from "vue";
 import { cancelPendingPdfImport, importBookFromPicker, importProtectedPdf, type LocalImportFormat } from "../../api/books";
 import { type LocalBookImportResponse } from "../../api/types";
@@ -5,8 +7,6 @@ import { switchOpenedBook } from "./bookDetailState";
 
 interface LocalBookImportOptions {
   externalFileRequestBusy: Readonly<Ref<boolean>>;
-  backupBusy: Readonly<Ref<unknown>>;
-  recoveryRequired: Readonly<Ref<boolean>>;
   getRestoreRevision: () => number;
   pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -33,7 +33,7 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
     try {
       const book = await switchOpenedBook(response.book);
       if (!book) return;
-      if (restoreRevision !== options.getRestoreRevision() || options.recoveryRequired.value) return;
+      if (restoreRevision !== options.getRestoreRevision() || shelfBatchRecoveryRequired.value) return;
 
       if (initialPdfPassword) {
         const previous = options.pdfImportPasswords.get(book.id);
@@ -55,8 +55,8 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
   }
 
   async function importLocalBook(format?: LocalImportFormat): Promise<void> {
-    if (localBookImportBusy.value || options.externalFileRequestBusy.value || options.backupBusy.value
-      || options.recoveryRequired.value || pdfPasswordPromptOpen.value) return;
+    if (localBookImportBusy.value || options.externalFileRequestBusy.value || backupBusy.value
+      || shelfBatchRecoveryRequired.value || pdfPasswordPromptOpen.value) return;
     const restoreRevision = options.getRestoreRevision();
     localBookImportBusy.value = true;
     try {

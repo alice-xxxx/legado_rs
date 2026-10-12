@@ -1,5 +1,5 @@
 import type { Ref } from "vue";
-import type { AppSettingsResource } from "../../api/types";
+import { settings } from "../settings/settingsStore";
 import type { ReaderTouchStartState } from "./useReaderPageInteraction";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
@@ -7,7 +7,7 @@ export function useReaderDisplay(options: {
   reader: {
     viewport: Ref<HTMLElement | null>;
     visible: ReadonlyRef<boolean>; busy: ReadonlyRef<boolean>;
-    chapterIndex: ReadonlyRef<number>; settings: ReadonlyRef<AppSettingsResource>;
+    chapterIndex: ReadonlyRef<number>;
     imagePage: ReadonlyRef<boolean>; mediaChapter: ReadonlyRef<boolean>;
     pageIndex: Ref<number>; pageCount: Ref<number>; comicScrollTop: Ref<number>;
     getLoadRevision: () => number;
@@ -33,7 +33,7 @@ export function useReaderDisplay(options: {
     if (!viewport || reader.imagePage.value || reader.mediaChapter.value) return;
     const previousCount = reader.pageCount.value;
     const previousIndex = reader.pageIndex.value;
-    const vertical = reader.settings.value.reader.verticalScroll;
+    const vertical = settings.value.reader.verticalScroll;
     const size = Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth);
     reader.pageCount.value = Math.max(1, Math.ceil(((vertical ? viewport.scrollHeight : viewport.scrollWidth) - 1) / size));
     reader.pageIndex.value = preserveRatio && previousCount > 1
@@ -45,7 +45,7 @@ export function useReaderDisplay(options: {
   function scrollReaderFrameToPage(): void {
     const viewport = reader.viewport.value;
     if (!viewport || reader.imagePage.value || reader.mediaChapter.value) return;
-    const vertical = reader.settings.value.reader.verticalScroll;
+    const vertical = settings.value.reader.verticalScroll;
     viewport.scrollTo({ left: vertical ? 0 : reader.pageIndex.value * viewport.clientWidth,
       top: vertical ? reader.pageIndex.value * viewport.clientHeight : 0, behavior: "instant" as ScrollBehavior });
   }
@@ -57,7 +57,7 @@ export function useReaderDisplay(options: {
       if (offset === reader.comicScrollTop.value) return;
       reader.comicScrollTop.value = offset;
     } else {
-      const vertical = reader.settings.value.reader.verticalScroll;
+      const vertical = settings.value.reader.verticalScroll;
       const index = Math.min(reader.pageCount.value - 1, Math.max(0, Math.round(
         vertical ? viewport.scrollTop / Math.max(1, viewport.clientHeight) : viewport.scrollLeft / Math.max(1, viewport.clientWidth))));
       if (index === reader.pageIndex.value) return;
@@ -93,7 +93,7 @@ export function useReaderDisplay(options: {
     const touch = event.touches[0]!;
     const dx = Math.abs(touch.clientX - start.x), dy = Math.abs(touch.clientY - start.y);
     if (dx >= 12 || dy >= 12) start.moved = true;
-    if (!reader.imagePage.value && !reader.settings.value.reader.verticalScroll && dx >= 12 && dx > dy && event.cancelable) event.preventDefault();
+    if (!reader.imagePage.value && !settings.value.reader.verticalScroll && dx >= 12 && dx > dy && event.cancelable) event.preventDefault();
   }
   function onReaderFrameTouchEnd(event: TouchEvent): void {
     const start = reader.getTouchStart(); reader.setTouchStart(null);
@@ -111,7 +111,7 @@ export function useReaderDisplay(options: {
       return;
     }
     reader.setClickSuppressedUntil(Date.now() + 500);
-    if (reader.imagePage.value || reader.settings.value.reader.verticalScroll) return;
+    if (reader.imagePage.value || settings.value.reader.verticalScroll) return;
     if (event.cancelable) event.preventDefault();
     if (Math.abs(dx) >= 48 && Math.abs(dy) <= 52 && Math.abs(dx) >= Math.abs(dy) * 1.35) actions.turnPage(dx < 0 ? 1 : -1);
     else scrollReaderFrameToPage();

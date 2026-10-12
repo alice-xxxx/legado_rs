@@ -61,7 +61,7 @@ function changeTimeout(seconds: number): void {
   padding: 0 2px 12px;
   border-bottom: 1px solid var(--app-line);
 }
-.settings-detail-section-header strong { color: #373a45; font-size: 13px; }
+.settings-detail-section-header strong { color: var(--app-text); font-size: var(--ui-font-caption); }
 .setting-control {
   display: flex;
   align-items: center;
@@ -69,18 +69,18 @@ function changeTimeout(seconds: number): void {
   gap: 12px;
   min-height: 68px;
   padding: 8px 4px;
-  border-bottom: 1px solid #e8eaf0;
+  border-bottom: 1px solid var(--app-line);
 }
 .setting-control > div { display: grid; gap: 4px; min-width: 0; }
-.setting-control label { color: #383a45; font-size: 13px; font-weight: 650; }
-.setting-control small { color: #9196a1; font-size: 11px; line-height: 1.5; }
+.setting-control label { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 650; }
+.setting-control small { color: var(--app-subtle); font-size: var(--ui-font-caption); line-height: 1.5; }
 .setting-control select {
   min-width: 105px;
   min-height: 36px;
   padding: 5px;
-  border: 1px solid #e4e5ec;
+  border: 1px solid var(--app-line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--app-surface);
 }
 @media (max-width: 640px) {
   .settings-detail-content { gap: 22px; }

@@ -1,42 +1,28 @@
-import { ref, type ComputedRef, type Ref } from "vue";
+import { ref, type Ref } from "vue";
 import { type ResourceDescriptor, type SearchBookResult, type SearchResource, type ChapterRichTextResource, type ChapterTextResource, type SourceDebugResponse, type SourceMetadata } from "../../api/types";
 import { clearSourceDebugPreview, debugSearchResult, searchBooks } from "../../api/search";
 import { readResource } from "../../api/resources";
+import { sources, bookSourceCandidates } from "./sourcesStore";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 
 interface SourceDebugDependencies {
-  /** 当前可供书籍搜索的书源列表。 */
-  sources: Ref<SourceMetadata[]>;
-  /** 已启用且非 RSS 的候选书源。 */
-  bookSourceCandidates: ComputedRef<SourceMetadata[]>;
   /** 书源列表中当前选中的行。 */
   selectedSourceRows: Ref<string[]>;
   sourceBatchBusy: Ref<boolean>;
   sourceExportBusy: Ref<boolean>;
   searchBusy: Readonly<Ref<boolean>>;
   searchResultBatchBusy: Ref<boolean>;
-  shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
-  searchBooks: typeof searchBooks;
-  debugSearchResult: typeof debugSearchResult;
-  clearSourceDebugPreview: typeof clearSourceDebugPreview;
-  readResource: typeof readResource;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
 
 /** 处理单个书源的搜索、详情和章节预览调试流程。 */
 export function useSourceDebugActions({
-  sources,
-  bookSourceCandidates,
   selectedSourceRows,
   sourceBatchBusy,
   sourceExportBusy,
   searchBusy,
   searchResultBatchBusy,
-  shelfBatchRecoveryRequired,
-  searchBooks,
-  debugSearchResult,
-  clearSourceDebugPreview,
-  readResource,
   notify,
   errorText,
 }: SourceDebugDependencies) {

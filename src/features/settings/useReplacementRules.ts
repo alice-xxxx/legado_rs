@@ -63,24 +63,18 @@ export function useReplacementRules(options: UseReplacementRulesOptions) {
       replacementImportError.value = options.errorText(error);
     } finally { replacementImportBusy.value = false; }
   }
-  function exportReplacementRulesToFile(): void {
-    const url = URL.createObjectURL(new Blob([JSON.stringify({ schemaVersion: 1, rules: replacementRules.value }, null, 2)], { type: "application/json" }));
-    const anchor = document.createElement("a");
-    anchor.href = url; anchor.download = "replacement-rules.json"; anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-  }
   function resetForRestore(): void {
     replacementImportOpen.value = false;
     replacementImportUrl.value = "";
     replacementImportError.value = "";
   }
   return {
-    replacementRules, replacementImportOpen, replacementImportBusy, replacementImportUrl,
+    replacementImportOpen, replacementImportBusy, replacementImportUrl,
     replacementImportError, createReplacementRule,
     updateReplacementRule, saveReplacementRule, removeReplacement, removeReplacements,
     openReplacementRulesUrlImport, cancelReplacementRulesUrlImport,
     importReplacementRulesByUrl: () => importRules("url"),
     importReplacementRulesFromFile: () => importRules("local"),
-    exportReplacementRulesToFile, resetForRestore,
+    resetForRestore,
   };
 }

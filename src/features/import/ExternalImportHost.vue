@@ -4,7 +4,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppBootstrap } from "../../api/types";
 import { notify } from "../../app/notifications";
 import { getFrontendRestoreRevision, shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { backupBusy } from "../settings/backupState";
 import { getReaderSession } from "../reader/readerSession";
 import { useLocalBookImport } from "../books/useLocalBookImport";
 import PdfPasswordPrompt from "../books/PdfPasswordPrompt.vue";
@@ -45,8 +44,6 @@ async function openSourceImport(url: string): Promise<void> {
 
 const localBookImportFeature = useLocalBookImport({
   externalFileRequestBusy,
-  backupBusy,
-  recoveryRequired: shelfBatchRecoveryRequired,
   getRestoreRevision: getFrontendRestoreRevision,
   pdfImportPasswords,
   notify,
@@ -59,7 +56,6 @@ const removeLocalBookImportSession = installLocalBookImportSession({
   pdfPasswordError: localBookImportFeature.pdfPasswordError,
   pdfImportPasswords,
   externalFileRequestBusy,
-  backupBusy,
   importLocalBook: localBookImportFeature.importLocalBook,
   submitPdfPassword: localBookImportFeature.submitPdfPassword,
   cancelPdfPasswordPrompt: localBookImportFeature.cancelPdfPasswordPrompt,
@@ -68,8 +64,6 @@ const removeLocalBookImportSession = installLocalBookImportSession({
 const externalImports = proxyRefs(useExternalImportActions({
   unlisteners,
   bootstrapped,
-  backupBusy,
-  recoveryRequired: shelfBatchRecoveryRequired,
   getRestoreRevision: getFrontendRestoreRevision,
   getReaderSession,
   localBookImportBusy: localBookImportFeature.localBookImportBusy,

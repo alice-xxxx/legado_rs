@@ -1,5 +1,3 @@
-import { httpTtsConfigs } from "../settings/configurationStores";
-export const readerHttpTtsConfigs = httpTtsConfigs;
 let selectConfigWriter: ((id: string) => void) | null = null;
 
 export function registerReaderTtsConfigSelectionWriter(writer: (id: string) => void): () => void {

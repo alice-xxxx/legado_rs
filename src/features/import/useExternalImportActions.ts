@@ -1,3 +1,5 @@
+import { backupBusy } from "../settings/backupState";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { computed, ref, type Ref } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -12,8 +14,6 @@ type PendingImportLink = { kind: "source" | "rules"; url: string };
 interface ExternalImportOptions {
   unlisteners: UnlistenFn[];
   bootstrapped: Readonly<Ref<boolean>>;
-  backupBusy: Readonly<Ref<unknown>>;
-  recoveryRequired: Readonly<Ref<boolean>>;
   getRestoreRevision: () => number;
   getReaderSession: () => ReaderSession;
   localBookImportBusy: Ref<boolean>;
@@ -38,10 +38,10 @@ export function useExternalImportActions(options: ExternalImportOptions) {
   let disposed = false;
 
   const externalFileRequestBlocked = computed(() => externalFileRequestBusy.value || options.localBookImportBusy.value
-    || options.pdfPasswordPromptOpen.value || !options.bootstrapped.value || !!options.backupBusy.value
-    || options.recoveryRequired.value);
-  const importLinkBlocked = computed(() => importLinkOpening.value || !options.bootstrapped.value || !!options.backupBusy.value
-    || options.recoveryRequired.value || options.sourceImportOpen.value);
+    || options.pdfPasswordPromptOpen.value || !options.bootstrapped.value || !!backupBusy.value
+    || shelfBatchRecoveryRequired.value);
+  const importLinkBlocked = computed(() => importLinkOpening.value || !options.bootstrapped.value || !!backupBusy.value
+    || shelfBatchRecoveryRequired.value || options.sourceImportOpen.value);
 
   async function closeReaderForImport(restoreRevision: number): Promise<boolean> {
     const reader = options.getReaderSession();
@@ -91,7 +91,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     externalFileRequestBusy.value = true;
     try {
       if (!await closeReaderForImport(restoreRevision)) return;
-      if (restoreRevision !== options.getRestoreRevision() || options.backupBusy.value || options.recoveryRequired.value) return;
+      if (restoreRevision !== options.getRestoreRevision() || backupBusy.value || shelfBatchRecoveryRequired.value) return;
       options.localBookImportBusy.value = true;
       const response = await importExternalFile(file.token);
       if (restoreRevision !== options.getRestoreRevision()) {
@@ -127,7 +127,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
 
   async function ignoreExternalFileRequest(): Promise<void> {
     const file = pendingExternalFiles.value[0];
-    if (!file || externalFileRequestBusy.value || options.recoveryRequired.value) return;
+    if (!file || externalFileRequestBusy.value || shelfBatchRecoveryRequired.value) return;
     const restoreRevision = options.getRestoreRevision();
     externalFileRequestBusy.value = true;
     try {
@@ -192,7 +192,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     importLinkOpening.value = true;
     try {
       if (!await closeReaderForImport(restoreRevision)) return;
-      if (restoreRevision !== options.getRestoreRevision() || pendingImportLinks.value[0] !== pending || options.recoveryRequired.value || options.backupBusy.value) return;
+      if (restoreRevision !== options.getRestoreRevision() || pendingImportLinks.value[0] !== pending || shelfBatchRecoveryRequired.value || backupBusy.value) return;
       if (pending.kind === "source") {
         if (options.sourceImportOpen.value) return;
         await options.openSourceImport(pending.url);

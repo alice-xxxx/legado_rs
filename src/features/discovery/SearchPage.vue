@@ -1,9 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { cancelTask } from "../../api/tasks";
-import { startSearch } from "../../api/search";
-import { readResource } from "../../api/resources";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { clearSearchSnapshot, publishSearchSnapshot, searchSnapshot } from "./searchSnapshotState";
@@ -16,6 +13,8 @@ import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bo
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
+
+defineOptions({ name: "SearchPage" });
 
 type SearchMatchMode = "contains" | "exact";
 type SearchSortMode = "relevance" | "title" | "author";
@@ -116,7 +115,6 @@ const searchResults = ref<SearchBookResult[]>([]);
 const searchResourceErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
 const searchWasRun = ref(false);
 const searchWorkflow = useSearchWorkflow({
-  bookSourceCandidates,
   selectedSourceIds,
   searchKeyword,
   searchPage,
@@ -126,13 +124,9 @@ const searchWorkflow = useSearchWorkflow({
   searchResults,
   searchResourceErrors,
   searchWasRun,
-  shelfBatchRecoveryRequired,
   notify,
   errorText,
   getRestoreRevision: () => restoreRevision.value,
-  startSearch,
-  cancelTask,
-  readResource,
 });
 const {
   activeSearchTaskId,
@@ -375,10 +369,8 @@ function clearResultFilters(): void {
                 @click="resultFiltersOpen = !resultFiltersOpen"><PrototypeIcon name="tune"/> {{ resultFiltersOpen ? '收起筛选' : '筛选' }}</button>
             </div>
           </div>
-          <div v-if="!searchWasRun" class="search-start-inline">
-            <PrototypeIcon name="search"/>
-            <span>输入书名、作者或关键词，从所选 {{ selectedSourceIds.length }} 个书源搜索内容。</span>
-            <button v-if="!bookSourceCandidates.length" type="button" @click="openSources">前往来源管理</button>
+          <div v-if="!searchWasRun && !bookSourceCandidates.length" class="search-start-inline">
+            <button type="button" @click="openSources">前往来源管理</button>
           </div>
           <template v-if="searchWasRun">
           <div v-if="searchBusy && !searchResults.length" class="search-loading"><span class="loader-ring"></span><strong>正在查找相关书籍</strong><p>正在从所选书源寻找匹配的书。</p></div>
@@ -456,8 +448,8 @@ function clearResultFilters(): void {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  min-height: 54px;
-  padding-inline: 12px;
+  min-height: var(--ui-header-height);
+  padding-inline: var(--ui-header-gutter);
   border-bottom: 1px solid var(--app-line);
   background: var(--app-background);
 }
@@ -488,7 +480,7 @@ function clearResultFilters(): void {
   outline: 0;
   background: transparent;
   color: var(--app-text);
-  font-size: 14px;
+  font-size: var(--ui-font-body);
 }
 .search-prototype-top-input input::placeholder {
   color: var(--app-muted);
@@ -504,10 +496,6 @@ function clearResultFilters(): void {
   color: var(--app-muted);
   background: transparent;
   cursor: pointer;
-}
-.search-prototype-top-input .clear-search:hover {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 .search-prototype-layout {
   display: grid;
@@ -531,7 +519,7 @@ function clearResultFilters(): void {
 }
 .search-prototype-sidebar-title {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--ui-font-body);
 }
 .search-sidebar-type-list button, .search-sidebar-source-heading button,
 .search-sidebar-no-source button {
@@ -540,7 +528,7 @@ function clearResultFilters(): void {
   text-align: left;
   cursor: pointer;
 }
-.search-sidebar-type-list button.active, .search-prototype-layout .source-chip:hover {
+.search-sidebar-type-list button.active {
   background: var(--app-accent-soft);
 }
 .search-sidebar-source-heading, .search-list-heading, .search-list-count,
@@ -555,7 +543,7 @@ function clearResultFilters(): void {
 .search-sidebar-count, .search-list-count small, .search-list-progress,
 .search-list-sort, .search-status {
   color: var(--app-muted);
-  font-size: 11px;
+  font-size: var(--ui-font-caption);
 }
 .search-prototype-layout .source-chip {
   display: flex;
@@ -576,7 +564,7 @@ function clearResultFilters(): void {
   white-space: nowrap;
 }
 .search-sidebar-no-source {
-  font-size: 12px;
+  font-size: var(--ui-font-caption);
 }
 .search-mobile-categories {
   display: none;
@@ -591,18 +579,14 @@ function clearResultFilters(): void {
   border-radius: 999px;
   color: var(--app-muted);
   background: transparent;
-  font-size: 12px;
+  font-size: var(--ui-font-body);
   white-space: nowrap;
   cursor: pointer;
 }
 .search-mobile-categories button.active {
-  color: #fff;
-  background: #202126;
+  color: var(--app-on-selected);
+  background: var(--app-selected);
   font-weight: 700;
-}
-.search-mobile-categories button:hover:not(.active) {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 .search-mobile-filter-button {
   width: 36px;
@@ -619,7 +603,7 @@ function clearResultFilters(): void {
 }
 .search-list-count strong {
   color: var(--app-text);
-  font-size: 14px;
+  font-size: var(--ui-font-caption);
 }
 .search-list-actions {
   flex-wrap: wrap;
@@ -637,12 +621,8 @@ function clearResultFilters(): void {
   border-radius: 8px;
   color: var(--app-muted);
   background: transparent;
-  font-size: 12px;
+  font-size: var(--ui-font-caption);
   cursor: pointer;
-}
-.search-list-utility:hover:not(:disabled) {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 .search-start-inline, .search-empty-inline {
   display: flex;
@@ -651,13 +631,8 @@ function clearResultFilters(): void {
   min-height: 80px;
   padding: 12px;
   color: var(--app-muted);
-  font-size: 13px;
+  font-size: var(--ui-font-caption);
   line-height: 1.5;
-}
-.search-start-inline :deep(.prototype-icon) {
-  width: 18px;
-  height: 18px;
-  flex: none;
 }
 .search-start-inline button {
   border: 0;
@@ -705,14 +680,11 @@ function clearResultFilters(): void {
 }
 .search-prototype-result-list .result-title {
   color: var(--app-text);
-  font-size: 14px;
+  font-size: var(--ui-font-body);
   font-weight: 700;
   line-height: 1.4;
   text-align: left;
   cursor: pointer;
-}
-.search-prototype-result-list .result-title:hover:not(:disabled) {
-  color: var(--app-accent-ink);
 }
 .search-prototype-result-list .result-title:disabled {
   color: var(--app-muted);

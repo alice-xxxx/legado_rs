@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::resources::ResourceRef;
 
+mod settings;
+pub use settings::upgrade_settings_document;
+
 pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -81,6 +84,8 @@ pub struct WebDavBackupConfig {
 #[serde(rename_all = "camelCase")]
 pub struct SettingsDocument {
     #[serde(default)]
+    pub theme: AppTheme,
+    #[serde(default)]
     pub webdav_backup: WebDavBackupConfig,
     pub schema_version: u32,
     #[serde(default = "default_source_http_timeout_seconds")]
@@ -94,11 +99,21 @@ impl Default for SettingsDocument {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             source_http_timeout_seconds: default_source_http_timeout_seconds(),
+            theme: AppTheme::System,
             webdav_backup: WebDavBackupConfig::default(),
             reader: ReaderDefaults::default(),
             home: HomeConfigDocument::default(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AppTheme {
+    Light,
+    Dark,
+    #[default]
+    System,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -149,7 +164,7 @@ fn default_source_http_timeout_seconds() -> u64 {
 /// Reader display defaults. Cached chapter resources remain content data;
 /// the WebView applies these settings when building the current display document.
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ReaderDefaults {
     #[serde(default = "default_font_family")]
     pub font_family: String,
@@ -157,20 +172,36 @@ pub struct ReaderDefaults {
     pub font_size_px: f32,
     #[serde(default = "default_line_height")]
     pub line_height: f32,
-    #[serde(default = "default_text_color")]
+    /// Derived colors for standalone dictionary HTML; not persisted settings.
+    #[serde(skip_serializing, default = "default_text_color")]
     pub text_color: String,
-    #[serde(default = "default_background_color")]
+    #[serde(skip_serializing, default = "default_background_color")]
     pub background_color: String,
     /// Stable reader background image reference. It is materialized to a
     /// process-local URL only when the settings JSON is served to the UI.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_image_src: Option<ResourceRef>,
+    pub background_image_opacity: u8,
     #[serde(default = "default_text_align")]
     pub text_align: String,
-    #[serde(default)]
+    /// Resolved dictionary appearance; persisted reading choices live in `themes`.
+    #[serde(skip)]
     pub theme: ReaderTheme,
+    pub themes: ReaderThemes,
     #[serde(default = "default_preload_count")]
     pub preload_count: usize,
+    pub vertical_scroll: bool,
+    pub audio_playback_rate: f32,
+    pub audio_skip_seconds: u64,
+    pub video_playback_rate: f32,
+    pub tts_engine: String,
+    #[serde(default = "default_tts_rate")]
+    pub tts_rate: f32,
+    #[serde(rename = "ttsVoiceURI")]
+    pub tts_voice_uri: String,
+    pub http_tts_config_id: Option<String>,
+    pub tts_continue_across_chapters: bool,
+    pub tts_start_position: String,
 }
 
 /// Themes supported by the Vue reader.
@@ -181,7 +212,20 @@ pub enum ReaderTheme {
     Paper,
     Sepia,
     Dark,
-    System,
+    White,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ReaderThemes {
+    pub light: ReaderTheme,
+    pub dark: ReaderTheme,
+}
+
+impl Default for ReaderThemes {
+    fn default() -> Self {
+        Self { light: ReaderTheme::Paper, dark: ReaderTheme::Dark }
+    }
 }
 
 impl Default for ReaderDefaults {
@@ -193,9 +237,21 @@ impl Default for ReaderDefaults {
             text_color: default_text_color(),
             background_color: default_background_color(),
             background_image_src: None,
+            background_image_opacity: 20,
             text_align: default_text_align(),
             theme: ReaderTheme::Paper,
+            themes: ReaderThemes::default(),
             preload_count: default_preload_count(),
+            vertical_scroll: false,
+            audio_playback_rate: 1.0,
+            audio_skip_seconds: 15,
+            video_playback_rate: 1.0,
+            tts_engine: "system".to_owned(),
+            tts_rate: default_tts_rate(),
+            tts_voice_uri: String::new(),
+            http_tts_config_id: None,
+            tts_continue_across_chapters: true,
+            tts_start_position: "current".to_owned(),
         }
     }
 }
@@ -210,6 +266,10 @@ fn default_font_size_px() -> f32 {
 
 fn default_line_height() -> f32 {
     1.8
+}
+
+fn default_tts_rate() -> f32 {
+    1.0
 }
 
 fn default_text_color() -> String {
