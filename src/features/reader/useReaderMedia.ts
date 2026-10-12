@@ -1,6 +1,6 @@
 import type { Ref } from "vue";
 import type Hls from "hls.js";
-import { clamp } from "./displayHtml";
+import { clamp } from "./readerContent";
 import type { BookResource } from "../../api/types";
 
 type ReaderMediaContext = {
@@ -176,7 +176,7 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
       try {
         hls.destroy();
       } catch {
-        // iframe 卸载时媒体元素可能已失效。
+        // 阅读界面卸载时媒体元素可能已失效。
       }
     }
   }

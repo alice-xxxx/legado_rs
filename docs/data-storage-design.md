@@ -119,9 +119,10 @@ history.json 中，reading 保存阅读会话、按书和按日期的统计及�
 - 预览只包含书名、作者、封面、类型、章节数、最新章节、少量来源信息及独立复制的进度字段。预览没有保存 watch，也不能作为书籍保存载荷；书籍编辑仍通过 openedBook。
 - Rust 更新书籍 JSON 后，同一入口回读并更新当前 openedBook；若 bookPreviews 已有该缓存 ID，就更新其预览，没有则不新增。非当前书籍的更新只刷新已有预览，不替换 openedBook。
 - 预览按需加载，同一 ID 的并发请求共用一次读取，批量请求逐本读取并释放完整目录。关闭或切换书籍后，不在另一个全局集合中保留其完整 book.json。
-- 切换书籍时通过统一入口加载 book.json。阅读器从 openedBook 获取当前书籍和缓存资源信息；请求 Rust 缓存章节后，Rust 通过同一个 book-updated 通知更新 book.json。
+- 切换书籍时通过统一入口加载 book.json。各类阅读器从 openedBook 获取当前书籍和缓存资源信息；打开、翻页、滚动及播放进度统一调用 notify_reading，Rust 保存进度并按 settings.reader.preloadCount 准备当前和后续章节。有新缓存时通过同一个 book-updated 通知更新 book.json。
 - book-updated 事件监听保持安装，不随详情页开关而移除。收到事件后由统一函数读取资源、更新 openedBook；替换 Vue 状态时只暂停状态 watch，避免把 Rust 回读当成用户修改再发回。
-- 阅读页不另存一份书籍对象，直接从 openedBook 取当前书籍及缓存地址。章节内容请求通过阅读器的章节缓存请求函数发给 Rust，阅读进度通过对应的阅读进度操作写入；两类操作如果更新 book.json，都走同一个 book-updated 通知和 openedBook 回读函数。书籍显示信息的 watch 只提交前端可编辑的显示字段。
+- 阅读页不另存一份书籍对象，目录直接显示 openedBook.chapters，当前章节按其 resource.src 读取 typed 缓存。只有书籍、章节或缓存地址变化才重新读取正文；进度和其他章节预缓存的更新不重新创建当前播放器或重新读取正文。书籍显示信息的 watch 只提交前端可编辑的显示字段。
+- 小说、漫画、音频、视频及 PDF 各有独立 Vue 消费 typed 缓存，共用菜单、目录、搜索、朗读和书签界面。纯文本通过插值及 white-space: pre-wrap 保留换行与缩进；富文本直接显示 Rust 发布的安全片段；媒体入口交给原生播放器或 PDF.js。字体、配色等直接绑定全局 settings，替换与净化通过 computed 对缓存 text 应用全局规则，不生成完整 HTML 文档、不写回缓存。
 
 ### 书籍信息编辑
 

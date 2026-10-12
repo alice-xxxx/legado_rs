@@ -1,7 +1,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, type ComponentPublicInstance, type ComputedRef, type Ref } from "vue";
 import { releaseHttpTtsAudio, requestHttpTtsAudio } from "../../api/settings";
 import { type BookResource, type HttpTtsConfigMetadata, type ReaderSettings, type ResourceDescriptor } from "../../api/types";
-import { clamp, type PdfPageResource } from "./displayHtml";
+import { clamp, type PdfPageResource } from "./readerContent";
 import { mapTtsSegmentChunks, splitTtsText, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
 
 type TtsAvailability = "checking" | "ready" | "empty" | "unsupported";

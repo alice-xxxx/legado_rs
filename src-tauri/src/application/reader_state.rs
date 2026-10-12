@@ -2,7 +2,103 @@
 
 use super::*;
 
+#[cfg(test)]
+mod reading_notification_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingExecutor(Arc<AtomicUsize>);
+    impl SourceExecutor for CountingExecutor {
+        fn execute<'a>(&'a self, _request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async move {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(json!("　　Cached text\n　　Next paragraph"))
+            })
+        }
+    }
+
+    async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<AtomicUsize>) {
+        let directory = tempfile::tempdir().unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(CountingExecutor(calls.clone()))).await.unwrap();
+        service.write_sources(&[SourceRecord {
+            id: "source-a".into(), name: "Source".into(), group: None, enabled: true,
+            source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":0}),
+        }]).await.unwrap();
+        let chapters: Vec<Value> = (0..5).map(|index| json!({"id":format!("chapter-{index}"),"index":index,"title":format!("Chapter {index}")})).collect();
+        let raw: Vec<Value> = (0..5).map(|index| json!({"url":format!("https://example.invalid/{index}"),"title":format!("Chapter {index}")})).collect();
+        service.store.write_json_ref(&service.store.book_ref("book-a").unwrap(), &json!({
+            "schemaVersion":1,"id":"book-a","title":"Book","sourceId":"source-a","chapterCount":5,"chapters":chapters
+        })).await.unwrap();
+        service.write_internal_json(Path::new("books/book-a/source-state.json"), &json!({
+            "sourceId":"source-a","book":{"bookUrl":"https://example.invalid/book","name":"Book"},"chapters":raw
+        })).await.unwrap();
+        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":2}})).await.unwrap();
+        (directory, service, calls)
+    }
+
+    #[tokio::test]
+    async fn reading_saves_position_and_prepares_current_plus_configured_chapters() {
+        let (_directory, service, calls) = fixture().await;
+        service.save_progress("book-a", json!({"chapterId":"chapter-0","chapterIndex":0,"offset":3,"updatedAtMs":1})).await.unwrap();
+        let published = std::sync::Mutex::new(Vec::new());
+        let epoch = service.restore_epoch.load(Ordering::Acquire);
+        service.prepare_reading_chapters("book-a", 0, epoch, |resource| published.lock().unwrap().push(resource)).await.unwrap();
+        let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
+        assert_eq!(book["progress"]["offset"], 3);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(published.lock().unwrap().len(), 3);
+        assert!(book["chapters"][2]["resource"].is_object());
+        assert!(book["chapters"][3]["resource"].is_null());
+        service.save_progress("book-a", json!({"chapterId":"chapter-0","chapterIndex":0,"offset":4,"updatedAtMs":2})).await.unwrap();
+        published.lock().unwrap().clear();
+        service.prepare_reading_chapters("book-a", 0, epoch, |resource| published.lock().unwrap().push(resource)).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert!(published.lock().unwrap().is_empty());
+        service.save_progress("book-a", json!({"chapterId":"chapter-0","chapterIndex":0,"offset":1,"updatedAtMs":1})).await.unwrap();
+        let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
+        assert_eq!(book["progress"]["offset"], 4, "A late notification must not roll progress back");
+    }
+
+    #[tokio::test]
+    async fn stale_reading_window_does_not_prepare_old_chapters() {
+        let (_directory, service, calls) = fixture().await;
+        service.save_progress("book-a", json!({"chapterId":"chapter-3","chapterIndex":3,"offset":0})).await.unwrap();
+        let epoch = service.restore_epoch.load(Ordering::Acquire);
+        service.prepare_reading_chapters("book-a", 0, epoch, |_| panic!("Stale window must not publish")).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
 impl ApplicationService {
+    pub(super) async fn prepare_reading_chapters(
+        &self,
+        book_id: &str,
+        chapter_index: usize,
+        epoch: u64,
+        updated: impl Fn(Value),
+    ) -> Result<(), String> {
+        let _operation = self.operation_read().await;
+        let settings = self.store.read_json_ref(&self.store.settings_ref()).await.ok();
+        let count = reader_defaults(settings).preload_count;
+        let book_ref = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+        let book = self.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
+        let end = chapter_index.saturating_add(count + 1)
+            .min(book["chapters"].as_array().map_or(0, Vec::len));
+        for index in chapter_index..end {
+            if self.restore_epoch.load(std::sync::atomic::Ordering::Acquire) != epoch { break; }
+            let current = self.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
+            if current["progress"]["chapterIndex"].as_u64() != Some(chapter_index as u64) { break; }
+            if let Some(src) = current["chapters"][index]["resource"]["resourceId"].as_str() {
+                let reference = scoped_chapter_cache_ref(book_id, src)?;
+                if self.cached_chapter_format(&reference).await?.is_some() { continue; }
+            }
+            let result = self.prepare_chapters_unlocked(book_id, index, 1).await?;
+            if result["changed"].as_bool() == Some(true) { updated(result["book"].clone()); }
+        }
+        Ok(())
+    }
+
     pub async fn save_progress(&self, book_id: &str, progress: Value) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;
@@ -34,6 +130,9 @@ impl ApplicationService {
         let chapter_id_for_book = chapter_id.clone();
         self.store
             .update_json_ref(&book_ref, move |mut book| {
+                if book["progress"]["updatedAtMs"].as_u64().unwrap_or(0) > updated_at_ms {
+                    return Ok(book);
+                }
                 let chapter_count = book
                     .get("chapterCount")
                     .and_then(Value::as_u64)

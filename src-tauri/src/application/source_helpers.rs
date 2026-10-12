@@ -105,11 +105,85 @@ pub(super) fn sanitize_source_login_form(form: &Value) -> Result<Value, String> 
         actions.push(json!({ "id": id, "label": label }));
     }
 
+    let mut layout = Vec::new();
+    if let Some(raw_layout) = form.get("layout") {
+        let raw_layout = raw_layout
+            .as_array()
+            .filter(|rows| rows.len() <= 192)
+            .ok_or_else(|| "Source login layout exceeds the supported row limit".to_owned())?;
+        let mut placed_fields = HashSet::new();
+        let mut placed_actions = HashSet::new();
+        for row in raw_layout {
+            let cols = row
+                .get("cols")
+                .and_then(Value::as_u64)
+                .filter(|cols| (1..=4).contains(cols))
+                .ok_or_else(|| "Source login layout has invalid columns".to_owned())?;
+            let rows = row
+                .get("rows")
+                .and_then(Value::as_u64)
+                .filter(|rows| (1..=12).contains(rows))
+                .ok_or_else(|| "Source login layout has invalid rows".to_owned())?;
+            let mut safe_row = match row.get("kind").and_then(Value::as_str) {
+                Some("field") => {
+                    let name = row
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| names.contains(*name))
+                        .ok_or_else(|| {
+                            "Source login layout refers to an unknown field".to_owned()
+                        })?;
+                    if !placed_fields.insert(name.to_owned()) {
+                        return Err("Source login layout repeats a field".to_owned());
+                    }
+                    json!({ "kind": "field", "name": name })
+                }
+                Some("action") => {
+                    let id = row
+                        .get("id")
+                        .and_then(Value::as_u64)
+                        .filter(|id| action_ids.contains(id))
+                        .ok_or_else(|| {
+                            "Source login layout refers to an unknown action".to_owned()
+                        })?;
+                    if !placed_actions.insert(id) {
+                        return Err("Source login layout repeats an action".to_owned());
+                    }
+                    json!({ "kind": "action", "id": id })
+                }
+                Some("title") => {
+                    let label = row
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .filter(|label| label.len() <= 8192)
+                        .ok_or_else(|| "Source login layout has an invalid title".to_owned())?;
+                    json!({ "kind": "title", "label": label })
+                }
+                _ => return Err("Source login layout has an unsupported row".to_owned()),
+            };
+            safe_row["cols"] = json!(cols);
+            safe_row["rows"] = json!(rows);
+            layout.push(safe_row);
+        }
+        if placed_fields.len() != fields.len() || placed_actions.len() != actions.len() {
+            return Err("Source login layout is missing fields or actions".to_owned());
+        }
+    } else {
+        // Copied older engines still render a usable form without layout metadata.
+        for field in &fields {
+            layout.push(json!({ "kind": "field", "name": field["name"], "cols": 1, "rows": 1 }));
+        }
+        for action in &actions {
+            layout.push(json!({ "kind": "action", "id": action["id"], "cols": 2, "rows": 1 }));
+        }
+    }
+
     Ok(json!({
         "mode": "form",
         "canLogin": can_login,
         "fields": fields,
         "actions": actions,
+        "layout": layout,
     }))
 }
 
@@ -317,5 +391,78 @@ pub(super) fn set_optional_public_field(document: &mut Value, key: &str, value: 
         } else {
             fields.remove(key);
         }
+    }
+}
+
+#[cfg(test)]
+mod login_form_tests {
+    use super::*;
+
+    fn form() -> Value {
+        json!({
+            "canLogin": true,
+            "fields": [
+                { "name": "账号", "type": "text" },
+                { "name": "验证码", "type": "text" },
+                { "name": "线路", "type": "select", "choices": ["一", "二"] },
+                { "name": "记住", "type": "toggle" }
+            ],
+            "actions": [{ "id": 2, "label": "获取验证码" }],
+            "layout": [
+                { "kind": "title", "label": "登录说明", "cols": 1, "rows": 1 },
+                { "kind": "field", "name": "账号", "cols": 1, "rows": 1 },
+                { "kind": "action", "id": 2, "cols": 2, "rows": 1 },
+                { "kind": "field", "name": "验证码", "cols": 2, "rows": 1 },
+                { "kind": "field", "name": "线路", "cols": 2, "rows": 1 },
+                { "kind": "field", "name": "记住", "cols": 2, "rows": 1 }
+            ]
+        })
+    }
+
+    #[test]
+    fn preserves_row_order_titles_and_layout_without_exposing_actions() {
+        let mut input = form();
+        input["layout"][0]["style"] = json!({ "css": "unexpected" });
+        input["actions"][0]["action"] = json!("private script");
+        let result = sanitize_source_login_form(&input).unwrap();
+        assert_eq!(result["layout"][0]["label"], "登录说明");
+        assert_eq!(result["layout"][2]["kind"], "action");
+        assert_eq!(result["layout"][3]["name"], "验证码");
+        assert_eq!(result["layout"][3]["cols"], 2);
+        assert!(result["layout"][0].get("style").is_none());
+        assert!(result["actions"][0].get("action").is_none());
+        assert_eq!(result["fields"][2]["choices"], json!(["一", "二"]));
+    }
+
+    #[test]
+    fn supports_older_engines_without_layout() {
+        let mut input = form();
+        input.as_object_mut().unwrap().remove("layout");
+        let result = sanitize_source_login_form(&input).unwrap();
+        assert_eq!(result["layout"].as_array().unwrap().len(), 5);
+        assert_eq!(result["layout"][0]["name"], "账号");
+        assert_eq!(result["layout"][0]["cols"], 1);
+        assert_eq!(result["layout"][4]["id"], 2);
+    }
+
+    #[test]
+    fn rejects_broken_layout_references_and_dimensions() {
+        for (key, value) in [("cols", json!(0)), ("cols", json!(5)), ("rows", json!(13))] {
+            let mut input = form();
+            input["layout"][0][key] = value;
+            assert!(sanitize_source_login_form(&input).is_err());
+        }
+        let mut input = form();
+        input["layout"][1]["name"] = json!("unknown");
+        assert!(sanitize_source_login_form(&input).is_err());
+        let mut input = form();
+        input["layout"][2]["id"] = json!(99);
+        assert!(sanitize_source_login_form(&input).is_err());
+        let mut input = form();
+        input["layout"][3]["name"] = json!("账号");
+        assert!(sanitize_source_login_form(&input).is_err());
+        let mut input = form();
+        input["layout"].as_array_mut().unwrap().pop();
+        assert!(sanitize_source_login_form(&input).is_err());
     }
 }

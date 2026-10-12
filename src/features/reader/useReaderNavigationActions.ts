@@ -1,8 +1,8 @@
 import type { Ref } from "vue";
-import { saveProgress } from "../../api/books";
+import { notifyReading } from "../../api/books";
 import { type BookResource, type ReadingProgress } from "../../api/types";
-import { clamp } from "./displayHtml";
-import type { PdfPageResource } from "./displayHtml";
+import { clamp } from "./readerContent";
+import type { PdfPageResource } from "./readerContent";
 
 type ReaderNavigationOptions = {
   comicScaleMode: Ref<"fit-width" | "actual-size">;
@@ -25,28 +25,21 @@ type ReaderNavigationOptions = {
   readerMediaRetrying: Readonly<Ref<boolean>>;
   shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
   currentChapterId: () => string | null;
-  getReaderMediaElement: () => HTMLMediaElement | null;
-  getReaderMediaRevision: () => number;
-  getReaderLoadRevision: () => number;
   getProgressRevision: () => number;
   advanceProgressRevision: () => void;
   isBackupRestoreInProgress: () => boolean;
-  rebuildReaderDisplay: () => void;
   scrollReaderFrameToPage: () => void;
   loadReaderChapter: (index: number) => Promise<boolean>;
-  scheduleReaderMediaProgressSave: (mediaRevision: number, loadRevision: number) => void;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 };
 
 /** 管理章节翻页、章节跳转和阅读进度保存，进度版本由阅读器状态统一递增。 */
 export function useReaderNavigationActions(options: ReaderNavigationOptions) {
-  let progressSavePromise: Promise<void> | null = null;
 
   function setComicScaleMode(mode: "fit-width" | "actual-size"): void {
     if (options.comicScaleMode.value === mode) return;
     options.comicScaleMode.value = mode;
-    options.rebuildReaderDisplay();
   }
 
   function setPdfZoom(mode: PdfPageResource["defaultZoom"]): void {
@@ -73,6 +66,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     options.advanceProgressRevision();
     options.progressSaveState.value = "idle";
     options.scrollReaderFrameToPage();
+    void saveCurrentProgress();
   }
 
   function turnPage(direction: -1 | 1): void {
@@ -123,60 +117,22 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   }
 
   async function saveCurrentProgress(): Promise<void> {
-    if (options.isBackupRestoreInProgress()) return;
     const book = options.readingBook.value;
-    if (!book || !options.readerProgressDirty.value) return;
-    if (progressSavePromise) {
-      await progressSavePromise;
-      if (options.readerProgressDirty.value && options.readerVisible.value) {
-        const media = options.getReaderMediaElement();
-        if (options.readingMediaChapter.value && media && !media.paused) {
-          options.scheduleReaderMediaProgressSave(options.getReaderMediaRevision(), options.getReaderLoadRevision());
-          return;
-        }
-        return saveCurrentProgress();
-      }
-      return;
-    }
-
-    const saveRevision = options.getProgressRevision();
-    let saveSucceeded = false;
+    if (!book || !options.readerProgressDirty.value || options.isBackupRestoreInProgress()) return;
+    const revision = options.getProgressRevision();
+    const isCurrent = () => options.readingBook.value?.id === book.id && options.getProgressRevision() === revision;
     const progress: ReadingProgress = {
-      chapterId: options.currentChapterId(),
-      chapterIndex: options.readingChapterIndex.value,
-      offset: options.readingMediaChapter.value
-        ? options.readerMediaTimeMs.value
+      chapterId: options.currentChapterId(), chapterIndex: options.readingChapterIndex.value,
+      offset: options.readingMediaChapter.value ? options.readerMediaTimeMs.value
         : options.readingImagePage.value ? options.comicImageScrollTop.value : options.readerPageIndex.value,
       updatedAtMs: Date.now(),
     };
     options.progressSaveState.value = "saving";
-    progressSavePromise = (async () => {
-      try {
-        await saveProgress(book.id, progress);
-        saveSucceeded = true;
-        // A previous book/chapter save may finish after navigation. Its result
-        // must not mark the current chapter clean or replace its progress UI.
-        if (options.readingBook.value?.id === book.id && options.getProgressRevision() === saveRevision) {
-          options.readerProgressDirty.value = false;
-          options.progressSaveState.value = "saved";
-        }
-      } catch (error) {
-        if (options.readingBook.value?.id === book.id && options.getProgressRevision() === saveRevision) {
-          options.progressSaveState.value = "error";
-          options.notify(`阅读进度保存失败：${options.errorText(error)}`, "error");
-        }
-      } finally {
-        progressSavePromise = null;
-      }
-    })();
-    await progressSavePromise;
-    if (saveSucceeded && options.readerProgressDirty.value && options.readerVisible.value) {
-      const media = options.getReaderMediaElement();
-      if (options.readingMediaChapter.value && media && !media.paused) {
-        options.scheduleReaderMediaProgressSave(options.getReaderMediaRevision(), options.getReaderLoadRevision());
-        return;
-      }
-      return saveCurrentProgress();
+    try {
+      await notifyReading(book.id, progress);
+      if (isCurrent()) { options.readerProgressDirty.value = false; options.progressSaveState.value = "saved"; }
+    } catch (error) {
+      if (isCurrent()) { options.progressSaveState.value = "error"; options.notify('阅读进度保存失败：' + options.errorText(error), "error"); }
     }
   }
 

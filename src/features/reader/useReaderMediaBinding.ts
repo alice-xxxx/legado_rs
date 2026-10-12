@@ -1,5 +1,5 @@
 import type { Ref } from "vue";
-import { clamp } from "./displayHtml";
+import { clamp } from "./readerContent";
 import type { useReaderMedia } from "./useReaderMedia";
 
 export interface ReaderVideoQualityChoice {
@@ -19,7 +19,7 @@ type ReaderMediaBindingOptions = {
     timeMs: Ref<number>;
     durationMs: Ref<number>;
     playing: Ref<boolean>;
-    videoPlaybackRate: Ref<number>;
+    getVideoPlaybackRate: () => number;
     error: Ref<string>;
     progressDirty: Ref<boolean>;
     progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
@@ -44,7 +44,7 @@ type ReaderMediaBindingOptions = {
   mediaPlayback: ReturnType<typeof useReaderMedia>;
 };
 
-/** 管理阅读器 iframe 中媒体元素的绑定、进度保存和清晰度切换。 */
+/** 管理阅读器媒体元素的绑定、进度保存和清晰度切换。 */
 export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
   let mediaEventHandlers: Array<[string, EventListener]> = [];
   let mediaRevision = 0;
@@ -257,7 +257,6 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       if (!isCurrent()) return;
       const rate = Math.round(clamp(media.playbackRate, 0.5, 3) * 4) / 4;
       if (options.reader.videoChapter.value) {
-        options.reader.videoPlaybackRate.value = rate;
         options.actions.updateVideoPlaybackRate(rate);
       } else if (Math.abs(rate - options.reader.getAudioPlaybackRate()) > 0.001) {
         options.actions.updateAudioPlaybackRate(rate);
@@ -342,7 +341,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     options.mediaPlayback.setSession(media, isCurrent);
     try {
       const rate = options.reader.videoChapter.value
-        ? options.reader.videoPlaybackRate.value
+        ? options.reader.getVideoPlaybackRate()
         : options.reader.getAudioPlaybackRate();
       if (Math.abs(media.playbackRate - rate) > 0.001) media.playbackRate = rate;
     } catch {

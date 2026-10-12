@@ -127,7 +127,7 @@ impl ApplicationService {
             .await
     }
 
-    async fn prepare_chapters_unlocked(
+    pub(super) async fn prepare_chapters_unlocked(
         &self,
         book_id: &str,
         from_index: usize,
@@ -203,6 +203,7 @@ impl ApplicationService {
             return Ok(json!({
                 "book": self.resource_descriptor(&book_ref),
                 "prepared": 0,
+                "changed": false,
                 "bookId": book_id,
                 "fromIndex": from_index
             }));
@@ -272,6 +273,7 @@ impl ApplicationService {
             (source_id, engine_book, target_chapter_ids)
         };
         let mut prepared = 0usize;
+        let mut changed = false;
         for chapter_id in target_chapter_ids {
             // Requests for the same uncached chapter share this lock. It stays
             // held over the source call while the book lock remains available
@@ -341,6 +343,7 @@ impl ApplicationService {
                         if public_book["chapters"][index].get("resource")
                             != Some(&expected_descriptor)
                         {
+                            changed = true;
                             public_book["chapters"][index]["resource"] = expected_descriptor;
                             self.store
                                 .write_json_ref(&book_ref, &public_book)
@@ -718,9 +721,10 @@ impl ApplicationService {
                 .await
                 .map_err(|error| error.to_string())?;
             prepared += 1;
+            changed = true;
         }
         Ok(
-            json!({ "book": self.resource_descriptor(&book_ref), "prepared": prepared, "bookId": book_id, "fromIndex": from_index }),
+            json!({ "book": self.resource_descriptor(&book_ref), "prepared": prepared, "changed": changed, "bookId": book_id, "fromIndex": from_index }),
         )
     }
 }

@@ -53,11 +53,18 @@ export interface SourceLoginAction {
   label: string;
 }
 
+export type SourceLoginLayoutRow = (
+  { kind: "field"; name: string } |
+  { kind: "action"; id: number } |
+  { kind: "title"; label: string }
+) & { cols: number; rows: number };
+
 export type SourceLoginForm = {
   mode: "form";
   canLogin: boolean;
   fields: SourceLoginField[];
   actions: SourceLoginAction[];
+  layout?: SourceLoginLayoutRow[];
 } | {
   mode: "web";
   message: string;

@@ -8,10 +8,8 @@ import type {
   BookResource,
   ResourceDescriptor,
   TasksResource } from "../../api/types";
-import { replacementRules } from "../settings/configurationStores";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { sources, bookSourceCandidates as sourceCandidates } from "../sources/sourcesStore";
-import { refreshChapterContent } from "../../api/books";
 import { readResource } from "../../api/resources";
 import { startChapterDownload, tasksResource as loadTasksResource } from "../../api/tasks";
 import { notify, errorText } from "../../app/notifications";
@@ -32,12 +30,13 @@ import { useBookSourceSwitch } from "../sources/useBookSourceSwitch";
 import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import router, { routeNames } from "../../router";
 
-const AppReader = defineAsyncComponent(() => import("./AppReader.vue"));
+const NovelReader = defineAsyncComponent(() => import("./NovelReader.vue"));
+const ComicReader = defineAsyncComponent(() => import("./ComicReader.vue"));
+const AudioReader = defineAsyncComponent(() => import("./AudioReader.vue"));
+const VideoReader = defineAsyncComponent(() => import("./VideoReader.vue"));
+const PdfReader = defineAsyncComponent(() => import("./PdfReader.vue"));
 const route = useRoute();
 const settings = sharedSettings;
-watch(() => settings.value.reader.backgroundImageSrc, (next, previous) => {
-  if (next !== previous) readerFeatures.rebuildReaderDisplay();
-});
 
 
 const tasks = shallowRef<AppTask[]>([]);
@@ -45,7 +44,6 @@ const tasks = shallowRef<AppTask[]>([]);
 let tasksDescriptor: ResourceDescriptor | null = null;
 let disposed = false;
 let tasksReadRevision = 0;
-let readerDataRefreshPending = false;
 const unlisteners: UnlistenFn[] = [];
 const readerImportPasswords = getLocalBookImportSession().pdfImportPasswords;
 
@@ -85,17 +83,12 @@ function lockReaderRecovery(title: string, message: string): void {
 }
 
 const readerFeatures = useAppReaderFeatures({
-  settings,
-  replacementRules,
-  openedBook,
   shelfBatchRecoveryRequired,
   backupBusy,
   pdfImportPasswords: readerImportPasswords,
   getRestoreRevision: getFrontendRestoreRevision,
   notify,
   errorText,
-  lockChapterCacheRecovery: lockReaderRecovery,
-  refreshChapterContent,
   startChapterDownload,
   refreshTasks,
   reusedCatalogTaskNotice,
@@ -103,7 +96,6 @@ const readerFeatures = useAppReaderFeatures({
     void router.push({ name: routeNames.settingsOther });
   },
   showShelfBehindReader,
-  readResource,
 });
 
 const bookSourceSwitchActions = useBookSourceSwitch({
@@ -114,14 +106,10 @@ const bookSourceSwitchActions = useBookSourceSwitch({
   readerVisible: readerFeatures.readerVisible,
   readingChapterIndex: readerFeatures.readingChapterIndex,
   readerPageIndex: readerFeatures.readerPageIndex,
-  readingChapterHtml: readerFeatures.readingChapterHtml,
-  readingChapterRaw: readerFeatures.readingChapterRaw,
-  readingPdfPage: readerFeatures.readingPdfPage,
-  readingImagePage: readerFeatures.readingImagePage,
+  readingContent: readerFeatures.readingContent,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   readerControlsOpen: readerFeatures.readerControlsOpen,
   shelf,
-  bookmarks: readerFeatures.bookmarks,
   shelfBatchRecoveryRequired,
   shelfBatchRecoveryTitle,
   shelfBatchRecoveryMessage,
@@ -173,22 +161,8 @@ async function bootstrap(): Promise<void> {
     tasksDescriptor = taskDescriptor.resource;
     tasks.value = nextTasks.tasks ?? [];
   }
-  if (backupBusy.value === "restore") {
-    readerDataRefreshPending = true;
-  } else {
-    readerDataRefreshPending = false;
-    await readerFeatures.refreshBookmarksAndReadingHistory();
-  }
 }
 
-watch(backupBusy, (busy) => {
-  if (busy !== "restore" && readerDataRefreshPending) {
-    readerDataRefreshPending = false;
-    void readerFeatures.refreshBookmarksAndReadingHistory().catch((error) => {
-      notify(`恢复后的阅读记录载入失败：${errorText(error)}`, "error");
-    });
-  }
-});
 
 function retain(unlisten: UnlistenFn): void {
   if (disposed) unlisten();
@@ -197,11 +171,13 @@ function retain(unlisten: UnlistenFn): void {
 
 async function setupReaderEvents(): Promise<void> {
   try {
-    retain(await listen<{ requestId: number; resource: ResourceDescriptor }>("history-updated", (event) => {
-      void readerFeatures.readerBookmarksAndHistory.refreshCurrentReadingStatistics();
-      if (event.payload.requestId === 0) {
-        void readerFeatures.readerBookmarksAndHistory.refreshBookmarksAfterHistoryUpdate();
-      }
+    retain(await listen<{ title: string; message: string }>("reader-recovery-required", ({ payload }) => {
+      lockReaderRecovery(payload.title, payload.message);
+    }));
+    retain(await listen<{ bookId: string; chapterIndex: number; error: string }>("reading-resource-error", ({ payload }) => {
+      if (!readerFeatures.readerVisible.value || readerFeatures.readingBook.value?.id !== payload.bookId) return;
+      if (readerFeatures.readerBusy.value && readerFeatures.readingChapterIndex.value === payload.chapterIndex) readerFeatures.readerChapterLoading.failPending(payload.error);
+      else notify(payload.error, "error");
     }));
     retain(await listen<{ kind: string; resource: ResourceDescriptor }>("resource-updated", async (event) => {
       const revision = getFrontendRestoreRevision();
@@ -332,7 +308,7 @@ const readerVisible = readerFeatures.readerVisible;
 </script>
 
 <template>
-  <AppReader
+  <component :is="readerFeatures.readingPdfPage.value ? PdfReader : readerFeatures.readingVideoChapter.value ? VideoReader : readerFeatures.readingMediaChapter.value ? AudioReader : readerFeatures.readingImagePage.value ? ComicReader : NovelReader"
     v-if="readerVisible"
     :reader-features="readerFeatures"
     :close-reader="closeReaderForNavigation"

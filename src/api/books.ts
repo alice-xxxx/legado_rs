@@ -37,25 +37,6 @@ export const pickBookCover = (bookId: string) =>
 export const discardBookCoverAsset = (bookId: string, assetId: string) =>
   command<{ removed: boolean; inUse: boolean }>("discard_book_cover_asset", { bookId, assetId });
 
-export const prepareChapters = (bookId: string, fromIndex: number, count: number) =>
-  command<{ book: ResourceDescriptor; prepared: number }>("prepare_chapters", {
-    bookId,
-    fromIndex,
-    count,
-  });
-
-export const refreshChapterContent = (bookId: string, chapterId: string) =>
-  command<{
-    commitState: "committed" | "notCommitted" | "indeterminate";
-    recoveryRequired: boolean;
-    warning?: string | null;
-    error?: string | null;
-    book?: ResourceDescriptor;
-    chapterId?: string;
-    fromIndex?: number;
-    prepared?: number;
-  }>("refresh_chapter_content", { bookId, chapterId });
-
 export const resetBookProgress = (bookId: string) =>
   command<ResetBookProgressResponse>("reset_book_progress", { bookId });
 
@@ -64,5 +45,7 @@ export const clearBookChapterCache = (bookId: string) =>
 
 export const getChapterCacheUsage = () => command<ChapterCacheUsage>("get_chapter_cache_usage");
 
-export const saveProgress = (bookId: string, progress: ReadingProgress) =>
-  command<ResourceDescriptor>("save_progress", { bookId, progress });
+
+/** Rust publishes progress and prepared resources through book-updated. */
+export const notifyReading = (bookId: string, progress: ReadingProgress, refreshMedia = false) =>
+  command<void>("notify_reading", { bookId, progress, refreshMedia });

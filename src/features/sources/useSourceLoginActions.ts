@@ -127,7 +127,7 @@ export function useSourceLoginActions({
       if (!isCurrentSourceLogin(source.id, generation)) return;
       if (!("status" in result)) throw new Error("Source login returned an invalid response");
       if (result.status === "failed") sourceLoginFormError.value = result.message;
-      else sourceLoginFeedback.value = result.message;
+      else sourceLoginFeedback.value = actionId === undefined ? "已执行登录。" : "操作已执行。";
       if (result.status === "executed") {
         for (const field of form.fields) {
           if (field.password || field.type === "password") sourceLoginCredentials.value[field.name] = "";
@@ -168,7 +168,7 @@ export function useSourceLoginActions({
     const source = sourceLoginTarget.value;
     if (!source || sourceLoginBusy.value || sourceHasLoginState.value === null || shelfBatchRecoveryRequired.value) return;
     const generation = sourceLoginGeneration;
-    if (!window.confirm(`清除「${source.name}」的登录信息及该域名共享的 Cookie？使用同一域名的其他书源也可能需要重新登录。书源规则和书籍会保留。`)) return;
+    if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他书源也可能需要重新登录。`)) return;
     if (!isCurrentSourceLogin(source.id, generation) || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     sourceLoginBusy.value = true;
     sourceLoginError.value = "";
@@ -222,7 +222,6 @@ export function useSourceLoginActions({
         return;
       }
       sourceLoginWebSessionId.value = result.sessionId;
-      sourceLoginFeedback.value = "网页登录窗口已打开。完成网页登录后关闭私有浏览器，回此处点“完成并保存 Cookie”。应用只保存 Cookie，不会验证站点是否已认证。";
     } catch (error) {
       if (isCurrentSourceLogin(source.id, generation)) sourceLoginFormError.value = errorText(error);
     } finally {
@@ -246,7 +245,7 @@ export function useSourceLoginActions({
       if (!("importedCount" in result)) throw new Error("Source web login returned an invalid response");
       if (!isCurrentSourceLogin(source.id, generation)) return;
       sourceLoginWebSessionId.value = "";
-      sourceLoginFeedback.value = result.message;
+      sourceLoginFeedback.value = result.importedCount > 0 ? "Cookie 已保存。" : "未获取到 Cookie。";
       const state = await getSourceLoginState(source.id);
       if (isCurrentSourceLogin(source.id, generation)) sourceHasLoginState.value = state.hasLoginState;
     } catch (error) {

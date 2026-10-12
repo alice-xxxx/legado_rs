@@ -1,18 +1,15 @@
 import { ref, type Ref } from "vue";
-import type { AppSettingsResource, BookResource, DisplayReplacementRule, DictionaryLanguage } from "../../api/types";
+import type { BookResource, DictionaryLanguage } from "../../api/types";
 import { lookupDictionary } from "../../api/reading";
 import { readTextResource } from "../../api/resources";
-import { makeDisplayHtml } from "./displayHtml";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 
 interface ReaderDictionaryOptions {
-  frame: ReadonlyRef<HTMLIFrameElement | null>;
+  viewport: ReadonlyRef<HTMLElement | null>;
   book: ReadonlyRef<BookResource | null>;
   chapter: ReadonlyRef<BookResource["chapters"][number] | null>;
   visible: ReadonlyRef<boolean>;
-  settings: ReadonlyRef<AppSettingsResource>;
-  replacementRules: ReadonlyRef<DisplayReplacementRule[]>;
   getReaderLoadRevision: () => number;
   getRestoreRevision: () => number;
   isBackupRestoreInProgress: () => boolean;
@@ -33,7 +30,9 @@ export function useReaderDictionary(options: ReaderDictionaryOptions) {
   let lookupGeneration = 0;
 
   function selectedReaderText(): string {
-    return options.frame.value?.contentDocument?.getSelection()?.toString().trim() ?? "";
+    const root = options.viewport.value;
+    const selection = root?.ownerDocument.getSelection();
+    return root && selection?.anchorNode && root.contains(selection.anchorNode) ? selection.toString().trim() : "";
   }
 
   function openReaderDictionary(): void {
@@ -92,7 +91,7 @@ export function useReaderDictionary(options: ReaderDictionaryOptions) {
       dictionaryTitle.value = result.title;
       dictionaryProvider.value = result.provider;
       dictionarySourceUrl.value = result.sourceUrl;
-      dictionaryHtml.value = makeDisplayHtml(rawHtml, options.settings.value.reader, options.replacementRules.value);
+      dictionaryHtml.value = rawHtml;
     } catch (error) {
       if (isCurrentLookup()) dictionaryError.value = options.errorText(error);
     } finally {

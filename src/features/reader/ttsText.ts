@@ -30,11 +30,15 @@ export function collectReaderTtsSegments(
   document: Document,
   fromCurrentPosition: boolean,
   viewportFallback: ReaderTtsViewportFallback,
+  root?: HTMLElement,
 ): ReaderTtsSegment[] {
-  const body = document.body;
+  const body = root ?? document.body;
   const viewportWidth = Math.max(1, document.documentElement.clientWidth || viewportFallback.width || 1);
   const viewportHeight = Math.max(1, document.documentElement.clientHeight || viewportFallback.height || 1);
-  const isInViewport = (rect: DOMRect): boolean => rect.left < viewportWidth
+  const bounds = root?.parentElement?.getBoundingClientRect();
+  const isInViewport = (rect: DOMRect): boolean => bounds
+    ? rect.left < bounds.right && rect.right > bounds.left && rect.top < bounds.bottom && rect.bottom > bounds.top
+    : rect.left < viewportWidth
     && rect.right > 0
     && rect.top < viewportHeight
     && rect.bottom > 0;

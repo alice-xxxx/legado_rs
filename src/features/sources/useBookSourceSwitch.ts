@@ -4,9 +4,9 @@ import { cancelTask } from "../../api/tasks";
 import { changeBookSource, changeChapterSource, searchBookSourceCandidates } from "../../api/search";
 import { prepareSearchResultBook } from "../../api/books";
 import { readResource } from "../../api/resources";
-import { type AppTask, type BookResource, type BookSourceMutationResponse, type Bookmark, type SearchBookResult, type SearchResource, type ShelfResource, type SourceMetadata } from "../../api/types";
-import type { PdfPageResource } from "../reader/displayHtml";
-import { bookPreviews, loadBookPreview, loadBookPreviews, refreshOpenedBook, clearOpenedBook, switchOpenedBook, openedBookFromShelf } from "../books/bookDetailState";
+import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult, type SearchResource, type ShelfResource, type SourceMetadata } from "../../api/types";
+import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
+import { bookPreviews, loadBookPreview, loadBookPreviews, clearOpenedBook, switchOpenedBook, openedBookFromShelf } from "../books/bookDetailState";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
@@ -17,14 +17,10 @@ interface BookSourceSwitchDependencies {
   readerVisible: Ref<boolean>;
   readingChapterIndex: Ref<number>;
   readerPageIndex: Ref<number>;
-  readingChapterHtml: Ref<string>;
-  readingChapterRaw: Ref<string>;
-  readingPdfPage: Ref<PdfPageResource | null>;
-  readingImagePage: Ref<boolean>;
+  readingContent: Ref<CachedChapterContent | null>;
   readerProgressDirty: Ref<boolean>;
   readerControlsOpen: Ref<boolean>;
   shelf: Ref<ShelfResource>;
-  bookmarks: Ref<Bookmark[]>;
   shelfBatchRecoveryRequired: Ref<boolean>;
   shelfBatchRecoveryTitle: Ref<string>;
   shelfBatchRecoveryMessage: Ref<string>;
@@ -45,10 +41,7 @@ export function useBookSourceSwitch({
   readerVisible,
   readingChapterIndex,
   readerPageIndex,
-  readingChapterHtml,
-  readingChapterRaw,
-  readingPdfPage,
-  readingImagePage,
+  readingContent,
   readerProgressDirty,
   readerControlsOpen,
   shelfBatchRecoveryRequired,
@@ -364,48 +357,16 @@ export function useBookSourceSwitch({
         return;
       }
 
-      try {
-        if (response.chapterId !== chapter.id) throw new Error("返回的章节与所选章节不匹配。");
-        await refreshOpenedBook(response.book);
-        if (!currentRestore(restoreRevision)) return;
-        const current = openedBook.value;
-        if (current?.id !== bookId) return;
-        if (!current.chapters.some(entry => entry.id === chapter.id && entry.resource)) {
-          throw new Error("替换后的书籍目录与当前章节不匹配。");
-        }
-      } catch (error) {
-        if (!currentRestore(restoreRevision)) return;
-        shelfBatchRecoveryRequired.value = true;
-        shelfBatchRecoveryTitle.value = "本章正文已提交，显示尚未更新";
-        shelfBatchRecoveryMessage.value = `《${title}》的章节“${chapterTitle}”已提交替换，但新目录未能读取。请重启应用后再继续。${errorText(error)}`;
-        chapterSourceError.value = shelfBatchRecoveryMessage.value;
-        notify("本章正文已提交，但目录读取失败；请重启应用。", "error");
-        return;
-      }
-
-      let readerReadError = "";
-      if (readerWasOpen && readerVisible.value && readingChapterIndex.value === chapterIndex) {
-        readingChapterRaw.value = "";
-        readingChapterHtml.value = "";
-        readingPdfPage.value = null;
-        readingImagePage.value = false;
-        await loadReaderChapter(chapterIndex);
-        if (!currentRestore(restoreRevision)) return;
-        if (!readingChapterRaw.value) readerReadError = "替换后的章节内容未能重新载入。";
-      }
-
-      if (response.recoveryRequired || readerReadError) {
+      if (response.recoveryRequired) {
         shelfBatchRecoveryRequired.value = true;
         shelfBatchRecoveryTitle.value = "需要重启应用完成章节恢复";
-        shelfBatchRecoveryMessage.value = readerReadError
-          ? `《${title}》的章节“${chapterTitle}”已替换，但阅读内容未能重新载入。请重启应用后再继续。${warning ? ` ${warning}` : ""}`
-          : `《${title}》的章节“${chapterTitle}”已替换，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`;
+        shelfBatchRecoveryMessage.value = `《${title}》的章节“${chapterTitle}”已替换，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`;
         chapterSourceError.value = shelfBatchRecoveryMessage.value;
-        notify(readerReadError ? "本章正文已替换，但阅读内容未能重新载入；请重启应用。" : "本章正文已替换，但恢复待完成；请重启应用。", "error");
+        notify("本章正文已替换，但恢复待完成；请重启应用。", "error");
       } else {
         chapterSourceError.value = "";
         if (readerWasOpen) closeBookSourceSwitch();
-        notify(`《${title}》的章节“${chapterTitle}”正文已替换并重新载入。${warning ? ` ${warning}` : ""}`);
+        notify(`《${title}》的章节“${chapterTitle}”正文已替换。${warning ? ` ${warning}` : ""}`);
       }
     } catch (error) {
       if (!currentRestore(restoreRevision)) return;
@@ -486,9 +447,7 @@ export function useBookSourceSwitch({
           if (!currentRestore(restoreRevision)) return;
           if (readerWasOpen) {
             readerVisible.value = false;
-            readingChapterHtml.value = "";
-            readingChapterRaw.value = "";
-            readingPdfPage.value = null;
+            readingContent.value = null;
           }
           clearOpenedBook();
           notify(`已切换到“${candidate.sourceName}”，但新目录暂时无法读取：${errorText(error)}`, "error");
@@ -504,9 +463,6 @@ export function useBookSourceSwitch({
       bookSourceCandidateErrors.value = [];
       bookSourceSwitchBookId.value = cachedSourceBookId;
       if (readerWasOpen && readingBook.value?.id === cachedSourceBookId) {
-        readingPdfPage.value = null;
-        readingChapterHtml.value = "";
-        readingChapterRaw.value = "";
         readingChapterIndex.value = response.progress.chapterIndex;
         readerPageIndex.value = response.progress.offset;
         await loadReaderChapter(response.progress.chapterIndex);

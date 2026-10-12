@@ -1,12 +1,13 @@
 import { nextTick, type Ref } from "vue";
-import type { PdfPageResource } from "./displayHtml";
+import type { PdfPageResource } from "./readerContent";
 import { collectReaderTtsSegments, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 
 interface UseReaderTtsActionsOptions {
   reader: {
-    frame: ReadonlyRef<HTMLIFrameElement | null>;
+    viewport: ReadonlyRef<HTMLElement | null>;
+    busy: ReadonlyRef<boolean>;
     visible: ReadonlyRef<boolean>;
     mediaChapter: ReadonlyRef<boolean>;
     imagePage: ReadonlyRef<boolean>;
@@ -48,7 +49,7 @@ export function useReaderTtsActions(options: UseReaderTtsActionsOptions) {
       try {
         view?.CSS?.highlights?.delete?.("legado-reader-tts-current");
       } catch {
-        // 阅读 iframe 可能正在卸载，高亮清理失败时继续释放本地引用。
+        // 阅读正文可能正在卸载，高亮清理失败时继续释放本地引用。
       }
     }
     if (ttsHighlightElement) {
@@ -64,9 +65,9 @@ export function useReaderTtsActions(options: UseReaderTtsActionsOptions) {
 
   function highlightTtsChunk(target: ReaderTtsChunkTarget | undefined, loadRevision: number): void {
     clearTtsHighlight();
-    const frame = options.reader.frame.value;
+    const root = options.reader.viewport.value;
     const document = target?.startNode?.ownerDocument ?? target?.target?.ownerDocument;
-    if (!target || !document || document !== frame?.contentDocument || !options.reader.visible.value
+    if (!target || !document || document !== root?.ownerDocument || !root?.contains(target.startNode ?? target.target ?? null) || !options.reader.visible.value
       || loadRevision !== options.reader.getLoadRevision() || options.reader.mediaChapter.value
       || options.reader.imagePage.value || options.reader.pdfPage.value) return;
 
@@ -134,28 +135,10 @@ export function useReaderTtsActions(options: UseReaderTtsActionsOptions) {
 
   async function waitForReaderTtsSegments(fromCurrentPosition = false): Promise<ReaderTtsSegment[]> {
     await nextTick();
-    const frame = options.reader.frame.value;
-    if (!frame) throw new Error("章节阅读画面尚未准备好，请稍后重试。");
-    if (frame.contentDocument?.readyState !== "complete") {
-      await new Promise<void>((resolve, reject) => {
-        const finish = (error?: Error) => {
-          clearTimeout(timer);
-          frame.removeEventListener("load", onLoad);
-          if (error) reject(error);
-          else resolve();
-        };
-        const onLoad = () => finish();
-        const timer = setTimeout(() => finish(new Error("等待章节阅读画面超时，请重试。")), 12000);
-        frame.addEventListener("load", onLoad, { once: true });
-        if (frame.contentDocument?.readyState === "complete") finish();
-      });
-    }
-    const document = frame.contentDocument;
-    const segments = document
-      ? collectReaderTtsSegments(document, fromCurrentPosition, { width: frame.clientWidth, height: frame.clientHeight })
-      : [];
-    if (!segments.length) throw new Error("当前章节没有可朗读的正文。");
-    return segments;
+    const viewport = options.reader.viewport.value;
+    if (!viewport) throw new Error("阅读画面尚未准备好。");
+    return collectReaderTtsSegments(viewport.ownerDocument, fromCurrentPosition,
+      { width: viewport.clientWidth, height: viewport.clientHeight }, viewport.querySelector<HTMLElement>(".chapter-content") ?? viewport);
   }
 
   function startSelectedTextTts(): void {

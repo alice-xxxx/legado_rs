@@ -1,18 +1,14 @@
 import type { Ref } from "vue";
 import { pickReaderBackgroundImage } from "../../api/settings";
 import { type AppSettingsResource, type ReaderSettings } from "../../api/types";
-import { clamp } from "./displayHtml";
+import { clamp } from "./readerContent";
 
 interface ReaderSettingsActionOptions {
   settings: Ref<AppSettingsResource>;
   readerBackgroundBusy: Ref<boolean>;
   readerBackgroundError: Ref<string>;
-  readerMediaError: Ref<string>;
-  readerMediaElement: () => HTMLMediaElement | null;
-  readingVideoChapter: Readonly<Ref<boolean>>;
   backupBusy: () => boolean;
   recoveryRequired: Readonly<Ref<boolean>>;
-  rebuildReaderDisplay: () => void;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
@@ -27,50 +23,12 @@ export function useReaderSettingsActions(options: ReaderSettingsActionOptions) {
       system: { textColor: "#252525", backgroundColor: "#ffffff" },
     };
     Object.assign(options.settings.value.reader, { theme, ...colors[theme] });
-    options.rebuildReaderDisplay();
   }
 
-  function applyAppearanceSettings(reader: ReaderSettings): void {
-    const previous = { ...options.settings.value.reader };
-    Object.assign(options.settings.value.reader, reader);
-    // A playback preference is not a text-layout change. Avoid rebuilding the
-    // reader iframe (and disrupting active media) for rate-only updates.
-    const displayKeys = [
-      "fontSizePx", "lineHeight", "fontFamily", "textColor", "backgroundColor",
-      "backgroundImageSrc", "backgroundImageOpacity", "textAlign", "theme", "verticalScroll",
-    ] as const satisfies ReadonlyArray<keyof ReaderSettings>;
-    if (displayKeys.some((key) => previous[key] !== reader[key])) options.rebuildReaderDisplay();
-    const media = options.readerMediaElement();
-    const activeRate = options.readingVideoChapter.value ? reader.videoPlaybackRate : reader.audioPlaybackRate;
-    const previousRate = options.readingVideoChapter.value ? previous.videoPlaybackRate : previous.audioPlaybackRate;
-    if (media && activeRate !== previousRate && Math.abs(media.playbackRate - activeRate) > 0.001) {
-      try { media.playbackRate = activeRate; }
-      catch {
-        options.readerMediaError.value = options.readingVideoChapter.value
-          ? "当前视频播放器无法调整播放速度。" : "当前音频播放器无法调整播放速度。";
-      }
-    }
-  }
-
+  function applyAppearanceSettings(reader: ReaderSettings): void { Object.assign(options.settings.value.reader, reader); }
   function updateReaderSetting<K extends keyof ReaderSettings>(key: K, value: ReaderSettings[K]): void {
-    const valueToStore = key === "audioPlaybackRate" || key === "videoPlaybackRate"
-      ? Math.round(clamp(Number(value), 0.5, 3) * 4) / 4 as ReaderSettings[K]
-      : value;
-    options.settings.value.reader[key] = valueToStore;
-    const media = options.readerMediaElement();
-    if ((key === "audioPlaybackRate" && !options.readingVideoChapter.value
-      || key === "videoPlaybackRate" && options.readingVideoChapter.value) && media) {
-      const rate = options.readingVideoChapter.value
-        ? options.settings.value.reader.videoPlaybackRate : options.settings.value.reader.audioPlaybackRate;
-      try {
-        if (Math.abs(media.playbackRate - rate) > 0.001) media.playbackRate = rate;
-      } catch {
-        options.readerMediaError.value = options.readingVideoChapter.value
-          ? "当前视频播放器无法调整播放速度。" : "当前音频播放器无法调整播放速度。";
-      }
-    }
-    if (key !== "ttsRate" && key !== "ttsVoiceURI" && key !== "ttsContinueAcrossChapters"
-      && key !== "ttsStartPosition" && key !== "audioPlaybackRate" && key !== "videoPlaybackRate") options.rebuildReaderDisplay();
+    options.settings.value.reader[key] = key === "audioPlaybackRate" || key === "videoPlaybackRate"
+      ? Math.round(clamp(Number(value), 0.5, 3) * 4) / 4 as ReaderSettings[K] : value;
   }
 
   function updateSourceHttpTimeout(seconds: number): void {

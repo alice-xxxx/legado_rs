@@ -1,16 +1,17 @@
 import type { Ref } from "vue";
 import type { BookResource, ReaderSettings } from "../../api/types";
-import type { PdfPageResource } from "./displayHtml";
+import type { PdfPageResource } from "./readerContent";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 
 export interface ReaderTouchStartState {
   x: number;
   y: number;
+  moved: boolean;
   pageIndex: number;
   loadRevision: number;
   chapterIndex: number;
-  frame: HTMLIFrameElement;
+  frame: HTMLElement;
   document: Document;
 }
 
@@ -23,7 +24,7 @@ export interface ReaderPendingFragmentState {
 
 interface ReaderPageInteractionOptions {
   reader: {
-    frame: ReadonlyRef<HTMLIFrameElement | null>;
+    viewport: ReadonlyRef<HTMLElement | null>;
     book: ReadonlyRef<BookResource | null>;
     currentChapterSource: ReadonlyRef<string | null | undefined>;
     chapterIndex: ReadonlyRef<number>;
@@ -49,18 +50,9 @@ interface ReaderPageInteractionOptions {
     getClickSuppressedUntil: () => number;
     setClickSuppressedUntil: (value: number) => void;
   };
-  frameBinding: {
-    getDocument: () => Document | null;
-    setDocument: (value: Document | null) => void;
-    getWindow: () => Window | null;
-    setWindow: (value: Window | null) => void;
-    getScrollElement: () => HTMLElement | null;
-    setScrollElement: (value: HTMLElement | null) => void;
-  };
   events: {
     onScroll: () => void;
     onSelectionChange: () => void;
-    onKeydown: (event: KeyboardEvent) => void;
     onTouchStart: (event: TouchEvent) => void;
     onTouchMove: (event: TouchEvent) => void;
     onTouchEnd: (event: TouchEvent) => void;
@@ -72,9 +64,9 @@ interface ReaderPageInteractionOptions {
   };
 }
 
-/** 管理阅读 iframe 的触控、点击、章节内跳转和本章查找交互。 */
+/** 管理阅读正文的触控、点击、章节内跳转和本章查找交互。 */
 export function useReaderPageInteraction(options: ReaderPageInteractionOptions) {
-  const { reader, frameBinding, events, actions } = options;
+  const { reader, events, actions } = options;
 
   function resolveSemanticChapterAnchor(anchor: HTMLAnchorElement): { chapterIndex: number; fragment: string } | null {
     const chapterId = anchor.dataset.legadoChapterId?.trim();
@@ -134,39 +126,27 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     return { chapterIndex: chapter.index, fragment };
   }
 
-  function findReaderFragmentTarget(document: Document, fragment: string): Element | null {
-    try {
-      const idTarget = document.getElementById(fragment);
-      if (idTarget) return idTarget;
-      return document.getElementsByName(fragment).item(0);
-    } catch {
-      return null;
-    }
-  }
-
   function readerSegmentForElement(target: Element): number {
     return readerSegmentForRect(target.ownerDocument, target.getBoundingClientRect());
   }
 
-  function readerSegmentForRect(document: Document, rect: DOMRect): number {
-    if (reader.settings.value.verticalScroll) {
-      const height = Math.max(1, document.documentElement.clientHeight || reader.frame.value?.clientHeight || 1);
-      const scrollTop = Math.max(document.body.scrollTop, document.documentElement.scrollTop);
-      const top = rect.top + scrollTop;
-      return Math.floor(Math.max(0, top) / height);
+  function readerSegmentForRect(_document: Document, rect: DOMRect): number {
+    const viewport = reader.viewport.value;
+    if (viewport) {
+      const bounds = viewport.getBoundingClientRect();
+      return reader.settings.value.verticalScroll
+        ? Math.floor(Math.max(0, rect.top - bounds.top + viewport.scrollTop) / Math.max(1, viewport.clientHeight))
+        : Math.floor(Math.max(0, rect.left - bounds.left + viewport.scrollLeft) / Math.max(1, viewport.clientWidth));
     }
-    const width = Math.max(1, document.documentElement.clientWidth || reader.frame.value?.clientWidth || 1);
-    const scrollLeft = Math.max(document.body.scrollLeft, document.documentElement.scrollLeft);
-    const left = rect.left + scrollLeft;
-    return Math.floor(Math.max(0, left) / width);
+    return 0;
   }
 
   function scrollReaderToFragment(fragment: string, loadRevision: number, chapterIndex: number): boolean {
-    const frame = reader.frame.value;
-    const document = frame?.contentDocument;
-    if (!document || frame !== reader.frame.value || loadRevision !== reader.getLoadRevision() || chapterIndex !== reader.chapterIndex.value
+    const frame = reader.viewport.value;
+    const document = frame?.ownerDocument;
+    if (!document || frame !== reader.viewport.value || loadRevision !== reader.getLoadRevision() || chapterIndex !== reader.chapterIndex.value
       || reader.imagePage.value || reader.mediaChapter.value || reader.pdfPage.value) return false;
-    const target = findReaderFragmentTarget(document, fragment);
+    const target = frame?.querySelector(`[id="${CSS.escape(fragment)}"],[name="${CSS.escape(fragment)}"]`);
     if (!target) return false;
     actions.setPage(readerSegmentForElement(target));
     return true;
@@ -190,7 +170,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function onReaderFrameClick(event: MouseEvent): void {
-    const document = frameBinding.getDocument();
+    const document = reader.viewport.value?.ownerDocument;
     if (!document || Date.now() < reader.getClickSuppressedUntil() || event.defaultPrevented || event.button !== 0
       || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     if (!reader.visible.value || reader.busy.value || reader.mediaChapter.value
@@ -216,9 +196,10 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
       return;
     }
     if (element?.closest("button,input,select,textarea,[role='button'],[contenteditable='true']")) return;
-    const frameBounds = reader.frame.value?.getBoundingClientRect();
+    const frameBounds = reader.viewport.value?.getBoundingClientRect();
     if (!frameBounds) return;
-    handleReaderTapAt(frameBounds.left + event.clientX);
+    if (reader.viewport.value) event.stopPropagation();
+    handleReaderTapAt(event.clientX);
   }
 
   function handleReaderTapAt(x: number): void {
@@ -265,8 +246,9 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function rebuildReaderFind(visitFirstMatch = false): void {
-    const document = reader.frame.value?.contentDocument;
-    if (!document?.body) {
+    const root = reader.viewport.value?.querySelector<HTMLElement>(".chapter-content");
+    const document = root?.ownerDocument;
+    if (!root || !document) {
       clearReaderFindMatches();
       return;
     }
@@ -285,7 +267,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     }
 
     const occurrences: Array<{ node: Text; start: number; end: number }> = [];
-    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode(node) {
         const parent = node.parentElement;
         return parent && !parent.closest("script,style,noscript,textarea,input,select,button,svg,canvas,video,audio,object,iframe,[contenteditable]:not([contenteditable='false'])")
@@ -358,21 +340,15 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function clearReaderScrollListeners(): void {
-    const document = frameBinding.getDocument();
-    document?.removeEventListener("scroll", events.onScroll, true);
-    document?.removeEventListener("selectionchange", events.onSelectionChange);
-    document?.removeEventListener("keydown", events.onKeydown);
-    document?.removeEventListener("touchstart", events.onTouchStart);
-    document?.removeEventListener("touchmove", events.onTouchMove);
-    document?.removeEventListener("touchend", events.onTouchEnd);
-    document?.removeEventListener("touchcancel", onReaderFrameTouchCancel);
-    document?.removeEventListener("click", onReaderFrameClick);
-    frameBinding.getWindow()?.removeEventListener("scroll", events.onScroll);
-    frameBinding.getScrollElement()?.removeEventListener("scroll", events.onScroll);
+    const viewport = reader.viewport.value;
+    viewport?.ownerDocument.removeEventListener("selectionchange", events.onSelectionChange);
+    viewport?.removeEventListener("scroll", events.onScroll);
+    viewport?.removeEventListener("touchstart", events.onTouchStart);
+    viewport?.removeEventListener("touchmove", events.onTouchMove);
+    viewport?.removeEventListener("touchend", events.onTouchEnd);
+    viewport?.removeEventListener("touchcancel", onReaderFrameTouchCancel);
+    viewport?.removeEventListener("click", onReaderFrameClick);
     reader.setTouchStart(null);
-    frameBinding.setDocument(null);
-    frameBinding.setWindow(null);
-    frameBinding.setScrollElement(null);
   }
 
   return {

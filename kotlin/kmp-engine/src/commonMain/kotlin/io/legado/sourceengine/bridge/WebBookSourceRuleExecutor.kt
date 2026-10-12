@@ -39,6 +39,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
@@ -416,11 +418,40 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                 put("message", "此书源登录表单包含重复字段名称。")
             }.toString()
         }
+        val actionIds = actions.map { it.getValue("id").jsonPrimitive.int }.toSet()
+        val layout = rows.mapIndexedNotNull { index, row ->
+            val kind = when {
+                row.type in supportedLoginFieldTypes -> "field"
+                row.type == RowUi.Type.button && index in actionIds -> "action"
+                row.type == RowUi.Type.title && row.name.isNotBlank() -> "title"
+                else -> return@mapIndexedNotNull null
+            }
+            val defaultCols = if (kind == "action") 2 else 1
+            val basis = row.style?.layout_flexBasisPercent ?: 0F
+            val legacyCols = when {
+                !basis.isFinite() || basis <= 0F -> null
+                basis >= 0.75F -> 1
+                basis >= 0.42F -> 2
+                basis >= 0.29F -> 3
+                else -> 4
+            }
+            buildJsonObject {
+                put("kind", kind)
+                when (kind) {
+                    "field" -> put("name", row.name)
+                    "action" -> put("id", index)
+                    "title" -> put("label", row.name)
+                }
+                put("cols", (row.style?.cols ?: legacyCols ?: defaultCols).coerceIn(1, 4))
+                put("rows", (row.style?.rows ?: 1).coerceIn(1, 12))
+            }
+        }
         return buildJsonObject {
             put("mode", "form")
             put("canLogin", canLogin)
             put("fields", JsonArray(fields))
             put("actions", JsonArray(actions))
+            put("layout", JsonArray(layout))
         }.toString()
     }
 

@@ -3,6 +3,7 @@ import SourceDebugPanel from "./SourceDebugPanel.vue";
 import SourceManagerPage from "./SourceManagerPage.vue";
 import SourceMetadataEditorPage from "./SourceMetadataEditorPage.vue";
 import SourceFormEditor from "./SourceFormEditor.vue";
+import SourceLoginFormView from "./SourceLoginForm.vue";
 import { useSourceLoginActions } from "./useSourceLoginActions";
 import { useSourceDebugActions } from "./useSourceDebugActions";
 import { useSourceManagementActions } from "./useSourceManagementActions";
@@ -568,47 +569,43 @@ onBeforeUnmount(() => {
       </article>
     </div>
 
-    <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="!login.sourceLoginBusy && login.closeSourceLogin()">
-      <article class="app-modal source-edit-modal">
-        <button class="detail-close" :disabled="login.sourceLoginBusy" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
-        <h2 id="source-login-title">「{{ login.sourceLoginTarget.name }}」书源登录</h2>
-        <form v-if="login.sourceLoginForm?.mode === 'form'" @submit.prevent="login.executeSelectedSourceLogin()" class="source-login-form">
-          <label v-for="field in login.sourceLoginForm.fields" :key="field.name" class="form-field">
-            <span>{{ field.label }}</span>
-            <select v-if="field.type === 'select'" v-model="login.sourceLoginCredentials[field.name]" :disabled="login.sourceLoginBusy">
-              <option v-for="choice in field.choices ?? []" :key="choice" :value="choice">{{ choice }}</option>
-            </select>
-            <input v-else-if="field.type === 'toggle'" type="checkbox" :checked="login.sourceLoginCredentials[field.name] === 'true'" :disabled="login.sourceLoginBusy" @change="login.sourceLoginCredentials[field.name] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'" />
-            <input v-else v-model="login.sourceLoginCredentials[field.name]" :type="field.password || field.type === 'password' ? 'password' : 'text'" :autocomplete="field.password || field.type === 'password' ? 'new-password' : 'off'" maxlength="4096" :disabled="login.sourceLoginBusy" />
-          </label>
-          <small>输入交由书源引擎处理并保存在私有登录数据中；密码不会回填，留空时使用该字段已保存的密码。</small>
-          <div class="modal-actions">
-            <button v-if="login.sourceLoginForm.canLogin" type="submit" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired">执行登录</button>
-            <button v-for="action in login.sourceLoginForm.actions" :key="action.id" type="button" class="button secondary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.executeSelectedSourceLogin(action.id)">{{ action.label }}</button>
-          </div>
-        </form>
+    <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="!login.sourceLoginBusy && login.closeSourceLogin()"
+      @keydown.esc.stop.prevent="!login.sourceLoginBusy && login.closeSourceLogin()">
+      <article class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
+        <header class="source-login-heading">
+          <div><h2 id="source-login-title">书源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
+          <button type="button" :disabled="login.sourceLoginBusy" aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
+        </header>
+        <div class="source-login-body">
+        <SourceLoginFormView v-if="login.sourceLoginForm?.mode === 'form'"
+          :key="login.sourceLoginTarget.id" :form="login.sourceLoginForm"
+          v-model="login.sourceLoginCredentials" :busy="login.sourceLoginBusy"
+          :disabled="login.sourceLoginBusy || recoveryRequired" @execute="login.executeSelectedSourceLogin" />
         <div v-else-if="login.sourceLoginForm?.mode === 'web'" class="source-login-form">
-          <p>{{ login.sourceLoginForm.message }}</p>
-          <p v-if="login.sourceLoginWebSessionId" class="modal-description">登录页面已在私有浏览器中打开。完成网页登录后关闭私有浏览器，回此处点“完成并保存 Cookie”。应用只保存 Cookie，不会验证站点是否已认证。</p>
-          <div class="modal-actions">
-            <button v-if="!login.sourceLoginWebSessionId" type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.startSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在打开…' : '打开网页登录' }}</button>
+          <p v-if="login.sourceLoginWebSessionId" class="source-login-web-hint">在网页中登录，关闭窗口后点「完成」。</p>
+          <p v-else-if="!login.sourceLoginFeedback" class="source-login-web-hint">打开网页完成登录。</p>
+          <div class="source-login-web-actions">
+            <button v-if="!login.sourceLoginWebSessionId" type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.startSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在打开…' : login.sourceLoginFeedback ? '重新登录' : '打开登录页' }}</button>
             <template v-else>
-              <button type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.finishSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在保存…' : '完成并保存 Cookie' }}</button>
-              <button type="button" class="button secondary" :disabled="login.sourceLoginBusy" @click="login.cancelSelectedSourceWebLogin">取消网页登录</button>
+              <button type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.finishSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在保存…' : '完成' }}</button>
+              <button type="button" class="button secondary" :disabled="login.sourceLoginBusy" @click="login.cancelSelectedSourceWebLogin">取消</button>
             </template>
           </div>
         </div>
         <p v-else-if="login.sourceLoginForm?.mode === 'webUnavailable'" class="modal-description">{{ login.sourceLoginForm.message }}</p>
-        <p v-if="login.sourceLoginFeedback">{{ login.sourceLoginFeedback }}</p>
-        <p v-if="login.sourceLoginFormError" class="error-message">{{ login.sourceLoginFormError }}</p>
+        <p v-if="login.sourceLoginFeedback && !login.sourceLoginWebSessionId" class="source-login-feedback" role="status">{{ login.sourceLoginFeedback }}</p>
+        <p v-if="login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
         <button v-if="!login.sourceLoginForm" class="button secondary small" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.loadSelectedSourceLoginForm">读取登录表单</button>
-        <p class="modal-description">清除保存的登录信息和该域名共享的 Cookie。同域名的其他书源也可能需要重新登录。</p>
-        <p>{{ login.sourceLoginBusy ? '正在处理…' : login.sourceHasLoginState === true ? '存在已保存的登录数据' : login.sourceHasLoginState === false ? '未发现当前书源入口可用的登录数据' : '登录状态尚未确认' }}</p>
-        <p v-if="login.sourceLoginError" class="error-message">{{ login.sourceLoginError }}</p>
-        <div class="modal-actions">
-          <button class="button secondary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.refreshSelectedSourceLogin">重新读取</button>
-          <button class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebSessionId || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录状态</button>
-          <button class="button secondary" :disabled="login.sourceLoginBusy" @click="login.closeSourceLogin">关闭</button>
+        <div class="source-login-state">
+          <span :class="{ saved: login.sourceHasLoginState === true }"></span>
+          <p>{{ login.sourceLoginBusy ? '正在处理…' : login.sourceHasLoginState === true ? '已保存登录数据' : login.sourceHasLoginState === false ? '暂无登录数据' : '登录状态尚未确认' }}</p>
+          <button type="button" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.refreshSelectedSourceLogin">刷新</button>
+        </div>
+        <p v-if="login.sourceLoginError" class="source-login-error" role="alert">{{ login.sourceLoginError }}</p>
+        <details class="source-login-storage">
+          <summary>登录数据</summary>
+          <button type="button" class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebSessionId || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</button>
+        </details>
         </div>
       </article>
     </section>
@@ -651,6 +648,30 @@ onBeforeUnmount(() => {
  .source-workspace-frame :deep(.source-edit-screen){--source-editor-inset:24px}
 }
 .source-leave-guard{z-index:150}
+.source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);max-height:min(88dvh,800px);padding:0;overflow:hidden;border-radius:14px}
+.source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:14px;padding:22px 24px 18px;border-bottom:1px solid var(--app-line)}
+.source-login-heading>div{min-width:0}
+.source-login-heading h2{margin:0;color:var(--app-text);font-size:20px;font-weight:650}
+.source-login-heading p{margin:6px 0 0;color:#838c9b;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.source-login-heading>button{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:8px;background:#f1f3f8;color:#80899a;cursor:pointer}
+.source-login-heading svg{width:18px;height:18px}
+.source-login-body{min-height:0;padding:22px 24px;overflow-y:auto;overscroll-behavior:contain}
+.source-login-web-hint{margin:0;color:#818a99;font-size:14px;line-height:1.6}
+.source-login-web-actions{display:flex;gap:10px;margin-top:18px}
+.source-login-web-actions>.primary{flex:1}
+.source-login-web-actions>.button{min-height:44px}
+.source-login-feedback,.source-login-error{margin:16px 0 0;padding:11px 13px;border-radius:8px;font-size:13px;line-height:1.6;overflow-wrap:anywhere}
+.source-login-feedback{background:var(--app-accent-soft);color:var(--app-accent-ink)}
+.source-login-error{background:#fff0f2;color:#ad4858}
+.source-login-state{display:flex;align-items:center;gap:8px;margin-top:22px;padding-top:18px;border-top:1px solid var(--app-line)}
+.source-login-state>span{flex:none;width:7px;height:7px;border-radius:50%;background:#bdc4d0}
+.source-login-state>span.saved{background:var(--app-success)}
+.source-login-state>p{flex:1;margin:0;font-size:12px;color:#818a99}
+.source-login-state>button{min-height:36px;padding:0 8px;color:var(--app-accent);font-size:12px;cursor:pointer}
+.source-login-storage{margin-top:12px;color:#8a92a0;font-size:12px}
+.source-login-storage>summary{width:max-content;padding:8px 0;cursor:pointer}
+.source-login-storage>p{margin:7px 0 12px;line-height:1.6}
+@media(max-width:550px){.source-login-heading{padding:19px 18px 16px}.source-login-body{padding:20px 18px}.source-login-heading h2{font-size:18px}}
 .source-confirm{color:#9d7952;background:#f7f0e6}
 .source-confirm svg{width:22px;height:22px}
 .detail-close svg{width:18px;height:18px}

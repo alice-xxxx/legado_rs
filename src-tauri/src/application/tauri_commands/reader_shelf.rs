@@ -3,54 +3,55 @@
 use super::*;
 
 #[tauri::command]
-pub async fn prepare_chapters(
-    app: tauri::AppHandle,
-    book_id: String,
-    from_index: usize,
-    count: usize,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let result = service
-        .prepare_chapters(&book_id, from_index, count)
-        .await?;
-    let _ = app.emit(
-        "book-updated",
-        json!({ "requestId": 0, "resource": result["book"] }),
-    );
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn refresh_chapter_content(
-    app: tauri::AppHandle,
-    book_id: String,
-    chapter_id: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let result = service
-        .refresh_chapter_content(&book_id, &chapter_id)
-        .await?;
-    if result["commitState"].as_str() == Some("committed")
-        && result["recoveryRequired"].as_bool() == Some(false)
-    {
-        let _ = app.emit(
-            "book-updated",
-            json!({ "requestId": 0, "resource": result["book"] }),
-        );
-    }
-    Ok(result)
-}
-
-#[tauri::command]
-pub async fn save_progress(
+pub async fn notify_reading(
     app: tauri::AppHandle,
     book_id: String,
     progress: Value,
+    refresh_media: bool,
     service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let result = service.save_progress(&book_id, progress).await?;
-    let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": result }));
-    Ok(result)
+) -> Result<(), String> {
+    let chapter_index = progress["chapterIndex"].as_u64()
+        .ok_or_else(|| "Reading chapterIndex is missing".to_owned())? as usize;
+    let resource = service.save_progress(&book_id, progress).await?;
+    let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": resource }));
+    if refresh_media {
+        let book_ref = service.store.book_ref(&book_id).map_err(|error| error.to_string())?;
+        let book = service.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
+        let media = matches!(book["mediaType"].as_str(), Some("audio" | "video"))
+            || matches!(book["chapters"][chapter_index]["resource"]["contentFormat"].as_str(), Some("audio" | "video"));
+        if book["sourceId"].is_string() && !media {
+            let chapter_id = book["chapters"][chapter_index]["id"].as_str()
+                .ok_or_else(|| "Reading chapter ID is missing".to_owned())?;
+            let result = service.refresh_chapter_content(&book_id, chapter_id).await?;
+            if result["recoveryRequired"].as_bool() == Some(true) || result["commitState"].as_str() == Some("indeterminate") {
+                let _ = app.emit("reader-recovery-required", json!({
+                    "title": "章节缓存需要恢复", "message": result["warning"].as_str().unwrap_or("请重启应用完成缓存恢复。")
+                }));
+            }
+            if result["commitState"].as_str() != Some("committed") {
+                return Err(result["error"].as_str().unwrap_or("Chapter refresh was not committed").to_owned());
+            }
+            let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": result["book"] }));
+        } else {
+            let result = service.prepare_chapters(&book_id, chapter_index, 1).await?;
+            if result["changed"].as_bool() == Some(true) {
+                let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": result["book"] }));
+            }
+        }
+    }
+    let service = service.inner().clone();
+    let epoch = service.restore_epoch.load(std::sync::atomic::Ordering::Acquire);
+    tokio::spawn(async move {
+        let result = service.prepare_reading_chapters(&book_id, chapter_index, epoch, |resource| {
+            let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": resource }));
+        }).await;
+        if let Err(error) = result {
+            if service.restore_epoch.load(std::sync::atomic::Ordering::Acquire) == epoch {
+                let _ = app.emit("reading-resource-error", json!({ "bookId": book_id, "chapterIndex": chapter_index, "error": error }));
+            }
+        }
+    });
+    Ok(())
 }
 
 #[tauri::command]
