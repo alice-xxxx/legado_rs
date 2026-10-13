@@ -15,12 +15,15 @@ import platform.Foundation.NSError
 import platform.Foundation.NSURL
 import platform.Foundation.NSMutableURLRequest
 import platform.Foundation.NSSelectorFromString
+import platform.Foundation.setValue
 import platform.UIKit.UIApplication
 import platform.UIKit.UIViewController
 import platform.UIKit.UINavigationController
 import platform.UIKit.UIBarButtonItem
-import platform.UIKit.UIBarButtonSystemItemDone
+import platform.UIKit.UIBarButtonSystemItem.UIBarButtonSystemItemDone
 import platform.UIKit.UIModalPresentationFullScreen
+import platform.UIKit.navigationController
+import platform.UIKit.navigationItem
 import kotlinx.cinterop.ObjCAction
 import io.legado.app.utils.KS_JSON
 import kotlinx.serialization.json.jsonObject

@@ -638,7 +638,7 @@ interface JsExtensionsCommon {
     fun deviceID() = androidId()
 
     fun refreshExplore() {
-        (getSource() as? BookSource)?.let { source -> runBlockingInScope { source.clearExploreKindsCache() } }
+        (getSource() as? BookSource)?.let { source -> runBlockingInScope(context) { source.clearExploreKindsCache() } }
         refreshUi("explore")
     }
 
