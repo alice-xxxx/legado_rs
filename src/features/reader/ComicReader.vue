@@ -8,8 +8,10 @@ import ComicContent from "./ComicContent.vue";
 const content = computed(() => reader.readingContent.value?.kind === "richText" ? reader.readingContent.value : null);
 </script>
 <template>
-  <ReaderPage v-bind="props">
+  <ReaderPage v-bind="props" v-slot="{ comicReadMode, comicCounter, comicTouchStart, comicTouchEnd }">
     <ComicContent v-if="content" :markup="content.markup" :scale="reader.comicScaleMode.value"
-      @ready="reader.setReaderViewport" @layout="reader.applyComicScrollPosition" />
+      :style="{ scrollSnapType: comicReadMode === 'paged' ? 'y proximity' : 'none' }"
+      @ready="reader.setReaderViewport($event); comicCounter()" @layout="reader.applyComicScrollPosition(); comicCounter()"
+      @scroll="comicCounter" @touchstart="comicTouchStart" @touchend="comicTouchEnd" />
   </ReaderPage>
 </template>

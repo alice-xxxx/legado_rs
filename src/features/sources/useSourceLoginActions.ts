@@ -1,8 +1,8 @@
-import { type Ref } from "vue";
+import { ref, type Ref } from "vue";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { getSourceLoginForm, getSourceLoginState } from "../../api/sources";
 import { sources, mutateSources as mutateSource } from "./sourcesStore";
-import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
+import { type SourceBrowserPage, type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {
   selectedSourceRows: Ref<string[]>;
@@ -40,6 +40,7 @@ export function useSourceLoginActions({
 }: SourceLoginActionDependencies) {
   // 每次切换或关闭登录对象都会递增代次，丢弃旧请求的迟到结果。
   let sourceLoginGeneration = 0;
+  const sourceLoginBrowserPages = ref<SourceBrowserPage[]>([]);
 
   function isCurrentSourceLogin(sourceId: string, generation: number): boolean {
     return sourceLoginGeneration === generation && sourceLoginTarget.value?.id === sourceId;
@@ -69,6 +70,7 @@ export function useSourceLoginActions({
     }
 
     const generation = ++sourceLoginGeneration;
+    sourceLoginBrowserPages.value = [];
     sourceLoginBusy.value = false;
     sourceLoginTarget.value = source;
     sourceHasLoginState.value = null;
@@ -126,6 +128,7 @@ export function useSourceLoginActions({
       if (result.status === "failed") sourceLoginFormError.value = result.message;
       else sourceLoginFeedback.value = actionId === undefined ? "已执行登录。" : "操作已执行。";
       if (result.status === "executed") {
+        sourceLoginBrowserPages.value = "browserRequests" in result ? result.browserRequests ?? [] : [];
         for (const field of form.fields) {
           if (field.password || field.type === "password") sourceLoginCredentials.value[field.name] = "";
         }
@@ -272,6 +275,7 @@ export function useSourceLoginActions({
     if (sourceLoginBusy.value && sourceLoginWebSessionId.value) return;
     cancelSelectedSourceWebLogin();
     sourceLoginGeneration += 1;
+    sourceLoginBrowserPages.value = [];
     sourceLoginTarget.value = null;
     sourceLoginBusy.value = false;
     sourceHasLoginState.value = null;
@@ -283,6 +287,7 @@ export function useSourceLoginActions({
   }
 
   return {
+    sourceLoginBrowserPages,
     openSelectedSourceLogin,
     loadSelectedSourceLoginForm,
     executeSelectedSourceLogin,

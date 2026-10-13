@@ -56,9 +56,11 @@ object VerificationUiProviders {
     private var impl: VerificationUiProvider? = null
 
     /** 宿主启动早期注册一次 (任何 SourceVerificationHelp 调用之前)。 */
-    fun register(impl: VerificationUiProvider) {
+    fun register(impl: VerificationUiProvider?) {
         this.impl = impl
     }
+
+    fun current(): VerificationUiProvider? = impl
 
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): VerificationUiProvider = impl ?: error("VerificationUiProviders not registered")

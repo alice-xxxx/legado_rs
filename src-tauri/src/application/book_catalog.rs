@@ -8,6 +8,93 @@ struct AddBookSnapshot {
 }
 
 impl ApplicationService {
+    /// Resolve original /read and /addToBookshelf links through the existing book preparation flow.
+    pub async fn prepare_book_from_url(&self, book_url: &str, read: bool) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let book_url = book_url.trim();
+        let option_start = regex::Regex::new(r",\s*\{")
+            .unwrap()
+            .find(book_url)
+            .map(|entry| entry.start());
+        let url = parse_http_json_import_url(
+            &book_url[..option_start.unwrap_or(book_url.len())],
+            "书籍",
+        )?;
+        let origin = option_start
+            .map(|start| {
+                serde_json::from_str::<Value>(book_url[start + 1..].trim())
+                    .map_err(|error| format!("书籍链接参数不正确：{error}"))
+            })
+            .transpose()?
+            .and_then(|options| text_at(&options, &["origin"]));
+        let shelf = self
+            .store
+            .read_json_ref(&self.store.shelf_ref())
+            .await
+            .map_err(|error| error.to_string())?;
+        for entry in shelf["books"].as_array().into_iter().flatten() {
+            let Some(id) = entry["id"].as_str() else {
+                continue;
+            };
+            let _book = self.book_lock(id).await;
+            let Ok(private) = self
+                .read_internal_json(&Path::new("books").join(id).join("source-state.json"))
+                .await
+            else {
+                continue;
+            };
+            if text_at(&private["book"], &["bookUrl", "url"]).as_deref() == Some(book_url) {
+                if !read {
+                    return Err("已在书架".into());
+                }
+                let reference = self.store.book_ref(id).map_err(|error| error.to_string())?;
+                return Ok(
+                    json!({ "book": self.resource_descriptor(&reference), "inShelf": true }),
+                );
+            }
+        }
+        let cache = {
+            let _sources = self.sources_lock.lock().await;
+            let records = self.read_sources().await?;
+            let candidates = records
+                .iter()
+                .filter(|source| source.enabled && !crate::rss::is_rss_source(&source.source))
+                .collect::<Vec<_>>();
+            let source = if let Some(origin) = origin.as_deref() {
+                candidates.iter().copied().find(|source| {
+                    text_at(&source.source, &["bookSourceUrl"]).as_deref() == Some(origin)
+                })
+            } else {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|source| {
+                        text_at(&source.source, &["bookSourceUrl"])
+                            .and_then(|base| reqwest::Url::parse(&base).ok())
+                            .is_some_and(|base| base.origin() == url.origin())
+                    })
+                    .or_else(|| {
+                        candidates.iter().copied().find(|source| {
+                            text_at(&source.source, &["bookUrlPattern"])
+                                .and_then(|pattern| {
+                                    regex::Regex::new(&format!("^(?:{pattern})$")).ok()
+                                })
+                                .is_some_and(|pattern| pattern.is_match(book_url))
+                        })
+                    })
+            }
+            .ok_or_else(|| "未找到匹配书源".to_owned())?;
+            json!({
+                "sourceId": source.id, "sourceRevision": self.source_revision(&source.id).await?,
+                "sourceDefinitionFingerprint": source_definition_fingerprint(&source.source)?,
+                "book": { "bookUrl": book_url, "origin": text_at(&source.source, &["bookSourceUrl"]), "originName": source.name },
+            })
+        };
+        let mut result = self.materialize_source_book("linked-book", cache).await?;
+        result["inShelf"] = json!(false);
+        Ok(result)
+    }
+
     pub async fn prepare_search_result_book(&self, result_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let selected = self.materialize_search_result_book(result_id).await?;
@@ -51,6 +138,10 @@ impl ApplicationService {
     ) -> Result<Value, String> {
         validate_id(result_id, "resultId")?;
         let cache = self.read_search_result_cache(result_id).await?;
+        self.materialize_source_book(result_id, cache).await
+    }
+
+    async fn materialize_source_book(&self, result_id: &str, cache: Value) -> Result<Value, String> {
         let source_id = cache
             .get("sourceId")
             .and_then(Value::as_str)

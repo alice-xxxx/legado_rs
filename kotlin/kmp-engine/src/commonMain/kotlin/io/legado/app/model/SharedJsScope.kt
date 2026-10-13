@@ -4,6 +4,7 @@ import io.legado.app.model.SharedJsScope.clearAll
 import io.legado.app.model.script.JsEngineType
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.JsScope
+import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.SharedJsScopeProvider
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.CoroutineContext
@@ -54,6 +55,13 @@ object SharedJsScope {
     ): JsScope? {
         return provider().getScope(jsLib, enableDangerousApi, coroutineContext)
     }
+
+    fun getScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings,
+    ): JsScope? = provider().getScope(jsLib, enableDangerousApi, coroutineContext, bindings)
 
     /**
      * 删除 jsLib 的缓存条目（版本号失效）。

@@ -1,21 +1,21 @@
 import { computed, ref, type Ref } from "vue";
 import type { Bookmark, BookResource } from "../../api/types";
 import { history, removeHistoryBookmark } from "../settings/historyStore";
-import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
+import { openedBook, openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 export function useReaderBookmarksAndHistory(options: {
-  readingBook: Ref<BookResource | null>; readingChapterIndex: Ref<number>;
+  readingChapterIndex: Ref<number>;
   getReaderCurrentOffset: () => number; isBackupRestoreInProgress: () => boolean;
   getRestoreRevision: () => number;
   startReading: (book: BookResource, index?: number, offset?: number) => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void; errorText: (error: unknown) => string;
 }) {
   const bookmarkEditorOpen = ref(false), bookmarkNote = ref(""), bookmarkEditingId = ref<string | null>(null);
-  const currentBookmark = computed(() => (history.value.bookmarks[options.readingBook.value?.id ?? ""] ?? [])
+  const currentBookmark = computed(() => (history.value.bookmarks[openedBook.value?.id ?? ""] ?? [])
     .find(record => record.chapterIndex === options.readingChapterIndex.value && record.offset === options.getReaderCurrentOffset()) ?? null);
-  const readingSessionId = ref<string | null>(null), readingSessionStartedAt = ref<number | null>(null);
+  let readingSession: { bookId: string; sessionId: string; startedAtMs: number; restoreRevision: number } | null = null;
   function closeBookmarkEditor(): void { bookmarkEditorOpen.value = false; bookmarkEditingId.value = null; bookmarkNote.value = ""; }
   function toggleCurrentBookmark(): void {
-    const bookId = options.readingBook.value?.id;
+    const bookId = openedBook.value?.id;
     if (!bookId || options.isBackupRestoreInProgress()) return;
     if (currentBookmark.value) removeHistoryBookmark(bookId, currentBookmark.value.id);
     else { bookmarkEditingId.value = null; bookmarkNote.value = ""; bookmarkEditorOpen.value = true; }
@@ -25,26 +25,23 @@ export function useReaderBookmarksAndHistory(options: {
     bookmarkEditingId.value = currentBookmark.value.id; bookmarkNote.value = currentBookmark.value.note; bookmarkEditorOpen.value = true;
   }
   function beginReadingSession(): void {
-    if (!options.readingBook.value || readingSessionId.value) return;
-    readingSessionId.value = globalThis.crypto?.randomUUID?.() ?? `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    readingSessionStartedAt.value = Date.now();
+    const bookId = openedBook.value?.id;
+    const restoreRevision = options.getRestoreRevision();
+    if (!bookId || readingSession && readingSession.bookId === bookId && readingSession.restoreRevision === restoreRevision) return;
+    readingSession = { bookId, sessionId: crypto.randomUUID(), startedAtMs: Date.now(), restoreRevision };
   }
 
   async function finishReadingSession(): Promise<void> {
     if (options.isBackupRestoreInProgress()) return;
-    const restoreRevision = options.getRestoreRevision();
-    const bookId = options.readingBook.value?.id;
-    const sessionId = readingSessionId.value;
-    const startedAt = readingSessionStartedAt.value;
-    readingSessionId.value = null;
-    readingSessionStartedAt.value = null;
-    if (!bookId || !sessionId || startedAt == null) return;
+    const session = readingSession;
+    readingSession = null;
+    if (!session || session.restoreRevision !== options.getRestoreRevision()) return;
     const endedAtMs = Date.now();
-    const durationMs = endedAtMs - startedAt;
-    if (durationMs <= 0 || restoreRevision !== options.getRestoreRevision()) return;
+    const durationMs = endedAtMs - session.startedAtMs;
+    if (durationMs <= 0) return;
     history.value.reading.sessions.push({
-      bookId,
-      sessionId,
+      bookId: session.bookId,
+      sessionId: session.sessionId,
       durationMs,
       endedAtMs,
       utcOffsetMinutes: -new Date(endedAtMs).getTimezoneOffset(),
@@ -65,9 +62,8 @@ export function useReaderBookmarksAndHistory(options: {
     }
   }
 
-
   function saveBookmark(): void {
-    const book = options.readingBook.value;
+    const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === options.readingChapterIndex.value);
     if (!book || !chapter || options.isBackupRestoreInProgress()) return;
     const records = history.value.bookmarks[book.id] ??= [];

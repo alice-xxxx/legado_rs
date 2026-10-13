@@ -231,12 +231,65 @@ pub(super) fn sanitize_source_login_result(result: Value) -> Result<Value, Strin
         ("failed", "login_action_failed") => "登录操作执行失败。请检查网络或书源登录规则后重试。",
         _ => return Err("Source login returned an invalid result".to_owned()),
     };
-    Ok(json!({
+    let mut sanitized = json!({
         "status": status,
         "code": code,
         "message": message,
         "authenticated": null,
-    }))
+    });
+    if status == "executed" {
+        if let Some(requests) = result.get("browserRequests") {
+            let requests = requests
+                .as_array()
+                .filter(|requests| requests.len() <= 4)
+                .ok_or_else(|| "Source login returned invalid browser pages".to_owned())?;
+            let mut pages = Vec::with_capacity(requests.len());
+            for request in requests {
+                let url = request["url"]
+                    .as_str()
+                    .filter(|url| url.len() < 64 * 1024)
+                    .ok_or_else(|| "Source browser URL is invalid".to_owned())?;
+                let title = request["title"].as_str().unwrap_or("书源页面");
+                let title: String = title.chars().take(256).collect();
+                if let Some(data) = url.strip_prefix("data:") {
+                    let (format, body) = data
+                        .split_once(',')
+                        .ok_or_else(|| "Source browser HTML is invalid".to_owned())?;
+                    let format = format.to_ascii_lowercase();
+                    if !matches!(
+                        format.as_str(),
+                        "text/html"
+                            | "text/html;charset=utf-8"
+                            | "text/html;base64"
+                            | "text/html;charset=utf-8;base64"
+                    ) {
+                        return Err("Source browser data must be HTML".to_owned());
+                    }
+                    let html = if format.ends_with(";base64") {
+                        use base64::Engine;
+                        let body: String =
+                            body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+                        let bytes = base64::engine::general_purpose::STANDARD
+                            .decode(body)
+                            .map_err(|_| "Source browser HTML encoding is invalid".to_owned())?;
+                        String::from_utf8(bytes)
+                            .map_err(|_| "Source browser HTML must be UTF-8".to_owned())?
+                    } else {
+                        percent_encoding::percent_decode_str(body)
+                            .decode_utf8()
+                            .map_err(|_| "Source browser HTML must be UTF-8".to_owned())?
+                            .into_owned()
+                    };
+                    pages.push(json!({ "title": title, "html": html }));
+                } else {
+                    let url = parse_http_json_import_url(url, "书源页面")?;
+                    pages.push(json!({ "title": title, "url": url.as_str() }));
+                }
+            }
+            sanitized["browserRequests"] = json!(pages);
+        }
+    }
+    Ok(sanitized)
 }
 pub(super) fn extract_sources(value: Value) -> Result<Vec<Value>, String> {
     if let Some(array) = value.as_array() {
@@ -281,9 +334,12 @@ pub(super) async fn download_json_url(
     timeout: Duration,
     purpose: &str,
 ) -> Result<String, String> {
+    let input = input.trim();
+    let without_user_agent = input.ends_with("#requestWithoutUA");
+    let input = input.strip_suffix("#requestWithoutUA").unwrap_or(input);
     let url = parse_http_json_import_url(input, purpose)?;
     let requested_https = url.scheme() == "https";
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::builder_with_user_agent(!without_user_agent)
         .timeout(timeout)
         .build()
         .map_err(|_| format!("无法准备{purpose}下载"))?;
@@ -332,6 +388,75 @@ pub(super) async fn download_json_url(
     }
     let text = String::from_utf8(body).map_err(|_| format!("{purpose}必须是 UTF-8 文本"))?;
     Ok(text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned())
+}
+
+/// Resolve the original URL / JSON / sourceUrls input contract before preparing an import.
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+pub(super) async fn resolve_import_json(
+    input: &str,
+    max_bytes: usize,
+    purpose: &str,
+    expand_source_urls: bool,
+) -> Result<String, String> {
+    let mut pending = vec![input.to_owned()];
+    let mut values = Vec::new();
+    let mut downloads = HashSet::new();
+    let mut bytes = 0usize;
+    while let Some(input) = pending.pop() {
+        let input = input.trim().trim_start_matches('\u{feff}');
+        if input
+            .get(..7)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("http://"))
+            || input
+                .get(..8)
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case("https://"))
+        {
+            if downloads.contains(input) {
+                continue;
+            }
+            if downloads.len() >= 32 {
+                return Err("导入链接数量过多".into());
+            }
+            downloads.insert(input.to_owned());
+            pending
+                .push(download_json_url(input, max_bytes, Duration::from_secs(30), purpose).await?);
+            continue;
+        }
+        bytes = bytes.saturating_add(input.len());
+        if bytes > max_bytes {
+            return Err(format!("{purpose}超过大小限制"));
+        }
+        let value: Value =
+            serde_json::from_str(input).map_err(|error| format!("{purpose}格式不正确：{error}"))?;
+        if expand_source_urls && value.get("sourceUrls").is_some() {
+            let urls = value["sourceUrls"]
+                .as_array()
+                .ok_or_else(|| "sourceUrls 必须是链接数组".to_owned())?;
+            if urls.len() > 32 {
+                return Err("导入链接数量过多".into());
+            }
+            for url in urls.iter().rev() {
+                let url = url
+                    .as_str()
+                    .ok_or_else(|| "sourceUrls 必须是链接数组".to_owned())?;
+                parse_http_json_import_url(url, purpose)?;
+                pending.push(url.to_owned());
+            }
+        } else if let Value::Array(items) = value {
+            values.extend(items);
+        } else {
+            values.push(value);
+        }
+    }
+    if values.is_empty() {
+        return Err("没有可导入的内容".into());
+    }
+    let value = if values.len() == 1 {
+        values.remove(0)
+    } else {
+        Value::Array(values)
+    };
+    serde_json::to_string(&value).map_err(|error| error.to_string())
 }
 
 pub(super) fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
@@ -397,6 +522,29 @@ pub(super) fn set_optional_public_field(document: &mut Value, key: &str, value: 
 #[cfg(test)]
 mod login_form_tests {
     use super::*;
+
+    #[test]
+    fn decodes_source_tutorial_html_and_rejects_unsafe_browser_urls() {
+        use base64::Engine;
+        let html = "<!doctype html><h1>使用教程</h1>";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(html.as_bytes());
+        let mut result = json!({
+            "status": "executed", "code": "login_action_executed",
+            "browserRequests": [{"title": "教程", "url": format!("data:text/html;base64,{encoded}")}],
+        });
+        let sanitized = sanitize_source_login_result(result.clone()).unwrap();
+        assert_eq!(sanitized["browserRequests"][0]["html"], html);
+        for url in [
+            "javascript:alert(1)",
+            "file:///C:/secret",
+            "data:application/javascript,alert(1)",
+            "data:text/html;base64,%%%",
+            "https://user:password@example.com",
+        ] {
+            result["browserRequests"][0]["url"] = json!(url);
+            assert!(sanitize_source_login_result(result.clone()).is_err());
+        }
+    }
 
     fn form() -> Value {
         json!({

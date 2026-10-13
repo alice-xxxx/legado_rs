@@ -1,5 +1,5 @@
+import { openedBook } from "../books/bookDetailState";
 import type { Ref } from "vue";
-import type { BookResource } from "../../api/types";
 import { settings } from "../settings/settingsStore";
 import type { PdfPageResource } from "./readerContent";
 
@@ -9,25 +9,19 @@ export interface ReaderTouchStartState {
   x: number;
   y: number;
   moved: boolean;
-  pageIndex: number;
   loadRevision: number;
-  chapterIndex: number;
-  frame: HTMLElement;
-  document: Document;
+  viewport: HTMLElement;
 }
 
 export interface ReaderPendingFragmentState {
   fragment: string;
   loadRevision: number;
   chapterIndex: number;
-  frameLoaded: boolean;
 }
 
 interface ReaderPageInteractionOptions {
   reader: {
     viewport: ReadonlyRef<HTMLElement | null>;
-    book: ReadonlyRef<BookResource | null>;
-    currentChapterSource: ReadonlyRef<string | null | undefined>;
     chapterIndex: ReadonlyRef<number>;
     pageCount: ReadonlyRef<number>;
     visible: ReadonlyRef<boolean>;
@@ -50,13 +44,6 @@ interface ReaderPageInteractionOptions {
     getClickSuppressedUntil: () => number;
     setClickSuppressedUntil: (value: number) => void;
   };
-  events: {
-    onScroll: () => void;
-    onSelectionChange: () => void;
-    onTouchStart: (event: TouchEvent) => void;
-    onTouchMove: (event: TouchEvent) => void;
-    onTouchEnd: (event: TouchEvent) => void;
-  };
   actions: {
     setPage: (index: number) => void;
     turnPage: (direction: -1 | 1) => void;
@@ -66,12 +53,12 @@ interface ReaderPageInteractionOptions {
 
 /** 管理阅读正文的触控、点击、章节内跳转和本章查找交互。 */
 export function useReaderPageInteraction(options: ReaderPageInteractionOptions) {
-  const { reader, events, actions } = options;
+  const { reader, actions } = options;
 
   function resolveSemanticChapterAnchor(anchor: HTMLAnchorElement): { chapterIndex: number; fragment: string } | null {
     const chapterId = anchor.dataset.legadoChapterId?.trim();
     if (!chapterId) return null;
-    const book = reader.book.value;
+    const book = openedBook.value;
     if (!book) return null;
     const chapter = book.chapters.find((entry) => entry.id === chapterId);
     const chapterCount = book.chapterCount || book.chapters.length;
@@ -90,8 +77,8 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function resolveReaderChapterHref(href: string): { chapterIndex: number; fragment: string } | null {
-    const book = reader.book.value;
-    const currentSrc = reader.currentChapterSource.value;
+    const book = openedBook.value;
+    const currentSrc = openedBook.value?.chapters.find(chapter => chapter.index === reader.chapterIndex.value)?.resource?.src;
     if (!book || !currentSrc) return null;
     let currentUrl: URL;
     let targetUrl: URL;
@@ -159,7 +146,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
       reader.setPendingFragment(null);
       return;
     }
-    if (reader.busy.value || !pending.frameLoaded) return;
+    if (reader.busy.value) return;
     reader.setPendingFragment(null);
     if (pending.fragment) scrollReaderToFragment(pending.fragment, pending.loadRevision, pending.chapterIndex);
     else actions.setPage(0);
@@ -339,18 +326,6 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     moveReaderFind(event.shiftKey ? -1 : 1);
   }
 
-  function clearReaderScrollListeners(): void {
-    const viewport = reader.viewport.value;
-    viewport?.ownerDocument.removeEventListener("selectionchange", events.onSelectionChange);
-    viewport?.removeEventListener("scroll", events.onScroll);
-    viewport?.removeEventListener("touchstart", events.onTouchStart);
-    viewport?.removeEventListener("touchmove", events.onTouchMove);
-    viewport?.removeEventListener("touchend", events.onTouchEnd);
-    viewport?.removeEventListener("touchcancel", onReaderFrameTouchCancel);
-    viewport?.removeEventListener("click", onReaderFrameClick);
-    reader.setTouchStart(null);
-  }
-
   return {
     onReaderFrameTouchCancel,
     readerSegmentForElement,
@@ -364,6 +339,5 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     rebuildReaderFind,
     moveReaderFind,
     handleReaderFindKeydown,
-    clearReaderScrollListeners,
   };
 }

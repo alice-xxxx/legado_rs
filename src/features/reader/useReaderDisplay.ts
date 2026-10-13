@@ -7,7 +7,6 @@ export function useReaderDisplay(options: {
   reader: {
     viewport: Ref<HTMLElement | null>;
     visible: ReadonlyRef<boolean>; busy: ReadonlyRef<boolean>;
-    chapterIndex: ReadonlyRef<number>;
     imagePage: ReadonlyRef<boolean>; mediaChapter: ReadonlyRef<boolean>;
     pageIndex: Ref<number>; pageCount: Ref<number>; comicScrollTop: Ref<number>;
     getLoadRevision: () => number;
@@ -17,7 +16,7 @@ export function useReaderDisplay(options: {
     setClickSuppressedUntil: (value: number) => void;
   };
   getPageInteraction: () => {
-    clearReaderScrollListeners: () => void; clearReaderFindMatches: () => void;
+    clearReaderFindMatches: () => void;
     rebuildReaderFind: () => void; onReaderFrameClick: (event: MouseEvent) => void;
     onReaderFrameTouchTap: (x: number) => void; onReaderFrameTouchCancel: () => void;
   };
@@ -83,13 +82,13 @@ export function useReaderDisplay(options: {
     if (!viewport || reader.busy.value || event.touches.length !== 1 || ignoredTouch(event.target)
       || viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
     const touch = event.touches[0]!;
-    reader.setTouchStart({ x: touch.clientX, y: touch.clientY, moved: false, pageIndex: reader.pageIndex.value,
-      loadRevision: reader.getLoadRevision(), chapterIndex: reader.chapterIndex.value, frame: viewport, document: viewport.ownerDocument });
+    reader.setTouchStart({ x: touch.clientX, y: touch.clientY, moved: false,
+      loadRevision: reader.getLoadRevision(), viewport });
   }
   function onReaderFrameTouchMove(event: TouchEvent): void {
     const start = reader.getTouchStart();
     if (event.touches.length !== 1) { reader.setTouchStart(null); return; }
-    if (!start || start.document.getSelection()?.isCollapsed === false) return;
+    if (!start || start.viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
     const touch = event.touches[0]!;
     const dx = Math.abs(touch.clientX - start.x), dy = Math.abs(touch.clientY - start.y);
     if (dx >= 12 || dy >= 12) start.moved = true;
@@ -98,8 +97,8 @@ export function useReaderDisplay(options: {
   function onReaderFrameTouchEnd(event: TouchEvent): void {
     const start = reader.getTouchStart(); reader.setTouchStart(null);
     if (!start || event.changedTouches.length !== 1 || event.touches.length !== 0 || reader.busy.value
-      || reader.viewport.value !== start.frame || reader.getLoadRevision() !== start.loadRevision
-      || start.document.getSelection()?.isCollapsed === false || ignoredTouch(event.target)) return;
+      || reader.viewport.value !== start.viewport || reader.getLoadRevision() !== start.loadRevision
+      || start.viewport.ownerDocument.getSelection()?.isCollapsed === false || ignoredTouch(event.target)) return;
     const touch = event.changedTouches[0]!;
     const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
     if (!start.moved && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
@@ -119,8 +118,20 @@ export function useReaderDisplay(options: {
   function applyComicScrollPosition(): void {
     if (reader.imagePage.value && reader.viewport.value) reader.viewport.value.scrollTop = reader.comicScrollTop.value;
   }
+  function clearReaderScrollListeners(): void {
+    const element = reader.viewport.value;
+    const interaction = options.getPageInteraction();
+    element?.ownerDocument.removeEventListener("selectionchange", actions.updateTtsSelection);
+    element?.removeEventListener("scroll", onReaderFrameScroll);
+    element?.removeEventListener("touchstart", onReaderFrameTouchStart);
+    element?.removeEventListener("touchmove", onReaderFrameTouchMove);
+    element?.removeEventListener("touchend", onReaderFrameTouchEnd);
+    element?.removeEventListener("touchcancel", interaction.onReaderFrameTouchCancel);
+    element?.removeEventListener("click", interaction.onReaderFrameClick);
+    reader.setTouchStart(null);
+  }
   function setReaderViewport(element: HTMLElement | null): void {
-    options.getPageInteraction().clearReaderScrollListeners();
+    clearReaderScrollListeners();
     reader.viewport.value = element;
     if (!element) return;
     element.addEventListener("scroll", onReaderFrameScroll, { passive: true });
@@ -135,7 +146,7 @@ export function useReaderDisplay(options: {
     actions.stopTts(); actions.clearTtsHighlight(); options.getPageInteraction().clearReaderFindMatches();
   }
   function onReaderLayout(): void { measureReaderPages(true); options.getPageInteraction().rebuildReaderFind(); }
-  return { setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
+  return { clearReaderScrollListeners, setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
     scrollReaderFrameToPage, onReaderFrameScroll, shouldIgnoreReaderKeydown,
     onReaderFrameTouchStart, onReaderFrameTouchMove, onReaderFrameTouchEnd, applyComicScrollPosition };
 }

@@ -1,6 +1,5 @@
+import { openedBook } from "../books/bookDetailState";
 import type { Ref } from "vue";
-import { notifyReading } from "../../api/books";
-import { type BookResource, type ReadingProgress } from "../../api/types";
 import { clamp } from "./readerContent";
 import type { PdfPageResource } from "./readerContent";
 
@@ -12,24 +11,22 @@ type ReaderNavigationOptions = {
   readerPageIndex: Ref<number>;
   readerPageCount: Readonly<Ref<number>>;
   readerVisible: Readonly<Ref<boolean>>;
+  readerDirectoryOpen: Ref<boolean>;
   readerBusy: Readonly<Ref<boolean>>;
   readingImagePage: Readonly<Ref<boolean>>;
   readingMediaChapter: Readonly<Ref<boolean>>;
   readingPdfPage: Readonly<Ref<PdfPageResource | null>>;
-  readingBook: Ref<BookResource | null>;
   readingChapterIndex: Ref<number>;
   readerProgressDirty: Ref<boolean>;
   progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
-  readerMediaTimeMs: Readonly<Ref<number>>;
-  comicImageScrollTop: Readonly<Ref<number>>;
   readerMediaRetrying: Readonly<Ref<boolean>>;
   shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
-  currentChapterId: () => string | null;
   getProgressRevision: () => number;
   advanceProgressRevision: () => void;
   isBackupRestoreInProgress: () => boolean;
   scrollReaderFrameToPage: () => void;
   loadReaderChapter: (index: number) => Promise<boolean>;
+  notifyCurrentReading: () => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 };
@@ -47,7 +44,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   }
 
   function consumeImportedPdfPassword(): void {
-    const bookId = options.readingBook.value?.id;
+    const bookId = openedBook.value?.id;
     if (bookId) {
       const entry = options.pdfImportPasswords.get(bookId);
       if (entry) clearTimeout(entry.timer);
@@ -84,27 +81,29 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     else if (direction < 0 && options.readerPageIndex.value === 0) void changeChapter(-1);
   }
 
+  async function selectReaderChapter(index: number): Promise<boolean> {
+    if (!options.readerVisible.value || options.readerBusy.value || options.readerMediaRetrying.value
+      || options.shelfBatchRecoveryRequired.value || options.isBackupRestoreInProgress()
+      || !openedBook.value?.chapters.some(chapter => chapter.index === index)) return false;
+    if (index !== options.readingChapterIndex.value && !(await options.loadReaderChapter(index))) return false;
+    options.readerDirectoryOpen.value = false;
+    return true;
+  }
+
   async function jumpReaderChapter(event: Event): Promise<void> {
     const input = event.target as HTMLInputElement;
-    const count = options.readingBook.value?.chapters.length ?? 0;
-    const number = Number(input.value);
-    try {
-      if (!options.readerVisible.value || options.readerBusy.value || options.shelfBatchRecoveryRequired.value
-        || options.isBackupRestoreInProgress()) return;
-      if (!Number.isInteger(number) || number < 1 || number > count) {
-        options.notify(`请输入 1 到 ${count} 之间的章号。`, "error");
-        return;
-      }
-      if (number - 1 !== options.readingChapterIndex.value) await options.loadReaderChapter(number - 1);
-    } finally {
-      input.value = String(options.readingChapterIndex.value + 1);
-    }
+    const chapterNumber = input.type === "number";
+    const index = Number(input.value) - (chapterNumber ? 1 : 0);
+    const count = openedBook.value?.chapters.length ?? 0;
+    if (Number.isInteger(index) && index >= 0 && index < count) await selectReaderChapter(index);
+    else options.notify(`请输入 1 到 ${count} 之间的章号。`, "error");
+    input.value = String(options.readingChapterIndex.value + (chapterNumber ? 1 : 0));
   }
 
   async function changeChapter(direction: -1 | 1): Promise<void> {
     if (options.readerBusy.value || options.readerMediaRetrying.value) return;
     const nextIndex = options.readingChapterIndex.value + direction;
-    const count = options.readingBook.value?.chapterCount ?? options.readingBook.value?.chapters.length ?? 0;
+    const count = openedBook.value?.chapterCount ?? openedBook.value?.chapters.length ?? 0;
     if (nextIndex < 0) {
       options.notify("已经是第一章。");
       return;
@@ -113,23 +112,17 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
       options.notify("已经到达书源提供的最后一章。", "error");
       return;
     }
-    await options.loadReaderChapter(nextIndex);
+    await selectReaderChapter(nextIndex);
   }
 
   async function saveCurrentProgress(): Promise<void> {
-    const book = options.readingBook.value;
+    const book = openedBook.value;
     if (!book || !options.readerProgressDirty.value || options.isBackupRestoreInProgress()) return;
     const revision = options.getProgressRevision();
-    const isCurrent = () => options.readingBook.value?.id === book.id && options.getProgressRevision() === revision;
-    const progress: ReadingProgress = {
-      chapterId: options.currentChapterId(), chapterIndex: options.readingChapterIndex.value,
-      offset: options.readingMediaChapter.value ? options.readerMediaTimeMs.value
-        : options.readingImagePage.value ? options.comicImageScrollTop.value : options.readerPageIndex.value,
-      updatedAtMs: Date.now(),
-    };
+    const isCurrent = () => openedBook.value?.id === book.id && options.getProgressRevision() === revision;
     options.progressSaveState.value = "saving";
     try {
-      await notifyReading(book.id, progress);
+      await options.notifyCurrentReading();
       if (isCurrent()) { options.readerProgressDirty.value = false; options.progressSaveState.value = "saved"; }
     } catch (error) {
       if (isCurrent()) { options.progressSaveState.value = "error"; options.notify('阅读进度保存失败：' + options.errorText(error), "error"); }
@@ -142,6 +135,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     consumeImportedPdfPassword,
     setReaderPage,
     turnPage,
+    selectReaderChapter,
     jumpReaderChapter,
     changeChapter,
     saveCurrentProgress,

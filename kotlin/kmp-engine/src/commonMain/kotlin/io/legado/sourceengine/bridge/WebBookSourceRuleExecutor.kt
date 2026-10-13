@@ -1,6 +1,7 @@
 package io.legado.sourceengine.bridge
 
 import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookChapter
 import io.legado.app.data.entities.BookSource
 import io.legado.app.data.entities.HttpTTS
@@ -14,6 +15,8 @@ import io.legado.app.help.http.header
 import io.legado.app.help.http.CookieStoreProviders
 import io.legado.app.help.tts.HttpTtsRequest
 import io.legado.app.help.source.SourceCacheProviders
+import io.legado.app.help.source.VerificationUiProvider
+import io.legado.app.help.source.VerificationUiProviders
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
@@ -68,13 +71,13 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                         call.credentials,
                     )
 
-                    "loginSource" -> loginSource(decodeBookSource(call), call.credentials)
+                    "loginSource" -> withLoginBrowser {
+                        loginSource(decodeBookSource(call), call.credentials)
+                    }
 
-                    "sourceLoginAction" -> runSourceLoginAction(
-                        decodeBookSource(call),
-                        call.actionId,
-                        call.credentials,
-                    )
+                    "sourceLoginAction" -> withLoginBrowser {
+                        runSourceLoginAction(decodeBookSource(call), call.actionId, call.credentials)
+                    }
 
                     "sourceLoginState" -> {
                         val source = decodeBookSource(call)
@@ -546,6 +549,41 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                 code = "login_failed",
                 message = "登录请求执行失败。请检查凭据、网络或书源登录规则后重试。",
             )
+        }
+    }
+
+    /** 非等待的 startBrowser 随登录结果交给宿主显示，不启动原版应用的 UI。 */
+    private suspend fun withLoginBrowser(block: suspend () -> String): String {
+        val pages = mutableListOf<JsonObject>()
+        val previous = VerificationUiProviders.current()
+        VerificationUiProviders.register(object : VerificationUiProvider {
+            override fun showVerificationCodeDialog(url: String, source: BaseSource) {
+                error("Interactive verification is unavailable in this source login action")
+            }
+
+            override fun startBrowser(
+                source: BaseSource,
+                url: String,
+                title: String,
+                saveResult: Boolean?,
+                refetchAfterSuccess: Boolean?,
+                asBottomSheet: Boolean,
+            ) {
+                check(saveResult != true) { "Waiting for browser results is unavailable in this source login action" }
+                check(pages.size < 4) { "Too many source browser pages" }
+                pages += buildJsonObject { put("url", url); put("title", title.take(256)) }
+            }
+        })
+        return try {
+            val result = KS_JSON.parseToJsonElement(block()) as JsonObject
+            buildJsonObject {
+                result.forEach { (key, value) -> put(key, value) }
+                if (result["status"]?.jsonPrimitive?.content == "executed" && pages.isNotEmpty()) {
+                    put("browserRequests", JsonArray(pages))
+                }
+            }.toString()
+        } finally {
+            VerificationUiProviders.register(previous)
         }
     }
 

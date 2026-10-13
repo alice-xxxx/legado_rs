@@ -6,6 +6,8 @@ import com.script.quickjs.ScriptBindings
 import io.legado.app.help.CommonLruCache
 import io.legado.app.model.script.JsBindingInjector
 import io.legado.app.model.script.JsScope
+import io.legado.app.model.script.JsBindings
+import io.legado.app.data.entities.BaseSource
 import io.legado.app.model.script.SharedJsScopeProvider
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.MD5Utils
@@ -105,15 +107,31 @@ abstract class QuickJsSharedJsScopeBase : SharedJsScopeProvider {
         jsLib: String?,
         enableDangerousApi: Boolean,
         coroutineContext: CoroutineContext?,
+    ): JsScope? = createScope(jsLib, enableDangerousApi, coroutineContext, null)
+
+    override fun getScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings,
+    ): JsScope? = createScope(jsLib, enableDangerousApi, coroutineContext, bindings)
+
+    private fun createScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings?,
     ): JsScope? {
         if (jsLib.isNullOrBlank()) {
             return null
         }
         val key = MD5Utils.md5Encode(jsLib)
+        // 编译产物可共用，顶层初始化结果按书源隔离。
+        val scopeKey = "$key:$enableDangerousApi:${(bindings?.get("source") as? BaseSource)?.getKey().orEmpty()}"
         val bytecodeEntry = getOrCreateBytecodeEntry(key, jsLib)
         // withInitial 保证 get() 非空 (K2 对 ThreadLocal.get() 判为可空, 显式断言)
         val perThread = threadCache.get()!!
-        val cached = perThread.get(key)
+        val cached = perThread.get(scopeKey)
         if (cached != null && cached.version == bytecodeEntry.version) {
             return QuickJsJsScope(cached.ctx)
         }
@@ -125,12 +143,27 @@ abstract class QuickJsSharedJsScopeBase : SharedJsScopeProvider {
                 this["image"] = JsBindingInjector.image
             }
         )
-        for (bc in bytecodeEntry.bytecodes) {
-            evalJsLibBytecode(bc, scope, coroutineContext)
+        val keys = bindings?.let {
+            QuickJsEngine.injectBindings(scope, ScriptBindings().apply {
+                putAll(it)
+                dangerousApi = it.dangerousApi
+            })
+        }
+        try {
+            try {
+                for (bc in bytecodeEntry.bytecodes) {
+                    evalJsLibBytecode(bc, scope, coroutineContext)
+                }
+            } finally {
+                if (keys != null) QuickJsEngine.cleanupBindings(scope, keys)
+            }
+        } catch (error: Throwable) {
+            scope.close()
+            throw error
         }
         // LRU 淘汰仅放手强引用, 不显式 close (旧 ctx 可能仍被另一处 evalJS 持栈,
         // native 资源由 GC + PhantomReference 兜底释放)
-        perThread.put(key, CtxEntry(scope, bytecodeEntry.version))
+        perThread.put(scopeKey, CtxEntry(scope, bytecodeEntry.version))
         return QuickJsJsScope(scope)
     }
 

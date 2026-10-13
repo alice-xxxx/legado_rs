@@ -568,6 +568,20 @@ onBeforeUnmount(() => {
       </article>
     </section>
 
+    <section v-if="login.sourceLoginBrowserPages[0]" class="modal-backdrop"
+      @click.self="login.sourceLoginBrowserPages.shift()" @keydown.esc.stop.prevent="login.sourceLoginBrowserPages.shift()">
+      <article class="app-modal source-browser-modal" role="dialog" aria-modal="true" aria-labelledby="source-browser-title">
+        <header class="source-login-heading">
+          <div><h2 id="source-browser-title">{{ login.sourceLoginBrowserPages[0].title }}</h2></div>
+          <button type="button" aria-label="关闭页面" @click="login.sourceLoginBrowserPages.shift()"><PrototypeIcon name="close"/></button>
+        </header>
+        <iframe v-if="'html' in login.sourceLoginBrowserPages[0]" :srcdoc="login.sourceLoginBrowserPages[0].html"
+          :title="login.sourceLoginBrowserPages[0].title" sandbox="allow-scripts allow-forms allow-popups"></iframe>
+        <iframe v-else :src="login.sourceLoginBrowserPages[0].url"
+          :title="login.sourceLoginBrowserPages[0].title" sandbox="allow-scripts allow-forms allow-popups"></iframe>
+      </article>
+    </section>
+
     <SourceDebugPanel
       v-if="debug.sourceDebugTarget"
       :target="debug.sourceDebugTarget"
@@ -614,6 +628,8 @@ onBeforeUnmount(() => {
 .source-login-heading>button{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:8px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
 .source-login-heading svg{width:18px;height:18px}
 .source-login-body{min-height:0;padding:22px 24px;overflow-y:auto;overscroll-behavior:contain}
+.source-browser-modal{display:flex;flex-direction:column;width:min(960px,100%);height:85%;max-height:100%;padding:0;overflow:hidden}
+.source-browser-modal>iframe{flex:1;min-height:0;width:100%;border:0;background:white}
 .source-login-web-hint{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
 .source-login-web-actions{display:flex;gap:10px;margin-top:18px}
 .source-login-web-actions>.primary{flex:1}

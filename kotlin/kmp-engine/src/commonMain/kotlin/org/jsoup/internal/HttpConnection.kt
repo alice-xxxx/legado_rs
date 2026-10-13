@@ -6,6 +6,7 @@ import io.legado.app.help.http.KmpHttpClient
 import io.legado.app.help.http.KmpRequest
 import io.legado.app.help.http.KmpRequestBody
 import io.legado.app.help.http.KmpRequestBuilder
+import io.legado.app.help.http.requestHeaderValue
 import io.legado.app.help.http.toKmpMediaType
 import io.legado.app.help.http.toKmpRequestBody
 import io.legado.app.utils.InputStream
@@ -190,7 +191,7 @@ class HttpConnection : Connection {
         requestDelegate.multiHeaders().forEach { (name, values) ->
             if (name.equals("Cookie", ignoreCase = true)) return@forEach
             if (name.equals("Content-Type", ignoreCase = true)) return@forEach
-            values.forEach { builder.addHeader(name, it) }
+            values.forEach { builder.addHeader(name, requestHeaderValue(name, it)) }
         }
 
         if (supportsBody) {

@@ -73,11 +73,14 @@ export type SourceLoginForm = {
   message: string;
 };
 
+export type SourceBrowserPage = { title: string } & ({ html: string } | { url: string });
+
 export interface SourceLoginResult {
   status: "executed" | "failed";
   code: string;
   message: string;
   authenticated: null;
+  browserRequests?: SourceBrowserPage[];
 }
 
 export interface SourceWebLoginResult {

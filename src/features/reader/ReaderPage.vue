@@ -1,5 +1,5 @@
 <script lang="ts">
-import { nextTick, defineComponent, onMounted, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
+import { defineComponent, onMounted, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
 import type { ReaderContextFeatures } from "./readerContext";
 import type { SourceMetadata } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
@@ -54,6 +54,7 @@ export default defineComponent({
     }
     function updateVideoFullscreen(): void {
       const video = getVideoElement();
+      videoFullscreenSupported.value = Boolean(document.fullscreenEnabled || typeof video?.webkitEnterFullscreen === "function");
       videoFullscreen.value = Boolean(document.fullscreenElement === context.getReaderMediaElement()?.parentElement
         || video?.webkitDisplayingFullscreen);
     }
@@ -80,47 +81,28 @@ export default defineComponent({
         videoFullscreenError.value = `当前设备无法切换全屏：${error instanceof Error ? error.message : String(error)}`;
       }
     }
-    let listenedVideo: HTMLVideoElement | null = null;
-    function onNativeVideoFullscreen(): void { updateVideoFullscreen(); }
-    function detachNativeVideo(): void {
-      listenedVideo?.removeEventListener("webkitbeginfullscreen", onNativeVideoFullscreen);
-      listenedVideo?.removeEventListener("webkitendfullscreen", onNativeVideoFullscreen);
-      listenedVideo = null;
-    }
-    function bindNativeVideo(): void {
-      const video = getVideoElement();
-      if (video === listenedVideo) return;
-      detachNativeVideo();
-      listenedVideo = video;
-      videoFullscreenSupported.value = Boolean(document.fullscreenEnabled
-        || typeof video?.webkitEnterFullscreen === "function");
-      listenedVideo?.addEventListener("webkitbeginfullscreen", onNativeVideoFullscreen);
-      listenedVideo?.addEventListener("webkitendfullscreen", onNativeVideoFullscreen);
-    }
     watch(() => context.readingContent.value, () => {
-      detachNativeVideo();
       videoFullscreen.value = false;
       videoFullscreenError.value = "";
     });
-    onMounted(() => document.addEventListener("fullscreenchange", updateVideoFullscreen));
+    onMounted(() => { document.addEventListener("fullscreenchange", updateVideoFullscreen); updateVideoFullscreen(); });
     onUnmounted(() => {
       document.removeEventListener("fullscreenchange", updateVideoFullscreen);
-      detachNativeVideo();
     });
     const comicReadMode = ref<"vertical" | "paged">("vertical");
     const comicPanel = ref<"mode" | "fit" | "brightness" | null>(null);
     const comicPageIndex = ref(0);
     const comicPageCount = ref(0);
-    let comicDocument: HTMLElement | null = null;
     let comicFrame: number | null = null;
     function updateComicCounter(): void {
       comicFrame = null;
-      if (!comicDocument || !context.readingImagePage.value) return;
-      const images = [...comicDocument.querySelectorAll<HTMLImageElement>("img")]
+      const viewport = context.readerViewport.value;
+      if (!viewport || !context.readingImagePage.value) return;
+      const images = [...viewport.querySelectorAll<HTMLImageElement>("img")]
         .filter(image => image.getBoundingClientRect().height > 0);
       comicPageCount.value = images.length;
       if (!images.length) { comicPageIndex.value = 0; return; }
-      const reference = comicDocument.getBoundingClientRect().top + comicDocument.clientHeight * 0.45;
+      const reference = viewport.getBoundingClientRect().top + viewport.clientHeight * 0.45;
       const next = images.findIndex(image => image.getBoundingClientRect().bottom > reference);
       comicPageIndex.value = next < 0 ? images.length : next + 1;
     }
@@ -128,39 +110,20 @@ export default defineComponent({
       if (comicFrame !== null) return;
       comicFrame = window.requestAnimationFrame(updateComicCounter);
     }
-    function detachComicListeners(): void {
-      if (comicFrame !== null) window.cancelAnimationFrame(comicFrame);
-      comicFrame = null;
-      comicDocument?.removeEventListener("scroll", requestComicCounter, true);
-      comicDocument?.removeEventListener("load", requestComicCounter, true);
-      comicDocument?.removeEventListener("touchstart", onComicTouchStart);
-      comicDocument?.removeEventListener("touchend", onComicTouchEnd);
-      comicDocument = null;
-      comicPageIndex.value = 0;
-      comicPageCount.value = 0;
-    }
-    watch(() => context.readingImagePage.value, visible => { if (!visible) detachComicListeners(); });
-    onUnmounted(detachComicListeners);
-    // This is a viewing preference, not a replacement for the resource/scroll owner.
-    function applyComicMode(): void {
-      const viewport = context.readerViewport.value;
-      if (viewport) viewport.style.scrollSnapType = comicReadMode.value === "paged" ? "y proximity" : "none";
-    }
-    watch(comicReadMode, applyComicMode);
+    onUnmounted(() => { if (comicFrame !== null) window.cancelAnimationFrame(comicFrame); });
     function nextComicImage(direction: -1 | 1): void {
-      const doc = context.readerViewport.value;
-      const scroller = doc;
-      if (!doc || !scroller) return;
+      const scroller = context.readerViewport.value;
+      if (!scroller) return;
       const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
       const offset = Math.max(0, scroller.scrollTop);
       if (comicReadMode.value === "vertical") {
         const step = Math.max(120, scroller.clientHeight * 0.86);
         const goal = Math.max(0, Math.min(max, offset + direction * step));
         if (Math.abs(goal - offset) > 1) scroller.scrollTo({ top: goal, behavior: "smooth" });
-        else changeComicChapter(direction);
+        else void context.changeChapter(direction);
         return;
       }
-      const imgs = [...doc.querySelectorAll<HTMLImageElement>("img")].filter(img => img.getBoundingClientRect().height > 0);
+      const imgs = [...scroller.querySelectorAll<HTMLImageElement>("img")].filter(img => img.getBoundingClientRect().height > 0);
       const targets = imgs.map(img => img.getBoundingClientRect().top + offset);
       const next = direction > 0
         ? targets.find(target => target > offset + 10)
@@ -171,12 +134,7 @@ export default defineComponent({
         scroller.scrollTo({ top: 0, behavior: "smooth" });
       } else if (direction > 0 && max - offset > 2) {
         scroller.scrollTo({ top: max, behavior: "smooth" });
-      } else changeComicChapter(direction);
-    }
-    function changeComicChapter(direction: -1 | 1): void {
-      const next = context.readingChapterIndex.value + direction;
-      const count = context.readerChapterCount.value;
-      if (next >= 0 && next < count) context.selectReaderDirectoryChapter(next);
+      } else void context.changeChapter(direction);
     }
     function turnReaderEdge(direction: -1 | 1): void {
       if (context.readingImagePage.value) nextComicImage(direction);
@@ -187,14 +145,16 @@ export default defineComponent({
       context.openReaderControls("appearance");
     }
     function onComicTouchStart(event: TouchEvent): void {
-      if (!context.readingImagePage.value || comicReadMode.value !== "paged") return;
+      comicTouchStart = null;
+      if (!context.readingImagePage.value || comicReadMode.value !== "paged" || event.touches.length !== 1) return;
       const touch = event.touches.item(0);
       if (touch) comicTouchStart = { x: touch.clientX, y: touch.clientY };
     }
     function onComicTouchEnd(event: TouchEvent): void {
       const start = comicTouchStart;
       comicTouchStart = null;
-      if (!start || comicReadMode.value !== "paged" || !context.readingImagePage.value) return;
+      if (!start || comicReadMode.value !== "paged" || !context.readingImagePage.value
+        || event.touches.length || event.changedTouches.length !== 1) return;
       const touch = event.changedTouches.item(0);
       if (!touch) return;
       const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
@@ -202,32 +162,18 @@ export default defineComponent({
       nextComicImage(dx < 0 ? 1 : -1);
     }
     let comicTouchStart: { x: number; y: number } | null = null;
-    // The counter observes only the currently loaded display document; scroll/progress ownership stays in the reader binding.
-    watch(context.readerViewport, root => {
-      detachComicListeners();
-      if (context.readingImagePage.value && root) {
-        comicDocument = root;
-        root.addEventListener("touchstart", onComicTouchStart, { passive: true });
-        root.addEventListener("touchend", onComicTouchEnd, { passive: true });
-        root.addEventListener("scroll", requestComicCounter, { passive: true });
-        root.addEventListener("load", requestComicCounter, true);
-        applyComicMode();
-        requestComicCounter();
-      }
-    });
-    watch(context.readingContent, () => { void nextTick(bindNativeVideo); }, { flush: "post" });
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, videoFullscreen, videoFullscreenError, videoFullscreenSupported, toggleVideoFullscreen, comicReadMode, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, videoFullscreen, videoFullscreenError, videoFullscreenSupported, toggleVideoFullscreen, updateVideoFullscreen, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel };
   },
 });
 </script>
 
 <template>
 <section v-if="ctx.readerVisible" class="reader-shell" :data-reader-mode="ctx.readingPdfPage ? 'pdf' : ctx.readingVideoChapter ? 'video' : ctx.readingMediaChapter ? 'audio' : ctx.readingImagePage ? 'comic' : 'novel'" :class="{ 'reader-menu-open': readerMenuOpen, 'reader-chrome-hidden': !readerMenuOpen, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingContent }" @click="onReaderSurfaceClick">
-      <header class="reader-topbar safe-area-top">
+      <header class="reader-topbar">
         <div class="reader-toolbar-row">
-          <BackButton class="reader-back" label="返回书架" :disabled="readerSourceRefreshBusy" @click="closeReader()" />
+          <BackButton class="reader-back" label="返回书架" :disabled="readerMediaRetrying" @click="closeReader()" />
           <div class="reader-book-heading"><strong>{{ openedBook?.title }}</strong><small>{{ currentChapterTitle }}</small></div>
           <div class="reader-header-actions">
             <span class="read-save-state" :class="progressSaveState">{{ progressSaveState === 'saving' ? '保存中' : progressSaveState === 'saved' ? '已保存' : progressSaveState === 'error' ? '保存失败' : '' }}</span>
@@ -241,7 +187,7 @@ export default defineComponent({
           </div>
         </div>
       </header>
-      <div class="reader-main" :class="{ 'safe-area-top': !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage }">
+      <div class="reader-main">
         <output v-if="ctx.readingImagePage && comicPageCount" class="reader-comic-page-counter"
 >{{ comicPageIndex }} / {{ comicPageCount }}</output>
         <div v-if="ctx.readingVideoChapter && ctx.readerVideoQualityChoices.length > 1" class="reader-video-quality-control" @click.stop>
@@ -251,13 +197,13 @@ export default defineComponent({
           </select>
         </div>
         <div class="reader-content-frame" :style="ctx.readingImagePage ? { filter: `brightness(${comicBrightness}%)` } : undefined">
-            <div v-if="readerBusy && !ctx.readerMediaRetrying" class="reader-loading"><span class="loader-ring"></span><p>{{ readerSourceRefreshBusy ? '正在从书源更新本章缓存…' : '正在打开章节…' }}</p></div>
+            <div v-if="readerBusy && !ctx.readerMediaRetrying" class="reader-loading"><span class="loader-ring"></span><p>{{ readerMediaRetrying ? '正在从书源更新本章缓存…' : '正在打开章节…' }}</p></div>
             <div v-else-if="ctx.readerChapterError" class="reader-loading reader-load-error">
-              <strong>第 {{ (ctx.readerErrorChapterIndex ?? ctx.readingChapterIndex) + 1 }} 章暂时无法显示</strong>
+              <strong>第 {{ (ctx.readingChapterIndex) + 1 }} 章暂时无法显示</strong>
               <p>{{ ctx.readerChapterError }}</p>
               <div class="reader-load-actions">
-                <button type="button" class="button secondary small" :disabled="readerBusy" @click.stop="ctx.loadReaderChapter(ctx.readerErrorChapterIndex ?? ctx.readingChapterIndex)">重试缓存章节</button>
-                <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small" :disabled="readerBusy || readerSourceRefreshBusy || shelfBatchRecoveryRequired" @click.stop="ctx.refreshCurrentReaderChapter">从书源重新获取</button>
+                <button type="button" class="button secondary small" :disabled="readerBusy" @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试缓存章节</button>
+                <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small" :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired" @click.stop="ctx.reloadCurrentChapter">从书源重新获取</button>
                 <button v-if="openedBook?.canChangeSource" type="button" class="button secondary small" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired" @click.stop="ctx.openBookSourceSwitch(true)">切换书源</button>
               </div>
             </div>
@@ -265,12 +211,13 @@ export default defineComponent({
               <strong>本章正文尚未显示</strong>
               <p>阅读内容没有生成，请重试；仍为空时可以从书源重新获取本章。</p>
               <div class="reader-load-actions">
-                <button type="button" class="button secondary small" :disabled="readerBusy" @click.stop="ctx.loadReaderChapter(ctx.readerErrorChapterIndex ?? ctx.readingChapterIndex)">重试章节</button>
-                <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small" :disabled="readerBusy || readerSourceRefreshBusy || shelfBatchRecoveryRequired" @click.stop="ctx.refreshCurrentReaderChapter">从书源重新获取</button>
+                <button type="button" class="button secondary small" :disabled="readerBusy" @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试章节</button>
+                <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small" :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired" @click.stop="ctx.reloadCurrentChapter">从书源重新获取</button>
                 <button v-if="openedBook?.canChangeSource" type="button" class="button secondary small" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired" @click.stop="ctx.openBookSourceSwitch(true)">切换书源</button>
               </div>
             </div>
-            <slot v-else />
+            <slot v-else :comicReadMode="comicReadMode" :comicCounter="requestComicCounter"
+              :comicTouchStart="onComicTouchStart" :comicTouchEnd="onComicTouchEnd" :videoFullscreen="updateVideoFullscreen" />
         </div>
         <section v-if="ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && ctx.readingContent" class="reader-video-episodes" @click.stop>
           <header>
@@ -294,7 +241,7 @@ export default defineComponent({
                 <span>倍速</span>
                 <select
                   :value="settings.reader.videoPlaybackRate" :disabled="ctx.isReaderMediaControlBlocked()"
-                  @change="ctx.setReaderVideoPlaybackRate(Number(($event.target as HTMLSelectElement).value))">
+                  @change="settings.reader.videoPlaybackRate = Number(($event.target as HTMLSelectElement).value)">
                   <option v-for="rate in ([0.5,0.75,1,1.25,1.5,1.75,2,2.25,2.5,2.75,3] as const)"
                     :key="rate" :value="rate">{{ rate }}×</option>
                 </select>
@@ -311,7 +258,7 @@ export default defineComponent({
             <button v-for="chapter in openedBook?.chapters" :key="chapter.id" type="button"
               :class="{ active: chapter.index === ctx.readingChapterIndex }"
               :disabled="readerBusy || shelfBatchRecoveryRequired"
-              :title="chapter.title" @click="ctx.selectReaderDirectoryChapter(chapter.index)">
+              :title="chapter.title" @click="ctx.selectReaderChapter(chapter.index)">
               {{ chapter.index + 1 }}
             </button>
           </nav>
@@ -346,7 +293,7 @@ export default defineComponent({
         </article>
         <div v-if="ctx.readingMediaChapter && ctx.readerMediaError" class="reader-media-error">
           <span>{{ ctx.readerMediaError }}</span>
-          <button type="button" class="button secondary small" :disabled="readerBusy || ctx.readerMediaRetrying || shelfBatchRecoveryRequired" @click.stop="retryReaderMedia">{{ ctx.readerMediaRetrying ? '正在重新加载…' : '重新加载' }}</button>
+          <button type="button" class="button secondary small" :disabled="readerBusy || ctx.readerMediaRetrying || shelfBatchRecoveryRequired" @click.stop="reloadCurrentChapter">{{ ctx.readerMediaRetrying ? '正在重新加载…' : '重新加载' }}</button>
         </div>
         <div v-if="!ctx.readingMediaChapter" class="reader-edge reader-edge-left" @click.stop="turnReaderEdge(-1)"></div>
         <div v-if="!ctx.readingMediaChapter" class="reader-edge reader-edge-right" @click.stop="turnReaderEdge(1)"></div>
@@ -383,7 +330,7 @@ export default defineComponent({
           </header>
           <label class="reader-directory-search"><PrototypeIcon name="search"/><input v-model="readerDirectoryQuery" type="search" :placeholder="ctx.readingPdfPage ? '搜索页码或页名' : ctx.readingVideoChapter ? '搜索剧集' : ctx.readingMediaChapter ? '搜索节目' : ctx.readingImagePage ? '搜索话数' : '搜索章节名称'" /></label>
           <div class="reader-directory-list">
-            <button v-for="chapter in openedBook?.chapters" v-show="!readerDirectoryQuery || chapter.title.toLowerCase().includes(readerDirectoryQuery.toLowerCase())" :key="chapter.id" type="button" class="reader-directory-chapter" :class="{ current: chapter.index === ctx.readingChapterIndex }" :disabled="readerBusy" @click="ctx.selectReaderDirectoryChapter(chapter.index)">
+            <button v-for="chapter in openedBook?.chapters" v-show="!readerDirectoryQuery || chapter.title.toLowerCase().includes(readerDirectoryQuery.toLowerCase())" :key="chapter.id" type="button" class="reader-directory-chapter" :class="{ current: chapter.index === ctx.readingChapterIndex }" :disabled="readerBusy" @click="ctx.selectReaderChapter(chapter.index)">
               <span class="reader-directory-number">{{ String(chapter.index + 1).padStart(2, '0') }}</span>
               <strong>{{ chapter.title }}</strong>
               <span v-if="chapter.index === ctx.readingChapterIndex" class="reader-directory-current">{{ ctx.readingVideoChapter ? '正在播放' : ctx.readingMediaChapter ? '正在收听' : '当前位置' }}</span>
@@ -399,7 +346,7 @@ export default defineComponent({
           <div class="reader-chapter-progress">
             <div class="reader-chapter-position">{{ currentChapterTitle }} <span>（{{ ctx.readingChapterIndex + 1 }} / {{ readerChapterCount }}）</span></div>
           <div v-if="readerChapterCount > 1" class="reader-chapter-seek-row">
-            <input type="range" min="0" :max="readerChapterCount - 1" step="1" :value="ctx.readingChapterIndex" :disabled="readerBusy || shelfBatchRecoveryRequired" @change="ctx.jumpReaderChapterSlider" />
+            <input type="range" min="0" :max="readerChapterCount - 1" step="1" :value="ctx.readingChapterIndex" :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter" />
           </div>
         </div>
 
@@ -411,19 +358,19 @@ export default defineComponent({
         <button v-if="readerControlsMode === 'settings'" type="button" class="button secondary small reader-add-bookmark" @click="toggleCurrentBookmark">{{ currentBookmark ? '移除当前书签' : '添加当前页书签' }}</button>
         <div v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" class="setting-control compact-setting">
           <div><label for="reader-scroll-mode">阅读方式</label><small>本章按屏幕滚动或分页</small></div>
-          <select id="reader-scroll-mode" :value="settings.reader.verticalScroll ? 'vertical' : 'paged'" :disabled="readerBusy" @change="updateReaderSetting('verticalScroll', ($event.target as HTMLSelectElement).value === 'vertical')">
+          <select id="reader-scroll-mode" :value="settings.reader.verticalScroll ? 'vertical' : 'paged'" :disabled="readerBusy" @change="settings.reader.verticalScroll = ($event.target as HTMLSelectElement).value === 'vertical'">
             <option value="paged">左右翻页</option><option value="vertical">上下滚动</option>
           </select>
         </div>
         <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && !ctx.readingVideoChapter && !audioToolPanel" class="setting-control reader-audio-rate-control">
           <div><label for="reader-audio-rate">播放速度</label><small>{{ settings.reader.audioPlaybackRate }}×</small></div>
-          <input id="reader-audio-rate" type="range" min="0.5" max="3" step="0.25" :value="settings.reader.audioPlaybackRate" @input="updateReaderSetting('audioPlaybackRate', Number(($event.target as HTMLInputElement).value))" />
+          <input id="reader-audio-rate" type="range" min="0.5" max="3" step="0.25" :value="settings.reader.audioPlaybackRate" @input="settings.reader.audioPlaybackRate = Number(($event.target as HTMLInputElement).value)" />
         </div>
         <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && !ctx.readingVideoChapter && audioToolPanel === 'speed'" class="reader-audio-choice-grid">
           <button v-for="rate in ([0.75, 1, 1.25, 1.5, 1.75, 2] as const)" :key="rate" type="button"
             :class="{ selected: Math.abs(settings.reader.audioPlaybackRate - rate) < 0.001 }"
             :disabled="ctx.isReaderMediaControlBlocked()"
-            @click="updateReaderSetting('audioPlaybackRate', rate)">{{ rate }}×</button>
+            @click="settings.reader.audioPlaybackRate = rate">{{ rate }}×</button>
         </div>
         <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && audioToolPanel !== 'speed'" class="setting-control compact-setting">
           <div><label for="reader-media-sleep-timer">睡眠定时器</label><small>时间到后暂停并保存位置</small></div>
@@ -441,7 +388,7 @@ export default defineComponent({
           </div>
         </div>
         <div v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingPdfPage" class="reader-source-tools">
-          <button v-if="!ctx.readingImagePage && openedBook?.canChangeSource" type="button" class="button secondary small" :disabled="readerBusy || readerSourceRefreshBusy || bookSourceSwitch.bookSourceSwitchBusy" @click.stop="ctx.refreshCurrentReaderChapter"><PrototypeIcon name="refresh"/>从书源重新获取本章</button>
+          <button v-if="!ctx.readingImagePage && openedBook?.canChangeSource" type="button" class="button secondary small" :disabled="readerBusy || readerMediaRetrying || bookSourceSwitch.bookSourceSwitchBusy" @click.stop="ctx.reloadCurrentChapter"><PrototypeIcon name="refresh"/>从书源重新获取本章</button>
           <button v-if="openedBook?.sourceId" type="button" class="button secondary small" :disabled="readerBusy || readerBookDownloadBusy || shelfBatchRecoveryRequired" @click.stop="ctx.downloadReaderBook"><PrototypeIcon name="download"/>缓存全部章节</button>
         </div>
         <button v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button" class="button secondary small reader-dictionary-open" @click="openReaderDictionary">词典查词</button>
@@ -460,9 +407,9 @@ export default defineComponent({
             </optgroup>
           </select>
           <button v-if="!httpTtsConfigs.some((item) => item.enabled)" type="button" class="text-button" @click="ctx.openHttpTtsSettings">添加网络朗读源</button>
-          <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label><select id="reader-tts-start-position" :value="settings.reader.ttsStartPosition" @change="updateReaderSetting('ttsStartPosition', ($event.target as HTMLSelectElement).value === 'chapter' ? 'chapter' : 'current')"><option value="current">当前位置</option><option value="chapter">本章开头</option></select></div>
+          <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label><select id="reader-tts-start-position" :value="settings.reader.ttsStartPosition" @change="settings.reader.ttsStartPosition = ($event.target as HTMLSelectElement).value === 'chapter' ? 'chapter' : 'current'"><option value="current">当前位置</option><option value="chapter">本章开头</option></select></div>
           <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><input id="reader-tts-rate" type="range" min="0.5" max="5" step="0.1" :value="settings.reader.ttsRate" @input="setTtsRate(Number(($event.target as HTMLInputElement).value))" /><small>{{ settings.reader.ttsRate.toFixed(1) }}×</small></div>
-          <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox" @change="updateReaderSetting('ttsContinueAcrossChapters', ($event.target as HTMLInputElement).checked)" />连续朗读并自动进入下一章</label>
+          <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox" @change="settings.reader.ttsContinueAcrossChapters = ($event.target as HTMLInputElement).checked" />连续朗读并自动进入下一章</label>
           <div v-if="settings.reader.ttsEngine === 'system'" class="reader-tts-selection"><small>{{ ttsSelectedText ? `已选中 ${ttsSelectedText.length} 个字` : '先在正文中选中文字' }}</small><button v-if="ttsControlPlayback === 'idle'" type="button" class="button secondary small" :disabled="!ttsCanStart || !ttsSelectedText" @click="startSelectedTextTts">朗读选中文字</button></div>
           <div class="reader-tts-actions">
             <button type="button" class="button secondary small" :disabled="ttsControlPlayback === 'loading' || (ttsControlPlayback === 'idle' && !ttsControlCanStart)" @click="ttsControlPlayback === 'speaking' ? pauseSelectedTts() : ttsControlPlayback === 'paused' ? resumeSelectedTts() : startSelectedTts()">{{ ttsControlPlayback === 'loading' ? '准备中…' : ttsControlPlayback === 'speaking' ? '暂停' : ttsControlPlayback === 'paused' ? '继续' : '开始朗读' }}</button>
@@ -514,14 +461,14 @@ export default defineComponent({
           <div class="setting-control compact-setting">
             <div><label>字号</label><small>{{ settings.reader.fontSizePx }} px</small></div>
             <div class="range-control">
-              <button @click="updateReaderSetting('fontSizePx', clampValue(settings.reader.fontSizePx - 1, 12, 36))">−</button>
-              <input type="range" min="12" max="36" :value="settings.reader.fontSizePx" @input="updateReaderSetting('fontSizePx', Number(($event.target as HTMLInputElement).value))" />
-              <button @click="updateReaderSetting('fontSizePx', clampValue(settings.reader.fontSizePx + 1, 12, 36))">＋</button>
+              <button @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx - 1, 12, 36)">−</button>
+              <input type="range" min="12" max="36" :value="settings.reader.fontSizePx" @input="settings.reader.fontSizePx = Number(($event.target as HTMLInputElement).value)" />
+              <button @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx + 1, 12, 36)">＋</button>
             </div>
           </div>
           <div class="setting-control compact-setting">
             <div><label>行间距</label><small>{{ settings.reader.lineHeight.toFixed(1) }}</small></div>
-            <input type="range" min="1.2" max="2.8" step="0.1" :value="settings.reader.lineHeight" @input="updateReaderSetting('lineHeight', Number(($event.target as HTMLInputElement).value))" />
+            <input type="range" min="1.2" max="2.8" step="0.1" :value="settings.reader.lineHeight" @input="settings.reader.lineHeight = Number(($event.target as HTMLInputElement).value)" />
           </div>
         </template>
         <div v-if="readerControlsMode === 'appearance' && !ctx.readingImagePage && !ctx.readingPdfPage && !ctx.readingMediaChapter" class="setting-control compact-setting">

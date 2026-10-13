@@ -3,6 +3,7 @@ package io.legado.app.help.source
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.model.SharedJsScope
 import io.legado.app.model.script.JsScope
+import io.legado.app.model.script.JsBindings
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -15,3 +16,6 @@ import kotlin.coroutines.CoroutineContext
 fun BaseSource.getShareScope(coroutineContext: CoroutineContext? = null): JsScope? {
     return SharedJsScope.getScope(jsLib, enableDangerousApi == true, coroutineContext)
 }
+
+fun BaseSource.getShareScope(coroutineContext: CoroutineContext?, bindings: JsBindings): JsScope? =
+    SharedJsScope.getScope(jsLib, enableDangerousApi == true, coroutineContext, bindings)

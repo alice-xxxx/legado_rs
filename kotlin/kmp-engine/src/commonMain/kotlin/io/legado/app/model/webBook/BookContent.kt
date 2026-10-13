@@ -93,7 +93,8 @@ object BookContent {
             }
         }
         var contentData = analyzeContent(
-            book, baseUrl, body, contentRule, bookChapter, bookSource, mNextChapterUrl
+            book, baseUrl, body, contentRule, bookChapter, bookSource, mNextChapterUrl,
+            redirectUrl = redirectUrl
         )
         contentList.add(contentData.first)
         if (contentData.second.isNotEmpty() && mNextChapterUrl == null && bookChapter.index < book.totalChapterNum - 1) throw Exception(
@@ -125,7 +126,8 @@ object BookContent {
                         bookChapter,
                         bookSource,
                         mNextChapterUrl,
-                        printLog = false
+                        printLog = false,
+                        redirectUrl = res.url
                     )
                     nextUrl = if (contentData.second.isNotEmpty()) contentData.second[0] else ""
                     contentList.add(contentData.first)
@@ -156,7 +158,8 @@ object BookContent {
                     bookSource,
                     mNextChapterUrl,
                     getNextPageUrl = false,
-                    printLog = false
+                    printLog = false,
+                    redirectUrl = res.url
                 ).first
             }.collect {
                 currentCoroutineContext().ensureActive()
@@ -196,10 +199,12 @@ object BookContent {
         bookSource: BookSource,
         nextChapterUrl: String?,
         getNextPageUrl: Boolean = true,
-        printLog: Boolean = true
+        printLog: Boolean = true,
+        redirectUrl: String = baseUrl
     ): Pair<String, List<String>> {
         val analyzeRule = AnalyzeRuleFactories.create(book, bookSource)
         analyzeRule.setContent(body, baseUrl)
+        analyzeRule.setRedirectUrl(redirectUrl)
         analyzeRule.coroutineContext = currentCoroutineContext()
         analyzeRule.nextChapterUrl = nextChapterUrl
         val nextUrlList = arrayListOf<String>()

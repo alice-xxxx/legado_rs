@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use axum::body::Body;
 use axum::http::header::{
     ACCEPT, ACCEPT_LANGUAGE, ACCEPT_RANGES, ACCESS_CONTROL_ALLOW_ORIGIN,
-    ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_LENGTH,
-    CONTENT_RANGE, CONTENT_TYPE, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, IF_RANGE,
-    LAST_MODIFIED, RANGE,
+    ACCESS_CONTROL_EXPOSE_HEADERS, CACHE_CONTROL, CONTENT_DISPOSITION, CONTENT_ENCODING,
+    CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH,
+    IF_RANGE, LAST_MODIFIED, RANGE, USER_AGENT,
 };
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode};
 use reqwest::redirect::Policy;
@@ -30,10 +30,12 @@ const REQUEST_HEADERS: &[HeaderName] = &[
     IF_MODIFIED_SINCE,
     ACCEPT,
     ACCEPT_LANGUAGE,
+    USER_AGENT,
 ];
 
 const RESPONSE_HEADERS: &[HeaderName] = &[
     CONTENT_TYPE,
+    CONTENT_ENCODING,
     CONTENT_LENGTH,
     CONTENT_RANGE,
     ACCEPT_RANGES,
@@ -78,13 +80,13 @@ struct ProxyTarget {
 
 impl MediaProxyRegistry {
     pub(super) fn new() -> Result<Self, ResourceError> {
-        let client = Client::builder()
+        let client = crate::http_client::raw_builder()
             .redirect(Policy::limited(5))
             .build()
             .map_err(|error| {
                 ResourceError::new(format!("Cannot create media HTTP client: {error}"))
             })?;
-        let private_client = Client::builder()
+        let private_client = crate::http_client::raw_builder()
             .redirect(Policy::custom(|attempt| {
                 if attempt.previous().len() > 5 {
                     return attempt.error(std::io::Error::other(
@@ -267,8 +269,11 @@ impl MediaProxyRegistry {
             {
                 continue;
             }
-            if let Some(value) = client_headers.get(name) {
-                request_headers.insert(name.clone(), value.clone());
+            // Source headers take precedence over the player's browser defaults.
+            if !request_headers.contains_key(name) {
+                if let Some(value) = client_headers.get(name) {
+                    request_headers.insert(name.clone(), value.clone());
+                }
             }
         }
         let client = if has_sensitive_headers {

@@ -593,8 +593,16 @@ object NativeJsExtensionsBridge {
 
             // ============ 网络族 (300-399) ============
             obj is JsExtensionsCommon && methodId == 301 -> {
-                // ajax(url) — url 支持 String | Array
-                stringToJsValue(ctx, obj.ajax(args.getOrNull(0) ?: ""))
+                // ajax(url[, timeoutMs]) — url 支持 String | Array，超时单位为毫秒。
+                val url = args.getOrNull(0) ?: ""
+                val response = if (args.size < 2) {
+                    obj.ajax(url)
+                } else {
+                    val timeoutMs = (args[1] as? Number)?.toLong()
+                        ?: error("ajax timeoutMs must be a number")
+                    obj.ajax(url, timeoutMs)
+                }
+                stringToJsValue(ctx, response)
             }
             obj is JsExtensionsCommon && methodId == 302 -> {
                 // ajaxAll(urlList) → StrResponse handle 数组 (JS 层逐个包装)
@@ -662,10 +670,17 @@ object NativeJsExtensionsBridge {
                 stringToJsValue(ctx, obj.getCookie(args.getString(0), args.getOrNull(1) as? String))
             }
             obj is JsExtensionsCommon && methodId == 309 -> {
-                // java.get(url, headers) — 网络 GET (单参 java.get(key) 走 25 变量读取; 双参分派对齐 JVM)
+                // java.get(url, headers[, timeoutMs]) — 单参 java.get(key) 走 25 变量读取。
                 // headers 由 JS 层 JSON.stringify (对象/JSON 字符串都转成 JSON 文本), 此处解析回 Map
                 val headerMap = parseHeaderArg(args.getOrNull(1))
-                qjs_NewFloat64(ctx, registerObject(obj.get(args.getString(0), headerMap)).toDouble())
+                val response = if (args.size < 3) {
+                    obj.get(args.getString(0), headerMap)
+                } else {
+                    val timeoutMs = (args[2] as? Number)?.toInt()
+                        ?: error("get timeoutMs must be a number")
+                    obj.get(args.getString(0), headerMap, timeoutMs)
+                }
+                qjs_NewFloat64(ctx, registerObject(response).toDouble())
             }
             obj is JsExtensionsCommon && methodId == 310 -> {
                 // java.head(url, headers)
@@ -673,9 +688,16 @@ object NativeJsExtensionsBridge {
                 qjs_NewFloat64(ctx, registerObject(obj.head(args.getString(0), headerMap)).toDouble())
             }
             obj is JsExtensionsCommon && methodId == 311 -> {
-                // java.post(url, body, headers)
+                // java.post(url, body, headers[, timeoutMs])
                 val headerMap = parseHeaderArg(args.getOrNull(2))
-                qjs_NewFloat64(ctx, registerObject(obj.post(args.getString(0), args.getString(1), headerMap)).toDouble())
+                val response = if (args.size < 4) {
+                    obj.post(args.getString(0), args.getString(1), headerMap)
+                } else {
+                    val timeoutMs = (args[3] as? Number)?.toInt()
+                        ?: error("post timeoutMs must be a number")
+                    obj.post(args.getString(0), args.getString(1), headerMap, timeoutMs)
+                }
+                qjs_NewFloat64(ctx, registerObject(response).toDouble())
             }
 
             // ============ Connection.Response 对象方法 (700-799, java.get/head/post 返回值) ============
@@ -1136,7 +1158,9 @@ function __createJavaObj(handle) {
     obj.getString = function(rule, content, isUrl) { return __nativeDispatch(handle, 27, [rule, content, isUrl]); };
     obj.getStringList = function(rule, content, isUrl) { return __nativeDispatch(handle, 28, [rule, content, isUrl]); };
     // ============ 网络族 (300-399) ============
-    obj.ajax = function(url) { return __nativeDispatch(handle, 301, [url]); };
+    obj.ajax = function(url, timeoutMs) {
+        return __nativeDispatch(handle, 301, arguments.length >= 2 ? [url, timeoutMs] : [url]);
+    };
     obj.ajaxAll = function(urlList) {
         var hs = __nativeDispatch(handle, 302, [urlList]);
         if (!hs) return [];
@@ -1149,11 +1173,12 @@ function __createJavaObj(handle) {
     obj.webViewGetSource = function(html, url, js, sourceRegex, delayTime) { return __nativeDispatch(handle, 305, [html, url, js, sourceRegex, delayTime]); };
     obj.webViewGetOverrideUrl = function(html, url, js, overrideUrlRegex, delayTime) { return __nativeDispatch(handle, 306, [html, url, js, overrideUrlRegex, delayTime]); };
     obj.getCookie = function(tag, key) { return __nativeDispatch(handle, 307, [tag, key]); };
-    // java.get 重载: 单参 = 变量读取 (25), 双参 = 网络 GET (309) — 对齐 JVM 分派表按参数个数分派
-    obj.get = function(a, b) {
+    // java.get 重载: 单参 = 变量读取 (25), 双/三参 = 网络 GET (309)。
+    obj.get = function(a, b, timeoutMs) {
         if (arguments.length >= 2) {
             var h = (typeof b === 'string') ? b : JSON.stringify(b);
-            return __createRespObj(__nativeDispatch(handle, 309, [a, h]));
+            var params = arguments.length >= 3 ? [a, h, timeoutMs] : [a, h];
+            return __createRespObj(__nativeDispatch(handle, 309, params));
         }
         return __nativeDispatch(handle, 25, [a]);
     };
@@ -1161,9 +1186,10 @@ function __createJavaObj(handle) {
         var h = (typeof headers === 'string') ? headers : JSON.stringify(headers);
         return __createRespObj(__nativeDispatch(handle, 310, [urlStr, h]));
     };
-    obj.post = function(urlStr, body, headers) {
+    obj.post = function(urlStr, body, headers, timeoutMs) {
         var h = (typeof headers === 'string') ? headers : JSON.stringify(headers);
-        return __createRespObj(__nativeDispatch(handle, 311, [urlStr, body, h]));
+        var params = arguments.length >= 4 ? [urlStr, body, h, timeoutMs] : [urlStr, body, h];
+        return __createRespObj(__nativeDispatch(handle, 311, params));
     };
     // ============ UI/杂项 (400-499) ============
     obj.log = function(msg) { __nativeDispatch(handle, 402, [msg]); return msg; };

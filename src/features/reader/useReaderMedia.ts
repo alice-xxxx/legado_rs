@@ -1,13 +1,12 @@
+import { openedBook } from "../books/bookDetailState";
 import type { Ref } from "vue";
 import type Hls from "hls.js";
 import { clamp } from "./readerContent";
-import type { BookResource } from "../../api/types";
 
 type ReaderMediaContext = {
   visible: Readonly<Ref<boolean>>;
   mediaChapter: Readonly<Ref<boolean>>;
   videoChapter: Readonly<Ref<boolean>>;
-  book: Readonly<Ref<BookResource | null>>;
   chapterTitle: Readonly<Ref<string>>;
   getCurrentElement: () => HTMLMediaElement | null;
   isControlBlocked: () => boolean;
@@ -103,8 +102,8 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
       try {
         session.metadata = new MediaMetadata({
           title: options.reader.chapterTitle.value,
-          artist: options.reader.book.value?.author ?? "",
-          album: options.reader.book.value?.title ?? "",
+          artist: openedBook.value?.author ?? "",
+          album: openedBook.value?.title ?? "",
         });
       } catch {
         // 有 action handler 的平台也可能不支持 metadata。
@@ -163,7 +162,6 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
     register("nexttrack", () => changeMediaChapter(1));
     syncSession(audio);
   }
-
 
   function destroyHlsInstance(): void {
     ++hlsLoadRevision;

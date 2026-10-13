@@ -636,7 +636,6 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         </header>
 
         <div class="http-tts-editor-body">
-          <template>
             <fieldset class="http-tts-editor-fields" :disabled="blocked">
               <section class="http-tts-editor-section"><header><strong>请求</strong></header>
               <div class="http-tts-editor-grid">
@@ -702,7 +701,6 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
             </div>
             <p v-if="editorError || error" class="source-identity-confirmation">{{ editorError || error }}</p>
             <p v-if="editorSuccess" class="http-tts-editor-success">{{ editorSuccess }}</p>
-          </template>
         </div>
       </article>
     </section>

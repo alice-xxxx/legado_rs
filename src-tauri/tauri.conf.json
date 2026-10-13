@@ -79,13 +79,17 @@
       "mobile": [
         {
           "scheme": [
-            "legado-rs"
+            "legado-rs",
+            "legado",
+            "yuedu"
           ]
         }
       ],
       "desktop": {
         "schemes": [
-          "legado-rs"
+          "legado-rs",
+          "legado",
+          "yuedu"
         ]
       }
     }

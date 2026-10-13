@@ -9,9 +9,9 @@ import PdfReaderPage from "./PdfReaderPage.vue";
   <ReaderPage v-bind="props">
     <PdfReaderPage v-if="reader.readingPdfPage.value" :src="reader.readingPdfPage.value.src"
       :page-index="reader.readingPdfPage.value.pageIndex" :default-zoom="reader.activePdfZoom.value"
-      :initial-password="reader.readingPdfInitialPassword.value" @initial-password-used="reader.readerNavigationActions.consumeImportedPdfPassword"
+      :initial-password="reader.readingPdfInitialPassword.value" @initial-password-used="reader.consumeImportedPdfPassword"
       :find-open="reader.readerControlsOpen.value && reader.readerControlsMode.value === 'search'"
       @update:find-open="reader.readerControlsOpen.value = $event; reader.readerControlsMode.value = 'search'"
-      @loaded="reader.readerPageCount.value = 1" @page-selected="reader.selectReaderDirectoryChapter" @close-reader="props.closeReader()" />
+      @loaded="reader.readerPageCount.value = 1" @page-selected="reader.selectReaderChapter" @close-reader="props.closeReader()" />
   </ReaderPage>
 </template>

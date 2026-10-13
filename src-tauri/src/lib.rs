@@ -1,6 +1,7 @@
 //! Rust 后端入口：公开业务模块并启动跨平台 Tauri 宿主。
 
 pub mod application;
+mod http_client;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
@@ -197,6 +198,7 @@ pub fn run() {
         application::resume_task,
         application::cancel_task,
         application::prepare_search_result_book,
+            application::prepare_book_from_url,
         application::change_book_source,
         application::change_chapter_source,
         application::import_book_from_picker,

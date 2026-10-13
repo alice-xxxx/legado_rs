@@ -2,7 +2,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use reqwest::cookie::{CookieStore, Jar};
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue, ACCEPT_ENCODING, RANGE};
 use reqwest::multipart::{Form, Part};
 use reqwest::redirect::{Attempt, Policy};
 use reqwest::{Client, Method, Proxy, Request, Url};
@@ -156,7 +156,12 @@ pub(super) async fn execute_source_http_request(
         }
         attempt.follow()
     });
-    let mut client_builder = Client::builder().redirect(redirect_policy);
+    let mut client_builder = if headers.contains_key(ACCEPT_ENCODING) || headers.contains_key(RANGE) {
+        crate::http_client::raw_builder()
+    } else {
+        crate::http_client::builder()
+    }
+    .redirect(redirect_policy);
     if let Some(timeout_ms) = request.connect_timeout_ms {
         client_builder = client_builder.connect_timeout(Duration::from_millis(timeout_ms));
     }
@@ -321,9 +326,14 @@ pub(crate) fn clear_all_cookie_jars() -> Result<(), String> {
 }
 
 /// Report whether reqwest has any cookie applicable to this source URL without exposing values.
+/// A source key can be an identifier instead of a URL; it has no HTTP cookie match to query.
 pub(crate) fn has_cookie_jar_cookies(scope: &str, source_url: &str) -> Result<bool, String> {
-    let url =
-        Url::parse(source_url).map_err(|error| format!("Invalid source cookie URL: {error}"))?;
+    let Ok(url) = Url::parse(source_url) else {
+        return Ok(false);
+    };
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
+        return Ok(false);
+    }
     let jar = COOKIE_JARS
         .lock()
         .map_err(|_| "Source cookie jar registry is unavailable".to_owned())?

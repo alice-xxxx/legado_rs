@@ -88,25 +88,90 @@ impl ApplicationService {
         }))
     }
 
-    /// Prepare an import resource. Only Vue's shared store commits imported rules.
-    pub async fn prepare_configuration_import(&self, kind: &str, source_json: &str) -> Result<Value, String> {
+    /// Prepare an in-memory import preview. Only Vue's shared store commits imported rules.
+    pub async fn prepare_configuration_import(
+        &self,
+        kind: &str,
+        source_json: &str,
+    ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let source_json = source_json.strip_prefix('\u{feff}').unwrap_or(source_json);
+        let detected_kind;
+        let kind = if kind == "auto" {
+            let value: Value =
+                serde_json::from_str(source_json).map_err(|error| error.to_string())?;
+            let entry = value
+                .as_array()
+                .and_then(|items| items.first())
+                .unwrap_or(&value);
+            detected_kind = if entry.get("bookSourceUrl").is_some()
+                || entry.get("sourceUrl").is_some()
+                || entry.get("sources").is_some()
+                || entry.get("bookSource").is_some()
+            {
+                "sources"
+            } else if entry.get("pattern").is_some() {
+                "replacementRules"
+            } else if entry.get("themeName").is_some() {
+                return Err("本应用尚未提供原版主题导入".into());
+            } else if entry.get("showRule").is_some() {
+                return Err("本应用尚未提供原版词典规则导入".into());
+            } else if entry.get("name").is_some() && entry.get("rule").is_some() {
+                "txtTocRules"
+            } else if entry.get("name").is_some() && entry.get("url").is_some() {
+                "httpTtsConfigs"
+            } else if entry.get("configs").is_some() {
+                "httpTtsConfigs"
+            } else if entry
+                .get("rules")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .is_some_and(|rule| rule.get("pattern").is_some())
+            {
+                "replacementRules"
+            } else if entry
+                .get("rules")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .is_some_and(|rule| rule.get("rule").is_some())
+            {
+                "txtTocRules"
+            } else {
+                return Err("无法识别导入内容的类型".into());
+            };
+            detected_kind
+        } else {
+            kind
+        };
         let document = match kind {
+            "sources" => {
+                let value: Value =
+                    serde_json::from_str(source_json).map_err(|error| error.to_string())?;
+                let sources = extract_sources(value)?;
+                for source in &sources {
+                    if !source.is_object()
+                        || text_at(source, &["bookSourceUrl", "sourceUrl", "url"]).is_none()
+                    {
+                        return Err("书源缺少来源地址".into());
+                    }
+                }
+                json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "sources": sources })
+            }
             "replacementRules" => crate::reading_tools::parse_replacement_import(source_json)?,
-            "txtTocRules" => serde_json::to_value(crate::local_books::txt_toc_rules::parse_import(source_json)?)
-                .map_err(|error| error.to_string())?,
+            "txtTocRules" => serde_json::to_value(crate::local_books::txt_toc_rules::parse_import(
+                source_json,
+            )?)
+            .map_err(|error| error.to_string())?,
             "httpTtsConfigs" => {
                 let configs = crate::http_tts_config::import_configs(source_json)?
-                    .into_iter().map(|(_, entry)| entry).collect::<Vec<_>>();
+                    .into_iter()
+                    .map(|(_, entry)| entry)
+                    .collect::<Vec<_>>();
                 json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "configs": configs })
             }
             _ => return Err("Unknown configuration kind".into()),
         };
-        let reference = self.store.search_ref(&format!("configuration-import-{}", uuid::Uuid::new_v4().simple()))
-            .map_err(|error| error.to_string())?;
-        self.store.write_json_ref(&reference, &document).await.map_err(|error| error.to_string())?;
-        Ok(json!({ "resource": self.resource_descriptor(&reference) }))
+        Ok(json!({ "kind": kind, "document": document }))
     }
 
     pub async fn bootstrap(&self) -> Result<Value, String> {
@@ -244,9 +309,8 @@ pub(super) async fn fetch_wiktionary_page(
             .append_pair("redirects", "1");
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::builder()
         .timeout(Duration::from_secs(15))
-        .user_agent("legado_rs/0.1 (Wiktionary dictionary lookup)")
         .build()
         .map_err(|_| "无法准备维基词典查询，请稍后重试。".to_owned())?;
     let mut response = client

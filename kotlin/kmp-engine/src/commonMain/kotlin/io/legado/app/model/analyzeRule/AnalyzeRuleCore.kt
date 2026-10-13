@@ -857,7 +857,7 @@ open class AnalyzeRuleCore(
             bindings["nextChapterUrl"] = nextChapterUrl
             bindings.dangerousApi = source?.enableDangerousApi == true
         }
-        val topScope = source?.getShareScope(coroutineContext) ?: topScopeRef
+        val topScope = source?.getShareScope(coroutineContext, bindings) ?: topScopeRef
         // - topScope == null: 创建独立 scope, bindings 注入 globalThis
         // - sharedScope 路径: SharedJsScope 缓存的 topScope (ThreadLocal 线程独占),
         //   bindings 也注入到该 topScope 的 globalThis, 执行后由 evalInSubScope 自行清理,
@@ -906,7 +906,11 @@ open class AnalyzeRuleCore(
      * super<AnalyzeRuleCore>.ajax 选择本方法。
      * 此处用 [AnalyzeUrlCore] (shared 同包) 替代 app 端 AnalyzeUrl, 行为等价 (ajax 只用 getStrResponse)。
      */
-    override fun ajax(url: Any): String? {
+    override fun ajax(url: Any): String? = ajaxWithTimeout(url, null)
+
+    override fun ajax(url: Any, timeoutMs: Long): String? = ajaxWithTimeout(url, timeoutMs)
+
+    private fun ajaxWithTimeout(url: Any, timeoutMs: Long?): String? {
         val urlStr = if (url is List<*>) {
             url.firstOrNull().toString()
         } else {
@@ -916,6 +920,8 @@ open class AnalyzeRuleCore(
             urlStr,
             source = source,
             ruleData = ruleData,
+            readTimeout = timeoutMs,
+            callTimeout = timeoutMs,
             coroutineContext = coroutineContext
         )
         return kotlin.runCatching {

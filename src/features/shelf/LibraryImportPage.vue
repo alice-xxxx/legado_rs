@@ -14,11 +14,9 @@ import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
 import { getReaderSession } from "../reader/readerSession";
 
-type LinkKind = "source" | "rules";
 const localBookImport = getLocalBookImportSession();
 const localImportBusy = localBookImport.localBookImportBusy;
 const readerSession = getReaderSession();
-const linkOpening = ref(false);
 
 const pageDataLoading = ref(true);
 const pageDataError = ref("");
@@ -26,7 +24,7 @@ const localBooks = computed(() => shelf.value.books.filter((book) => book.id.sta
 const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
 const actionsBlocked = computed(() => localBookImport.localBookImportBusy.value || pageDataLoading.value || !!pageDataError.value
   || recoveryRequired.value || localBookImport.pdfPasswordPromptOpen.value
-  || localBookImport.externalFileRequestBusy.value || backupBusy.value !== null || linkOpening.value);
+  || localBookImport.externalFileRequestBusy.value || backupBusy.value !== null);
 let disposed = false;
 const eventUnlisteners: UnlistenFn[] = [];
 
@@ -90,53 +88,11 @@ const formats = [
 ] as const;
 const linkInput = ref("");
 const linkError = ref("");
-const recognizedUrl = ref("");
-const recognizedKind = ref<LinkKind | null>(null);
-const linkKinds = [
-  { kind: "source", label: "内容源 / RSS 配置", note: "交给内容引擎预览和确认，不会直接保存" },
-  { kind: "rules", label: "替换与净化规则", note: "打开规则导入确认页面" },
-] as const;
 function parseLink(): void {
+  if (actionsBlocked.value) return;
   linkError.value = "";
-  recognizedUrl.value = "";
-  recognizedKind.value = null;
-  const raw = linkInput.value.trim();
-  if (!raw) { linkError.value = "请先输入链接。"; return; }
-  if (raw.length > 4096) { linkError.value = "链接不能超过 4096 个字符。"; return; }
-  try {
-    const parsed = new URL(raw);
-    let target = parsed;
-    if (parsed.protocol === "legado-rs:") {
-      if (parsed.username || parsed.password || parsed.hash || (parsed.pathname && parsed.pathname !== "/")
-        || !["import-source", "import-rules"].includes(parsed.hostname) || parsed.searchParams.getAll("url").length !== 1) {
-        throw new Error("不支持该应用导入链接。");
-      }
-      recognizedKind.value = parsed.hostname === "import-source" ? "source" : "rules";
-      target = new URL(parsed.searchParams.get("url") ?? "");
-    }
-    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) {
-      throw new Error("仅支持无账号密码的 HTTP/HTTPS 导入地址。");
-    }
-    recognizedUrl.value = target.href;
-  } catch (error) {
-    recognizedKind.value = null;
-    linkError.value = error instanceof Error ? error.message : "无效的导入链接。";
-  }
-}
-async function openLink(kind: LinkKind): Promise<void> {
-  if (!recognizedUrl.value || actionsBlocked.value || linkOpening.value) return;
-  linkOpening.value = true;
-  try {
-    const target = kind === "source"
-      ? router.push({ name: routeNames.sources, query: { sourceImport: "url", importUrl: recognizedUrl.value } })
-      : router.push({ name: routeNames.settingsRules, query: { importUrl: recognizedUrl.value } });
-    const failure = await target;
-    if (failure) notify("无法打开导入页面", "error");
-  } catch (error) {
-    notify(errorText(error), "error");
-  } finally {
-    linkOpening.value = false;
-  }
+  try { localBookImport.requestLinkImport(linkInput.value); }
+  catch (error) { linkError.value = errorText(error); }
 }
 
 async function openLocalBook(bookId: string): Promise<void> {
@@ -184,24 +140,15 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 
       <section class="library-import-section">
         <h2 id="library-import-link-title">通过链接导入</h2>
-        <p>支持内容源、RSS 来源配置、替换与净化规则的 HTTP/HTTPS 地址或本应用导入链接。</p>
+        <p>支持书源、RSS、替换规则、TXT 目录规则和 HTTP TTS 配置。</p>
         <form class="library-import-form" @submit.prevent="parseLink">
-          <input v-model="linkInput" type="url" inputmode="url" autocomplete="url"
-            placeholder="粘贴链接"
+          <input v-model="linkInput" type="text" inputmode="url" autocomplete="url"
+            placeholder="粘贴链接或 JSON"
             :disabled="actionsBlocked"
-            @input="recognizedUrl = ''; recognizedKind = null; linkError = ''"/>
+            @input="linkError = ''"/>
           <button type="submit" class="library-import-primary" :disabled="actionsBlocked || !linkInput.trim()">识别</button>
         </form>
         <p v-if="linkError" class="library-import-warning">{{ linkError }}</p>
-        <div v-if="recognizedUrl" class="library-import-link-recognized">
-          <p v-if="recognizedKind">已识别为{{ recognizedKind === 'source' ? '内容源' : '替换规则' }}导入链接。将进入对应的预览/确认流程。</p>
-          <p v-else>已验证地址格式。链接内容尚未请求，请选择需要使用的导入处理器。</p>
-          <button v-for="kind in linkKinds.filter(item => !recognizedKind || item.kind === recognizedKind)"
-            :key="kind.kind" type="button" :disabled="actionsBlocked"
-            @click="openLink(kind.kind)">
-            <strong>{{ kind.label }}</strong><small>{{ kind.note }}</small><PrototypeIcon name="chevron-right"/>
-          </button>
-        </div>
       </section>
 
       <section class="library-import-section">
@@ -248,12 +195,6 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 .library-import-status,.library-import-warning{font-size:var(--ui-font-caption);line-height:1.6}
 .library-import-warning{color:var(--app-danger)}
 .library-import-retry{margin-left:8px;padding:2px 7px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:var(--ui-font-caption);cursor:pointer}
-.library-import-link-recognized{display:grid;gap:6px;margin-top:12px;padding:11px;border:1px solid var(--app-accent-soft);border-radius:12px;background:var(--app-accent-soft)}
-.library-import-link-recognized p{margin:0 0 5px;color:var(--app-muted);font-size:var(--ui-font-caption)}
-.library-import-link-recognized button{display:grid;grid-template-columns:1fr 20px;gap:4px 8px;min-height:45px;padding:8px 10px;border:1px solid var(--app-accent-soft);border-radius:9px;background:var(--app-surface);text-align:left;cursor:pointer}
-.library-import-link-recognized button strong{font-size:var(--ui-font-body)}
-.library-import-link-recognized button small{color:var(--app-subtle);font-size:var(--ui-font-caption);grid-column:1}
-.library-import-link-recognized button :deep(svg){grid-column:2;grid-row:1/3;align-self:center;width:17px;height:17px}
 .library-import-recent-list{margin-top:13px}
 .library-import-recent-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;min-height:62px;border-bottom:1px solid var(--app-line)}
 .library-import-recent-detail{display:flex;flex-direction:column;gap:5px;min-width:0}

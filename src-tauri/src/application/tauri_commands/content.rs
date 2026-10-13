@@ -70,6 +70,7 @@ pub async fn unsubscribe_rss(
 pub enum ConfigurationImportSource {
     Local,
     Url { url: String },
+    Text { text: String },
 }
 
 #[tauri::command]
@@ -80,6 +81,7 @@ pub async fn prepare_configuration_import(
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let (limit, label) = match kind.as_str() {
+        "sources" | "auto" => (MAX_SOURCE_IMPORT_BODY_BYTES, "导入 JSON"),
         "replacementRules" => (MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES, "显示替换规则 JSON"),
         "txtTocRules" => (crate::local_books::txt_toc_rules::MAX_IMPORT_BODY_BYTES, "TXT 目录规则 JSON"),
         "httpTtsConfigs" => (crate::http_tts_config::MAX_CONFIG_BYTES, "HTTP TTS JSON"),
@@ -93,7 +95,10 @@ pub async fn prepare_configuration_import(
             tokio::fs::read_to_string(&file.path).await.map_err(|error| error.to_string())?
         }
         ConfigurationImportSource::Url { url } => {
-            download_json_url(&url, limit, Duration::from_secs(30), label).await?
+            resolve_import_json(&url, limit, label, matches!(kind.as_str(), "sources" | "auto")).await?
+        }
+        ConfigurationImportSource::Text { text } => {
+            resolve_import_json(&text, limit, label, matches!(kind.as_str(), "sources" | "auto")).await?
         }
     };
     service.prepare_configuration_import(&kind, &source_json).await

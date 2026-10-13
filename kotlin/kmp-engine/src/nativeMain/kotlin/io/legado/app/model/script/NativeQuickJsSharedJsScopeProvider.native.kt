@@ -53,15 +53,31 @@ object NativeQuickJsSharedJsScopeProvider : SharedJsScopeProvider {
         jsLib: String?,
         enableDangerousApi: Boolean,
         coroutineContext: CoroutineContext?,
+    ): JsScope? = createScope(jsLib, enableDangerousApi, coroutineContext, null)
+
+    override fun getScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings,
+    ): JsScope? = createScope(jsLib, enableDangerousApi, coroutineContext, bindings)
+
+    private fun createScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings?,
     ): JsScope? {
         if (jsLib.isNullOrBlank()) {
             return null
         }
         val key = MD5Utils.md5Encode(jsLib)
+        // 同一库的初始化代码可能读取 source，不能复用其他书源的初始化结果。
+        val scopeKey = "$key:$enableDangerousApi:${(bindings?.get("source") as? io.legado.app.data.entities.BaseSource)?.getKey().orEmpty()}"
         val sourceEntry = getOrCreateSourceEntry(key, jsLib)
         val perThread = threadCache ?: LruScopeCache(PER_THREAD_LRU_SIZE).also { threadCacheHolder = it }
         perThread.flushPendingClose()
-        val cached = perThread.get(key)
+        val cached = perThread.get(scopeKey)
         if (cached != null && cached.version == sourceEntry.version) {
             return cached.scope
         }
@@ -71,10 +87,20 @@ object NativeQuickJsSharedJsScopeProvider : SharedJsScopeProvider {
         val scope = NativeJsEngine.getRuntimeScope(JsBindings().apply {
             dangerousApi = enableDangerousApi
         }) as NativeJsScope
-        for (src in sourceEntry.sources) {
-            NativeJsEngine.eval(src, scope, coroutineContext)
+        val keys = bindings?.let { NativeJsEngine.injectBindings(scope, it) }
+        try {
+            try {
+                for (src in sourceEntry.sources) {
+                    NativeJsEngine.eval(src, scope, coroutineContext)
+                }
+            } finally {
+                if (keys != null) NativeJsEngine.cleanupBindings(scope, keys)
+            }
+        } catch (error: Throwable) {
+            scope.close()
+            throw error
         }
-        perThread.put(key, CtxEntry(scope, sourceEntry.version))
+        perThread.put(scopeKey, CtxEntry(scope, sourceEntry.version))
         return scope
     }
 

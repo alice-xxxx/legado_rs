@@ -3,6 +3,15 @@
 use super::*;
 
 #[tauri::command]
+pub async fn prepare_book_from_url(
+    url: String,
+    read: bool,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    service.prepare_book_from_url(&url, read).await
+}
+
+#[tauri::command]
 pub async fn prepare_search_result_book(
     result_id: String,
     service: State<'_, ApplicationService>,

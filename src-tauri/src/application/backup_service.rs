@@ -68,7 +68,7 @@ fn webdav_file_url(directory: &reqwest::Url, file_name: &str) -> Result<reqwest:
 }
 
 fn webdav_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    crate::http_client::builder()
         .connect_timeout(Duration::from_secs(15))
         .timeout(WEBDAV_REQUEST_TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())

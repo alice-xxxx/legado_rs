@@ -151,6 +151,20 @@ body,
   padding-top: var(--safe-top);
 }
 
+:root .safe-area-bottom {
+  padding-bottom: var(--safe-bottom);
+}
+
+/* The app mounting layer owns the viewport; reader pages fill its safe content box. */
+#reader-host {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  pointer-events: none;
+}
+
 body {
   min-height: 100dvh;
 }

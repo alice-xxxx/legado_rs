@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref } from "vue";
 defineProps<{ markup: string; scale: "fit-width" | "actual-size" }>();
-const emit = defineEmits<{ ready: [element: HTMLElement | null]; layout: [] }>();
+const emit = defineEmits<{ ready: [element: HTMLElement | null]; layout: []; scroll: []; touchstart: [event: TouchEvent]; touchend: [event: TouchEvent] }>();
 const viewport = ref<HTMLElement | null>(null);
-onMounted(() => emit("ready", viewport.value));
+onMounted(() => { emit("ready", viewport.value); emit("layout"); });
 onBeforeUnmount(() => emit("ready", null));
 </script>
 <template>
   <div ref="viewport" class="comic-reader" :class="{ original: scale === 'actual-size' }"
-    @load.capture="emit('layout')" v-html="markup"></div>
+    @load.capture="emit('layout')" @scroll.passive="emit('scroll')"
+    @touchstart.passive="emit('touchstart', $event)" @touchend.passive="emit('touchend', $event)"
+    v-html="markup"></div>
 </template>
 <style scoped>
 .comic-reader { width: 100%; height: 100%; overflow: auto; touch-action: pan-y; background: var(--reader-background); }

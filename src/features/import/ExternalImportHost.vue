@@ -11,6 +11,7 @@ import router, { routeNames } from "../../router";
 import { useExternalImportActions } from "./useExternalImportActions";
 import { installLocalBookImportSession } from "./localBookImportSession";
 import ImportRequestBanners from "./ImportRequestBanners.vue";
+import DeepLinkImportDialog from "./DeepLinkImportDialog.vue";
 
 type PdfPasswordPromptContext = {
   pdfPasswordPromptOpen: boolean;
@@ -34,12 +35,8 @@ let disposed = false;
 
 
 function refreshRestoredShelf(_snapshot: AppBootstrap): void {
+  externalImports.cancelPendingImport();
   bootstrapped.value = true;
-}
-
-async function openSourceImport(url: string): Promise<void> {
-  const failure = await router.push({ name: routeNames.sources, query: { sourceImport: "url", importUrl: url } });
-  if (failure) throw new Error("无法打开书源导入页");
 }
 
 const localBookImportFeature = useLocalBookImport({
@@ -57,6 +54,7 @@ const removeLocalBookImportSession = installLocalBookImportSession({
   pdfImportPasswords,
   externalFileRequestBusy,
   importLocalBook: localBookImportFeature.importLocalBook,
+  requestLinkImport: text => externalImports.requestLinkImport(text),
   submitPdfPassword: localBookImportFeature.submitPdfPassword,
   cancelPdfPasswordPrompt: localBookImportFeature.cancelPdfPasswordPrompt,
 });
@@ -71,7 +69,6 @@ const externalImports = proxyRefs(useExternalImportActions({
   openPdfPasswordPrompt: localBookImportFeature.openPdfPasswordPrompt,
   acceptLocalBookImport: localBookImportFeature.acceptLocalBookImport,
   sourceImportOpen,
-  openSourceImport,
   pdfPasswordPromptOpen: localBookImportFeature.pdfPasswordPromptOpen,
   notify,
   errorText,
@@ -139,11 +136,17 @@ onBeforeUnmount(() => {
     :import-link-opening="externalImports.importLinkOpening"
     :import-link-blocked="externalImports.importLinkBlocked"
     :recovery-required="shelfBatchRecoveryRequired"
-    :source-import-open="sourceImportOpen"
+    :source-import-open="sourceImportOpen || externalImports.importDialogOpen"
     :accept-external-file-request="externalImports.acceptExternalFileRequest"
     :ignore-external-file-request="externalImports.ignoreExternalFileRequest"
     :open-pending-import-link="externalImports.openPendingImportLink"
     :ignore-pending-import-link="ignorePendingImportLink"
+  />
+  <DeepLinkImportDialog
+    :open="externalImports.importDialogOpen" :title="externalImports.importTitle"
+    :busy="externalImports.importLinkOpening" :error="externalImports.importError"
+    :entries="externalImports.importEntries" v-model:selected-keys="externalImports.selectedImportKeys"
+    @save="externalImports.savePendingImport" @cancel="externalImports.cancelPendingImport()" @retry="externalImports.retryPendingImport"
   />
   <PdfPasswordPrompt :context="pdfPasswordPromptContext" />
 </template>

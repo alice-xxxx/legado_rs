@@ -303,7 +303,7 @@ open class AnalyzeUrlCore(
             bindings["result"] = result
             bindings.dangerousApi = source?.enableDangerousApi == true
         }
-        val sharedScope = source?.getShareScope(coroutineContext)
+        val sharedScope = source?.getShareScope(coroutineContext, bindings)
         // - sharedScope == null: 创建独立 scope, bindings 注入 globalThis
         // - sharedScope 路径: SharedJsScope 缓存的 topScope (ThreadLocal 线程独占),
         //   bindings 注入该 topScope 的 globalThis 后再执行, evalInSubScope 内部清理,

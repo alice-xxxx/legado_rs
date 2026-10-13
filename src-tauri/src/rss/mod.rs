@@ -915,9 +915,8 @@ async fn fetch_feed(url: &str) -> Result<Feed, String> {
     {
         return Err("RSS feed URL must be a credential-free HTTP(S) URL".to_owned());
     }
-    let client = reqwest::Client::builder()
+    let client = crate::http_client::builder()
         .timeout(Duration::from_secs(20))
-        .user_agent("legado_rs/0.1 (+RSS reader)")
         .build()
         .map_err(|_| "Cannot prepare RSS network request".to_owned())?;
     let mut response = client

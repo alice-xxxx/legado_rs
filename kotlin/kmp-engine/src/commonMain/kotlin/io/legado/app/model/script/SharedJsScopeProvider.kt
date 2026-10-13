@@ -31,6 +31,14 @@ interface SharedJsScopeProvider {
         coroutineContext: CoroutineContext?
     ): JsScope?
 
+    /** jsLib 顶层执行也使用当前规则的 java/source/cache 等绑定。 */
+    fun getScope(
+        jsLib: String?,
+        enableDangerousApi: Boolean,
+        coroutineContext: CoroutineContext?,
+        bindings: JsBindings,
+    ): JsScope? = getScope(jsLib, enableDangerousApi, coroutineContext)
+
     /** 删除 jsLib 的缓存条目（版本号失效）。 */
     fun remove(jsLib: String?)
 

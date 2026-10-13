@@ -413,7 +413,12 @@ interface JsExtensionsCommon {
     /**
      * 访问网络,返回String
      */
-    fun ajax(url: Any): String? {
+    fun ajax(url: Any): String? = ajaxWithTimeout(url, null)
+
+    /** timeoutMs is a per-request timeout in milliseconds. */
+    fun ajax(url: Any, timeoutMs: Long): String? = ajaxWithTimeout(url, timeoutMs)
+
+    private fun ajaxWithTimeout(url: Any, timeoutMs: Long?): String? {
         val urlStr = if (url is List<*>) {
             url.firstOrNull().toString()
         } else {
@@ -423,6 +428,8 @@ interface JsExtensionsCommon {
         val analyzeUrl = AnalyzeUrlFactories.create(
             urlStr,
             source = getSource(),
+            readTimeout = timeoutMs,
+            callTimeout = timeoutMs,
             coroutineContext = jsContext.coroutineContext ?: EmptyCoroutineContext
         )
         return kotlin.runCatching {
@@ -500,10 +507,18 @@ interface JsExtensionsCommon {
      *
      * (sslContext 入参经 [JsExtensionsPlatform.unsafeSslContext] 门面, native 端为 null 不走 unsafe SSL)
      */
-    fun get(urlStr: String, headers: Map<String, String>): Connection.Response {
+    fun get(urlStr: String, headers: Map<String, String>?): Connection.Response =
+        getWithTimeout(urlStr, headers, null)
+
+    /** timeoutMs is a per-request timeout in milliseconds; null headers mean no extra headers. */
+    fun get(urlStr: String, headers: Map<String, String>?, timeoutMs: Int): Connection.Response =
+        getWithTimeout(urlStr, headers, timeoutMs)
+
+    private fun getWithTimeout(urlStr: String, headers: Map<String, String>?, timeoutMs: Int?): Connection.Response {
+        val extraHeaders = headers.orEmpty()
         val requestHeaders = if (getSource()?.enabledCookieJar == true) {
-            headers.toMutableMap().apply { put(cookieJarHeader, "1") }
-        } else headers
+            extraHeaders.toMutableMap().apply { put(cookieJarHeader, "1") }
+        } else extraHeaders
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             jsContext.ensureActive()
@@ -513,6 +528,7 @@ interface JsExtensionsCommon {
                 .followRedirects(false)
                 .headers(requestHeaders)
                 .method(Connection.Method.GET)
+                .apply { timeoutMs?.let { timeout(it) } }
                 .execute()
         }
         return response
@@ -542,10 +558,18 @@ interface JsExtensionsCommon {
     /**
      * 网络访问post
      */
-    fun post(urlStr: String, body: String, headers: Map<String, String>): Connection.Response {
+    fun post(urlStr: String, body: String, headers: Map<String, String>?): Connection.Response =
+        postWithTimeout(urlStr, body, headers, null)
+
+    /** timeoutMs is a per-request timeout in milliseconds; null headers mean no extra headers. */
+    fun post(urlStr: String, body: String, headers: Map<String, String>?, timeoutMs: Int): Connection.Response =
+        postWithTimeout(urlStr, body, headers, timeoutMs)
+
+    private fun postWithTimeout(urlStr: String, body: String, headers: Map<String, String>?, timeoutMs: Int?): Connection.Response {
+        val extraHeaders = headers.orEmpty()
         val requestHeaders = if (getSource()?.enabledCookieJar == true) {
-            headers.toMutableMap().apply { put(cookieJarHeader, "1") }
-        } else headers
+            extraHeaders.toMutableMap().apply { put(cookieJarHeader, "1") }
+        } else extraHeaders
         val rateLimiter = ConcurrentRateLimiter(getSource())
         val response = rateLimiter.withLimitBlocking {
             jsContext.ensureActive()
@@ -556,6 +580,7 @@ interface JsExtensionsCommon {
                 .requestBody(body)
                 .headers(requestHeaders)
                 .method(Connection.Method.POST)
+                .apply { timeoutMs?.let { timeout(it) } }
                 .execute()
         }
         return response

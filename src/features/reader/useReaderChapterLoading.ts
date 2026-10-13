@@ -1,6 +1,7 @@
+import { openedBook } from "../books/bookDetailState";
 import { nextTick, ref, watch, type Ref } from "vue";
-import { notifyReading } from "../../api/books";
 import { readResource } from "../../api/resources";
+import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import type { BookResource, ChapterMediaResource, ChapterPdfPageResource, ChapterRichTextResource, ChapterTextResource } from "../../api/types";
 import type { PdfPageResource } from "./readerContent";
 import type { ReaderPendingFragmentState } from "./useReaderPageInteraction";
@@ -8,7 +9,6 @@ export type CachedChapterContent = ChapterTextResource | ChapterRichTextResource
 
 export interface ReaderChapterLoadingOptions {
   reader: {
-    book: Ref<BookResource | null>;
     chapterIndex: Ref<number>;
     content: Ref<CachedChapterContent | null>;
     pdfPage: Readonly<Ref<PdfPageResource | null>>;
@@ -39,9 +39,9 @@ export interface ReaderChapterLoadingOptions {
     setPendingFragment: (value: ReaderPendingFragmentState | null) => void;
     resetClickSuppression: () => void;
     chapterError: Ref<string>;
-    errorChapterIndex: Ref<number | null>;
   };
   actions: {
+    notifyCurrentReading: (refresh?: boolean) => Promise<void>;
     showShelfBehindReader: (book: BookResource) => Promise<void>;
     stopTts: (showNotice?: boolean) => void;
     pauseReaderMediaAndSave: () => Promise<boolean>;
@@ -70,18 +70,17 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
   }
   function failPending(error: string): void {
     reader.chapterError.value = error;
-    reader.errorChapterIndex.value = reader.chapterIndex.value;
     reader.menuOpen.value = true;
     complete(false);
   }
   watch(() => {
     if (!reader.visible.value) return null;
-    const book = reader.book.value;
+    const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === reader.chapterIndex.value);
     return chapter?.resource ? JSON.stringify([book!.id, chapter.id, chapter.resource.src, request.value]) : null;
   }, async (key, _previous, onCleanup) => {
     if (!key) { if (!reader.visible.value) complete(false); return; }
-    const book = reader.book.value!;
+    const book = openedBook.value!;
     const chapter = book.chapters.find(entry => entry.index === reader.chapterIndex.value)!;
     const controller = new AbortController();
     onCleanup(() => controller.abort());
@@ -95,7 +94,6 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       reader.content.value = content;
       reader.pdfInitialPassword.value = reader.pdfPage.value ? reader.pdfImportPasswords.get(book.id)?.password ?? "" : "";
       reader.chapterError.value = "";
-      reader.errorChapterIndex.value = null;
       reader.busy.value = false;
       await nextTick();
       if (controller.signal.aborted) return;
@@ -110,7 +108,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
   });
 
   async function loadReaderChapter(index: number, offset?: number, fragment?: string): Promise<boolean> {
-    const book = reader.book.value;
+    const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === index);
     if (!book || !chapter || actions.isBackupRestoreInProgress()) return false;
     if (reader.getMediaElement() && !(await actions.pauseReaderMediaAndSave())) return false;
@@ -136,11 +134,11 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     reader.busy.value = true;
     reader.progressDirty.value = false;
     reader.advanceProgressRevision();
-    reader.setPendingFragment(fragment != null ? { fragment, loadRevision: reader.getLoadRevision(), chapterIndex: index, frameLoaded: true } : null);
+    reader.setPendingFragment(fragment != null ? { fragment, loadRevision: reader.getLoadRevision(), chapterIndex: index } : null);
     const done = new Promise<boolean>(resolve => { finishLoad = resolve; });
     const revision = reader.getLoadRevision();
-    void notifyReading(book.id, { chapterId: chapter.id, chapterIndex: index, offset: position, updatedAtMs: Date.now() })
-      .catch(error => { if (reader.getLoadRevision() === revision && reader.book.value?.id === book.id) failPending(actions.errorText(error)); });
+    void actions.notifyCurrentReading()
+      .catch(error => { if (reader.getLoadRevision() === revision && openedBook.value?.id === book.id) failPending(actions.errorText(error)); });
     request.value += 1;
     return done;
   }
@@ -150,24 +148,26 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     reader.controlsOpen.value = false;
     reader.directoryOpen.value = false;
     reader.controlsMode.value = "settings";
-    reader.menuOpen.value = !!book.mediaType;
+    reader.menuOpen.value = false;
     reader.pdfZoomOverride.value = null;
     reader.resetClickSuppression();
     await loadReaderChapter(index ?? book.progress?.chapterIndex ?? 0, offset ?? (index == null ? book.progress?.offset ?? 0 : 0));
   }
   async function reloadCurrentChapter(): Promise<void> {
-    const book = reader.book.value;
+    const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === reader.chapterIndex.value);
-    if (!book || !chapter || reader.mediaRetrying.value) return;
+    if (!book || !chapter || !reader.visible.value || reader.busy.value || reader.mediaRetrying.value
+      || actions.isBackupRestoreInProgress() || shelfBatchRecoveryRequired.value) return;
     if (!(await actions.pauseReaderMediaAndSave())) return;
+    if (openedBook.value?.id !== book.id || reader.chapterIndex.value !== chapter.index) return;
     reader.mediaRetrying.value = true;
     try {
-      await notifyReading(book.id, { chapterId: chapter.id, chapterIndex: chapter.index, offset: reader.mediaChapter.value ? reader.mediaTimeMs.value : reader.imagePage.value ? reader.comicScrollTop.value : reader.pageIndex.value, updatedAtMs: Date.now() }, true);
-      if (reader.visible.value && reader.book.value?.id === book.id && reader.chapterIndex.value === chapter.index) {
+      await actions.notifyCurrentReading(true);
+      if (reader.visible.value && openedBook.value?.id === book.id && reader.chapterIndex.value === chapter.index) {
         request.value += 1;
       }
     } catch (error) { reader.mediaError.value = actions.errorText(error); actions.notify(reader.mediaError.value, "error"); }
     finally { reader.mediaRetrying.value = false; }
   }
-  return { startReading, loadReaderChapter, reloadCurrentChapter, retryReaderMedia: reloadCurrentChapter, failPending, cancel: () => complete(false) };
+  return { startReading, loadReaderChapter, reloadCurrentChapter, failPending, cancel: () => complete(false) };
 }

@@ -1,15 +1,21 @@
 import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, watch, type Ref } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles } from "../../api/books";
-import { type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
+import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles, prepareBookFromUrl } from "../../api/books";
+import { type BookResource, type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule, type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
+import { prepareDeepLinkImport } from "../../api/settings";
+import { readResource } from "../../api/resources";
+import { mutateSources as mutateSource } from "../sources/sourcesStore";
+import { replacementRuleStore, txtTocRuleStore, httpTtsStore } from "../settings/configurationStores";
+import { requestBookDetailOpen, discardBookDetailOpenRequest } from "../books/bookDetailOpenRequest";
+import { parseDeepLink, parseImportInput, deepLinkLabels, type ImportKind, type PendingImportLink } from "./deepLinks";
 import router, { routeNames } from "../../router";
 import type { ReaderSession } from "../reader/readerSession";
 
-type PendingImportLink = { kind: "source" | "rules"; url: string };
+type ImportEntry = { key: string; name: string; data: Record<string, unknown> };
 
 interface ExternalImportOptions {
   unlisteners: UnlistenFn[];
@@ -21,7 +27,6 @@ interface ExternalImportOptions {
   openPdfPasswordPrompt: (importToken: string) => void;
   acceptLocalBookImport: (response: LocalBookImportResponse) => Promise<void>;
   sourceImportOpen: Readonly<Ref<boolean>>;
-  openSourceImport: (url: string) => Promise<void>;
   pdfPasswordPromptOpen: Readonly<Ref<boolean>>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
@@ -31,6 +36,14 @@ interface ExternalImportOptions {
 export function useExternalImportActions(options: ExternalImportOptions) {
   const pendingImportLinks = ref<PendingImportLink[]>([]);
   const importLinkOpening = ref(false);
+  const activeImportLink = ref<PendingImportLink | null>(null);
+  const importDialogOpen = computed(() => activeImportLink.value !== null);
+  const importKind = ref<ImportKind | null>(null);
+  const importEntries = ref<ImportEntry[]>([]);
+  const selectedImportKeys = ref<string[]>([]);
+  const importError = ref("");
+  const importTitle = computed(() => `导入${deepLinkLabels[importKind.value ?? activeImportLink.value?.kind ?? "auto"]}`);
+  let importGeneration = 0;
   const pendingExternalFiles = ref<PendingExternalFile[]>([]);
   const externalFileRequestBusy = options.externalFileRequestBusy;
   let externalFilesInitialReadPending = false;
@@ -41,7 +54,9 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     || options.pdfPasswordPromptOpen.value || !options.bootstrapped.value || !!backupBusy.value
     || shelfBatchRecoveryRequired.value);
   const importLinkBlocked = computed(() => importLinkOpening.value || !options.bootstrapped.value || !!backupBusy.value
-    || shelfBatchRecoveryRequired.value || options.sourceImportOpen.value);
+    || shelfBatchRecoveryRequired.value || options.sourceImportOpen.value || importDialogOpen.value
+    || pendingExternalFiles.value.length > 0 || options.localBookImportBusy.value || options.pdfPasswordPromptOpen.value
+    || options.getReaderSession().readerBusy.value);
 
   async function closeReaderForImport(restoreRevision: number): Promise<boolean> {
     const reader = options.getReaderSession();
@@ -145,26 +160,23 @@ export function useExternalImportActions(options: ExternalImportOptions) {
   function receiveImportLinks(urls: string[]): void {
     for (const raw of urls) {
       try {
-        if (raw.length > 8192) throw new Error("导入链接过长。");
-        const link = new URL(raw);
-        if (link.protocol !== "legado-rs:") continue;
-        if (link.username || link.password || (link.pathname && link.pathname !== "/") || link.hash
-          || (link.hostname !== "import-source" && link.hostname !== "import-rules")
-          || link.searchParams.getAll("url").length !== 1) throw new Error("不支持这个导入链接。");
-        const target = link.searchParams.get("url")!;
-        if (target.length > 4096) throw new Error("导入地址过长。");
-        const targetUrl = new URL(target);
-        if (!/^https?:$/.test(targetUrl.protocol) || targetUrl.username || targetUrl.password) {
-          throw new Error("导入地址必须是 HTTP 或 HTTPS 链接，且不能包含用户名和密码。");
-        }
-        const kind = link.hostname === "import-source" ? "source" : "rules";
-        if (pendingImportLinks.value.some((entry) => entry.kind === kind && entry.url === target)) continue;
-        if (pendingImportLinks.value.length >= 8) throw new Error("待处理的导入链接过多，请先处理已有链接。");
-        pendingImportLinks.value.push({ kind, url: target });
+        const pending = parseDeepLink(raw);
+        if (!pending) continue;
+        enqueueImportLink(pending);
       } catch (error) {
         options.notify(`无法打开导入链接：${options.errorText(error)}`, "error");
       }
     }
+  }
+
+  function enqueueImportLink(pending: PendingImportLink): void {
+    if (disposed || pendingImportLinks.value.some(entry => entry.kind === pending.kind && entry.url === pending.url)) return;
+    if (pendingImportLinks.value.length >= 8) throw new Error("待处理的导入链接过多，请先处理已有链接。");
+    pendingImportLinks.value.push(pending);
+  }
+
+  function requestLinkImport(input: string): void {
+    enqueueImportLink(parseImportInput(input));
   }
 
   async function setupImportLinks(): Promise<void> {
@@ -188,34 +200,116 @@ export function useExternalImportActions(options: ExternalImportOptions) {
   async function openPendingImportLink(): Promise<void> {
     const pending = pendingImportLinks.value[0];
     if (!pending || importLinkBlocked.value) return;
-    const restoreRevision = options.getRestoreRevision();
+    const generation = ++importGeneration;
+    const revision = options.getRestoreRevision();
+    const isCurrent = () => !disposed && generation === importGeneration && revision === options.getRestoreRevision()
+      && pendingImportLinks.value[0] === pending;
     importLinkOpening.value = true;
     try {
-      if (!await closeReaderForImport(restoreRevision)) return;
-      if (restoreRevision !== options.getRestoreRevision() || pendingImportLinks.value[0] !== pending || shelfBatchRecoveryRequired.value || backupBusy.value) return;
-      if (pending.kind === "source") {
-        if (options.sourceImportOpen.value) return;
-        await options.openSourceImport(pending.url);
-        if (restoreRevision !== options.getRestoreRevision()) return;
-      } else {
-        await router.push({ name: routeNames.settingsRules, query: { importUrl: pending.url } });
-        if (restoreRevision !== options.getRestoreRevision()) return;
+      if (!await closeReaderForImport(revision) || !isCurrent()) return;
+      if (pending.kind === "read" || pending.kind === "addToBookshelf") {
+        const response = await prepareBookFromUrl(pending.url, pending.kind === "read");
+        if (!isCurrent()) return;
+        const book = await readResource<BookResource>(response.book);
+        if (!isCurrent()) return;
+        if (pending.kind === "read" && response.inShelf) {
+          await router.push({ name: routeNames.shelf });
+          if (isCurrent()) await options.getReaderSession().startReading(book);
+        } else {
+          if (router.currentRoute.value.name === routeNames.bookDetail) await router.push({ name: routeNames.shelf });
+          if (!isCurrent()) return;
+          const requestId = requestBookDetailOpen({ kind: "cached-book", bookId: book.id, initialTab: "info" });
+          try {
+            const failure = await router.push({ name: routeNames.bookDetail });
+            if (failure) throw new Error("无法打开书籍详情");
+          } catch (error) { discardBookDetailOpenRequest(requestId); throw error; }
+        }
+        if (isCurrent()) pendingImportLinks.value.shift();
+        return;
       }
-      pendingImportLinks.value.shift();
+      if (pending.kind === "theme" || pending.kind === "dictRule" || pending.kind === "readConfig") {
+        throw new Error("本应用尚未提供原版" + deepLinkLabels[pending.kind] + "导入");
+      }
+      activeImportLink.value = pending;
+      importError.value = "";
+      const prepared = await prepareDeepLinkImport(pending.kind, pending.url);
+      if (!isCurrent()) return;
+      importKind.value = prepared.kind;
+      const items = prepared.document[prepared.kind === "sources" ? "sources" : prepared.kind === "httpTtsConfigs" ? "configs" : "rules"];
+      if (!Array.isArray(items) || !items.length) throw new Error("没有可导入的内容");
+      importEntries.value = items.map((data: Record<string, unknown>, index) => ({
+        key: String(index), data,
+        name: String(data.bookSourceName ?? data.sourceName ?? data.name ?? data.bookSourceUrl ?? data.sourceUrl ?? "未命名"),
+      }));
+      selectedImportKeys.value = importEntries.value.map(entry => entry.key);
     } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`Unable to open import confirmation page: ${options.errorText(error)}`, "error");
+      if (isCurrent()) {
+        if (activeImportLink.value) importError.value = options.errorText(error);
+        else { pendingImportLinks.value.shift(); options.notify(options.errorText(error), "error"); }
       }
     } finally {
-      importLinkOpening.value = false;
+      if (generation === importGeneration) importLinkOpening.value = false;
     }
   }
 
+  function cancelPendingImport(consume = true): void {
+    if (consume && activeImportLink.value === pendingImportLinks.value[0]) pendingImportLinks.value.shift();
+    importGeneration++;
+    activeImportLink.value = null;
+    importKind.value = null;
+    importEntries.value = [];
+    selectedImportKeys.value = [];
+    importError.value = "";
+    importLinkOpening.value = false;
+  }
+
+  function retryPendingImport(): void {
+    cancelPendingImport(false);
+    void openPendingImportLink();
+  }
+
+  async function savePendingImport(): Promise<void> {
+    const kind = importKind.value;
+    if (!kind || importLinkOpening.value || backupBusy.value || shelfBatchRecoveryRequired.value) return;
+    const keys = new Set(selectedImportKeys.value);
+    const selected = importEntries.value.filter(entry => keys.has(entry.key));
+    if (!selected.length) return;
+    const generation = importGeneration, revision = options.getRestoreRevision();
+    const isCurrent = () => !disposed && generation === importGeneration && revision === options.getRestoreRevision();
+    importLinkOpening.value = true;
+    importError.value = "";
+    try {
+      if (kind === "sources") await mutateSource({ kind: "save", id: null, json: JSON.stringify(selected.map(entry => entry.data)) });
+      else for (const { data } of selected) {
+        if (kind === "replacementRules") replacementRuleStore.update(data as unknown as DisplayReplacementRule);
+        else if (kind === "txtTocRules") txtTocRuleStore.update(data as unknown as TxtTocRule);
+        else httpTtsStore.update(data as unknown as HttpTtsConfigEntry);
+      }
+      if (!isCurrent()) return;
+      options.notify("已导入 " + selected.length + " 项" + deepLinkLabels[kind] + "。");
+      cancelPendingImport();
+    } catch (error) { if (isCurrent()) importError.value = options.errorText(error); }
+    finally { if (isCurrent()) importLinkOpening.value = false; }
+  }
+
+  let autoOpenedLink: PendingImportLink | undefined;
+  const stopAutoOpen = watch([() => pendingImportLinks.value[0], importLinkBlocked], () => {
+    const pending = pendingImportLinks.value[0];
+    if (!importLinkBlocked.value && pending && autoOpenedLink !== pending) {
+      autoOpenedLink = pending;
+      void openPendingImportLink();
+    }
+  });
+
   function dispose(): void {
     disposed = true;
+    importGeneration++;
+    stopAutoOpen();
   }
 
   return {
+    importDialogOpen, importKind, importEntries, selectedImportKeys, importError, importTitle,
+    cancelPendingImport, retryPendingImport, savePendingImport,
     pendingImportLinks,
     importLinkOpening,
     pendingExternalFiles,
@@ -228,6 +322,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     acceptExternalFileRequest,
     ignoreExternalFileRequest,
     receiveImportLinks,
+    requestLinkImport,
     setupImportLinks,
     openPendingImportLink,
     dispose,

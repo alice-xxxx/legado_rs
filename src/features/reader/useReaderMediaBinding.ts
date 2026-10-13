@@ -1,14 +1,8 @@
 import type { Ref } from "vue";
+import type { ChapterMediaSource } from "../../api/types";
+import { settings } from "../settings/settingsStore";
 import { clamp } from "./readerContent";
 import type { useReaderMedia } from "./useReaderMedia";
-
-export interface ReaderVideoQualityChoice {
-  label: string;
-  src: string;
-  isHls: boolean;
-  unavailableReason?: string;
-  selected: boolean;
-}
 
 type ReaderMediaBindingOptions = {
   reader: {
@@ -19,24 +13,20 @@ type ReaderMediaBindingOptions = {
     timeMs: Ref<number>;
     durationMs: Ref<number>;
     playing: Ref<boolean>;
-    getVideoPlaybackRate: () => number;
     error: Ref<string>;
     progressDirty: Ref<boolean>;
     progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
-    qualityChoices: Ref<ReaderVideoQualityChoice[]>;
+    qualityChoices: Readonly<Ref<ChapterMediaSource[]>>;
     qualityIndex: Ref<number>;
     getLoadRevision: () => number;
     getMediaElement: () => HTMLMediaElement | null;
     setMediaElement: (media: HTMLMediaElement | null) => void;
-    getAudioPlaybackRate: () => number;
     incrementProgressRevision: () => void;
   };
   actions: {
     changeChapter: (direction: -1 | 1) => Promise<void>;
     saveCurrentProgress: () => Promise<void>;
     isControlBlocked: () => boolean;
-    updateAudioPlaybackRate: (rate: number) => void;
-    updateVideoPlaybackRate: (rate: number) => void;
     notify: (message: string, kind?: "success" | "error") => void;
     errorText: (error: unknown) => string;
     formatMediaTime: (milliseconds: number) => string;
@@ -93,7 +83,6 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     options.reader.playing.value = false;
     mediaRevision += 1;
     restoreTargetMs = null;
-    options.reader.qualityChoices.value = [];
     options.reader.qualityIndex.value = 0;
     if (pause && media) {
       try {
@@ -205,7 +194,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       };
       qualityResumeHandler = resumeAfterMetadata;
       video.addEventListener("loadedmetadata", resumeAfterMetadata, { once: true });
-      sourceRevision = loadReaderMediaSource(video, choice.src, choice.isHls, bindingRevision, loadRevision);
+      sourceRevision = loadReaderMediaSource(video, choice.src, choice.format === "hls", bindingRevision, loadRevision);
     } catch (error) {
       mediaSourceRevision += 1;
       options.mediaPlayback.destroyHlsInstance();
@@ -256,11 +245,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const onRateChange = () => {
       if (!isCurrent()) return;
       const rate = Math.round(clamp(media.playbackRate, 0.5, 3) * 4) / 4;
-      if (options.reader.videoChapter.value) {
-        options.actions.updateVideoPlaybackRate(rate);
-      } else if (Math.abs(rate - options.reader.getAudioPlaybackRate()) > 0.001) {
-        options.actions.updateAudioPlaybackRate(rate);
-      }
+      const key = options.reader.videoChapter.value ? "videoPlaybackRate" : "audioPlaybackRate";
+      if (Math.abs(settings.value.reader[key] - rate) > 0.001) settings.value.reader[key] = rate;
       options.mediaPlayback.syncSession(media);
     };
     const onTimeUpdate = () => {
@@ -339,14 +325,6 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     ];
     for (const [eventName, handler] of mediaEventHandlers) media.addEventListener(eventName, handler);
     options.mediaPlayback.setSession(media, isCurrent);
-    try {
-      const rate = options.reader.videoChapter.value
-        ? options.reader.getVideoPlaybackRate()
-        : options.reader.getAudioPlaybackRate();
-      if (Math.abs(media.playbackRate - rate) > 0.001) media.playbackRate = rate;
-    } catch {
-      options.reader.error.value = `当前${options.reader.videoChapter.value ? "视频" : "音频"}播放器无法调整播放速度。`;
-    }
     if (media.readyState >= HTMLMediaElement.HAVE_METADATA) onLoadedMetadata();
   }
 
@@ -356,12 +334,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     clearReaderMediaBinding,
     flushReaderMediaProgress,
     getBindingRevision: () => mediaRevision,
-    invalidateSource: () => { mediaSourceRevision += 1; },
     loadReaderMediaSource,
     onReaderVideoQualityChange,
     pauseReaderMediaAndSave,
-    scheduleReaderMediaProgressSave,
-    selectReaderVideoQuality,
-    syncReaderMediaPosition,
   };
 }

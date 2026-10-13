@@ -1,9 +1,15 @@
 import { command } from "./ipc";
-import { readResource } from "./resources";
 import type { ResourceDescriptor, ReaderBackgroundPickerResponse, HttpTtsAudioResult, AppSettingsResource } from "./types";
 
 export type { TxtTocRule, TxtTocRulesDocument } from "./types";
-export type ConfigurationImportSource = { kind: "local" } | { kind: "url"; url: string };
+export type ConfigurationImportSource = { kind: "local" } | { kind: "url"; url: string } | { kind: "text"; text: string };
+export type ConfigurationImportKind = "sources" | "replacementRules" | "txtTocRules" | "httpTtsConfigs";
+
+export async function prepareDeepLinkImport(kind: ConfigurationImportKind | "auto", text: string) {
+  return command<{ kind: ConfigurationImportKind; document: Record<string, unknown> }>(
+    "prepare_configuration_import", { kind, source: { kind: "text", text } },
+  );
+}
 
 export interface SaveSettingsResponse {
   requestId: number;
@@ -19,10 +25,10 @@ export const saveSettings = (settings: AppSettingsResource, requestId: number) =
 export async function prepareConfigurationImport<T>(
   kind: "replacementRules" | "txtTocRules" | "httpTtsConfigs", source: ConfigurationImportSource,
 ): Promise<T | null> {
-  const result = await command<{ cancelled: true } | { resource: ResourceDescriptor }>(
+  const result = await command<{ cancelled: true } | { document: T }>(
     "prepare_configuration_import", { kind, source },
   );
-  return "cancelled" in result ? null : readResource<T>(result.resource);
+  return "cancelled" in result ? null : result.document;
 }
 
 export const requestHttpTtsAudio = (configId: string, text: string, speechRate: number) =>

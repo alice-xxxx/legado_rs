@@ -1,3 +1,4 @@
+import { openedBook } from "../books/bookDetailState";
 import { ref, type Ref } from "vue";
 import type { BookResource, DictionaryLanguage } from "../../api/types";
 import { lookupDictionary } from "../../api/reading";
@@ -7,7 +8,6 @@ type ReadonlyRef<T> = Readonly<Ref<T>>;
 
 interface ReaderDictionaryOptions {
   viewport: ReadonlyRef<HTMLElement | null>;
-  book: ReadonlyRef<BookResource | null>;
   chapter: ReadonlyRef<BookResource["chapters"][number] | null>;
   visible: ReadonlyRef<boolean>;
   getReaderLoadRevision: () => number;
@@ -60,7 +60,7 @@ export function useReaderDictionary(options: ReaderDictionaryOptions) {
       dictionaryError.value = "请输入要查询的词语。";
       return;
     }
-    const bookId = options.book.value?.id;
+    const bookId = openedBook.value?.id;
     const chapterId = options.chapter.value?.id;
     if (!options.visible.value || !dictionaryOpen.value || !bookId || !chapterId) return;
     const language = dictionaryLanguage.value;
@@ -72,7 +72,7 @@ export function useReaderDictionary(options: ReaderDictionaryOptions) {
       && readerLoadRevisionAtStart === options.getReaderLoadRevision()
       && options.visible.value
       && dictionaryOpen.value
-      && options.book.value?.id === bookId
+      && openedBook.value?.id === bookId
       && options.chapter.value?.id === chapterId
       && dictionaryWord.value.trim() === word
       && dictionaryLanguage.value === language
