@@ -518,6 +518,8 @@ pub(super) fn looks_like_html(content: &str) -> bool {
         || trimmed.starts_with("<div")
         || trimmed.starts_with("<p")
         || trimmed.starts_with("<section")
+        || trimmed.starts_with("<img")
+        || trimmed.starts_with("<picture")
 }
 
 pub(super) fn validate_id(id: &str, field: &str) -> Result<(), String> {

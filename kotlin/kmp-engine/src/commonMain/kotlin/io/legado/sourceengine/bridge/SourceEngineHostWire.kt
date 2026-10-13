@@ -109,8 +109,13 @@ object SourceEngineHostWire {
             })
             put("useCookieJar", request.useCookieJar)
             request.cookieScope?.let { put("cookieScope", it) }
-            put("prepareScript", SourceBrowserSnapshot.prepareDocument(request))
-            put("evaluateScript", SourceBrowserSnapshot.evaluateRule(request))
+            if (request.mode == HostBrowserMode.INTERACTIVE_PAGE) {
+                put("title", request.title)
+                put("waitForResult", request.waitForResult)
+            } else {
+                put("prepareScript", SourceBrowserSnapshot.prepareDocument(request))
+                put("evaluateScript", SourceBrowserSnapshot.evaluateRule(request))
+            }
         }.toString()
     }
 
@@ -125,7 +130,7 @@ object SourceEngineHostWire {
             check(finalUrl == request.baseUrl) {
                 "Private browser snapshot changed its final URL"
             }
-        } else {
+        } else if (request.mode != HostBrowserMode.INTERACTIVE_PAGE) {
             check(finalUrl.startsWith("https://", ignoreCase = true) ||
                 finalUrl.startsWith("http://", ignoreCase = true)) {
                 "Private dynamic browser returned a non-HTTP(S) final URL"
@@ -135,7 +140,9 @@ object SourceEngineHostWire {
         check(body.encodeToByteArray().size <= MAX_BROWSER_RESULT_BYTES) {
             "Private browser result exceeds the 4 MiB limit"
         }
-        return HostBrowserResponse(capabilityId, finalUrl, body)
+        val cookieHeader = value["cookieHeader"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        check(cookieHeader.length <= 256 * 1024 && cookieHeader.none { it == '\r' || it == '\n' })
+        return HostBrowserResponse(capabilityId, finalUrl, body, cookieHeader)
     }
 
     fun verifyBrowserDocumentPrepared(json: String, request: HostBrowserRequest) {
@@ -149,6 +156,15 @@ object SourceEngineHostWire {
     fun validateBrowserRequest(request: HostBrowserRequest) {
         check(request.capabilityId.matches(Regex("[0-9a-f]{32}"))) {
             "Private browser capability ID is invalid"
+        }
+        if (request.mode == HostBrowserMode.INTERACTIVE_PAGE) {
+            check(request.baseUrl.length < 64 * 1024)
+            check(request.baseUrl.startsWith("https://", ignoreCase = true) ||
+                request.baseUrl.startsWith("http://", ignoreCase = true) ||
+                request.baseUrl.startsWith("data:text/html", ignoreCase = true)) {
+                "Source browser URL must be HTTP(S) or inline HTML"
+            }
+            return
         }
         check(request.baseUrl.startsWith("https://", ignoreCase = true) ||
             request.baseUrl.startsWith("http://", ignoreCase = true)) {

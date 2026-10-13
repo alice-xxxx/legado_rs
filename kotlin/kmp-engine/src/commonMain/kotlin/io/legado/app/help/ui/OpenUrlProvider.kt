@@ -42,9 +42,11 @@ object OpenUrlProviders {
     private var impl: OpenUrlProvider? = null
 
     /** 宿主启动早期注册一次 (任何 JsExtensionsCommon.openUrl 调用之前)。 */
-    fun register(impl: OpenUrlProvider) {
+    fun register(impl: OpenUrlProvider?) {
         this.impl = impl
     }
+
+    fun current(): OpenUrlProvider? = impl
 
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): OpenUrlProvider = impl ?: error("OpenUrlProviders not registered")

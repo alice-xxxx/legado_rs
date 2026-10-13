@@ -35,7 +35,7 @@ async function readBook(reference: BookReference): Promise<BookResource> {
 function previewOf(book: BookResource): BookPreview {
   return {
     id: book.id, title: book.title, author: book.author, coverSrc: book.coverSrc,
-    kind: book.kind, mediaType: book.mediaType, chapterCount: book.chapterCount,
+    kind: book.kind, contentType: book.contentType, mediaType: book.mediaType, chapterCount: book.chapterCount,
     latestChapter: book.latestChapter, canChangeSource: book.canChangeSource,
     sourceId: book.sourceId, sourceName: book.sourceName,
     progress: book.progress ? {

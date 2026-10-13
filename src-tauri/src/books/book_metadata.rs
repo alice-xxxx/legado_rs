@@ -35,6 +35,8 @@ pub(crate) struct ProcessedBookMetadata {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) content_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) word_count: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) latest_chapter: Option<String>,
@@ -70,6 +72,8 @@ pub(crate) fn project_book_metadata(
             true,
         ),
         kind: kind_at(engine_book),
+        content_type: source.source.is_object()
+            .then(|| crate::source_metadata::content_type(&source.source).to_owned()),
         word_count: word_count_at(engine_book),
         latest_chapter: text_at(
             engine_book,

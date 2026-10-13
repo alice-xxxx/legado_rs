@@ -24,6 +24,7 @@ export interface SourceMetadata {
   group?: string;
   enabled: boolean;
   isRss?: boolean;
+  contentType?: "text" | "comic" | "audio" | "video";
   mediaType?: "audio" | "video";
   capabilities?: { search: boolean; detail: boolean; toc: boolean; content: boolean };
   userAgentOverride?: string | null;
@@ -73,14 +74,16 @@ export type SourceLoginForm = {
   message: string;
 };
 
-export type SourceBrowserPage = { title: string } & ({ html: string } | { url: string });
-
 export interface SourceLoginResult {
   status: "executed" | "failed";
   code: string;
   message: string;
   authenticated: null;
-  browserRequests?: SourceBrowserPage[];
+  detail?: string;
+  messages?: string[];
+  inputUpdates?: Record<string, string>;
+  refreshTargets?: string[];
+  copyText?: string;
 }
 
 export interface SourceWebLoginResult {
@@ -148,6 +151,7 @@ export interface BookResource {
   author?: string;
   intro?: string;
   kind?: string;
+  contentType?: "text" | "comic" | "audio" | "video";
   /** Audio and video sources store progress.offset in milliseconds. */
   mediaType?: "audio" | "video";
   wordCount?: string;
@@ -173,7 +177,7 @@ export interface BookResource {
 
 /** Shared list metadata. Complete catalogs belong only to openedBook. */
 export type BookPreview = Pick<BookResource,
-  "id" | "title" | "author" | "coverSrc" | "kind" | "mediaType" | "chapterCount" |
+  "id" | "title" | "author" | "coverSrc" | "kind" | "contentType" | "mediaType" | "chapterCount" |
   "latestChapter" | "progress" | "canChangeSource" | "sourceId" | "sourceName"
 > & { bookSrc: string };
 
@@ -219,7 +223,7 @@ export interface ShelfResource {
   sort?: ShelfSortKey;
   sortOrder?: ShelfSortOrder;
   groups?: string[];
-  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "mediaType"> & { bookSrc: string; groups?: string[] }>;
+  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { bookSrc: string; groups?: string[] }>;
 }
 
 export type ResetBookProgressResponse =
@@ -317,6 +321,7 @@ export interface SearchResultSource {
   resultId: string;
   sourceId: string;
   sourceName: string;
+  contentType?: "text" | "comic" | "audio" | "video";
   mediaType?: "audio" | "video";
   kind?: string;
   articleId?: string;

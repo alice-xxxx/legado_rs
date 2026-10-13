@@ -435,8 +435,8 @@ open class AnalyzeUrlCore(
      */
     private suspend fun getOkHttpStrResponse(): StrResponse =
         getClient().newCallStrResponse(option?.retry ?: 0) {
-            addHeaders(headerMap)
             configureRequest()
+            addHeaders(headerMap)
         }.let {
             val isXml = it.raw.body.contentType()?.toString()
                 ?.matches(AppPattern.xmlContentTypeRegex) == true
@@ -501,9 +501,9 @@ open class AnalyzeUrlCore(
         setCookie()
         try {
             getClient().newCallResponse(option?.retry ?: 0) {
-                addHeaders(headerMap)
                 tagKmp(String::class, rawUrl)
                 configureRequest()
+                addHeaders(headerMap)
             }
         } finally {
             saveCookie()

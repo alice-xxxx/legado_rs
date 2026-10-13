@@ -263,6 +263,7 @@ pub struct SourceMetadata {
     pub group: Option<String>,
     pub enabled: bool,
     pub is_rss: bool,
+    pub content_type: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
     pub capabilities: SourceCapabilities,
@@ -285,6 +286,8 @@ pub(crate) struct SearchResultSource {
     pub(crate) result_id: String,
     pub(crate) source_id: String,
     pub(crate) source_name: String,
+    #[serde(default)]
+    pub(crate) content_type: String,
     pub(crate) title: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) author: Option<String>,
@@ -322,6 +325,7 @@ pub(crate) fn project_search_result(
         result_id: result_id.to_owned(),
         source_id: source.id.clone(),
         source_name: source.name.clone(),
+        content_type: crate::source_metadata::content_type(&source.source).to_owned(),
         title: "Untitled".to_owned(),
         author: None,
         cover_src: None,

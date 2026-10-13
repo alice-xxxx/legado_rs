@@ -62,6 +62,7 @@ const sourceCapabilities = [
 ] as const;
 function sourceKindLabel(source: SourceMetadata): string {
   if (source.isRss) return "RSS";
+  if (source.contentType === "comic") return "漫画";
   if (source.mediaType === "audio") return "音频";
   if (source.mediaType === "video") return "视频";
   return "书籍";

@@ -42,9 +42,11 @@ object Toasters {
     private var impl: Toaster? = null
 
     /** 宿主启动早期注册一次 (任何 toast 调用之前)。 */
-    fun register(impl: Toaster) {
+    fun register(impl: Toaster?) {
         this.impl = impl
     }
+
+    fun current(): Toaster? = impl
 
     /** 获取已注册实现, 未注册抛出 IllegalStateException。 */
     fun get(): Toaster =

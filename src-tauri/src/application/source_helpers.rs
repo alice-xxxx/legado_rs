@@ -237,57 +237,41 @@ pub(super) fn sanitize_source_login_result(result: Value) -> Result<Value, Strin
         "message": message,
         "authenticated": null,
     });
-    if status == "executed" {
-        if let Some(requests) = result.get("browserRequests") {
-            let requests = requests
-                .as_array()
-                .filter(|requests| requests.len() <= 4)
-                .ok_or_else(|| "Source login returned invalid browser pages".to_owned())?;
-            let mut pages = Vec::with_capacity(requests.len());
-            for request in requests {
-                let url = request["url"]
-                    .as_str()
-                    .filter(|url| url.len() < 64 * 1024)
-                    .ok_or_else(|| "Source browser URL is invalid".to_owned())?;
-                let title = request["title"].as_str().unwrap_or("书源页面");
-                let title: String = title.chars().take(256).collect();
-                if let Some(data) = url.strip_prefix("data:") {
-                    let (format, body) = data
-                        .split_once(',')
-                        .ok_or_else(|| "Source browser HTML is invalid".to_owned())?;
-                    let format = format.to_ascii_lowercase();
-                    if !matches!(
-                        format.as_str(),
-                        "text/html"
-                            | "text/html;charset=utf-8"
-                            | "text/html;base64"
-                            | "text/html;charset=utf-8;base64"
-                    ) {
-                        return Err("Source browser data must be HTML".to_owned());
-                    }
-                    let html = if format.ends_with(";base64") {
-                        use base64::Engine;
-                        let body: String =
-                            body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
-                        let bytes = base64::engine::general_purpose::STANDARD
-                            .decode(body)
-                            .map_err(|_| "Source browser HTML encoding is invalid".to_owned())?;
-                        String::from_utf8(bytes)
-                            .map_err(|_| "Source browser HTML must be UTF-8".to_owned())?
-                    } else {
-                        percent_encoding::percent_decode_str(body)
-                            .decode_utf8()
-                            .map_err(|_| "Source browser HTML must be UTF-8".to_owned())?
-                            .into_owned()
-                    };
-                    pages.push(json!({ "title": title, "html": html }));
-                } else {
-                    let url = parse_http_json_import_url(url, "书源页面")?;
-                    pages.push(json!({ "title": title, "url": url.as_str() }));
-                }
-            }
-            sanitized["browserRequests"] = json!(pages);
+    if let Some(detail) = result.get("detail").and_then(Value::as_str) {
+        sanitized["detail"] = json!(detail.chars().take(4096).collect::<String>());
+    }
+    if let Some(messages) = result.get("messages").and_then(Value::as_array) {
+        sanitized["messages"] = json!(
+            messages
+                .iter()
+                .take(40)
+                .filter_map(Value::as_str)
+                .map(|text| text.chars().take(4096).collect::<String>())
+                .collect::<Vec<_>>()
+        );
+    }
+    if let Some(updates) = result.get("inputUpdates") {
+        let updates: std::collections::HashMap<String, String> =
+            serde_json::from_value(updates.clone())
+                .map_err(|_| "Invalid source login field updates".to_owned())?;
+        validate_source_login_credentials(&updates)?;
+        sanitized["inputUpdates"] = json!(updates);
+    }
+    if let Some(targets) = result.get("refreshTargets").and_then(Value::as_array) {
+        sanitized["refreshTargets"] = json!(
+            targets
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|target| matches!(*target, "login" | "explore" | "book"))
+                .take(3)
+                .collect::<Vec<_>>()
+        );
+    }
+    if let Some(text) = result.get("copyText").and_then(Value::as_str) {
+        if text.len() > 1024 * 1024 {
+            return Err("Source clipboard text exceeds its limit".into());
         }
+        sanitized["copyText"] = json!(text);
     }
     Ok(sanitized)
 }
@@ -468,6 +452,7 @@ pub(super) fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
             group: record.group.clone(),
             enabled: record.enabled,
             is_rss: crate::source_metadata::is_rss_source_metadata(&record.source),
+            content_type: crate::source_metadata::content_type(&record.source).to_owned(),
             media_type: crate::source_metadata::media_type(&record.source).map(str::to_owned),
             capabilities: source_capabilities(&record.source),
             user_agent_override: valid_user_agent_override(&record.source),
@@ -524,26 +509,16 @@ mod login_form_tests {
     use super::*;
 
     #[test]
-    fn decodes_source_tutorial_html_and_rejects_unsafe_browser_urls() {
-        use base64::Engine;
-        let html = "<!doctype html><h1>使用教程</h1>";
-        let encoded = base64::engine::general_purpose::STANDARD.encode(html.as_bytes());
-        let mut result = json!({
+    fn forwards_source_ui_effects_and_restricts_refresh_targets() {
+        let result = sanitize_source_login_result(json!({
             "status": "executed", "code": "login_action_executed",
-            "browserRequests": [{"title": "教程", "url": format!("data:text/html;base64,{encoded}")}],
-        });
-        let sanitized = sanitize_source_login_result(result.clone()).unwrap();
-        assert_eq!(sanitized["browserRequests"][0]["html"], html);
-        for url in [
-            "javascript:alert(1)",
-            "file:///C:/secret",
-            "data:application/javascript,alert(1)",
-            "data:text/html;base64,%%%",
-            "https://user:password@example.com",
-        ] {
-            result["browserRequests"][0]["url"] = json!(url);
-            assert!(sanitize_source_login_result(result.clone()).is_err());
-        }
+            "messages": ["已保存设置"], "inputUpdates": {"设备ID": "123"},
+            "refreshTargets": ["explore", "invalid"],
+        }))
+        .unwrap();
+        assert_eq!(result["messages"], json!(["已保存设置"]));
+        assert_eq!(result["inputUpdates"]["设备ID"], "123");
+        assert_eq!(result["refreshTargets"], json!(["explore"]));
     }
 
     fn form() -> Value {

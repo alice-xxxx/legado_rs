@@ -1,6 +1,7 @@
 package io.legado.app.help.source
 
 import io.legado.app.data.entities.BaseSource
+import io.legado.app.help.http.StrResponse
 import kotlin.concurrent.Volatile
 
 /**
@@ -16,6 +17,9 @@ import kotlin.concurrent.Volatile
  * 模式参考 `SourceHelpAccessors` / `AppDbProviders`。
  */
 interface VerificationUiProvider {
+
+    /** 支持直接等待的宿主回传完整响应；旧平台继续使用结果槽位。 */
+    fun awaitBrowser(source: BaseSource, url: String, title: String, refetchAfterSuccess: Boolean): StrResponse? = null
 
     /**
      * 弹图片验证码对话框 (对应 app 端 `VerificationCodeDialog.display`)。

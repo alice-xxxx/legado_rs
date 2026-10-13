@@ -358,6 +358,7 @@ impl ApplicationService {
             cover_src: display_metadata.cover_src.clone(),
             intro: display_metadata.intro.clone(),
             kind: display_metadata.kind.clone(),
+            content_type: display_metadata.content_type.clone(),
             media_type: crate::source_metadata::media_type(&source.source)
                 .and_then(BookMediaType::from_source_value),
             word_count: display_metadata.word_count.clone(),
@@ -1004,6 +1005,9 @@ pub(super) fn apply_cached_book_metadata(
     source_is_imported: bool,
 ) -> Result<(), String> {
     crate::book_display_metadata::update_base(book, metadata)?;
+    if let Some(content_type) = metadata.content_type.as_deref() {
+        book["contentType"] = json!(content_type);
+    }
     if let Some(kind) = metadata.kind.as_deref() {
         book["kind"] = json!(kind);
     }
@@ -1033,6 +1037,9 @@ pub(super) fn apply_refreshed_book_metadata(
     metadata: &crate::book_metadata::ProcessedBookMetadata,
 ) -> Result<(), String> {
     crate::book_display_metadata::update_base(book, metadata)?;
+    if let Some(content_type) = metadata.content_type.as_deref() {
+        book["contentType"] = json!(content_type);
+    }
     if let Some(kind) = metadata.kind.as_deref() {
         book["kind"] = json!(kind);
     }

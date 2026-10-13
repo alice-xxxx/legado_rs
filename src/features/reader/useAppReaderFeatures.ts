@@ -46,9 +46,12 @@ const readingPdfPage = computed(() => readingContent.value?.kind === "pdfPage" ?
 const readingPdfZoomOverride = ref<PdfPageResource["defaultZoom"] | null>(null);
 const activePdfZoom = computed(() => readingPdfZoomOverride.value ?? readingPdfPage.value?.defaultZoom ?? "page-fit");
 const readingPdfInitialPassword = ref("");
-const readingImagePage = computed(() => readingContent.value?.kind === "richText" && isImageOnlyChapter(readingContent.value.markup));
-const readingMediaChapter = computed(() => readingContent.value ? readingContent.value.kind === "media" : !!readingBook.value?.mediaType);
-const readingVideoChapter = computed(() => readingContent.value?.kind === "media" ? readingContent.value.mediaType === "video" : !readingContent.value && readingBook.value?.mediaType === "video");
+const readingImagePage = computed(() => readingBook.value?.contentType === "comic"
+  || !readingBook.value?.contentType && readingContent.value?.kind === "richText" && isImageOnlyChapter(readingContent.value.markup));
+const readingMediaChapter = computed(() => readingBook.value?.contentType === "audio" || readingBook.value?.contentType === "video"
+  || !!readingBook.value?.mediaType || readingContent.value?.kind === "media");
+const readingVideoChapter = computed(() => readingBook.value?.contentType === "video" || readingBook.value?.mediaType === "video"
+  || readingContent.value?.kind === "media" && readingContent.value.mediaType === "video");
 const readerMediaTimeMs = ref(0);
 const readerMediaDurationMs = ref(0);
 const readerMediaPlaying = ref(false);

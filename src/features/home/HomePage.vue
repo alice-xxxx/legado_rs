@@ -77,7 +77,7 @@ async function openSearchResult(result: SearchBookResult): Promise<void> {
   }
 }
 
-// 结果未声明类型时，根据书源信息推断。
+// 使用 Rust 发布的内容类型。
 function contentType(result: SearchBookResult): "novel" | "comic" | "video" | "audio" {
   const declared = [result.contentType, result.mediaType, result.type]
     .find((value): value is string => typeof value === "string");
@@ -88,8 +88,8 @@ function contentType(result: SearchBookResult): "novel" | "comic" | "video" | "a
     if (/^(novel|text|小说)$/i.test(declared)) return "novel";
   }
   const source = sources.value.find((item) => item.id === result.sourceId);
+  if (source?.contentType) return source.contentType === "text" ? "novel" : source.contentType;
   if (source?.mediaType === "video" || source?.mediaType === "audio") return source.mediaType;
-  if (/漫画|comic|manga/i.test(source?.group ?? "")) return "comic";
   return "novel";
 }
 

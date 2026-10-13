@@ -332,7 +332,10 @@ pub struct BookDocument {
     pub intro: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub kind: Option<String>,
-    /// Typed playback mode for content whose ordered units are audio or video.
+    /// Reader mode projected from the source, independent of genre labels.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub content_type: Option<String>,
+    /// Audio/video playback mode, retained for progress and media resource handling.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub media_type: Option<BookMediaType>,
     #[serde(skip_serializing_if = "Option::is_none", default)]

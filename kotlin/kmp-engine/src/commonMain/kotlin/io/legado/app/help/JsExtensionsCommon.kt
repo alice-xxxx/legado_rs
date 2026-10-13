@@ -21,8 +21,12 @@ import io.legado.app.help.http.CookieStoreProviders
 import io.legado.app.help.http.StrResponse
 import io.legado.app.help.http.cookieJarHeader
 import io.legado.app.help.source.SourceVerificationHelpShared
+import io.legado.app.help.source.VerificationUiProviders
+import io.legado.app.help.source.clearExploreKindsCache
+import io.legado.app.data.entities.BookSource
 import io.legado.app.help.toast.Toasters
 import io.legado.app.help.ui.OpenUrlProviders
+import io.legado.app.help.ui.JsUiProviders
 import io.legado.app.model.Debug
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.analyzeRule.CustomUrl
@@ -590,6 +594,7 @@ interface JsExtensionsCommon {
      * 刷新 UI (通过 EventBus 通知, login/explore/book)
      */
     fun refreshUi(target: String) {
+        JsUiProviders.impl?.let { it.refresh(target); return }
         val tag = when (target.lowercase()) {
             "login" -> EventBus.REFRESH_LOGIN_UI
             "explore" -> EventBus.REFRESH_EXPLORE
@@ -630,6 +635,18 @@ interface JsExtensionsCommon {
      */
     fun androidId() = AppConst.androidId
 
+    fun deviceID() = androidId()
+
+    fun refreshExplore() {
+        (getSource() as? BookSource)?.let { source -> runBlockingInScope { source.clearExploreKindsCache() } }
+        refreshUi("explore")
+    }
+
+    fun upLoginData(data: Map<String, Any?>) {
+        JsUiProviders.impl?.updateLoginData(data.mapValues { it.value?.toString().orEmpty() })
+        refreshUi("login")
+    }
+
     //****************** P1: UI 反馈 (toast/longToast/getWebViewUA/openUrl, 走 Providers) ******************
 
     /**
@@ -657,6 +674,7 @@ interface JsExtensionsCommon {
      */
     fun copy(text: Any?) {
         jsContext.ensureActive()
+        JsUiProviders.impl?.let { it.copy(text?.toString().orEmpty()); return }
         val navigator = AppNavigatorProviders.getOrNull() ?: return
         val textStr = text?.toString() ?: ""
         // 复用 IntentData 临时大数据容器 (one-shot, 对话框取走即删)
@@ -988,6 +1006,8 @@ interface JsExtensionsCommon {
      */
     fun startBrowserAwait(url: String, title: String, refetchAfterSuccess: Boolean): StrResponse {
         jsContext.ensureActive()
+        val source = getSource() ?: throw NoStackTraceException("startBrowser source cannot be null")
+        VerificationUiProviders.get().awaitBrowser(source, url, title, refetchAfterSuccess)?.let { return it }
         val body = SourceVerificationHelpShared.getVerificationResult(
             getSource(), url, title, true, refetchAfterSuccess
         )

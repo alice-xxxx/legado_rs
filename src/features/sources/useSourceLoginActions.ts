@@ -1,8 +1,9 @@
-import { ref, type Ref } from "vue";
+import { type Ref } from "vue";
+import { emit } from "@tauri-apps/api/event";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { getSourceLoginForm, getSourceLoginState } from "../../api/sources";
 import { sources, mutateSources as mutateSource } from "./sourcesStore";
-import { type SourceBrowserPage, type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
+import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {
   selectedSourceRows: Ref<string[]>;
@@ -40,7 +41,6 @@ export function useSourceLoginActions({
 }: SourceLoginActionDependencies) {
   // 每次切换或关闭登录对象都会递增代次，丢弃旧请求的迟到结果。
   let sourceLoginGeneration = 0;
-  const sourceLoginBrowserPages = ref<SourceBrowserPage[]>([]);
 
   function isCurrentSourceLogin(sourceId: string, generation: number): boolean {
     return sourceLoginGeneration === generation && sourceLoginTarget.value?.id === sourceId;
@@ -70,7 +70,6 @@ export function useSourceLoginActions({
     }
 
     const generation = ++sourceLoginGeneration;
-    sourceLoginBrowserPages.value = [];
     sourceLoginBusy.value = false;
     sourceLoginTarget.value = source;
     sourceHasLoginState.value = null;
@@ -125,14 +124,29 @@ export function useSourceLoginActions({
         : await mutateSource({ kind: "runLoginAction", sourceId: source.id, actionId, credentials });
       if (!isCurrentSourceLogin(source.id, generation)) return;
       if (!("status" in result)) throw new Error("Source login returned an invalid response");
-      if (result.status === "failed") sourceLoginFormError.value = result.message;
-      else sourceLoginFeedback.value = actionId === undefined ? "已执行登录。" : "操作已执行。";
+      if (result.status === "failed") sourceLoginFormError.value = result.message + ("detail" in result && result.detail ? `\n${result.detail}` : "");
+      else sourceLoginFeedback.value = "messages" in result && result.messages?.length ? result.messages[result.messages.length - 1] : result.message;
       if (result.status === "executed") {
-        sourceLoginBrowserPages.value = "browserRequests" in result ? result.browserRequests ?? [] : [];
         for (const field of form.fields) {
           if (field.password || field.type === "password") sourceLoginCredentials.value[field.name] = "";
         }
       }
+      if ("inputUpdates" in result) {
+        for (const field of form.fields) {
+          const value = result.inputUpdates?.[field.name];
+          if (value !== undefined) sourceLoginCredentials.value[field.name] = value;
+        }
+      }
+      if ("refreshTargets" in result && result.refreshTargets) {
+        if (result.refreshTargets.includes("login")) {
+          const nextForm = await getSourceLoginForm(source.id);
+          if (!isCurrentSourceLogin(source.id, generation)) return;
+          sourceLoginForm.value = nextForm;
+          sourceLoginCredentials.value = makeSourceLoginCredentials(nextForm.mode === "form" ? nextForm.fields : [], sourceLoginCredentials.value);
+        }
+        for (const target of result.refreshTargets) void emit("source-ui-refresh", { sourceId: source.id, target });
+      }
+      if ("copyText" in result && result.copyText !== undefined) await navigator.clipboard.writeText(result.copyText);
       const state = await getSourceLoginState(source.id);
       if (isCurrentSourceLogin(source.id, generation)) sourceHasLoginState.value = state.hasLoginState;
     } catch {
@@ -275,7 +289,6 @@ export function useSourceLoginActions({
     if (sourceLoginBusy.value && sourceLoginWebSessionId.value) return;
     cancelSelectedSourceWebLogin();
     sourceLoginGeneration += 1;
-    sourceLoginBrowserPages.value = [];
     sourceLoginTarget.value = null;
     sourceLoginBusy.value = false;
     sourceHasLoginState.value = null;
@@ -287,7 +300,6 @@ export function useSourceLoginActions({
   }
 
   return {
-    sourceLoginBrowserPages,
     openSelectedSourceLogin,
     loadSelectedSourceLoginForm,
     executeSelectedSourceLogin,

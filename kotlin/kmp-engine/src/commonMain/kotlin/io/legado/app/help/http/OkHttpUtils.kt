@@ -57,7 +57,7 @@ suspend fun KmpCall.await(): KmpResponse = suspendCancellableCoroutine { block -
 
 fun KmpRequestBuilder.addHeaders(headers: Map<String, String>) {
     headers.forEach {
-        addHeader(it.key, requestHeaderValue(it.key, it.value))
+        addRequestHeader(it.key, it.value)
     }
 }
 

@@ -180,6 +180,7 @@ const manageGroupsOpen = ref(false);
 
 /** 只使用 Rust 投影的书籍类型；未知类型归入小说/文本，不按书名猜测。 */
 function bookType(book: ShelfResource["books"][number]): Exclude<LibraryType, "all"> {
+  if (book.contentType) return book.contentType === "text" ? "novel" : book.contentType;
   if (book.mediaType === "video" || book.mediaType === "audio") return book.mediaType;
   const kind = book.kind?.trim().toLowerCase() ?? "";
   if (/漫画|comic|manga|manhua|manhwa|cbz/.test(kind)) return "comic";

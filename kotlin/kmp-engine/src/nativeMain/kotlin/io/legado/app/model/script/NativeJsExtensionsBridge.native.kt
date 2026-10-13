@@ -755,6 +755,13 @@ object NativeJsExtensionsBridge {
                 val resp = obj.startBrowserAwait(args.getString(0), args.getString(1), refetch)
                 qjs_NewFloat64(ctx, registerObject(resp).toDouble())
             }
+            obj is JsExtensionsCommon && methodId == 414 -> stringToJsValue(ctx, obj.deviceID())
+            obj is JsExtensionsCommon && methodId == 415 -> { obj.refreshExplore(); jsUndefined() }
+            obj is JsExtensionsCommon && methodId == 416 -> {
+                val data = io.legado.app.utils.KS_JSON.parseToJsonElement(args.getString(0)) as kotlinx.serialization.json.JsonObject
+                obj.upLoginData(data.mapValues { (_, value) -> (value as? kotlinx.serialization.json.JsonPrimitive)?.content })
+                jsUndefined()
+            }
             // ============ 字体族 (500-599) ============
             obj is JsExtensionsCommon && methodId == 501 -> {
                 // queryTTF(data[, useCache]) → QueryTTF handle (null → 0, JS 层转 null)
@@ -1195,6 +1202,9 @@ function __createJavaObj(handle) {
     obj.log = function(msg) { __nativeDispatch(handle, 402, [msg]); return msg; };
     obj.logType = function(any) { __nativeDispatch(handle, 403, [any]); };
     obj.openUrl = function(url, mimeType) { __nativeDispatch(handle, 407, [url, mimeType]); };
+    obj.deviceID = function() { return __nativeDispatch(handle, 414, []); };
+    obj.refreshExplore = function() { __nativeDispatch(handle, 415, []); };
+    obj.upLoginData = function(data) { __nativeDispatch(handle, 416, [JSON.stringify(data)]); };
     obj.startBrowser = function(url, title) { __nativeDispatch(handle, 408, [url, title]); };
     obj.startBrowserAwait = function(url, title, refetchAfterSuccess) {
         return __createStrResponseObj(__nativeDispatch(handle, 409, [url, title, refetchAfterSuccess]));

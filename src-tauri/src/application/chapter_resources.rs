@@ -279,7 +279,9 @@ impl ApplicationService {
             // held over the source call while the book lock remains available
             // to progress saves and unrelated chapter cache commits.
             let _chapter_lock = self.chapter_lock(book_id, &chapter_id).await;
-            let (raw_chapter, next_chapter_url, already_ready, saved_media_type) = {
+            let source = self.find_source(&source_id).await?;
+            let comic_source = crate::source_metadata::is_comic_source_metadata(&source.source);
+            let (raw_chapter, next_chapter_url, already_ready) = {
                 let _book_lock = self.book_lock(book_id).await;
                 let private = self
                     .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
@@ -295,11 +297,15 @@ impl ApplicationService {
                     .read_json_ref(&book_ref)
                     .await
                     .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
-                let media_type = public_book
-                    .get("mediaType")
-                    .and_then(Value::as_str)
-                    .filter(|value| matches!(*value, "audio" | "video"))
-                    .map(str::to_owned);
+                let content_type = crate::source_metadata::content_type(&source.source);
+                if public_book["contentType"].as_str() != Some(content_type) {
+                    public_book["contentType"] = json!(content_type);
+                    set_optional_public_field(&mut public_book, "mediaType",
+                        crate::source_metadata::media_type(&source.source).map(|kind| json!(kind)));
+                    self.store.write_json_ref(&book_ref, &public_book).await
+                        .map_err(|error| error.to_string())?;
+                    changed = true;
+                }
                 let index = public_book
                     .get("chapters")
                     .and_then(Value::as_array)
@@ -326,11 +332,26 @@ impl ApplicationService {
                     .map(|src| scoped_chapter_cache_ref(book_id, src))
                     .transpose()?;
                 let mut ready_ref = None;
-                if let Some(reference) = declared_ref {
+                if let Some(mut reference) = declared_ref {
                     // A file's existence cannot establish that its typed payload is
                     // readable. Reuse only a resource validated by Rust, and repair
                     // obsolete descriptor semantics from the actual payload.
-                    if let Some(content_format) = self.cached_chapter_format(&reference).await? {
+                    if let Some(mut content_format) = self.cached_chapter_format(&reference).await? {
+                        // Older versions stored <img> lists as plain text. Repair
+                        // from the existing cache, without requesting the source again.
+                        if content_format == "text" {
+                            let cached = self.store.read_json_ref(&reference).await
+                                .map_err(|error| error.to_string())?;
+                            let text = cached["text"].as_str().unwrap_or_default();
+                            if comic_source || looks_like_html(text) {
+                                let base = text_at(&raw_chapter, &["url", "chapterUrl"])
+                                    .or_else(|| text_at(&engine_book, &["bookUrl", "url"]));
+                                reference = self.store.write_chapter_rich_text(
+                                    book_id, &chapter_id, text, base.as_deref(),
+                                ).await.map_err(|error| error.to_string())?;
+                                content_format = "richText";
+                            }
+                        }
                         let expected_descriptor = serde_json::to_value(
                             crate::models::ChapterResourceDescriptor::for_chapter(
                                 &reference,
@@ -353,15 +374,12 @@ impl ApplicationService {
                         ready_ref = Some(reference);
                     }
                 }
-                (raw_chapter, next_chapter_url, ready_ref.is_some(), media_type)
+                (raw_chapter, next_chapter_url, ready_ref.is_some())
             };
 
-            // Look up the private source after releasing the book lock. Older
-            // book JSON may not yet have a public mediaType, so classify it
-            // from BookSourceType as a fallback.
-            let source = self.find_source(&source_id).await?;
-            let media_type = saved_media_type
-                .or_else(|| crate::source_metadata::media_type(&source.source).map(str::to_owned));
+            // Source type is authoritative; genre labels and stale book JSON
+            // must not select the text reader for comics or streamed media.
+            let media_type = crate::source_metadata::media_type(&source.source);
             if already_ready && media_type.is_none() {
                 continue;
             }
@@ -397,7 +415,7 @@ impl ApplicationService {
             let content_base_url = text_at(&raw_chapter, &["url", "chapterUrl"])
                 .or_else(|| text_at(&engine_book, &["bookUrl", "url"]));
             let non_media_content_format =
-                if looks_like_html(content) { "richText" } else { "text" };
+                if comic_source || looks_like_html(content) { "richText" } else { "text" };
             let media_request = if let Some(media_type) = media_type.as_deref() {
                 if media_type == "video" {
                     let (candidates, default_index) = video_media_candidates(content)?;
@@ -669,7 +687,7 @@ impl ApplicationService {
                     == Some(non_media_content_format)
                 {
                     reference
-                } else if looks_like_html(content) {
+                } else if non_media_content_format == "richText" {
                     self.store
                         .write_chapter_rich_text(
                             book_id,
@@ -685,7 +703,7 @@ impl ApplicationService {
                         .await
                         .map_err(|error| error.to_string())?
                 }
-            } else if looks_like_html(content) {
+            } else if non_media_content_format == "richText" {
                 self.store
                     .write_chapter_rich_text(
                             book_id,

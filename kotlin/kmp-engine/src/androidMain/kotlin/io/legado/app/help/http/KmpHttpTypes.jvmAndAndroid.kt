@@ -53,6 +53,13 @@ actual typealias KmpHttpClientBuilder = OkHttpClient.Builder
 actual typealias KmpRequest = Request
 
 actual typealias KmpRequestBuilder = Request.Builder
+
+internal actual fun KmpRequestBuilder.addNonAsciiRequestHeader(
+    name: String,
+    value: String,
+): KmpRequestBuilder = headers(
+    build().headers.newBuilder().addUnsafeNonAscii(name, value).build()
+)
 // endregion
 
 // region Response / Builder / Body

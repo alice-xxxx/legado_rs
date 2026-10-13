@@ -7,23 +7,31 @@ mod reading_notification_tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    struct CountingExecutor(Arc<AtomicUsize>);
+    struct CountingExecutor(Arc<AtomicUsize>, &'static str);
     impl SourceExecutor for CountingExecutor {
-        fn execute<'a>(&'a self, _request: SourceEngineRequest) -> EngineFuture<'a> {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
             Box::pin(async move {
                 self.0.fetch_add(1, Ordering::SeqCst);
-                Ok(json!("　　Cached text\n　　Next paragraph"))
+                if request.operation == "resolveMedia" {
+                    Ok(json!({"url":request.media_url, "headers":{}}))
+                } else {
+                    Ok(json!(self.1))
+                }
             })
         }
     }
 
     async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<AtomicUsize>) {
+        fixture_with_content(0, "　　Cached text\n　　Next paragraph").await
+    }
+
+    async fn fixture_with_content(source_type: u32, content: &'static str) -> (tempfile::TempDir, ApplicationService, Arc<AtomicUsize>) {
         let directory = tempfile::tempdir().unwrap();
         let calls = Arc::new(AtomicUsize::new(0));
-        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(CountingExecutor(calls.clone()))).await.unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(CountingExecutor(calls.clone(), content))).await.unwrap();
         service.write_sources(&[SourceRecord {
             id: "source-a".into(), name: "Source".into(), group: None, enabled: true,
-            source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":0}),
+            source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":source_type}),
         }]).await.unwrap();
         let chapters: Vec<Value> = (0..5).map(|index| json!({"id":format!("chapter-{index}"),"index":index,"title":format!("Chapter {index}")})).collect();
         let raw: Vec<Value> = (0..5).map(|index| json!({"url":format!("https://example.invalid/{index}"),"title":format!("Chapter {index}")})).collect();
@@ -68,6 +76,73 @@ mod reading_notification_tests {
         service.prepare_reading_chapters("book-a", 0, epoch, |_| panic!("Stale window must not publish")).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
+
+    const COMIC: &str = "<img src=\"https://images.example.invalid/1.webp\"><img src=\"https://images.example.invalid/2.webp\"><script>alert(1)</script>";
+
+    #[tokio::test]
+    async fn comic_img_list_is_cached_as_markup_and_opened_as_comic() {
+        let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
+        service.get_book("book-a").await.unwrap();
+        service.prepare_chapters("book-a", 0, 1).await.unwrap();
+        let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
+        assert_eq!(book["contentType"], "comic");
+        assert_eq!(book["chapters"][0]["resource"]["contentFormat"], "richText");
+        let reference = scoped_chapter_cache_ref("book-a", book["chapters"][0]["resource"]["resourceId"].as_str().unwrap()).unwrap();
+        let content = service.store.read_json_ref(&reference).await.unwrap();
+        assert_eq!(content["kind"], "richText");
+        let markup = content["markup"].as_str().unwrap();
+        assert_eq!(markup.matches("<img ").count(), 2);
+        assert!(!markup.contains("<script"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn old_comic_text_cache_is_repaired_and_published_without_network() {
+        let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
+        let original = service.store.write_chapter_text("book-a", "chapter-0", COMIC).await.unwrap();
+        let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(&original, "text")).unwrap();
+        let book_ref = service.store.book_ref("book-a").unwrap();
+        service.store.update_json_ref(&book_ref, |mut book| {
+            book["chapters"][0]["resource"] = descriptor;
+            Ok(book)
+        }).await.unwrap();
+        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+        service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
+        let published = std::sync::Mutex::new(Vec::new());
+        let epoch = service.restore_epoch.load(Ordering::Acquire);
+        service.prepare_reading_chapters("book-a", 0, epoch, |resource| published.lock().unwrap().push(resource)).await.unwrap();
+        let book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(book["contentType"], "comic");
+        assert_eq!(book["chapters"][0]["resource"]["contentFormat"], "richText");
+        assert_ne!(book["chapters"][0]["resource"]["resourceId"].as_str(), Some(original.as_str()));
+        assert_eq!(service.store.read_json_ref(&original).await.unwrap()["kind"], "text");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(published.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn audio_and_video_are_resolved_to_player_resources_and_reused() {
+        for (source_type, expected) in [(1, "audio"), (4, "video")] {
+            let (_directory, service, calls) = fixture_with_content(source_type, "https://media.example.invalid/play.mp4").await;
+            service.get_book("book-a").await.unwrap();
+            service.prepare_chapters("book-a", 0, 1).await.unwrap();
+            let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
+            assert_eq!(book["contentType"], expected);
+            assert_eq!(book["mediaType"], expected);
+            assert_eq!(book["chapters"][0]["resource"]["contentFormat"], expected);
+            let reference = scoped_chapter_cache_ref("book-a", book["chapters"][0]["resource"]["resourceId"].as_str().unwrap()).unwrap();
+            let content = service.store.read_json_ref(&reference).await.unwrap();
+            assert_eq!(content["kind"], "media");
+            assert_eq!(content["mediaType"], expected);
+            assert!(content.get("text").is_none());
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+            service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+            service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
+            let epoch = service.restore_epoch.load(Ordering::Acquire);
+            service.prepare_reading_chapters("book-a", 0, epoch, |_| panic!("Ready media must be reused")).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2);
+        }
+    }
 }
 
 impl ApplicationService {
@@ -91,7 +166,23 @@ impl ApplicationService {
             if current["progress"]["chapterIndex"].as_u64() != Some(chapter_index as u64) { break; }
             if let Some(src) = current["chapters"][index]["resource"]["resourceId"].as_str() {
                 let reference = scoped_chapter_cache_ref(book_id, src)?;
-                if self.cached_chapter_format(&reference).await?.is_some() { continue; }
+                // Online books written before source type projection must pass
+                // through preparation once, even when a cache file exists.
+                if let Some(format) = self.cached_chapter_format(&reference).await?
+                    .filter(|_| current["sourceId"].as_str().is_none() || current["contentType"].is_string()) {
+                    let reusable = match current["contentType"].as_str() {
+                        Some("audio") => format == "audio",
+                        Some("video") => format == "video",
+                        Some("comic") => format == "richText",
+                        _ if format == "text" => {
+                            let cached = self.store.read_json_ref(&reference).await
+                                .map_err(|error| error.to_string())?;
+                            !looks_like_html(cached["text"].as_str().unwrap_or_default())
+                        }
+                        _ => true,
+                    };
+                    if reusable { continue; }
+                }
             }
             let result = self.prepare_chapters_unlocked(book_id, index, 1).await?;
             if result["changed"].as_bool() == Some(true) { updated(result["book"].clone()); }

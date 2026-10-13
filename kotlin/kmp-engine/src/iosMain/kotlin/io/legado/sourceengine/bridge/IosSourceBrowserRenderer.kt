@@ -13,6 +13,18 @@ import kotlinx.coroutines.withTimeout
 import platform.CoreGraphics.CGRectMake
 import platform.Foundation.NSError
 import platform.Foundation.NSURL
+import platform.Foundation.NSMutableURLRequest
+import platform.Foundation.NSSelectorFromString
+import platform.UIKit.UIApplication
+import platform.UIKit.UIViewController
+import platform.UIKit.UINavigationController
+import platform.UIKit.UIBarButtonItem
+import platform.UIKit.UIBarButtonSystemItemDone
+import platform.UIKit.UIModalPresentationFullScreen
+import kotlinx.cinterop.ObjCAction
+import io.legado.app.utils.KS_JSON
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import platform.WebKit.WKNavigation
 import platform.WebKit.WKNavigationAction
 import platform.WebKit.WKNavigationActionPolicy
@@ -31,11 +43,96 @@ internal suspend fun renderIosSourceBrowserSnapshot(
     request: HostBrowserRequest,
 ): HostBrowserResponse {
     SourceEngineHostWire.validateBrowserRequest(request)
+    if (request.mode == HostBrowserMode.INTERACTIVE_PAGE) return openIosSourceScriptBrowser(request)
     val renderer = IosSourceBrowserSnapshot(request)
     return try {
         withTimeout(AppConst.timeLimit.coerceAtLeast(30_000L)) { renderer.run() }
     } finally {
         withContext(NonCancellable + Dispatchers.Main) { renderer.destroy() }
+    }
+}
+
+private suspend fun openIosSourceScriptBrowser(request: HostBrowserRequest): HostBrowserResponse =
+    withTimeout(30 * 60_000L) { withContext(Dispatchers.Main) {
+        suspendCancellableCoroutine<HostBrowserResponse> { block ->
+            var presenter = UIApplication.sharedApplication.keyWindow?.rootViewController
+                ?: error("Source browser requires an active view controller")
+            while (presenter.presentedViewController != null) presenter = presenter.presentedViewController!!
+            val controller = SourceScriptBrowserController(request) { result ->
+                if (block.isActive) result.fold({ block.resume(it) }, { block.resumeWithException(it) })
+            }
+            val navigation = UINavigationController(rootViewController = controller)
+            navigation.modalPresentationStyle = UIModalPresentationFullScreen
+            block.invokeOnCancellation {
+                dispatch_async(dispatch_get_main_queue()) { controller.cancel() }
+            }
+            presenter.presentViewController(navigation, animated = true, completion = {
+                if (!request.waitForResult && block.isActive) block.resume(HostBrowserResponse(request.capabilityId, request.baseUrl, ""))
+            })
+        }
+    } }
+
+private class SourceScriptBrowserController(
+    private val request: HostBrowserRequest,
+    private val complete: (Result<HostBrowserResponse>) -> Unit,
+) : UIViewController(nibName = null, bundle = null), WKNavigationDelegateProtocol {
+    private val browser = WKWebView(frame = CGRectMake(0.0, 0.0, 0.0, 0.0),
+        configuration = WKWebViewConfiguration().apply { websiteDataStore = WKWebsiteDataStore.nonPersistentDataStore() })
+    private var finishing = false
+
+    override fun viewDidLoad() {
+        super.viewDidLoad()
+        title = request.title
+        view = browser
+        browser.navigationDelegate = this
+        request.headers.firstOrNull { it.name.equals("User-Agent", true) }?.let { browser.customUserAgent = it.value }
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            barButtonSystemItem = UIBarButtonSystemItemDone, target = this, action = NSSelectorFromString("finishBrowser"))
+        val url = NSURL.URLWithString(request.baseUrl) ?: error("Invalid source browser URL")
+        val nativeRequest = NSMutableURLRequest(uRL = url)
+        request.headers.forEach { nativeRequest.setValue(it.value, forHTTPHeaderField = it.name) }
+        browser.loadRequest(nativeRequest)
+    }
+
+    @ObjCAction
+    fun finishBrowser() {
+        if (finishing) return
+        finishing = true
+        if (!request.waitForResult) { cancel(); return }
+        browser.evaluateJavaScript("JSON.stringify({finalUrl:location.href,body:document.documentElement.outerHTML})") { result, error ->
+            if (error != null) {
+                complete(Result.failure(IllegalStateException(error.localizedDescription))); cancel()
+            } else {
+                val decoded = runCatching { KS_JSON.parseToJsonElement(result.toString()).jsonObject }
+                decoded.fold({ value ->
+                    val finalUrl = value.getValue("finalUrl").jsonPrimitive.content
+                    val body = value.getValue("body").jsonPrimitive.content
+                    browser.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies ->
+                        val host = NSURL.URLWithString(finalUrl)?.host.orEmpty()
+                        val cookieHeader = cookies.orEmpty().filterIsInstance<platform.Foundation.NSHTTPCookie>()
+                            .filter { host == it.domain.removePrefix(".") || host.endsWith("." + it.domain.removePrefix(".")) }
+                            .joinToString("; ") { "${it.name}=${it.value}" }
+                        complete(Result.success(HostBrowserResponse(request.capabilityId, finalUrl, body, cookieHeader)))
+                        cancel()
+                    }
+                }, { complete(Result.failure(it)); cancel() })
+            }
+        }
+    }
+
+    fun cancel() {
+        browser.stopLoading(); browser.navigationDelegate = null
+        navigationController?.dismissViewControllerAnimated(true, completion = null)
+    }
+
+    @ObjCSignatureOverride
+    override fun webView(webView: WKWebView, decidePolicyForNavigationAction: WKNavigationAction,
+        decisionHandler: (WKNavigationActionPolicy) -> Unit) {
+        val url = decidePolicyForNavigationAction.request.URL
+        val value = url?.absoluteString.orEmpty()
+        val allowed = value == request.baseUrl || value == "about:blank" ||
+            ((url?.scheme == "http" || url?.scheme == "https") && !url.host.isNullOrBlank() && url.user == null && url.password == null)
+        decisionHandler(if (allowed) WKNavigationActionPolicy.WKNavigationActionPolicyAllow else WKNavigationActionPolicy.WKNavigationActionPolicyCancel)
     }
 }
 

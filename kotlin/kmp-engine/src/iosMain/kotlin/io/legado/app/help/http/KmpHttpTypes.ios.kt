@@ -383,6 +383,11 @@ actual class KmpRequestBuilder actual constructor() {
         return KmpRequest(urlStr, method, headers.toList(), body, tags.toMap())
     }
 }
+
+internal actual fun KmpRequestBuilder.addNonAsciiRequestHeader(
+    name: String,
+    value: String,
+): KmpRequestBuilder = addHeader(name, value)
 // endregion
 
 // region Response / Builder / Body —— 用 Ktor HttpResponse 包装

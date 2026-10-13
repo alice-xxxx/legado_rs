@@ -281,6 +281,7 @@ async fn persist_parsed_book(
         cover_src,
         intro: None,
         kind: (original_extension == "cbz").then(|| "comic".to_owned()),
+        content_type: Some(if original_extension == "cbz" { "comic" } else { "text" }.to_owned()),
         media_type: None,
         word_count: None,
         source_id: None,

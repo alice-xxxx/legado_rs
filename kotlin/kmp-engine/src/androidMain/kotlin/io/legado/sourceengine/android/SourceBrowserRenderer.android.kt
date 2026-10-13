@@ -24,6 +24,10 @@ import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.legado.sourceengine.bridge.HostBrowserRequest
 import io.legado.sourceengine.bridge.HostBrowserResponse
+import io.legado.sourceengine.bridge.HostBrowserMode
+import io.legado.app.utils.KS_JSON
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import io.legado.sourceengine.bridge.SourceBrowserSnapshot
 import io.legado.sourceengine.bridge.SourceEngineHostWire
 import java.io.ByteArrayInputStream
@@ -50,6 +54,7 @@ internal suspend fun renderSourceBrowserSnapshot(
     request: HostBrowserRequest,
 ): HostBrowserResponse {
     SourceEngineHostWire.validateBrowserRequest(request)
+    if (request.mode == HostBrowserMode.INTERACTIVE_PAGE) return openSourceScriptBrowser(context, request)
     val renderer = AndroidSourceBrowserSnapshot(context.applicationContext, request)
     return try {
         withTimeout(30_000L) { renderer.run() }
@@ -57,6 +62,82 @@ internal suspend fun renderSourceBrowserSnapshot(
         withContext(NonCancellable + Dispatchers.Main.immediate) { renderer.destroy() }
     }
 }
+
+/** 复用独立 WebView profile，等待型调用在用户关闭页面后回传。 */
+private suspend fun openSourceScriptBrowser(context: Context, request: HostBrowserRequest): HostBrowserResponse =
+    withTimeout(30 * 60_000L) { withContext(Dispatchers.Main.immediate) {
+        val activity = context as? Activity ?: error("Source browser requires an active Activity")
+        check(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) { "Source browser requires isolated WebView profiles" }
+        suspendCancellableCoroutine { block ->
+            val store = ProfileStore.getInstance()
+            val profileName = "legado-source-script-${UUID.randomUUID()}"
+            val profile = store.getOrCreateProfile(profileName)
+            val view = WebView(activity)
+            WebViewCompat.setProfile(view, profileName)
+            val cookieManager = profile.cookieManager
+            view.settings.apply {
+                javaScriptEnabled = true; domStorageEnabled = true
+                allowFileAccess = false; allowContentAccess = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+                request.headers.firstOrNull { it.name.equals("User-Agent", true) }?.let { userAgentString = it.value }
+            }
+            if (request.baseUrl.startsWith("http")) {
+                request.headers.firstOrNull { it.name.equals("Cookie", true) }?.value?.split(';')?.forEach {
+                    cookieManager.setCookie(request.baseUrl, "${it.trim()}; Path=/")
+                }
+            }
+            val dialog = Dialog(activity)
+            val root = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+            root.addView(view, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            val done = Button(activity).apply { text = "关闭" }
+            root.addView(done)
+            dialog.setTitle(request.title)
+            dialog.setContentView(root)
+            dialog.setCanceledOnTouchOutside(false)
+            var finishing = false
+            fun dispose() {
+                dialog.setOnDismissListener(null)
+                dialog.dismiss()
+                root.removeView(view)
+                view.stopLoading(); view.destroy()
+                runCatching { store.deleteProfile(profileName) }
+            }
+            fun finish() {
+                if (finishing) return
+                finishing = true
+                if (!request.waitForResult) { dispose(); return }
+                view.evaluateJavascript("JSON.stringify({finalUrl:location.href,body:document.documentElement.outerHTML})") { raw ->
+                    val result = runCatching {
+                        val encoded = KS_JSON.parseToJsonElement(raw).jsonPrimitive.content
+                        val value = KS_JSON.parseToJsonElement(encoded).jsonObject
+                        val finalUrl = value.getValue("finalUrl").jsonPrimitive.content
+                        HostBrowserResponse(request.capabilityId, finalUrl,
+                            value.getValue("body").jsonPrimitive.content,
+                            if (finalUrl.startsWith("http")) cookieManager.getCookie(finalUrl).orEmpty() else "")
+                    }
+                    dispose()
+                    if (block.isActive) result.fold({ block.resume(it) }, { block.resumeWithException(it) })
+                }
+            }
+            done.setOnClickListener { finish() }
+            dialog.setOnCancelListener { finish() }
+            dialog.setOnDismissListener { finish() }
+            view.webChromeClient = WebChromeClient()
+            view.webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                    val uri = request.url
+                    return !(uri.toString() == "about:blank" ||
+                        ((uri.scheme == "https" || uri.scheme == "http") && !uri.host.isNullOrBlank() && uri.userInfo.isNullOrEmpty()))
+                }
+                override fun onReceivedSslError(view: WebView, handler: SslErrorHandler, error: android.net.http.SslError) { handler.cancel() }
+            }
+            block.invokeOnCancellation { view.post { if (!finishing) { finishing = true; dispose() } } }
+            dialog.show()
+            dialog.window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+            view.loadUrl(request.baseUrl)
+            if (!request.waitForResult) block.resume(HostBrowserResponse(request.capabilityId, request.baseUrl, ""))
+        }
+    } }
 
 private class AndroidSourceBrowserSnapshot(
     private val context: Context,

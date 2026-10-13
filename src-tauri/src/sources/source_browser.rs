@@ -60,7 +60,13 @@ struct BrowserRequest {
     use_cookie_jar: bool,
     #[serde(default)]
     cookie_scope: Option<String>,
+    #[serde(default)]
+    title: String,
+    #[serde(default = "default_wait_for_result")]
+    wait_for_result: bool,
+    #[serde(default)]
     prepare_script: String,
+    #[serde(default)]
     evaluate_script: String,
 }
 
@@ -70,6 +76,11 @@ enum BrowserMode {
     #[default]
     OfflineSnapshot,
     DynamicPage,
+    InteractivePage,
+}
+
+fn default_wait_for_result() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -357,6 +368,7 @@ pub(crate) fn browser_json(request_json: &str) -> String {
         match request.mode {
             BrowserMode::OfflineSnapshot => render_snapshot(&request),
             BrowserMode::DynamicPage => render_dynamic_page(&request),
+            BrowserMode::InteractivePage => render_interactive_page(&request),
         }
     })
     .unwrap_or_else(|_| Err("Private source browser renderer panicked".to_owned()));
@@ -365,6 +377,155 @@ pub(crate) fn browser_json(request_json: &str) -> String {
         Ok(value) => json!({ "ok": true, "value": value }).to_string(),
         Err(error) => json!({ "ok": false, "error": error }).to_string(),
     }
+}
+
+/// 规则发起的浏览器拥有独立 Cookie；等待型调用在用户关闭后继续执行 JS。
+fn render_interactive_page(request: &BrowserRequest) -> Result<Value, String> {
+    let app = BROWSER_APP
+        .get()
+        .ok_or("Source browser requires a running application")?;
+    let (sender, receiver) = mpsc::channel::<Result<Value, String>>();
+    let html = crate::source_engine::decode_browser_html(&request.base_url)?;
+    let initial_url = if html.is_some() {
+        "about:blank"
+    } else {
+        &request.base_url
+    };
+    let mut builder = WebviewWindowBuilder::new(
+        app,
+        format!("source-script-{}", request.capability_id),
+        WebviewUrl::External(reqwest::Url::parse(initial_url).map_err(|e| e.to_string())?),
+    )
+    .title(if request.title.is_empty() {
+        "书源"
+    } else {
+        &request.title
+    })
+    .inner_size(1024.0, 760.0)
+    .incognito(true)
+    .on_navigation(|url| {
+        url.as_str() == "about:blank"
+            || (matches!(url.scheme(), "http" | "https")
+                && url.host_str().is_some()
+                && url.username().is_empty()
+                && url.password().is_none())
+    })
+    .on_new_window(|_, _| NewWindowResponse::Deny);
+    if let Some(header) = request
+        .headers
+        .iter()
+        .find(|h| h.name.eq_ignore_ascii_case("user-agent"))
+    {
+        builder = builder.user_agent(&header.value);
+    }
+    if let Some(html) = html {
+        let encoded = serde_json::to_string(&html).map_err(|e| e.to_string())?;
+        builder = builder.initialization_script(format!("if(window===window.top&&location.href==='about:blank'){{document.open();document.write({encoded});document.close();}}"));
+    }
+    let window = builder
+        .build()
+        .map_err(|e| format!("Cannot open source browser: {e}"))?;
+    if request.base_url.starts_with("http") {
+        if let Some(cookie) = request
+            .headers
+            .iter()
+            .find(|h| h.name.eq_ignore_ascii_case("cookie"))
+        {
+            let url = reqwest::Url::parse(&request.base_url).map_err(|e| e.to_string())?;
+            if let Err(error) = seed_login_cookies(&window, &url, &cookie.value) {
+                let _ = window.close();
+                return Err(error);
+            }
+            window.navigate(url).map_err(|e| e.to_string())?;
+        }
+    }
+    if !request.wait_for_result {
+        return Ok(
+            json!({ "capabilityId": request.capability_id, "finalUrl": request.base_url, "body": "" }),
+        );
+    }
+    let closing = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let view = window.clone();
+    let capability_id = request.capability_id.clone();
+    let original_url = request.base_url.clone();
+    let sender_for_close = sender.clone();
+    let closing_callback = closing.clone();
+    let finished_callback = finished.clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            if finished_callback.load(Ordering::SeqCst) {
+                return;
+            }
+            api.prevent_close();
+            if closing_callback.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            let sender = sender_for_close.clone();
+            let capability_id = capability_id.clone();
+            let original_url = original_url.clone();
+            let eval = view.eval_with_callback(
+                "JSON.stringify({finalUrl:location.href,body:document.documentElement.outerHTML})",
+                move |raw| {
+                    let result = (|| {
+                        if raw.len() > MAX_RESULT_BYTES * 2 {
+                            return Err("Source browser result exceeds its limit".into());
+                        }
+                        let outer: Value = serde_json::from_str(&raw)
+                            .map_err(|e| format!("Invalid source browser result: {e}"))?;
+                        let mut value: Value = serde_json::from_str(
+                            outer
+                                .as_str()
+                                .ok_or("Source browser returned no document")?,
+                        )
+                        .map_err(|e| format!("Invalid source browser document: {e}"))?;
+                        value["capabilityId"] = json!(capability_id);
+                        let final_url = value["finalUrl"]
+                            .as_str()
+                            .unwrap_or(&original_url)
+                            .to_owned();
+                        if final_url == "about:blank" {
+                            value["finalUrl"] = json!(original_url);
+                        }
+                        Ok(value)
+                    })();
+                    let _ = sender.send(result);
+                },
+            );
+            if let Err(error) = eval {
+                let _ = sender_for_close.send(Err(error.to_string()));
+                finished_callback.store(true, Ordering::SeqCst);
+                let _ = view.close();
+            }
+        } else if matches!(event, tauri::WindowEvent::Destroyed) {
+            let _ = sender_for_close.send(Err("Source browser was closed without a result".into()));
+        }
+    });
+    let result = receiver
+        .recv_timeout(Duration::from_secs(30 * 60))
+        .map_err(|_| "Source browser result wait timed out".to_owned())
+        .and_then(|v| v)
+        .and_then(|mut value| {
+            if let Some(url) = value["finalUrl"]
+                .as_str()
+                .and_then(|s| reqwest::Url::parse(s).ok())
+            {
+                if matches!(url.scheme(), "http" | "https") {
+                    let cookies = window.cookies_for_url(url).map_err(|e| e.to_string())?;
+                    value["cookieHeader"] = json!(
+                        cookies
+                            .iter()
+                            .map(|c| format!("{}={}", c.name(), c.value()))
+                            .collect::<Vec<_>>()
+                            .join("; ")
+                    );
+                }
+            }
+            Ok(value)
+        });
+    finished.store(true, Ordering::SeqCst);
+    let _ = window.close();
+    result
 }
 
 fn validate(request: &BrowserRequest) -> Result<(), String> {
@@ -381,6 +542,15 @@ fn validate(request: &BrowserRequest) -> Result<(), String> {
     }
     if request.evaluate_script.len() > MAX_EVALUATE_SCRIPT_BYTES {
         return Err("Private browser evaluation script exceeds its limit".to_owned());
+    }
+    if request.mode == BrowserMode::InteractivePage {
+        if request.base_url.len() >= 64 * 1024 {
+            return Err("Source browser URL exceeds its limit".into());
+        }
+        if !request.base_url.starts_with("data:text/html") {
+            validate_login_url(&request.base_url)?;
+        }
+        return Ok(());
     }
     if request.base_url.len() > 8192 {
         return Err("Private browser base URL exceeds the 8 KiB limit".to_owned());

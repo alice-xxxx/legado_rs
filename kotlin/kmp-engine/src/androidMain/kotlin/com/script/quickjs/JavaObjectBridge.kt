@@ -455,6 +455,15 @@ object JavaObjectBridge {
         args: Array<Any?>,
         dangerousApi: Boolean
     ): Any? {
+        // JS 的默认类型转换会调用实例 valueOf()；Java 包装类同名的静态
+        // valueOf(value) 不能接收这个零参数调用。返回 JS 基本值，保留有参重载。
+        if (methodName == "valueOf" && args.isEmpty()) {
+            when (obj) {
+                is String, is Boolean -> return obj
+                is Number -> return obj.toDouble()
+                is Char -> return obj.toString()
+            }
+        }
         return when (obj) {
             is MutableList<*> -> callListMethod(
                 obj as MutableList<Any?>,

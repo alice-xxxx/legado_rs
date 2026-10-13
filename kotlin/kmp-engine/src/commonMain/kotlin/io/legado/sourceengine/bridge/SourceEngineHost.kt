@@ -52,6 +52,9 @@ enum class HostBrowserMode {
 
     /** Real desktop page navigation inside a private, incognito source browser. */
     DYNAMIC_PAGE,
+
+    /** 用户可见的书源浏览器；关闭时回传正文、地址和 Cookie。 */
+    INTERACTIVE_PAGE,
 }
 
 /** Private browser operation. Dynamic mode is desktop-only and must never be emulated by snapshots. */
@@ -66,12 +69,15 @@ data class HostBrowserRequest(
     val headers: List<HostHeader> = emptyList(),
     val useCookieJar: Boolean = false,
     val cookieScope: String? = null,
+    val title: String = "",
+    val waitForResult: Boolean = true,
 )
 
 data class HostBrowserResponse(
     val capabilityId: String,
     val finalUrl: String,
     val body: String,
+    val cookieHeader: String = "",
 )
 
 /** A real redirect hop followed by Rust's HTTP client for this request. */

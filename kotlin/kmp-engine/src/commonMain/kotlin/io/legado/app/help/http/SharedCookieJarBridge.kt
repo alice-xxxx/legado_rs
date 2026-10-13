@@ -18,11 +18,11 @@ import io.legado.app.utils.NetworkUtils
  *
  * # 1:1 对照 app 端 CookieManager
  * - [loadRequest]: 对照 `CookieManager.loadRequest` — domain 提取 / getCookie(domain) /
- *   mergeCookies(requestCookie, storeCookie) / header 设置 / catch 清除;
+ *   mergeCookies(requestCookie, storeCookie) / header 设置;
  * - [saveResponse]: 对照 `CookieManager.saveResponse` → `saveCookiesFromHeaders` —
  *   parseResponseCookies / persistent·session 分区 / updateSessionCookie + replaceCookie。
  *
- * 行为与 app 端完全一致, 仅把 CookieStore 单例调用改为 CookieStoreProvider 间接。
+ * 通过 CookieStoreProvider 访问存储，发送时保留 Cookie 原值；构造失败不清除存储。
  *
  * # 注册时机
  * 宿主启动早期 (CookieStoreProvider 注册之后) 调 [registerSharedCookieJarBridge] 一次:
@@ -38,7 +38,7 @@ class SharedCookieJarBridge : CookieJarBridge {
     /**
      * 加载 Cookies 到请求中 (对照 app 端 CookieManager.loadRequest)。
      *
-     * 取 url 所属二级域名 cookie, 与请求已有 Cookie 头合并; 设置失败时清除该 url cookie 并返回原请求。
+     * 取 url 所属二级域名 cookie, 与请求已有 Cookie 头合并; 设置失败时保留存储并返回原请求。
      */
     override fun loadRequest(request: KmpRequest): KmpRequest {
         val store = CookieStoreProviders.get() ?: return request
@@ -52,12 +52,11 @@ class SharedCookieJarBridge : CookieJarBridge {
 
         return try {
             request.newBuilder()
-                .header("Cookie", newCookie)
+                .removeHeader("Cookie")
+                .addRequestHeader("Cookie", newCookie)
                 .build()
         } catch (e: Exception) {
-            store.removeCookie(urlString)
-            val msg = "设置cookie出错，已清除cookie $domain cookie:$newCookie"
-            AppLog.put(msg, e)
+            AppLog.put("设置cookie出错，已保留登录数据 $domain", e)
             request
         }
     }

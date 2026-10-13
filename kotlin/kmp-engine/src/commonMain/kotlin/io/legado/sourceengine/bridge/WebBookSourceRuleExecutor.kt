@@ -17,6 +17,13 @@ import io.legado.app.help.tts.HttpTtsRequest
 import io.legado.app.help.source.SourceCacheProviders
 import io.legado.app.help.source.VerificationUiProvider
 import io.legado.app.help.source.VerificationUiProviders
+import io.legado.app.help.source.SourceVerificationHelpShared
+import io.legado.app.help.toast.Toaster
+import io.legado.app.help.toast.Toasters
+import io.legado.app.help.ui.OpenUrlProvider
+import io.legado.app.help.ui.OpenUrlProviders
+import io.legado.app.help.ui.JsUiProvider
+import io.legado.app.help.ui.JsUiProviders
 import io.legado.app.help.source.exploreKinds
 import io.legado.app.help.config.AppConfigProviders
 import io.legado.app.help.coroutine.IoDispatcher
@@ -34,6 +41,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -71,11 +79,11 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                         call.credentials,
                     )
 
-                    "loginSource" -> withLoginBrowser {
+                    "loginSource" -> withSourceLoginUi {
                         loginSource(decodeBookSource(call), call.credentials)
                     }
 
-                    "sourceLoginAction" -> withLoginBrowser {
+                    "sourceLoginAction" -> withSourceLoginUi {
                         runSourceLoginAction(decodeBookSource(call), call.actionId, call.credentials)
                     }
 
@@ -548,17 +556,64 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                 status = "failed",
                 code = "login_failed",
                 message = "登录请求执行失败。请检查凭据、网络或书源登录规则后重试。",
+                detail = error.message,
             )
         }
     }
 
-    /** 非等待的 startBrowser 随登录结果交给宿主显示，不启动原版应用的 UI。 */
-    private suspend fun withLoginBrowser(block: suspend () -> String): String {
-        val pages = mutableListOf<JsonObject>()
+    /** 注册原版 JS 使用的 UI 能力，浏览器等待及 Cookie 交给各平台宿主。 */
+    private suspend fun withSourceLoginUi(block: suspend () -> String): String {
+        val messages = mutableListOf<String>()
+        val updates = mutableMapOf<String, String>()
+        val refreshTargets = mutableSetOf<String>()
+        var copyText: String? = null
         val previous = VerificationUiProviders.current()
+        val previousToast = Toasters.current()
+        val previousOpenUrl = OpenUrlProviders.current()
+        val previousUi = JsUiProviders.impl
+        Toasters.register(object : Toaster {
+            override fun toast(message: String) { if (messages.size < 40) messages += message.take(4096) }
+            override fun toastLong(message: String) = toast(message)
+        })
+        JsUiProviders.impl = object : JsUiProvider {
+            override fun refresh(target: String) { if (target in setOf("login", "explore", "book")) refreshTargets += target }
+            override fun updateLoginData(data: Map<String, String>) { updates.putAll(data) }
+            override fun copy(text: String) { copyText = text }
+        }
+        fun openBrowser(source: BaseSource?, url: String, title: String, wait: Boolean): HostBrowserResponse = runBlocking {
+            val host = requireNotNull(SourceEngineHostRegistry.current())
+            val cookieStore = CookieStoreProviders.get()
+            val cookie = if (url.isAbsoluteWebUrl()) cookieStore?.getCookie(url).orEmpty() else ""
+            val headers = source?.getHeaderMap(true).orEmpty()
+                .filterKeys { it.equals("User-Agent", true) }
+                .map { (name, value) -> HostHeader(name, value) }
+                .toMutableList()
+            if (cookie.isNotEmpty()) headers += HostHeader("Cookie", cookie)
+            val response = host.executeBrowser(HostBrowserRequest(
+                capabilityId = SourceBrowserSnapshot.newCapabilityId(), html = "", baseUrl = url,
+                javaScript = "", mode = HostBrowserMode.INTERACTIVE_PAGE, headers = headers,
+                title = title.take(256), waitForResult = wait,
+            ))
+            if (response.cookieHeader.isNotEmpty() && response.finalUrl.isAbsoluteWebUrl()) {
+                cookieStore?.replaceCookie(response.finalUrl, response.cookieHeader)
+            }
+            response
+        }
+        OpenUrlProviders.register(object : OpenUrlProvider {
+            override fun openUrl(url: String, mimeType: String?, sourceKey: String?, sourceTag: String?, sourceType: Int) {
+                openBrowser(null, url, sourceTag.orEmpty(), false)
+            }
+        })
         VerificationUiProviders.register(object : VerificationUiProvider {
+            override fun awaitBrowser(source: BaseSource, url: String, title: String, refetchAfterSuccess: Boolean): io.legado.app.help.http.StrResponse {
+                val response = openBrowser(source, url, title, true)
+                val body = if (refetchAfterSuccess && response.finalUrl.isAbsoluteWebUrl()) {
+                    runBlocking { AnalyzeUrlFactories.create(response.finalUrl, source = source).getStrResponseAwait().body }
+                } else response.body
+                return io.legado.app.help.http.StrResponse(response.finalUrl, body)
+            }
             override fun showVerificationCodeDialog(url: String, source: BaseSource) {
-                error("Interactive verification is unavailable in this source login action")
+                error("Image verification requires a verification input UI")
             }
 
             override fun startBrowser(
@@ -569,21 +624,30 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                 refetchAfterSuccess: Boolean?,
                 asBottomSheet: Boolean,
             ) {
-                check(saveResult != true) { "Waiting for browser results is unavailable in this source login action" }
-                check(pages.size < 4) { "Too many source browser pages" }
-                pages += buildJsonObject { put("url", url); put("title", title.take(256)) }
+                val response = openBrowser(source, url, title, saveResult == true)
+                if (saveResult == true) {
+                    val body = if (refetchAfterSuccess == true && response.finalUrl.isAbsoluteWebUrl()) {
+                        runBlocking { AnalyzeUrlFactories.create(response.finalUrl, source = source).getStrResponseAwait().body }
+                    } else response.body
+                    SourceVerificationHelpShared.setResult(source.getKey(), body)
+                    SourceVerificationHelpShared.notifyResultArrived(source.getKey())
+                }
             }
         })
         return try {
             val result = KS_JSON.parseToJsonElement(block()) as JsonObject
             buildJsonObject {
                 result.forEach { (key, value) -> put(key, value) }
-                if (result["status"]?.jsonPrimitive?.content == "executed" && pages.isNotEmpty()) {
-                    put("browserRequests", JsonArray(pages))
-                }
+                if (messages.isNotEmpty()) put("messages", JsonArray(messages.map(::JsonPrimitive)))
+                if (updates.isNotEmpty()) put("inputUpdates", buildJsonObject { updates.forEach { (key, value) -> put(key, value) } })
+                if (refreshTargets.isNotEmpty()) put("refreshTargets", JsonArray(refreshTargets.map(::JsonPrimitive)))
+                copyText?.let { put("copyText", it) }
             }.toString()
         } finally {
             VerificationUiProviders.register(previous)
+            Toasters.register(previousToast)
+            OpenUrlProviders.register(previousOpenUrl)
+            JsUiProviders.impl = previousUi
         }
     }
 
@@ -620,7 +684,7 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         }
         return try {
             source.evalJS("$loginJs\n${action.action}") {
-                put("result", { HashMap(credentials) })
+                put("result", HashMap(credentials))
             }
             currentCoroutineContext().ensureActive()
             loginResult("executed", "login_action_executed", "登录操作已执行。")
@@ -630,6 +694,7 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                 status = "failed",
                 code = "login_action_failed",
                 message = "登录操作执行失败。请检查网络或书源登录规则后重试。",
+                detail = error.message,
             )
         }
     }
@@ -660,11 +725,12 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         }
     }
 
-    private fun loginResult(status: String, code: String, message: String): String =
+    private fun loginResult(status: String, code: String, message: String, detail: String? = null): String =
         buildJsonObject {
             put("status", status)
             put("code", code)
             put("message", message)
+            detail?.let { put("detail", it.take(4096)) }
             put("authenticated", JsonNull)
         }.toString()
 

@@ -225,8 +225,8 @@ function resultContentType(result: SearchBookResult): Exclude<SearchContentType,
     if (/^(novel|text|小说)$/i.test(declared)) return "novel";
   }
   const source = bookSourceCandidates.value.find((candidate) => candidate.id === result.sourceId);
+  if (source?.contentType) return source.contentType === "text" ? "novel" : source.contentType;
   if (source?.mediaType === "video" || source?.mediaType === "audio") return source.mediaType;
-  if (/漫画|comic|manga/i.test(source?.group ?? "")) return "comic";
   return "novel";
 }
 
