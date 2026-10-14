@@ -11,6 +11,7 @@ export type BookSourceSwitchSession = Pick<
   | "bookSourceSearchBusy"
   | "bookSourceSwitchConfirmOpen"
   | "bookSourceSwitchBook"
+  | "bookSourceEligibleSources"
   | "bookSourceChapterTargetId"
   | "bookSourceChapterTargetTitle"
   | "bookSourceCandidateTaskId"

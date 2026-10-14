@@ -15,6 +15,7 @@ export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   | "bookSourceSearchBusy"
   | "bookSourceSwitchConfirmOpen"
   | "bookSourceSwitchBook"
+  | "bookSourceEligibleSources"
   | "bookSourceChapterTargetId"
   | "bookSourceChapterTargetTitle"
   | "bookSourceCandidateTaskId"

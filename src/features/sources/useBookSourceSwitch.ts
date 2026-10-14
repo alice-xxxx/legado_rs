@@ -6,6 +6,7 @@ import { bookSourceCandidates } from "./sourcesStore";
 import { shelfBatchRecoveryRequired, shelfBatchRecoveryTitle, shelfBatchRecoveryMessage } from "../../app/recoveryState";
 import { changeBookSource, changeChapterSource, searchBookSourceCandidates, getSearchTaskResults } from "../../api/search";
 import { prepareSearchResultBook, prepareAlternativeBook } from "../../api/books";
+import { bookContentType } from "../../api/bookContentType";
 import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
 import { loadBookPreview, clearOpenedBook, switchOpenedBook, openedBook } from "../books/bookDetailState";
@@ -51,13 +52,22 @@ export function useBookSourceSwitch({
   const bookSourceSwitchConfirmOpen = ref(false);
   const bookSourceSwitchFromReader = ref(false);
   const bookSourceSwitchBookId = ref<string | null>(null);
-  const bookSourceSwitchBook = computed(() => openedBook.value?.id === bookSourceSwitchBookId.value ? openedBook.value : null);
+  const bookSourceSwitchBook = computed(() => !bookSourceSwitchOpen.value
+    || openedBook.value?.id === bookSourceSwitchBookId.value ? openedBook.value : null);
+  const bookSourceEligibleSources = computed(() => {
+    const book = bookSourceSwitchBook.value;
+    if (!book || book.canChangeSource !== true) return [];
+    const type = bookContentType(book);
+    const searchType = type === "html" || type === "pdf" ? "text" : type
+      ?? bookSourceCandidates.value.find(source => source.id === book.sourceId)?.searchType ?? "text";
+    return bookSourceCandidates.value.filter(source => source.id !== book.sourceId && source.searchType === searchType);
+  });
   const bookSourceChapterTargetId = ref<string | null>(null);
   const bookSourceChapterTargetTitle = ref<string | null>(null);
   const bookSourceCandidateTaskId = ref<string | null>(null);
   const searchedCandidates = ref<SearchBookResult[]>([]);
   const showCachedSources = ref(false);
-  const bookSourceCandidateResults = computed<SearchBookResult[]>(() => showCachedSources.value
+  const bookSourceCandidateResults = computed<SearchBookResult[]>(() => !bookSourceSwitchOpen.value || showCachedSources.value
     ? (bookSourceSwitchBook.value?.alternatives ?? []).map((candidate, index) => ({
         resultId: `alternative-${index}`, alternativeIndex: index,
         sourceId: candidate.sourceId, sourceName: candidate.sourceName,
@@ -176,7 +186,7 @@ export function useBookSourceSwitch({
     if (!book || book.canChangeSource !== true || bookSourceSearchBusy.value || bookSourceSwitchBusy.value) return;
     const restoreRevision = getRestoreRevision();
     const generation = ++bookSourceSearchGeneration;
-    const sourceIds = bookSourceCandidates.value.map((source) => source.id);
+    const sourceIds = bookSourceEligibleSources.value.map((source) => source.id);
     if (!sourceIds.length) {
       bookSourceSwitchError.value = "没有可用于换源的已启用源。";
       return;
@@ -487,11 +497,13 @@ export function useBookSourceSwitch({
     bookSourceSearchBusy,
     bookSourceSwitchConfirmOpen,
     bookSourceSwitchBook,
+    bookSourceEligibleSources,
     bookSourceChapterTargetId,
     bookSourceChapterTargetTitle,
     bookSourceCandidateTaskId,
     bookSourceCandidateResults,
-    bookSourceCandidateErrors,
+    bookSourceCandidateErrors: computed(() => bookSourceSwitchBookId.value === openedBook.value?.id
+      ? bookSourceCandidateErrors.value : []),
     selectedBookSourceCandidate,
     bookSourceSwitchError,
     bookSourceChangeError,

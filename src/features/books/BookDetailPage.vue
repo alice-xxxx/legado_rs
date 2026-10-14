@@ -2,10 +2,10 @@
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { sources, bookSourceCandidates } from "../sources/sourcesStore";
+import { sources } from "../sources/sourcesStore";
 import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
 import { checkNewChapters, refreshChapters, startBookDownload } from "../../api/tasks";
-import type { AppBootstrap, BookResource } from "../../api/types";
+import type { AppBootstrap, BookResource, SearchBookResult } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
@@ -399,6 +399,21 @@ function openBookSourceSwitch(chapterTarget?: { id: string; title: string }): vo
   const book = openedBook.value;
   if (book) void bookSourceSwitch.openBookSourceSwitchForBook(book, chapterTarget);
 }
+async function searchMoreBookSources(): Promise<void> {
+  const book = openedBook.value;
+  if (!book || recoveryRequired.value || bookSourceSwitch.bookSourceSwitchBusy) return;
+  await bookSourceSwitch.openBookSourceSwitchForBook(book);
+  if (disposed || closing || openedBook.value?.id !== book.id || !bookSourceSwitch.bookSourceSwitchOpen) return;
+  await bookSourceSwitch.startBookSourceCandidateSearch();
+}
+async function chooseCachedBookSource(candidate: SearchBookResult): Promise<void> {
+  const book = openedBook.value;
+  if (!book || recoveryRequired.value || bookSourceSwitch.bookSourceSwitchBusy) return;
+  await bookSourceSwitch.openBookSourceSwitchForBook(book);
+  if (disposed || closing || openedBook.value?.id !== book.id || !bookSourceSwitch.bookSourceSwitchOpen) return;
+  bookSourceSwitch.selectBookSourceCandidate(candidate);
+  bookSourceSwitch.bookSourceSwitchConfirmOpen = true;
+}
 const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   book?.mediaType === "audio" || book?.mediaType === "video";
 </script>
@@ -571,11 +586,11 @@ title="更换章节来源"
               </section>
               <section v-if="openedBook.canChangeSource === true" class="detail-source-block detail-alternates">
                 <div class="detail-alternates-heading">
-                  <h2>可替换来源</h2>
+                  <h2>可更换源</h2>
                   <button type="button"
-                    :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
-                    @click="openBookSourceSwitch()">
-                    <PrototypeIcon name="search"/><span>{{ bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateResults.length ? '重新搜索' : '搜索候选' }}</span>
+                    :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired || !bookSourceSwitch.bookSourceEligibleSources.length"
+                    @click="searchMoreBookSources()">
+                    <PrototypeIcon name="search"/><span>搜索更多</span>
                   </button>
                 </div>
                 <div v-if="bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateResults.length"
@@ -590,14 +605,14 @@ title="更换章节来源"
                     </div>
                     <button v-if="candidate.sourceId !== openedBook.sourceId" type="button"
                       :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
-                      @click="bookSourceSwitch.selectBookSourceCandidate(candidate); bookSourceSwitch.bookSourceSwitchOpen = true">
-                      切换
+                      @click="chooseCachedBookSource(candidate)">
+                      换源
                     </button>
                     <span v-else class="detail-source-current-badge">当前</span>
                   </article>
                 </div>
                 <div v-else class="detail-alternates-empty">
-                  尚未搜索到可用候选。点击「搜索候选」使用已启用源进行真实匹配；结果不会包含推测的响应时间。
+                  暂无缓存的其他源，可点击「搜索更多」查找。
                 </div>
                 <p v-if="bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateErrors.length"
                   class="detail-source-partial">
@@ -770,7 +785,7 @@ loading="lazy" decoding="async"/>
 
     <BookSourceSwitchSheet
       :book-source-switch="bookSourceSwitch"
-      :book-source-candidates="bookSourceCandidates"
+      :book-source-candidates="bookSourceSwitch.bookSourceEligibleSources"
       :source-name="sourceName"
       :shelf-batch-recovery-required="recoveryRequired"
     />

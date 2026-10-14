@@ -7,7 +7,7 @@ import type {
   AppTask,
   BookResource } from "../../api/types";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { sources, bookSourceCandidates as sourceCandidates } from "../sources/sourcesStore";
+import { sources } from "../sources/sourcesStore";
 import { startChapterDownload } from "../../api/tasks";
 import { notify, errorText } from "../../app/notifications";
 import { tasks, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
@@ -264,7 +264,7 @@ onBeforeUnmount(() => {
   disposeReaderSession();
 });
 
-const bookSourceCandidates = sourceCandidates;
+const bookSourceCandidates = computed(() => bookSourceSwitch.bookSourceEligibleSources);
 const readerVisible = readerFeatures.readerVisible;
 </script>
 

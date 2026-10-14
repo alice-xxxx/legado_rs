@@ -109,6 +109,14 @@ const sourceFilter = ref("");
 const sortMode = ref<SearchSortMode>("relevance");
 const searchOptionsOpen = ref(false);
 const resultFiltersOpen = ref(false);
+const searchErrorsOpen = ref(false);
+const searchErrors = computed(() => [...searchResponseErrors.value, ...searchResourceErrors.value]);
+const failedSourceCount = computed(() => new Set(searchErrors.value.flatMap(error => error.sourceId ? [error.sourceId] : [])).size);
+watch(() => searchErrors.value.length, count => { if (!count) searchErrorsOpen.value = false; }, { flush: "sync" });
+function onSearchErrorsToggle(event: Event): void {
+  const element = event.target as HTMLDetailsElement;
+  if (element.isConnected) searchErrorsOpen.value = element.open;
+}
 const resultCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 const loadMoreMarker = ref<HTMLElement | null>(null);
 let touchY: number | null = null;
@@ -311,6 +319,19 @@ watch(selectedContentType, () => { clearResultFilters(); resultFiltersOpen.value
               </button>
             </div>
           </div>
+          <details v-if="searchErrors.length" class="search-errors" :open="searchErrorsOpen" @toggle="onSearchErrorsToggle">
+            <summary>
+              <span>{{ failedSourceCount ? `${failedSourceCount} 个源未完成搜索` : `搜索异常（${searchErrors.length} 条）` }}</span>
+              <small>{{ searchErrorsOpen ? '收起' : '查看详情' }}</small>
+              <PrototypeIcon name="right" />
+            </summary>
+            <ul v-if="searchErrorsOpen">
+              <li v-for="(error, index) in searchErrors"
+                :key="`${error.sourceId}-${index}`"><b>{{ error.sourceId ? sourceNameForId(error.sourceId) : '源'
+                  }}</b>：{{
+                error.message }}</li>
+            </ul>
+          </details>
           <template v-if="searchWasRun">
             <div v-if="searchBusy && !searchResults.length" class="search-loading"><span
                 class="loader-ring"></span><strong>正在搜索</strong></div>
@@ -373,15 +394,6 @@ watch(selectedContentType, () => { clearResultFilters(); resultFiltersOpen.value
               <button v-if="precisionSearch && !searchResponseErrors.length" class="text-button" type="button"
                 :disabled="shelfBatchRecoveryRequired"
                 @click="precisionSearch = false; startNewSearch()">关闭精准搜索，查看全部结果</button>
-            </div>
-            <div v-if="searchResponseErrors.length || searchResourceErrors.length" class="search-errors">
-              <strong>{{ selectedSourceIds.length === 1 ? '这个源没有完成搜索' : '部分源没有完成搜索' }}</strong>
-              <ul>
-                <li v-for="(error, index) in [...searchResponseErrors, ...searchResourceErrors]"
-                  :key="`${error.sourceId}-${index}`"><b>{{ error.sourceId ? sourceNameForId(error.sourceId) : '源'
-                    }}</b>：{{
-                  error.message }}</li>
-              </ul>
             </div>
             <div ref="loadMoreMarker" class="search-load-more" aria-live="polite">
               <span v-if="searchBusy && searchResults.length">正在加载更多…</span>
@@ -858,15 +870,32 @@ watch(selectedContentType, () => { clearResultFilters(); resultFiltersOpen.value
 }
 
 .search-errors {
-  margin-top: 12px;
-  padding: 12px;
-  border: 1px solid var(--app-line);
+  margin-top: 8px;
+  min-width: 0;
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
 }
 
+.search-errors summary { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 4px 0; list-style: none; cursor: pointer; }
+.search-errors summary::-webkit-details-marker { display: none; }
+.search-errors summary > span { flex: 1; min-width: 0; }
+.search-errors summary small { color: var(--app-accent-ink); font-size: inherit; }
+.search-errors summary :deep(svg) { width: 14px; height: 14px; }
+.search-errors[open] summary :deep(svg) { transform: rotate(90deg); }
+.search-errors summary:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 .search-errors ul {
-  margin: 8px 0 0;
-  padding-left: 18px;
+  max-height: min(260px, 40dvh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 4px 0 0;
+  padding: 10px 12px 10px 28px;
+  border: 1px solid var(--app-line);
+  border-radius: 8px;
+  background: var(--app-panel-softer);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
 }
+.search-errors li + li { margin-top: 6px; }
 
 @media (max-width: 860px) {
   .search-prototype-layout {
