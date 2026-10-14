@@ -29,6 +29,7 @@ const MAX_TTS_AUDIO_FILES: usize = 32;
 struct StoreInner {
     root: PathBuf,
     update_lock: Arc<Mutex<()>>,
+    local_import_lock: Arc<Mutex<()>>,
     content_types: std::sync::RwLock<HashMap<String, String>>,
 }
 
@@ -55,6 +56,7 @@ impl ResourceStore {
             inner: Arc::new(StoreInner {
                 root,
                 update_lock: Arc::new(Mutex::new(())),
+                local_import_lock: Arc::new(Mutex::new(())),
                 content_types: std::sync::RwLock::new(HashMap::new()),
             }),
         };
@@ -89,6 +91,10 @@ impl ResourceStore {
 
     pub fn root(&self) -> &Path {
         &self.inner.root
+    }
+
+    pub(crate) async fn local_import_guard(&self) -> OwnedMutexGuard<()> {
+        self.inner.local_import_lock.clone().lock_owned().await
     }
 
     /// Acquire the same store-wide mutex used by all public resource writers.
@@ -1110,8 +1116,8 @@ impl ResourceStore {
     }
 
     /// Copy a selected local book into the app-managed book directory.
-    /// The original is intentionally outside the public ResourceRef namespace:
-    /// WebView consumers can only access parsed/processed resources.
+    /// Originals are retained beside the parsed cache. PDF readers use the
+    /// original directly; the other readers consume extracted chapter assets.
     pub async fn persist_local_original(
         &self,
         book_id: &str,

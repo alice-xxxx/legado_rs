@@ -572,7 +572,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
       </aside>
       <main v-if="showEditor" class="txt-toc-editor__detail">
         <header class="txt-toc-editor__editor-header safe-area-top">
-          <BackButton class="txt-toc-editor__back-button" label="返回规则列表" :disabled="busy"
+          <BackButton class="txt-toc-editor__back-button" data-back-local label="返回规则列表" :disabled="busy"
             @click="requestCancelEditor" />
           <div class="txt-toc-editor__editor-title">
             <h2>{{ editingId ? draft.name || '未命名目录规则' : '新目录规则' }}</h2>
@@ -620,7 +620,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
         </form>
       </main>
     </div>
-    <div v-if="importDialogOpen" class="txt-toc-editor__scrim"
+    <div v-if="importDialogOpen" class="txt-toc-editor__scrim" data-back-layer
       @click.self="closeUrlImport">
       <section class="txt-toc-editor__confirm txt-toc-editor__import-dialog">
         <h3 id="txt-toc-import-title">从网络链接导入</h3>
@@ -635,29 +635,29 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
         </form>
         <p v-if="importError" class="txt-toc-editor__error">{{ importError }}</p>
         <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="importBusy" @click="closeUrlImport">取消</button>
+          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="importBusy" data-back-action @click="closeUrlImport">取消</button>
         </div>
       </section>
     </div>
-    <div v-if="deleteTargets.length" class="txt-toc-editor__scrim"
+    <div v-if="deleteTargets.length" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDelete">
       <section class="txt-toc-editor__confirm">
         <h3 id="txt-toc-delete-title">{{ deleteTargets.length === 1 ? '删除这条规则？' : '删除选中的 ' + deleteTargets.length + ' 条规则？' }}</h3>
         <p id="txt-toc-delete-description">{{ deleteTargets.length === 1 ? '“' + deleteTargets[0].name + '”将从本地 TXT 目录识别设置中移除。' : '选中的规则将从本地 TXT 目录识别设置中移除。' }}</p>
         <div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div>
         <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="busy" @click="cancelDelete">取消</button>
+          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="busy" data-back-action @click="cancelDelete">取消</button>
           <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" :disabled="busy" @click="confirmDelete">保存</button>
         </div>
       </section>
     </div>
-    <div v-if="discardPromptOpen" class="txt-toc-editor__scrim"
+    <div v-if="discardPromptOpen" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDiscard">
       <section class="txt-toc-editor__confirm">
         <h3 id="txt-toc-discard-title">放弃未保存的规则？</h3>
         <p>当前名称、表达式、优先级或启用状态已改变，离开编辑器会丢弃这些修改。</p>
         <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" @click="cancelDiscard">继续编辑</button>
+          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" data-back-action @click="cancelDiscard">继续编辑</button>
           <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" @click="discardDraft">放弃修改</button>
         </div>
       </section>

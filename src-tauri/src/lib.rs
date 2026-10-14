@@ -86,6 +86,10 @@ pub fn run() {
             }
         }))
     };
+    #[cfg(mobile)]
+    let builder = builder
+        .plugin(tauri_plugin_native_audio::init())
+        .plugin(tauri_plugin_tts::init());
     let run_external_files = external_files.clone();
     let builder = builder
         .plugin(tauri_plugin_deep_link::init())

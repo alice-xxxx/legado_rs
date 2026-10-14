@@ -25,6 +25,8 @@ desktop = [
     "dep:tauri-plugin-fs",
     "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
+    "dep:tauri-plugin-native-audio",
+    "dep:tauri-plugin-tts",
     "dep:tauri-plugin-single-instance",
     "tauri-plugin-single-instance/deep-link",
     "tauri/wry",
@@ -43,6 +45,8 @@ mobile-runtime = [
     "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
     "tauri-plugin-source-engine/native-mobile",
+    "dep:tauri-plugin-native-audio",
+    "dep:tauri-plugin-tts",
 ]
 
 [build-dependencies]
@@ -82,6 +86,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 jni = { version = "0.22.4", features = ["invocation"] }
 tauri-plugin-deep-link = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+tauri-plugin-native-audio = { version = "=1.0.5", optional = true }
+tauri-plugin-tts = { version = "=0.2.1", optional = true }
 
 [patch.crates-io]
 swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }

@@ -16,6 +16,7 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
   <button
     type="button"
     class="back-button"
+    data-back-action
     :title="label"
     :aria-label="label"
     :disabled="disabled"

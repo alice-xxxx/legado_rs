@@ -2,7 +2,8 @@ import { ref, type Ref } from "vue";
 import { type ResourceDescriptor, type SearchBookResult, type SearchResource, type SourceDebugResponse, type SourceMetadata } from "../../api/types";
 import { clearSourceDebugPreview, debugSearchResult, searchBooks } from "../../api/search";
 import { readTextResource } from "../../api/resources";
-import { sources, bookSourceCandidates } from "./sourcesStore";
+import { sources, readSourceDefinitionJson } from "./sourcesStore";
+import { readSourceEditorDraft } from "./sourceEditorDraft";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 
 interface SourceDebugDependencies {
@@ -39,6 +40,7 @@ export function useSourceDebugActions({
   const sourceDebugStage = ref<SourceDebugResponse["stage"] | null>(null);
   const sourceDebugError = ref("");
   const sourceDebugKeyword = ref("");
+  const sourceDebugKeywordLoading = ref(false);
   const sourceDebugBusy = ref(false);
   let sourceDebugGeneration = 0;
 
@@ -71,6 +73,20 @@ export function useSourceDebugActions({
     sourceDebugError.value = "";
   }
 
+  async function loadSourceDebugKeyword(source: SourceMetadata, generation: number): Promise<void> {
+    sourceDebugKeyword.value = "我的";
+    sourceDebugKeywordLoading.value = true;
+    try {
+      const json = await readSourceDefinitionJson(source.id);
+      const draft = readSourceEditorDraft(json, [{ key: "ruleSearch.checkKeyWord", label: "校验关键词", kind: "text" }], source.enabled);
+      if (isCurrentSourceDebug(generation, source.id)) sourceDebugKeyword.value = draft["ruleSearch.checkKeyWord"]?.trim() || "我的";
+    } catch {
+      // The optional keyword must not prevent testing if its saved definition cannot be read.
+    } finally {
+      if (isCurrentSourceDebug(generation, source.id)) sourceDebugKeywordLoading.value = false;
+    }
+  }
+
   function openSelectedSourceDebug(): void {
     if (selectedSourceRows.value.length !== 1 || sourceBatchBusy.value || sourceExportBusy.value || searchBusy.value) return;
     const source = sources.value.find((entry) => entry.id === selectedSourceRows.value[0]);
@@ -90,25 +106,12 @@ export function useSourceDebugActions({
     sourceDebugGeneration += 1;
     releaseSourceDebugPreview();
     sourceDebugTarget.value = source;
-    sourceDebugKeyword.value = "";
     sourceDebugResults.value = [];
     sourceDebugSearched.value = false;
     sourceDebugErrors.value = [];
     sourceDebugStage.value = null;
     resetSourceDebugInspection();
-  }
-
-  function selectSourceDebugSource(sourceId: string): void {
-    const source = bookSourceCandidates.value.find((entry) => entry.id === sourceId);
-    if (!source || sourceDebugBusy.value) return;
-    sourceDebugGeneration += 1;
-    releaseSourceDebugPreview();
-    sourceDebugTarget.value = source;
-    sourceDebugResults.value = [];
-    sourceDebugSearched.value = false;
-    sourceDebugErrors.value = [];
-    sourceDebugStage.value = null;
-    resetSourceDebugInspection();
+    void loadSourceDebugKeyword(source, sourceDebugGeneration);
   }
 
   function closeSourceDebug(): void {
@@ -117,6 +120,7 @@ export function useSourceDebugActions({
     releaseSourceDebugPreview();
     sourceDebugTarget.value = null;
     sourceDebugKeyword.value = "";
+    sourceDebugKeywordLoading.value = false;
     sourceDebugResults.value = [];
     sourceDebugSearched.value = false;
     sourceDebugErrors.value = [];
@@ -127,7 +131,7 @@ export function useSourceDebugActions({
   async function startSourceDebugSearch(): Promise<void> {
     const source = sourceDebugTarget.value;
     const keyword = sourceDebugKeyword.value.trim();
-    if (!source || sourceDebugBusy.value || shelfBatchRecoveryRequired.value) return;
+    if (!source || sourceDebugBusy.value || sourceDebugKeywordLoading.value || shelfBatchRecoveryRequired.value) return;
     if (!keyword) {
       notify("请输入要测试的书名或关键词。", "error");
       return;
@@ -262,9 +266,9 @@ export function useSourceDebugActions({
     sourceDebugStage,
     sourceDebugError,
     sourceDebugKeyword,
+    sourceDebugKeywordLoading,
     sourceDebugBusy,
     openSelectedSourceDebug,
-    selectSourceDebugSource,
     closeSourceDebug,
     startSourceDebugSearch,
     inspectSourceDebugResult,

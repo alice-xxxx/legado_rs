@@ -15,6 +15,11 @@ final class SourceEnginePlugin: Plugin {
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
 
+    override public func load(webview: WKWebView) {
+        // WebKit owns recognition, cancellation and interactive navigation.
+        webview.allowsBackForwardNavigationGestures = true
+    }
+
     @objc public func execute(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(ExecuteArgs.self)
         let applicationSupport = FileManager.default.urls(

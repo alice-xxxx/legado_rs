@@ -26,6 +26,16 @@ const marker = "// Source-engine dependencies include a JVM-only JAR index.";
 const stripNativeDebugSymbols = process.env.LEGADO_ANDROID_STRIP_DEBUG_SYMBOLS === "1";
 let contents = await readFile(buildFile, "utf8");
 let buildFileChanged = false;
+// Native audio requires Android 8+. Keep regenerated projects aligned with the plugin.
+if (/minSdk\s*=\s*24/.test(contents)) {
+    contents = contents.replace(/minSdk\s*=\s*24/, "minSdk = 26");
+    buildFileChanged = true;
+}
+const nativeHlsDependency = '    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")';
+if (!contents.includes(nativeHlsDependency)) {
+    contents = contents.replace("dependencies {", "dependencies {\n" + nativeHlsDependency);
+    buildFileChanged = true;
+}
 
 // The generated app targets Java 8 by default. JDK 21 warns on source/target 8, so align the
 // generated Java and Kotlin bytecode levels at 11 instead of suppressing the compiler warning.
@@ -208,6 +218,14 @@ let manifest = await readFile(manifestFile, "utf8");
 const applicationTag = /<application\b([^>]*)>/;
 const applicationMatch = manifest.match(applicationTag);
 if (!applicationMatch) throw new Error(`Cannot find the application tag in ${manifestFile.pathname}`);
+// Android owns edge recognition and predictive-back feedback; Tauri delivers the committed Back event.
+const nativeBackAttribute = /android:enableOnBackInvokedCallback\s*=\s*"[^"]*"/;
+if (nativeBackAttribute.test(applicationMatch[1])) {
+  manifest = manifest.replace(nativeBackAttribute, 'android:enableOnBackInvokedCallback="true"');
+} else {
+  manifest = manifest.replace(applicationTag, '<application$1\n        android:enableOnBackInvokedCallback="true">');
+}
+await writeFile(manifestFile, manifest, "utf8");
 if (!applicationMatch[1].includes(networkManifestMarker)) {
   if (/android:networkSecurityConfig\s*=/.test(applicationMatch[1])) {
     throw new Error(`Unexpected Android network security config in ${manifestFile.pathname}`);

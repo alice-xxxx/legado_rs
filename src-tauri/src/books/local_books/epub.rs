@@ -5,16 +5,19 @@ use std::{
     io::{Cursor, Read},
 };
 
-use quick_xml::{Reader, events::Event};
+use quick_xml::{events::Event, Reader};
 use zip::ZipArchive;
 
+#[path = "epub_toc.rs"]
+mod toc;
+
 use super::{
-    MAX_EPUB_CHAPTERS, ParsedAsset, ParsedBook, ParsedChapter,
     archive::{index_zip_members, read_archive_member},
     common::short_hash,
     rewrite::{
         chapter_title, inline_style_regex, rewrite_css, rewrite_epub_html, rewrite_epub_svg,
     },
+    ParsedAsset, ParsedBook, ParsedChapter, MAX_EPUB_CHAPTERS,
 };
 
 pub(super) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
@@ -32,10 +35,13 @@ struct ManifestItem {
 struct EpubPackage {
     title: String,
     author: String,
+    intro: Option<String>,
     opf_path: String,
     manifest: HashMap<String, ManifestItem>,
     spine: Vec<String>,
     cover_id: Option<String>,
+    nav_id: Option<String>,
+    ncx_id: Option<String>,
 }
 
 pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
@@ -123,11 +129,42 @@ pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
         });
     }
 
-    let path_to_chapter = spine_items
-        .iter()
-        .enumerate()
-        .map(|(index, (_, path))| (path.clone(), format!("chapter-{:05}", index + 1)))
-        .collect::<HashMap<_, _>>();
+    let mut documents = Vec::with_capacity(spine_items.len());
+    for (index, (id, path)) in spine_items.iter().enumerate() {
+        let content = read_epub_member(&mut archive, &members, path, MAX_EPUB_XML_BYTES)?;
+        let html = String::from_utf8_lossy(&content);
+        let (body, styles) = toc::document_parts(&html);
+        documents.push(toc::SpineDocument {
+            path: path.clone(),
+            title: chapter_title(&html, &package.manifest[id].href, index),
+            body,
+            styles,
+        });
+    }
+    let mut entries = Vec::new();
+    for (id, ncx) in [
+        (package.nav_id.as_ref(), false),
+        (package.ncx_id.as_ref(), true),
+    ] {
+        let Some(item) = id.and_then(|id| package.manifest.get(id)) else {
+            continue;
+        };
+        let Some(path) = normalize_epub_href(&package.opf_path, &item.href) else {
+            continue;
+        };
+        if let Ok(bytes) = read_epub_member(&mut archive, &members, &path, MAX_EPUB_XML_BYTES) {
+            if let Ok(toc) = toc::parse_toc(&String::from_utf8_lossy(&bytes), &path, ncx) {
+                if !toc.is_empty() {
+                    entries = toc;
+                    break;
+                }
+            }
+        }
+    }
+    let (slices, path_to_chapter) = toc::chapter_slices(&documents, &entries);
+    if slices.len() > MAX_EPUB_CHAPTERS {
+        return Err("EPUB navigation has too many chapters".to_owned());
+    }
 
     // EPUB resources can reference images from linked CSS. Rewrite all local
     // URL references to the same browser-readable asset directory.
@@ -156,43 +193,60 @@ pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
     }
 
     let inline_css = inline_style_regex();
-    let mut chapters = Vec::with_capacity(spine_items.len());
-    for (index, (id, html_path)) in spine_items.into_iter().enumerate() {
-        let item = &package.manifest[&id];
-        let html_bytes = read_epub_member(&mut archive, &members, &html_path, MAX_EPUB_XML_BYTES)?;
-        let html = String::from_utf8_lossy(&html_bytes).into_owned();
-        let mut links = String::new();
-        let html = inline_css
-            .replace_all(&html, |captures: &regex::Captures<'_>| {
-                let css = rewrite_css(
-                    captures.get(1).map_or("", |value| value.as_str()),
-                    &html_path,
-                    &asset_ids,
-                );
-                if css.trim().is_empty() {
-                    String::new()
-                } else {
-                    let id = format!(
-                        "inline-{:05}-{}.css",
-                        index + 1,
-                        short_hash(&format!("{}\0{}", html_path, links.len()))
+    let mut chapters = Vec::with_capacity(slices.len());
+    for (index, slice) in slices.into_iter().enumerate() {
+        let mut chapter_html = String::new();
+        for document_index in slice.start.0..=slice.end.0 {
+            let document = &documents[document_index];
+            let start = if document_index == slice.start.0 {
+                slice.start.1
+            } else {
+                0
+            };
+            let end = if document_index == slice.end.0 {
+                slice.end.1
+            } else {
+                document.body.len()
+            };
+            if start == end {
+                continue;
+            }
+            let html_path = &document.path;
+            let html = format!("{}{}", document.styles, &document.body[start..end]);
+            let mut links = String::new();
+            let html = inline_css
+                .replace_all(&html, |captures: &regex::Captures<'_>| {
+                    let css = rewrite_css(
+                        captures.get(1).map_or("", |value| value.as_str()),
+                        &html_path,
+                        &asset_ids,
                     );
-                    // Each inline style becomes a normal local stylesheet so the
-                    // HTML sanitiser can discard inline style attributes.
-                    rewritten_assets.push(ParsedAsset {
-                        id: id.clone(),
-                        bytes: css.into_bytes(),
-                    });
-                    links.push_str(&format!(r#"<link rel="stylesheet" href="../assets/{id}">"#));
-                    String::new()
-                }
-            })
-            .into_owned();
-        let html = rewrite_epub_html(&html, &html_path, &asset_ids, &path_to_chapter);
-        let html = format!("{links}{html}");
+                    if css.trim().is_empty() {
+                        String::new()
+                    } else {
+                        let id = format!(
+                            "inline-{:05}-{}.css",
+                            index + 1,
+                            short_hash(&format!("{}\0{}\0{}", html_path, links.len(), css))
+                        );
+                        // Each inline style becomes a normal local stylesheet so the
+                        // HTML sanitiser can discard inline style attributes.
+                        rewritten_assets.push(ParsedAsset {
+                            id: id.clone(),
+                            bytes: css.into_bytes(),
+                        });
+                        links
+                            .push_str(&format!(r#"<link rel="stylesheet" href="../assets/{id}">"#));
+                        String::new()
+                    }
+                })
+                .into_owned();
+            let html = rewrite_epub_html(&html, &html_path, &asset_ids, &path_to_chapter);
+            chapter_html.push_str(&format!("{links}{html}"));
+        }
         chapters.push(ParsedChapter {
-            title: chapter_title(&html, &item.href, index),
-            html: Some(html),
+            title: slice.title,
+            html: Some(chapter_html),
             text: None,
             pdf_page_index: None,
         });
@@ -204,9 +258,9 @@ pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
         asset_ids.get(&path).cloned()
     });
     Ok(ParsedBook {
-        identity: String::new(),
         title: package.title.trim().chars().take(200).collect(),
         author: package.author.trim().chars().take(200).collect(),
+        intro: package.intro,
         chapters,
         assets: rewritten_assets,
         cover_asset_id,
@@ -229,6 +283,9 @@ pub(super) fn normalize_epub_href(base_file: &str, href: &str) -> Option<String>
         .decode_utf8()
         .ok()?;
     let path = decoded.as_ref();
+    if path.is_empty() && href.starts_with('#') && !base_file.is_empty() {
+        return Some(base_file.to_owned());
+    }
     if path.is_empty() || path.contains(':') {
         return None;
     }
@@ -285,6 +342,7 @@ fn parse_xml_tree(xml: &str) -> Result<Vec<XmlNode>, String> {
             Ok(Event::Empty(element)) => {
                 let node = xml_node(&element)?;
                 if let Some(parent) = stack.last_mut() {
+                    parent.text.push_str(&node.text);
                     parent.children.push(node);
                 } else {
                     roots.push(node);
@@ -302,11 +360,20 @@ fn parse_xml_tree(xml: &str) -> Result<Vec<XmlNode>, String> {
                     node.text.push_str(value.as_ref());
                 }
             }
+            Ok(Event::GeneralRef(value)) => {
+                if let Some(node) = stack.last_mut() {
+                    let entity = format!("&{};", value.as_ref());
+                    let decoded = quick_xml::escape::unescape(&entity)
+                        .map_err(|_| "EPUB XML text has invalid entities".to_owned())?;
+                    node.text.push_str(&decoded);
+                }
+            }
             Ok(Event::End(_)) => {
                 let node = stack
                     .pop()
                     .ok_or_else(|| "Malformed EPUB XML tree".to_owned())?;
                 if let Some(parent) = stack.last_mut() {
+                    parent.text.push_str(&node.text);
                     parent.children.push(node);
                 } else {
                     roots.push(node);
@@ -372,10 +439,15 @@ fn parse_opf(opf: &str, opf_path: String) -> Result<EpubPackage, String> {
         .and_then(|node| find_nodes(&node.children, "creator").into_iter().next())
         .map(|node| node.text.trim().to_owned())
         .unwrap_or_default();
+    let intro = metadata
+        .and_then(|node| find_nodes(&node.children, "description").into_iter().next())
+        .map(|node| node.text.trim().to_owned())
+        .filter(|text| !text.is_empty());
     let manifest_node =
         find_child(package, "manifest").ok_or_else(|| "EPUB OPF has no manifest".to_owned())?;
     let mut manifest = HashMap::new();
     let mut cover_id = None;
+    let mut nav_id = None;
     for item_node in manifest_node
         .children
         .iter()
@@ -405,6 +477,9 @@ fn parse_opf(opf: &str, opf_path: String) -> Result<EpubPackage, String> {
         if properties.contains("cover-image") {
             cover_id = Some(id.clone());
         }
+        if properties.contains("nav") {
+            nav_id = Some(id.clone());
+        }
         manifest.insert(id, ManifestItem { href, media_type });
     }
     if cover_id.is_none() {
@@ -423,6 +498,12 @@ fn parse_opf(opf: &str, opf_path: String) -> Result<EpubPackage, String> {
     }
     let spine_node =
         find_child(package, "spine").ok_or_else(|| "EPUB OPF has no spine".to_owned())?;
+    let ncx_id = spine_node.attributes.get("toc").cloned().or_else(|| {
+        manifest
+            .iter()
+            .find(|(_, item)| item.media_type == "application/x-dtbncx+xml")
+            .map(|(id, _)| id.clone())
+    });
     let spine = spine_node
         .children
         .iter()
@@ -440,10 +521,13 @@ fn parse_opf(opf: &str, opf_path: String) -> Result<EpubPackage, String> {
     Ok(EpubPackage {
         title,
         author,
+        intro,
         opf_path,
         manifest,
         spine,
         cover_id,
+        nav_id,
+        ncx_id,
     })
 }
 

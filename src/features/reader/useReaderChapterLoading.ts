@@ -1,4 +1,5 @@
 import type { ReaderPosition } from "./readerPosition";
+import type { ReaderMediaElement } from "./nativeAudio";
 import { openedBook } from "../books/bookDetailState";
 import { nextTick, ref, watch, type Ref } from "vue";
 import { readTextResource } from "../../api/resources";
@@ -34,7 +35,7 @@ export interface ReaderChapterLoadingOptions {
     busy: Ref<boolean>;
     progressDirty: Ref<boolean>;
     pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
-    getMediaElement: () => HTMLMediaElement | null;
+    getMediaElement: () => ReaderMediaElement | null;
     getExpectedTtsChapter: () => string | null | undefined;
     getLoadRevision: () => number;
     advanceLoadRevision: () => number;

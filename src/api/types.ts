@@ -184,6 +184,8 @@ export interface BookResource {
   intro?: string;
   kind?: string;
   contentType?: ContentType;
+  /** Filename of the retained local original, such as original.epub. */
+  original?: string;
   updatedAtMs?: number;
   cover?: string;
   alternatives?: ContentAlternative[];
@@ -614,6 +616,7 @@ export interface LocalBookImportResponse {
   passwordRequired?: boolean;
   importToken?: string;
   book?: ResourceDescriptor;
+  shelf?: ResourceDescriptor;
 }
 
 export interface LocalBookImportOptions {

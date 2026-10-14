@@ -1,49 +1,25 @@
-# 原版深度链接兼容
+# 深度链接
 
-对照 `D:\sdk\legado` 的 `LegadoDeepLink.kt`、`DeepLinkImportHost.kt`、
-`SchemeImportOps.kt` 和四类 `Import*ViewModelShared`。
-本次范围是现有功能的协议和导入行为，未新增主题、词典规则和 ZIP 排版功能。
+Tauri 配置注册 `legado`、`yuedu`、`legado-rs`。解析入口为 `src/features/import/deepLinks.ts`，处理入口为 `useExternalImportActions.ts`。
 
-## 协议与分流
+## 路径
 
-桌面和移动端均注册 `legado`、`yuedu`、`legado-rs`。
-原版两种协议共用下表，载荷取第一个 `src` 参数。
+`legado`、`yuedu` 使用第一个 `src` 查询参数，缺失或为空时忽略。
 
-| 原版路径 | 当前行为 |
-| --- | --- |
-| `/bookSource`、`/rssSource` | 书源 / RSS 勾选导入 |
-| `/replaceRule` | 替换规则勾选导入 |
-| `/textTocRule` | TXT 目录规则勾选导入 |
-| `/httpTTS` | HTTP TTS 勾选导入 |
-| `/importonline`，host 为 `booksource` / `rsssource` | 旧格式书源 / RSS 导入 |
-| `/importonline`，host 为 `replace` | 旧格式替换规则导入 |
-| `/read` | 书架内按原进度阅读；不在书架则准备书籍并打开详情 |
-| `/addToBookshelf` | 准备书籍并打开详情，用户决定是否加入书架；已在书架则提示 |
-| 其他路径 | 下载 / 解析 JSON，自动判断四类已有配置 |
-| `/theme`、`/dictRule`、`/readConfig` | 明确提示当前没有对应的原版导入功能 |
+| 路径 | 行为 |
+|---|---|
+| `/bookSource`、`/rssSource` | 书源或 RSS 配置勾选导入。 |
+| `/replaceRule`、`/textTocRule`、`/httpTTS` | 替换规则、TXT 目录规则或 HTTP TTS 勾选导入。 |
+| `/importonline` | 按 host 区分旧式书源、RSS、替换规则，其他情况自动识别。 |
+| `/read` | 已在内容库则继续阅读，否则准备书籍并打开详情。 |
+| `/addToBookshelf` | 准备详情，由用户决定加入内容库；已在库中则提示。 |
+| `/theme`、`/dictRule`、`/readConfig` | 提示未提供对应导入功能。 |
+| 其他路径 | 自动识别已有配置类型。 |
 
-保留 `legado-rs://import-source?url=...` 和 `legado-rs://import-rules?url=...`。
-原版链接缺少或空 `src` 时静默忽略，查询值进行 percent 解码及 `+` 转空格，外层 fragment 忽略。
+`legado-rs://import-source?url=...` 和 `legado-rs://import-rules?url=...` 分别导入书源和替换规则。
 
-## 导入流程
+## 导入
 
-冷启动使用插件 `getCurrent`，运行中使用 `onOpenUrl`；桌面复用 single-instance 转发。
-收到链接后直接打开导入勾选框。连续请求排队，关闭 / 完成当前请求后处理下一条。
+冷启动和运行中的链接共用队列与导入弹窗；内容库导入页的粘贴入口也使用同一解析流程。载荷可为 HTTP(S) 地址或 JSON，Rust 下载、识别和校验，确认后由对应 store 保存。书籍链接通过已有书籍准备流程解析，不读取链接指定的本地文件。
 
-导入载荷支持 HTTP(S) 地址、JSON 对象、JSON 数组。
-书源还支持 `{"sourceUrls":["https://example.com/a.json","https://example.com/b.json"]}`。
-下载地址的 `#requestWithoutUA` 后缀表示去除该标记且不发送默认 User-Agent。
-未知 JSON 按原版字段顺序识别 `bookSourceUrl` / `sourceUrl` / `pattern` /
-`themeName` / `showRule` / `name+rule` / `name+url`；未实现的类型会明确报错。
-
-书架导入页的“识别”按钮使用同一入口，支持普通地址、原版深链和直接粘贴 JSON，
-不再让用户预先选择书源或替换规则处理器。
-Rust 负责下载、规范化和类型识别，预览只在内存中；确认后调用已有书源 / 配置 store 保存，
-不创建 `configuration-import-*` 快照。KMP 请求行为保持不变。
-
-书籍链接通过已有书籍准备流程取得详情和目录，匹配明确 `origin`、同站书源或 `bookUrlPattern`。
-URL 参数使用 JSON；正则匹配使用本项目 Rust regex 支持的语法。
-保留本项目的 HTTP(S)、内容大小和队列数量限制，不读取深链指定的本地文件。
-
-系统协议注册的变更需要重新编译并启动桌面程序，移动端需要重新打包安装。
-静态类型与核心库编译检查不代表完成了 Windows / Android / iOS 的系统唤起验证。
+协议注册见 `src-tauri/tauri.conf.json`。配置注册与系统实际唤起是不同检查，修改注册后需要重新构建、安装。

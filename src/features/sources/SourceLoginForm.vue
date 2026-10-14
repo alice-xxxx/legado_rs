@@ -105,16 +105,16 @@ function execute(actionId?: number): void {
 </template>
 
 <style scoped>
-.source-login-fields{display:grid;gap:18px;min-width:0}
-.source-login-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-rows:minmax(44px,auto);gap:16px 12px;align-items:stretch}
-.source-login-row{display:flex;flex-direction:column;justify-content:flex-end;gap:8px;min-width:0;overflow-wrap:anywhere}
+.source-login-fields{display:grid;gap:12px;min-width:0}
+.source-login-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-rows:minmax(var(--ui-control-height),auto);gap:12px;align-items:stretch}
+.source-login-row{display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-width:0;overflow-wrap:anywhere}
 .source-login-row--title{justify-content:center;padding-top:4px}
 .source-login-section-title{margin:0;color:var(--app-text);font-size:var(--ui-font-body);font-weight:650;line-height:1.6;white-space:pre-wrap}
 .source-login-label{color:var(--app-muted);font-size:var(--ui-font-body);line-height:1.4}
-.source-login-row input:not([type=checkbox]),.source-login-row select,.source-login-row textarea{box-sizing:border-box;min-width:0;width:100%;min-height:46px;padding:11px 13px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-panel-soft);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);line-height:1.4}
+.source-login-row input:not([type=checkbox]),.source-login-row select,.source-login-row textarea{box-sizing:border-box;min-width:0;width:100%;min-height:var(--ui-control-height);padding:10px 12px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);line-height:1.4}
 .source-login-row textarea{flex:1;resize:none;min-height:96px}
 .source-login-row input:focus-visible,.source-login-row select:focus-visible,.source-login-row textarea:focus-visible,.source-login-fields button:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
-.source-login-password{display:flex;align-items:center;border:1px solid var(--app-line);border-radius:8px;background:var(--app-panel-soft)}
+.source-login-password{display:flex;align-items:center;min-width:0;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface)}
 .source-login-password input{flex:1;border:0!important;background:transparent!important}
 .source-login-password>button{display:grid;place-items:center;flex:none;align-self:stretch;width:42px;border:0;background:transparent;color:var(--app-subtle);cursor:pointer}
 .source-login-password svg{width:19px;height:19px}
@@ -126,9 +126,9 @@ function execute(actionId?: number): void {
 .source-login-toggle input:checked+.source-login-toggle-track::after{transform:translateX(16px)}
 .source-login-toggle input:focus-visible+.source-login-toggle-track{outline:2px solid var(--app-accent);outline-offset:3px}
 .source-login-toggle.is-disabled{opacity:.55;cursor:default}
-.source-login-rule-button,.source-login-submit{min-height:46px;padding:10px 13px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-accent-soft);color:var(--app-accent-ink);font:inherit;font-size:var(--ui-font-body);font-weight:600;line-height:1.4;cursor:pointer;overflow-wrap:anywhere}
+.source-login-rule-button,.source-login-submit{min-height:var(--ui-control-height);padding:10px 12px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);font-weight:500;line-height:1.4;cursor:pointer;overflow-wrap:anywhere}
 .source-login-row--tall .source-login-rule-button,.source-login-row--tall .source-login-toggle{flex:1}
-.source-login-submit{border-color:var(--app-accent);background:var(--app-accent);color:var(--app-on-accent)}
-.source-login-password-note{margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.5}
+.source-login-submit{justify-self:end;padding-inline:16px;border-color:var(--app-accent);background:var(--app-accent);color:var(--app-on-accent)}
+.source-login-password-note{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5}
 .source-login-fields :disabled{opacity:.55;cursor:default}
 </style>

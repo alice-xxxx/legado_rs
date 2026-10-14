@@ -2,7 +2,6 @@
 import SourceDebugPanel from "./SourceDebugPanel.vue";
 import SourceManagerPage from "./SourceManagerPage.vue";
 import SourceMetadataEditorPage from "./SourceMetadataEditorPage.vue";
-import SourceFormEditor from "./SourceFormEditor.vue";
 import SourceLoginFormView from "./SourceLoginForm.vue";
 import { useSourceLoginActions } from "./useSourceLoginActions";
 import { useSourceDebugActions } from "./useSourceDebugActions";
@@ -15,7 +14,7 @@ import { tasks as taskList, tasksLoaded as taskListLoaded, tasksError, ensureTas
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import { onBeforeRouteLeave, useRoute } from "vue-router";
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from "vue-router";
 import router, { routeNames } from "../../router";
 
 
@@ -148,6 +147,7 @@ async function handleAppStateUpdated(): Promise<void> {
   selectedSourceRows.value = [];
   pendingSourceRemoval.value = [];
   editingSource.value = null;
+  sourceManagementActions.sourceEditCreating.value = false;
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
   await ensureTasksLoaded();
@@ -187,82 +187,50 @@ function returnFromSources(): void {
   else void router.replace({ name: routeNames.shelf });
 }
 
-const sourceImportMode = ref<"new"|"url">("url");
-let requestedSourceImportMode: "new" | "url" | null = null;
+const pendingDraft = ref(false);
+const confirmRouteLeave = ref(false);
+const pendingSourceSwitch = ref<SourceMetadata | "new" | null>(null);
+let initialDesktopSourceOpened = false;
 const currentRoute = useRoute();
 const routeSourceImportMode = computed(() => currentRoute.name === routeNames.sources
   && (currentRoute.query.sourceImport === "url" || currentRoute.query.sourceImport === "new")
   ? currentRoute.query.sourceImport : "");
-let sourceImportQueryOpen = false;
 let suppressSourceImportQuerySync = false;
-function syncSourceImportRoute(open: boolean): void {
-  if (currentRoute.name !== routeNames.sources) return;
-  if (open && routeSourceImportMode.value) return;
+function syncSourceImportRoute(mode: "new" | "url" | null): void {
+  if (suppressSourceImportQuerySync || currentRoute.name !== routeNames.sources) return;
   const query = { ...currentRoute.query };
-  if (open) {
-    query.sourceImport = sourceImportMode.value;
-    if (sourceImportMode.value === "new") delete query.importUrl;
+  if (mode) {
+    query.sourceImport = mode;
+    if (mode === "new") delete query.importUrl;
   } else {
     delete query.sourceImport;
     delete query.importUrl;
   }
+  if (query.sourceImport === currentRoute.query.sourceImport && query.importUrl === currentRoute.query.importUrl) return;
   void router.replace({ name: routeNames.sources, query });
 }
+watch(sourceImportOpen, opened => {
+  if (opened) syncSourceImportRoute("url");
+  else if (routeSourceImportMode.value === "url") syncSourceImportRoute(null);
+}, { flush: "sync" });
+watch(sourceManagementActions.sourceEditCreating, creating => {
+  if (creating) syncSourceImportRoute("new");
+  else if (routeSourceImportMode.value === "new") syncSourceImportRoute(null);
+}, { flush: "sync" });
 watch(routeSourceImportMode, mode => {
-  if (mode) {
-    sourceImportQueryOpen = true;
-    requestedSourceImportMode = mode;
-    sourceImportMode.value = mode;
-    if (mode === "url") {
-      const url = currentRoute.query.importUrl;
-      sourceImportUrl.value = typeof url === "string" ? url : "";
-    } else sourceImportUrl.value = "";
+  if (mode === "new") {
+    sourceImportOpen.value = false;
+    if (!sourceManagementActions.sourceEditCreating.value) requestEditorSwitch();
+  } else if (mode === "url") {
+    const url = currentRoute.query.importUrl;
+    sourceImportUrl.value = typeof url === "string" ? url : "";
     sourceImportOpen.value = true;
-    return;
-  }
-  if (!sourceImportQueryOpen) return;
-  sourceImportQueryOpen = false;
-  if (sourceImportOpen.value) {
+  } else if (sourceImportOpen.value) {
     suppressSourceImportQuerySync = true;
     sourceImportOpen.value = false;
     suppressSourceImportQuerySync = false;
   }
 }, { immediate: true });
-watch(sourceImportOpen, (opened, wasOpen) => {
-  if (suppressSourceImportQuerySync) return;
-  if (opened) syncSourceImportRoute(true);
-  else if (wasOpen) syncSourceImportRoute(false);
-}, { flush: "sync" });
-const newSourceTemplate = "{}";
-const newSourceJson = ref(newSourceTemplate);
-const newSourceForm = ref<InstanceType<typeof SourceFormEditor> | null>(null);
-const newSourceFormPending = ref(false);
-const newSourceDiscardOpen = ref(false);
-const hasNewSourceDraft = computed(() => newSourceFormPending.value || newSourceJson.value !== newSourceTemplate);
-let pendingSourceImportNavigation: ((allow: boolean) => void) | null = null;
-const newSourceError = ref("");
-async function submitNewSource(): Promise<void> {
-  if (importLocked.value) return;
-  const json = newSourceForm.value?.serialize();
-  if (!json) return;
-  try {
-    const parsed: unknown = JSON.parse(json);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("配置必须是对象");
-    const source = parsed as Record<string, unknown>;
-    if (typeof source.bookSourceName !== "string" || !source.bookSourceName.trim()) throw new Error("请填写来源名称");
-    if (typeof source.bookSourceUrl !== "string" || !source.bookSourceUrl.trim()) throw new Error("请填写来源地址");
-  } catch (error) {
-    newSourceError.value = errorText(error);
-    return;
-  }
-  newSourceError.value = "";
-  newSourceJson.value = json;
-  const created = await management.createSourceFromJson(newSourceJson.value);
-  if (created) {
-    newSourceJson.value = newSourceTemplate;
-    newSourceFormPending.value = false;
-  }
-}
 const importLocked = computed(() => recoveryRequired.value || sourceImportBusy.value
   || sourceExportBusy.value || sourceBatchBusy.value
   || sourceManagementActions.sourceRemovalBusy.value || sourceManagementActions.sourceEditBusy.value);
@@ -276,80 +244,44 @@ const urlImportError = computed(() => {
       ? "" : "仅支持 HTTP 或 HTTPS 来源链接";
   } catch { return "链接格式不正确"; }
 });
-function openSourceImport(mode: "new" | "url"): void {
+function openSourceImport(): void {
   if (importLocked.value) return;
-  sourceImportMode.value = mode;
-  requestedSourceImportMode = mode;
-  if (mode === "url") sourceImportUrl.value = "";
+  sourceImportUrl.value = "";
   sourceImportOpen.value = true;
 }
 function closeSourceImport(): void {
   if (importLocked.value) return;
-  if (hasNewSourceDraft.value) {
-    newSourceDiscardOpen.value = true;
-    return;
-  }
-  requestedSourceImportMode = null;
   sourceImportOpen.value = false;
-}
-function keepNewSourceDraft(): void {
-  newSourceDiscardOpen.value = false;
-  const resume = pendingSourceImportNavigation;
-  pendingSourceImportNavigation = null;
-  resume?.(false);
-}
-function abandonNewSource(): void {
-  if (importLocked.value) return;
-  newSourceDiscardOpen.value = false;
-  newSourceJson.value = newSourceTemplate;
-  newSourceError.value = "";
-  newSourceForm.value?.reset(newSourceTemplate);
-  newSourceFormPending.value = false;
-  requestedSourceImportMode = null;
-  const resume = pendingSourceImportNavigation;
-  pendingSourceImportNavigation = null;
-  if (resume) suppressSourceImportQuerySync = true;
-  sourceImportOpen.value = false;
-  if (resume) suppressSourceImportQuerySync = false;
-  resume?.(true);
 }
 function submitSourceImport(): void {
   if (importLocked.value || !sourceImportUrl.value.trim() || urlImportError.value) return;
   void sourceManagementActions.importSourceFromUrl();
 }
-watch(sourceImportOpen, opened => {
-  if (opened) {
-    sourceImportMode.value = requestedSourceImportMode ?? "url";
-    requestedSourceImportMode = null;
-  }
-});
-
-const pendingDraft = ref(false);
-const confirmRouteLeave = ref(false);
-const pendingSourceSwitch = ref<SourceMetadata | null>(null);
-let initialDesktopSourceOpened = false;
 watch(() => sources.value.length, count => {
-  if (initialDesktopSourceOpened || !count || editingSource.value
+  if (initialDesktopSourceOpened || !count || sourceManagementActions.sourceEditorOpen.value
       || sourceImportOpen.value || typeof window === "undefined"
       || window.innerWidth <= 860) return;
   initialDesktopSourceOpened = true;
   const firstSource = sources.value[0];
   if (firstSource) void sourceManagementActions.beginSourceEdit(firstSource);
 }, { immediate: true });
-function requestEditorSwitch(source: SourceMetadata): void {
+function requestEditorSwitch(source?: SourceMetadata): void {
   if (sourceManagementActions.sourceEditBusy.value || recoveryRequired.value) return;
-  if (!editingSource.value) {
-    void sourceManagementActions.beginSourceEdit(source);
+  initialDesktopSourceOpened = true;
+  if (!sourceManagementActions.sourceEditorOpen.value) {
+    if (source) void sourceManagementActions.beginSourceEdit(source);
+    else sourceManagementActions.beginSourceCreate();
     return;
   }
-  if (editingSource.value.id === source.id) return;
+  if (source ? editingSource.value?.id === source.id : sourceManagementActions.sourceEditCreating.value) return;
   if (isEdited()) {
-    pendingSourceSwitch.value = source;
+    pendingSourceSwitch.value = source ?? "new";
     confirmRouteLeave.value = true;
     return;
   }
   sourceManagementActions.closeSourceEdit();
-  void sourceManagementActions.beginSourceEdit(source);
+  if (source) void sourceManagementActions.beginSourceEdit(source);
+  else sourceManagementActions.beginSourceCreate();
 }
 function runEditorAction(action: "test" | "login" | "export" | "remove"): void {
   const source = editingSource.value;
@@ -378,48 +310,55 @@ function chooseRouteLeave(allow:boolean): void {
   pendingSourceSwitch.value = null;
   confirmRouteLeave.value = false;
   if (allow) {
+    if (resolve) suppressSourceImportQuerySync = true;
     sourceManagementActions.closeSourceEdit();
-    if (target) void sourceManagementActions.beginSourceEdit(target);
+    suppressSourceImportQuerySync = false;
+    if (target === "new") sourceManagementActions.beginSourceCreate();
+    else if (target) void sourceManagementActions.beginSourceEdit(target);
+  } else if (target === "new" && !sourceManagementActions.sourceEditCreating.value) {
+    syncSourceImportRoute(null);
   }
   resolve?.(allow);
 }
-onBeforeRouteLeave(() => {
-  if (sourceImportOpen.value) {
-    if (importLocked.value) return false;
-    if (hasNewSourceDraft.value) {
-      return new Promise<boolean>(resolve => {
-        pendingSourceImportNavigation?.(false);
-        pendingSourceImportNavigation = resolve;
-        newSourceDiscardOpen.value = true;
-      });
-    }
-    suppressSourceImportQuerySync = true;
-    sourceImportOpen.value = false;
-    suppressSourceImportQuerySync = false;
-  }
-  if (!editingSource.value) return true;
+function guardEditorNavigation(): boolean | Promise<boolean> {
+  if (!sourceManagementActions.sourceEditorOpen.value) return true;
   if (sourceManagementActions.sourceEditBusy.value) return false;
   if (!isEdited()) {
+    suppressSourceImportQuerySync = true;
     sourceManagementActions.closeSourceEdit();
+    suppressSourceImportQuerySync = false;
     return true;
   }
   // Router back/side navigation cannot bypass the editor's own Cancel dialog.
   return new Promise<boolean>(resolve => {
+    pendingSourceSwitch.value = null;
     resolveNavigation?.(false);
     resolveNavigation = resolve;
     confirmRouteLeave.value = true;
   });
+}
+onBeforeRouteLeave(() => {
+  if (sourceImportOpen.value) {
+    if (importLocked.value) return false;
+    suppressSourceImportQuerySync = true;
+    sourceImportOpen.value = false;
+    suppressSourceImportQuerySync = false;
+  }
+  return guardEditorNavigation();
+});
+onBeforeRouteUpdate(to => {
+  if (sourceManagementActions.sourceEditCreating.value && to.query.sourceImport !== "new") return guardEditorNavigation();
+  return true;
 });
 onBeforeUnmount(() => {
   resolveNavigation?.(false);
-  pendingSourceImportNavigation?.(false);
 });
 </script>
 
 <template>
-  <div class="source-workspace-frame" :class="{ 'source-workspace-frame--editing': !!management.editingSource }">
+  <div class="source-workspace-frame" :class="{ 'source-workspace-frame--editing': management.sourceEditorOpen }">
   <SourceManagerPage
-    :editor-open="!!management.editingSource"
+    :editor-open="management.sourceEditorOpen"
     :editing-source-id="management.editingSource?.id"
     :sources="management.sources"
     :selected-ids="management.selectedSourceRows"
@@ -430,28 +369,28 @@ onBeforeUnmount(() => {
     @selection-change="management.selectedSourceRows = $event"
     @toggle-source="management.toggleSourceRow"
     @change-enabled="management.changeSourceEnabled"
-    @create-open="openSourceImport('new')"
+    @create-open="requestEditorSwitch()"
     @import-local="management.importSourceFileFromPicker()"
-    @import-url-open="openSourceImport('url')"
+    @import-url-open="openSourceImport"
     @login="login.openSelectedSourceLogin"
     @debug="debug.openSelectedSourceDebug"
     @set-group="management.setSelectedSourcesGroup"
     @set-enabled="management.setSelectedSourcesEnabled"
     @export="management.exportSelectedSources"
     @remove="management.pendingSourceRemoval = $event"
-    @edit="management.beginSourceEdit"
+    @edit="requestEditorSwitch"
     @switch-editor="requestEditorSwitch"
     @back="returnFromSources"
   >
     <template #editor>
       <SourceMetadataEditorPage
-        v-if="management.editingSource"
-        :key="management.editingSource.id"
-        :source="management.editingSource"
+        v-if="management.sourceEditorOpen"
+        :key="management.editingSource?.id ?? 'new'"
+        :source="management.editingSource ?? undefined"
         v-model:json-text="management.sourceEditJson"
         :original-json="management.sourceEditOriginalJson"
         :busy="management.sourceEditBusy"
-        :locked="recoveryRequired"
+        :locked="importLocked"
         @save="management.saveSourceDefinitionJson"
         @cancel="management.closeSourceEdit"
         @pending-draft="pendingDraft = $event"
@@ -467,37 +406,24 @@ onBeforeUnmount(() => {
     <section v-if="confirmRouteLeave" class="modal-backdrop source-leave-guard"
 >
       <article class="app-modal">
-        <h2>{{ pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2>
+        <h2>{{ pendingSourceSwitch === 'new' ? '新建来源？' : pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2>
         <p class="modal-description">当前源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
         <div class="modal-actions">
-          <button type="button" class="button secondary" @click="chooseRouteLeave(false)">继续编辑</button>
-          <button type="button" class="button danger" @click="chooseRouteLeave(true)">{{ pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</button>
+          <button type="button" class="button secondary" data-back-action @click="chooseRouteLeave(false)">继续编辑</button>
+          <button type="button" class="button danger" @click="chooseRouteLeave(true)">{{ pendingSourceSwitch === 'new' ? '放弃并新建' : pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</button>
         </div>
       </article>
     </section>
 
     <section v-if="management.sourceImportOpen" class="modal-backdrop" @click.self="closeSourceImport">
-      <article class="app-modal source-import-modal" :class="{ 'source-import-modal--url': sourceImportMode === 'url', 'source-import-modal--new': sourceImportMode === 'new' }"
+      <article class="app-modal source-import-modal"
 @keydown.esc="closeSourceImport">
         <header class="source-import-heading">
-          <h2 id="source-import-title">{{ sourceImportMode === 'new' ? '新建来源' : '从网络链接导入' }}</h2>
-          <button type="button" class="source-import-close"
+          <h2 id="source-import-title">从网络链接导入</h2>
+          <button type="button" class="source-import-close" data-back-action
             :disabled="importLocked" @click="closeSourceImport"><PrototypeIcon name="close"/></button>
         </header>
-        <div v-if="sourceImportMode==='new'" class="source-import-new">
-          <SourceFormEditor ref="newSourceForm" :json-text="newSourceJson" :enabled="true"
-            :disabled="importLocked" @pending="newSourceFormPending = $event" />
-          <p v-if="newSourceError" class="source-import-error">{{ newSourceError }}</p>
-          <p class="source-import-hint">与现有来源地址相同时将更新已有配置，而不是生成重复来源。</p>
-          <div class="source-import-actions">
-            <button type="button" class="button secondary" :disabled="importLocked" @click="closeSourceImport">取消</button>
-            <button type="button" class="button primary"
-              :disabled="importLocked" @click="submitNewSource">
-              {{ management.sourceImportBusy ? '正在保存…' : '保存来源配置' }}
-            </button>
-          </div>
-        </div>
-        <form v-else class="source-import-url" @submit.prevent="submitSourceImport">
+        <form class="source-import-url" @submit.prevent="submitSourceImport">
           <label for="source-import-url">内容来源 JSON 链接</label>
           <input id="source-import-url" v-model="management.sourceImportUrl"
             type="url" inputmode="url" autocomplete="url" maxlength="4096"
@@ -513,26 +439,15 @@ onBeforeUnmount(() => {
             <button type="button" class="button secondary" :disabled="importLocked" @click="closeSourceImport">取消</button>
           </div>
         </form>
-        <p v-if="management.sourceImportBusy" class="source-import-loading">{{ sourceImportMode === 'new' ? '正在保存来源配置…' : '正在下载并导入来源…' }}</p>
+        <p v-if="management.sourceImportBusy" class="source-import-loading">正在下载并导入来源…</p>
       </article>
     </section>
-    <div v-if="newSourceDiscardOpen" class="modal-backdrop source-new-discard-mask">
-      <article class="app-modal">
-        <h2 id="source-new-discard-title">放弃新建来源的修改？</h2>
-        <p class="modal-description">尚未保存的名称、网络参数和解析规则将被丢弃。关闭或离开会丢失全部草稿。</p>
-        <div class="modal-actions">
-          <button type="button" class="button secondary" @click="keepNewSourceDraft">继续编辑</button>
-          <button type="button" class="button danger" @click="abandonNewSource">放弃修改</button>
-        </div>
-      </article>
-    </div>
-
     <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="!login.sourceLoginBusy && login.closeSourceLogin()"
       @keydown.esc.stop.prevent="!login.sourceLoginBusy && login.closeSourceLogin()">
       <article class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
         <header class="source-login-heading">
-          <div><h2 id="source-login-title">源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
-          <button type="button" :disabled="login.sourceLoginBusy" aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
+          <div><h2 id="source-login-title">来源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
+          <button type="button" :disabled="login.sourceLoginBusy" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
         </header>
         <div class="source-login-body">
         <SourceLoginFormView v-if="login.sourceLoginForm?.mode === 'form'"
@@ -550,18 +465,23 @@ onBeforeUnmount(() => {
             </template>
           </div>
         </div>
-        <p v-else-if="login.sourceLoginForm?.mode === 'webUnavailable'" class="modal-description">{{ login.sourceLoginForm.message }}</p>
+        <p v-else-if="login.sourceLoginForm?.mode === 'webUnavailable'" class="source-login-note">{{ login.sourceLoginForm.message }}</p>
         <p v-if="login.sourceLoginFeedback && !login.sourceLoginWebSessionId" class="source-login-feedback" role="status">{{ login.sourceLoginFeedback }}</p>
-        <p v-if="login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
-        <button v-if="!login.sourceLoginForm" class="button secondary small" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.loadSelectedSourceLoginForm">读取登录表单</button>
+        <p v-if="login.sourceLoginForm && login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
+        <div v-if="!login.sourceLoginForm && !login.sourceLoginBusy" class="source-login-load-state">
+          <p v-if="login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
+          <button type="button" class="source-login-retry" :disabled="recoveryRequired" @click="login.loadSelectedSourceLoginForm">
+            <PrototypeIcon name="refresh" />{{ login.sourceLoginFormError ? '重试' : '读取登录方式' }}
+          </button>
+        </div>
         <div class="source-login-state">
           <span :class="{ saved: login.sourceHasLoginState === true }"></span>
-          <p>{{ login.sourceLoginBusy ? '正在处理…' : login.sourceHasLoginState === true ? '已保存登录数据' : login.sourceHasLoginState === false ? '暂无登录数据' : '登录状态尚未确认' }}</p>
-          <button type="button" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.refreshSelectedSourceLogin">刷新</button>
+          <p role="status">{{ login.sourceLoginBusy ? '处理中…' : login.sourceHasLoginState === true ? '已保存登录数据' : login.sourceHasLoginState === false ? '暂无登录数据' : '状态未确认' }}</p>
+          <button type="button" aria-label="刷新登录状态" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.refreshSelectedSourceLogin"><PrototypeIcon name="refresh" />刷新</button>
         </div>
         <p v-if="login.sourceLoginError" class="source-login-error" role="alert">{{ login.sourceLoginError }}</p>
-        <details class="source-login-storage">
-          <summary>登录数据</summary>
+        <details v-if="login.sourceHasLoginState === true" class="source-login-storage">
+          <summary>管理登录数据</summary>
           <button type="button" class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebSessionId || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</button>
         </details>
         </div>
@@ -571,8 +491,8 @@ onBeforeUnmount(() => {
     <SourceDebugPanel
       v-if="debug.sourceDebugTarget"
       :target="debug.sourceDebugTarget"
-      :sources="management.bookSourceCandidates"
       :keyword="debug.sourceDebugKeyword"
+      :keyword-loading="debug.sourceDebugKeywordLoading"
       :busy="debug.sourceDebugBusy"
       :search-result-batch-busy="searchResultBatchBusy"
       :recovery-required="recoveryRequired"
@@ -589,7 +509,6 @@ onBeforeUnmount(() => {
       :chapter-text="debug.sourceDebugChapterText"
       @close="debug.closeSourceDebug"
       @update:keyword="debug.sourceDebugKeyword = $event"
-      @select-source="debug.selectSourceDebugSource"
       @search="debug.startSourceDebugSearch"
       @inspect-result="debug.inspectSourceDebugResult"
       @preview-chapter="debug.previewSourceDebugChapter"
@@ -606,48 +525,48 @@ onBeforeUnmount(() => {
  .source-workspace-frame :deep(.source-edit-screen){--source-editor-inset:24px}
 }
 .source-leave-guard{z-index:150}
-.source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);max-height:min(88dvh,800px);padding:0;overflow:hidden;border-radius:14px}
-.source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:14px;padding:22px 24px 18px;border-bottom:1px solid var(--app-line)}
+.source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);min-width:0;max-height:min(88dvh,800px);padding:0;overflow:hidden;border-radius:12px}
+.source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--app-line)}
 .source-login-heading>div{min-width:0}
-.source-login-heading h2{margin:0;color:var(--app-text);font-size:var(--ui-font-title);font-weight:650}
-.source-login-heading p{margin:6px 0 0;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.source-login-heading>button{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:8px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
-.source-login-heading svg{width:18px;height:18px}
-.source-login-body{min-height:0;padding:22px 24px;overflow-y:auto;overscroll-behavior:contain}
+.source-login-heading h2{margin:0;color:var(--app-text);font-size:var(--ui-font-heading);font-weight:650}
+.source-login-heading p{margin:4px 0 0;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.source-login-heading>button{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:var(--ui-radius);background:transparent;color:var(--app-muted);cursor:pointer}
+.source-login-heading svg{width:var(--ui-icon-size);height:var(--ui-icon-size)}
+.source-login-body{display:grid;gap:12px;min-width:0;min-height:0;padding:16px 20px 20px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;overflow-wrap:anywhere}
+.source-login-note{margin:0;color:var(--app-muted);font-size:var(--ui-font-body);line-height:1.5}
+.source-login-load-state{display:flex;align-items:flex-start;gap:12px;min-width:0}
+.source-login-load-state>.source-login-error{flex:1;min-width:0}
+.source-login-retry{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px;border-radius:var(--ui-radius);color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
+.source-login-retry svg,.source-login-state button svg{width:16px;height:16px}
 .source-login-web-hint{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
-.source-login-web-actions{display:flex;gap:10px;margin-top:18px}
-.source-login-web-actions>.primary{flex:1}
-.source-login-web-actions>.button{min-height:44px}
-.source-login-feedback,.source-login-error{margin:16px 0 0;padding:11px 13px;border-radius:8px;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap}
-.source-login-feedback{background:var(--app-accent-soft);color:var(--app-accent-ink)}
-.source-login-error{background:var(--app-danger-soft);color:var(--app-danger)}
-.source-login-state{display:flex;align-items:center;gap:8px;margin-top:22px;padding-top:18px;border-top:1px solid var(--app-line)}
+.source-login-web-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:12px}
+.source-login-web-actions>.button{min-height:var(--ui-control-height);font-weight:500}
+.source-login-feedback,.source-login-error{margin:0;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap}
+.source-login-feedback{color:var(--app-accent-ink)}
+.source-login-error{color:var(--app-danger)}
+.source-login-state{display:flex;align-items:center;gap:8px;min-width:0;padding-top:8px;border-top:1px solid var(--app-line)}
 .source-login-state>span{flex:none;width:7px;height:7px;border-radius:50%;background:var(--app-accent-soft)}
 .source-login-state>span.saved{background:var(--app-success)}
-.source-login-state>p{flex:1;margin:0;font-size:var(--ui-font-caption);color:var(--app-muted)}
-.source-login-state>button{min-height:36px;padding:0 8px;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
-.source-login-storage{margin-top:12px;color:var(--app-subtle);font-size:var(--ui-font-caption)}
-.source-login-storage>summary{width:max-content;padding:8px 0;cursor:pointer}
-.source-login-storage>p{margin:7px 0 12px;line-height:1.6}
-@media(max-width:550px){.source-login-heading{padding:19px 18px 16px}.source-login-body{padding:20px 18px}.source-login-heading h2{font-size:var(--ui-font-heading)}}
+.source-login-state>p{flex:1;min-width:0;margin:0;font-size:var(--ui-font-caption);color:var(--app-muted)}
+.source-login-state>button{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px;border-radius:var(--ui-radius);color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
+.source-login-storage{color:var(--app-muted);font-size:var(--ui-font-caption)}
+.source-login-storage>summary{width:max-content;padding:4px 0;cursor:pointer}
+.source-login-storage>.button{min-height:var(--ui-compact-control-height);margin-top:8px;border-color:var(--app-danger-line);background:var(--app-surface);color:var(--app-danger);font-weight:500}
+.source-login-heading>button:focus-visible,.source-login-retry:focus-visible,.source-login-state>button:focus-visible,.source-login-storage>summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 .source-confirm{color:var(--app-warning);background:var(--app-panel-soft)}
 .source-confirm svg{width:22px;height:22px}
 .detail-close svg{width:18px;height:18px}
-.source-import-modal{width:min(515px,100%);box-sizing:border-box;padding:25px}
-.source-import-modal--url{width:min(420px,100%);padding:22px}
-.source-import-modal--new{max-height:90dvh;overflow-y:auto}
+.source-import-modal{width:min(420px,100%);box-sizing:border-box;padding:22px}
 .source-import-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .source-import-heading h2{margin:0;font-size:var(--ui-font-title);color:var(--app-text)}
 .source-import-close{display:grid;place-items:center;flex:none;width:33px;height:33px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
 .source-import-close svg{width:18px;height:18px}
 .source-import-close:disabled{opacity:.45;cursor:default}
 .source-import-url{display:grid;gap:9px;margin-top:10px}
-.source-import-new{display:grid;gap:11px;margin-top:22px}
 .source-import-modal--url .source-import-heading h2{font-size:var(--ui-font-heading)}
 .source-import-url label,.source-import-new label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
 .source-import-modal--new{width:min(820px,100%)}
 .source-new-discard-mask{z-index:150}
-.source-import-hint{margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
 .source-import-url input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid var(--app-line);border-radius:9px;background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body)}
 .source-import-url input.is-invalid{border-color:var(--app-danger-line)}
 .source-import-url>small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
@@ -656,6 +575,4 @@ onBeforeUnmount(() => {
 .source-import-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px;padding-top:12px}
 .source-import-url .source-import-actions{padding-top:5px}
 .source-import-loading{margin:12px 0 0;font-size:var(--ui-font-caption);color:var(--app-accent-ink)}
-@media(max-width:550px){.source-import-modal{padding:19px}.source-import-modal--url{padding:22px}}
-.source-new-discard-mask .app-modal{width:min(430px,100%);padding:22px;border-radius:14px}
 </style>

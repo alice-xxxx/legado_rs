@@ -102,7 +102,7 @@ async function openLocalBook(bookId: string): Promise<void> {
     return;
   }
   try {
-    openedBookFromShelf.value = false;
+    openedBookFromShelf.value = true;
     const current = await switchOpenedBook(bookId);
     if (current) await readerSession.startReading(current);
   } catch (error) {
@@ -110,7 +110,10 @@ async function openLocalBook(bookId: string): Promise<void> {
   }
 }
 function bookFormat(book: ShelfResource["books"][number]): string {
-  if (book.kind === "comic") return "CBZ / 图片";
+  if (book.contentType === "image") return "CBZ / 图片";
+  if (book.contentType === "pdf") return "PDF";
+  if (book.contentType === "html") return "EPUB";
+  if (book.contentType === "text") return "TXT";
   if (book.mediaType === "audio") return "音频";
   if (book.mediaType === "video") return "视频";
   return "本地书";

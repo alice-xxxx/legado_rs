@@ -29,7 +29,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
           <h2 id="book-source-switch-title">更换源</h2>
           <small>{{ bookSourceSwitch.bookSourceSwitchBook?.title }}</small>
         </div>
-        <button type="button" class="book-source-switch-close" aria-label="关闭换源" @click="bookSourceSwitch.closeBookSourceSwitch"><PrototypeIcon name="close" /></button>
+        <button type="button" class="book-source-switch-close" data-back-action aria-label="关闭换源" @click="bookSourceSwitch.closeBookSourceSwitch"><PrototypeIcon name="close" /></button>
       </header>
       <div class="book-source-switch-body">
       <p class="book-source-switch-description">整书换源会重新获取目录，并按章节名称匹配阅读位置和书签。</p>
@@ -189,7 +189,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
       </p>
       <p v-else-if="bookSourceSwitch.bookSourceChangeError" class="source-identity-confirmation">{{ bookSourceSwitch.bookSourceChangeError }}</p>
       <div class="modal-actions">
-        <button type="button" class="button secondary small" :disabled="bookSourceSwitch.bookSourceSwitchBusy" @click="bookSourceSwitch.bookSourceSwitchConfirmOpen = false">返回</button>
+        <button type="button" class="button secondary small" :disabled="bookSourceSwitch.bookSourceSwitchBusy" data-back-action @click="bookSourceSwitch.bookSourceSwitchConfirmOpen = false">返回</button>
         <button
           type="button" class="button primary small"
           :disabled="bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired"

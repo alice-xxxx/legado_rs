@@ -3,9 +3,10 @@ import { computed, ref } from "vue";
 import type { SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import SourceFormEditor from "./SourceFormEditor.vue";
+import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 
 const props = defineProps<{
-  source: SourceMetadata;
+  source?: SourceMetadata;
   jsonText: string;
   originalJson: string;
   busy: boolean;
@@ -26,6 +27,20 @@ const emit = defineEmits<{
 const discardPrompt = ref(false);
 const fieldPending = ref(false);
 const form = ref<InstanceType<typeof SourceFormEditor> | null>(null);
+const operationMenu = ref<HTMLDetailsElement | null>(null);
+
+function closeOperationMenu(restoreFocus = false): void {
+  const menu = operationMenu.value;
+  if (!menu) return;
+  menu.open = false;
+  if (restoreFocus) menu.querySelector("summary")?.focus({ preventScroll: true });
+}
+
+useOutsidePointerDismiss(
+  () => Boolean(operationMenu.value?.open),
+  target => target instanceof Node && Boolean(operationMenu.value?.contains(target)),
+  () => closeOperationMenu(),
+);
 function updatePendingDraft(pending: boolean): void {
   fieldPending.value = pending;
   emit("pendingDraft", pending);
@@ -46,11 +61,13 @@ const parsed = computed<{ value: Record<string, unknown> | null; error: string }
 const changed = computed(() => props.jsonText !== props.originalJson);
 
 function cancel(): void {
+  closeOperationMenu();
   if (fieldPending.value || changed.value) discardPrompt.value = true;
   else emit("cancel");
 }
 
 function reset(): void {
+  closeOperationMenu();
   emit("update:jsonText", props.originalJson);
   form.value?.reset(props.originalJson);
   saveError.value = "";
@@ -58,6 +75,7 @@ function reset(): void {
 }
 function save(): void {
   if (props.busy || props.locked) return;
+  closeOperationMenu();
   const json = form.value?.serialize();
   if (!json) return;
   const definition = JSON.parse(json) as Record<string, unknown>;
@@ -76,19 +94,24 @@ const saveError = ref("");
 <template>
  <section class="source-edit-screen">
   <header class="source-edit-bar safe-area-top">
-   <button type="button" class="source-edit-back" :disabled="busy" @click="cancel"><PrototypeIcon name="left"/> 返回来源</button>
-   <strong>编辑源</strong>
+   <button type="button" class="source-edit-back" data-back-action data-back-local :disabled="busy" @click="cancel"><PrototypeIcon name="left"/> 返回来源</button>
+   <strong>{{ source ? '编辑源' : '新建来源' }}</strong>
    <div class="source-edit-tools">
     <button type="button" class="button primary" :disabled="busy||locked||(!changed&&!fieldPending)||!parsed.value" @click="save">{{busy?'保存中…':'保存'}}</button>
-    <details class="source-edit-menu">
+    <details ref="operationMenu" class="source-edit-menu" @keydown.esc.stop.prevent="closeOperationMenu(true)">
      <summary aria-label="源操作"><PrototypeIcon name="more"/></summary>
      <div>
-      <button type="button" :disabled="busy||locked||!source.enabled||source.isRss" @click="emit('test')"><PrototypeIcon name="debug"/> 测试配置</button>
-      <button v-if="!source.isRss" type="button" :disabled="busy||locked" @click="emit('login')"><PrototypeIcon name="login"/> 登录</button>
-      <button type="button" :disabled="busy||locked" @click="emit('export')"><PrototypeIcon name="export"/> 导出</button>
-      <button data-source-reset type="button" :disabled="busy||locked||(!changed&&!fieldPending)" @click="reset">还原全部修改</button>
-      <button type="button" class="danger" :disabled="busy||locked" @click="emit('remove')"><PrototypeIcon name="trash"/> 删除</button>
-      <small v-if="changed||fieldPending">测试、登录和导出使用已保存的配置。</small>
+      <template v-if="source">
+        <button type="button" :disabled="busy||locked||!source.enabled||source.isRss" @click="closeOperationMenu(); emit('test')"><PrototypeIcon name="debug"/> 测试配置</button>
+        <button v-if="!source.isRss" type="button" :disabled="busy||locked" @click="closeOperationMenu(); emit('login')"><PrototypeIcon name="login"/> 登录</button>
+        <button type="button" :disabled="busy||locked" @click="closeOperationMenu(); emit('export')"><PrototypeIcon name="export"/> 导出</button>
+      </template>
+      <button data-source-reset type="button" :disabled="busy||locked||(!changed&&!fieldPending)" @click="reset"><PrototypeIcon name="backup"/> 还原修改</button>
+      <template v-if="source">
+        <div class="source-edit-menu-divider" role="separator"></div>
+        <button type="button" class="danger" :disabled="busy||locked" @click="closeOperationMenu(); emit('remove')"><PrototypeIcon name="trash"/> 删除</button>
+        <small v-if="changed||fieldPending">测试、登录和导出使用已保存的配置。</small>
+      </template>
      </div>
     </details>
    </div>
@@ -100,14 +123,14 @@ const saveError = ref("");
      ref="form"
      v-if="parsed.value"
      :json-text="jsonText"
-     :enabled="source.enabled"
+     :enabled="source?.enabled ?? true"
      :disabled="busy||locked"
      @pending="updatePendingDraft"
    />
   </div>
-  <div v-if="discardPrompt" class="source-discard-prompt">
+  <div v-if="discardPrompt" class="source-discard-prompt" data-back-layer>
     <div><strong>放弃未保存的源修改？</strong><p>未保存的字段修改将丢失。</p>
-      <button type="button" class="button secondary" @click="discardPrompt=false">继续编辑</button>
+      <button type="button" class="button secondary" data-back-action @click="discardPrompt=false">继续编辑</button>
       <button type="button" class="button danger" @click="emit('cancel')">放弃修改</button>
     </div>
   </div>
@@ -122,14 +145,18 @@ const saveError = ref("");
 .source-edit-tools{display:flex;align-items:center;gap:4px}
 .source-edit-tools>.button{background:var(--app-accent);border-radius:8px;font-size:var(--ui-font-body);min-height:40px}
 .source-edit-menu{position:relative;z-index:8}
-.source-edit-menu>summary{display:grid;place-items:center;width:38px;height:44px;cursor:pointer;list-style:none;color:var(--app-muted)}
+.source-edit-menu>summary{display:grid;place-items:center;width:36px;height:40px;border-radius:var(--ui-radius);cursor:pointer;list-style:none;color:var(--app-muted)}
+.source-edit-menu[open]>summary{background:var(--app-panel-soft);color:var(--app-text)}
 .source-edit-menu>summary::-webkit-details-marker{display:none}
-.source-edit-menu svg{width:20px;height:20px}
-.source-edit-menu>div{position:absolute;top:100%;right:0;display:grid;min-width:210px;padding:6px;border:1px solid var(--app-line);border-radius:9px;background:var(--app-surface);box-shadow:0 8px 24px #18203422}
-.source-edit-menu button{display:flex;align-items:center;gap:9px;min-height:44px;padding:0 12px;border:0;border-radius:6px;background:transparent;text-align:left;color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
+.source-edit-menu>summary :deep(svg){width:var(--ui-icon-size);height:var(--ui-icon-size)}
+.source-edit-menu>div{position:absolute;top:calc(100% + 4px);right:0;display:grid;gap:2px;width:196px;max-width:calc(100vw - 32px);max-height:min(360px,calc(100dvh - var(--safe-top) - 80px));overflow-y:auto;overscroll-behavior:contain;padding:6px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);box-shadow:var(--app-shadow)}
+.source-edit-menu button{display:flex;align-items:center;gap:8px;min-height:36px;padding:0 10px;border:0;border-radius:6px;background:transparent;text-align:left;color:var(--app-text);font-size:var(--ui-font-body);cursor:pointer}
+.source-edit-menu button :deep(svg){width:16px;height:16px}
+.source-edit-menu-divider{height:1px;margin:4px 6px;background:var(--app-line)}
+.source-edit-menu>summary:focus-visible,.source-edit-menu button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
 .source-edit-menu button:disabled{opacity:.4;cursor:default}
 .source-edit-menu button.danger{color:var(--app-danger)}
-.source-edit-menu small{padding:8px 12px;font-size:var(--ui-font-caption);line-height:1.5;color:var(--app-subtle)}
+.source-edit-menu small{padding:6px 10px;font-size:var(--ui-font-caption);line-height:1.5;color:var(--app-muted)}
 .source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0;padding:0;overscroll-behavior:contain}
 .source-edit-body :deep(.source-field-editor){padding-inline:var(--source-editor-inset)}
 .source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:var(--ui-font-body);line-height:1.5}

@@ -20,6 +20,10 @@ mod rewrite;
 #[path = "local_books/txt.rs"]
 mod txt;
 
+#[cfg(test)]
+#[path = "local_books/import_tests.rs"]
+mod import_tests;
+
 use std::fmt;
 use std::path::Path;
 
@@ -27,9 +31,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    models::{
-        BookDocument, CURRENT_SCHEMA_VERSION, ChapterDescriptor, ProgressSummary
-    },
+    models::{BookDocument, ChapterDescriptor, ProgressSummary, CURRENT_SCHEMA_VERSION},
     resources::ResourceStore,
 };
 
@@ -84,18 +86,17 @@ struct ParsedAsset {
 
 #[derive(Debug)]
 struct ParsedBook {
-    identity: String,
     title: String,
     author: String,
+    intro: Option<String>,
     chapters: Vec<ParsedChapter>,
     assets: Vec<ParsedAsset>,
     cover_asset_id: Option<String>,
     pdf_asset_id: Option<String>,
 }
 
-/// Import an app-managed staged local file. `identity_path` is used only to
-/// preserve stable IDs created by older versions; parsing reads `selected_path`
-/// exclusively. The managed original is persisted with the parsed book.
+/// Import an app-managed staged local file. Rust assigns a content ID and
+/// stores the original before parsing; the picker path is never a reading URL.
 pub(crate) struct LocalBookImportOutcome {
     pub(crate) book: BookDocument,
 }
@@ -106,9 +107,11 @@ pub async fn import_local_book(
     identity_path: impl AsRef<Path>,
     options: &LocalImportOptions,
 ) -> Result<BookDocument, String> {
-    Ok(import_local_book_with_outcome(store, selected_path, identity_path, options)
-        .await?
-        .book)
+    Ok(
+        import_local_book_with_outcome(store, selected_path, identity_path, options)
+            .await?
+            .book,
+    )
 }
 
 pub(crate) async fn import_local_book_with_outcome(
@@ -118,14 +121,14 @@ pub(crate) async fn import_local_book_with_outcome(
     options: &LocalImportOptions,
 ) -> Result<LocalBookImportOutcome, String> {
     let selected_path = selected_path.as_ref().to_path_buf();
-    let identity_path = identity_path.as_ref().to_path_buf();
+    let display_path = identity_path.as_ref().to_path_buf();
+    let _import = store.local_import_guard().await;
     let original_extension = selected_path
         .extension()
         .and_then(|extension| extension.to_str())
         .map(str::to_ascii_lowercase)
         .filter(|extension| matches!(extension.as_str(), "txt" | "epub" | "cbz" | "pdf"))
         .ok_or_else(|| "Unsupported local book format".to_owned())?;
-    let parse_path = selected_path.clone();
     let options = options.clone();
     let saved_toc_rules = if selected_path
         .extension()
@@ -137,20 +140,32 @@ pub(crate) async fn import_local_book_with_outcome(
     } else {
         None
     };
-    let parsed = tokio::task::spawn_blocking(move || {
-        parse_selected_file(
-            &parse_path,
-            &identity_path,
-            &options,
-            saved_toc_rules.as_ref(),
-        )
+    let read_path = selected_path.clone();
+    let identity_options = options.clone();
+    let identity_rules = saved_toc_rules.clone();
+    let identity_extension = original_extension.clone();
+    let identity = tokio::task::spawn_blocking(move || {
+        let bytes = read_selected_file(&read_path)?;
+        Ok::<_, String>(local_identity(
+            &bytes,
+            &identity_extension,
+            &identity_options,
+            identity_rules.as_ref(),
+        ))
     })
     .await
     .map_err(|error| format!("Local book import worker failed: {error}"))??;
-
-    let book_id = format!("local-{}", parsed.identity);
-    let content_type = match original_extension.as_str() { "epub" => "html", "cbz" => "image", "pdf" => "pdf", _ => "text" };
-    store.bind_book_type(&book_id, content_type).await.map_err(|error| error.to_string())?;
+    let book_id = format!("local-{identity}");
+    let content_type = match original_extension.as_str() {
+        "epub" => "html",
+        "cbz" => "image",
+        "pdf" => "pdf",
+        _ => "text",
+    };
+    store
+        .bind_book_type(&book_id, content_type)
+        .await
+        .map_err(|error| error.to_string())?;
     // Re-importing the same file is idempotent. In particular, do not rewrite
     // the user's progress or cached chapters merely because the picker was
     // opened again for an already imported file.
@@ -168,24 +183,37 @@ pub(crate) async fn import_local_book_with_outcome(
             .map_err(|error| error.to_string())?;
         let book = serde_json::from_value(existing)
             .map_err(|error| format!("Existing local book document is invalid: {error}"))?;
-        return Ok(LocalBookImportOutcome {
-            book,
-        });
+        return Ok(LocalBookImportOutcome { book });
     }
-    let result = persist_parsed_book(store, &book_id, parsed, &original_extension).await;
+    let result = async {
+        store
+            .persist_local_original(&book_id, &original_extension, &selected_path)
+            .await
+            .map_err(|error| error.to_string())?;
+        let original = store
+            .root()
+            .join("cache")
+            .join(content_type)
+            .join(&book_id)
+            .join(format!("original.{original_extension}"));
+        let extension = original_extension.clone();
+        let parsed = tokio::task::spawn_blocking(move || {
+            let bytes = read_selected_file(&original)?;
+            parse_selected_file(
+                &display_path,
+                &extension,
+                bytes,
+                &options,
+                saved_toc_rules.as_ref(),
+            )
+        })
+        .await
+        .map_err(|error| format!("Local book import worker failed: {error}"))??;
+        persist_parsed_book(store, &book_id, parsed, &original_extension).await
+    }
+    .await;
     match result {
-        Ok(book) => {
-            if let Err(error) = store
-                .persist_local_original(&book_id, &original_extension, &selected_path)
-                .await
-            {
-                let _ = store.remove_book_resources(&book_id).await;
-                return Err(error.to_string());
-            }
-            Ok(LocalBookImportOutcome {
-                book,
-            })
-        }
+        Ok(book) => Ok(LocalBookImportOutcome { book }),
         Err(error) => {
             let _ = store.remove_book_resources(&book_id).await;
             Err(error)
@@ -228,7 +256,12 @@ async fn persist_parsed_book(
                 serde_json::json!({"id": format!("p{}", page_index + 1), "url": asset.id})
             }).collect::<Vec<_>>();
             image_pages.push(serde_json::json!(pages));
-            chapters.push(ChapterDescriptor { id: chapter_id, title: parsed_chapter.title, index, resource: None });
+            chapters.push(ChapterDescriptor {
+                id: chapter_id,
+                title: parsed_chapter.title,
+                index,
+                resource: None,
+            });
             continue;
         }
         let src = if let (Some(pdf_asset_id), Some(page_index)) = (
@@ -236,13 +269,7 @@ async fn persist_parsed_book(
             parsed_chapter.pdf_page_index,
         ) {
             store
-                .write_pdf_page(
-                    book_id,
-                    &chapter_id,
-                    pdf_asset_id,
-                    page_index,
-                    "page-fit",
-                )
+                .write_pdf_page(book_id, &chapter_id, pdf_asset_id, page_index, "page-fit")
                 .await
         } else if let Some(html) = parsed_chapter.html {
             store
@@ -270,7 +297,8 @@ async fn persist_parsed_book(
             title: parsed_chapter.title,
             index,
             resource: Some(crate::models::ChapterResourceDescriptor::for_chapter(
-                &src, content_format,
+                &src,
+                content_format,
             )),
         });
     }
@@ -290,9 +318,17 @@ async fn persist_parsed_book(
         can_change_source: false,
         author: parsed.author,
         cover_src,
-        intro: None,
+        intro: parsed.intro,
         kind: (original_extension == "cbz").then(|| "comic".to_owned()),
-        content_type: Some(match original_extension { "cbz" => "image", "epub" => "html", "pdf" => "pdf", _ => "text" }.to_owned()),
+        content_type: Some(
+            match original_extension {
+                "cbz" => "image",
+                "epub" => "html",
+                "pdf" => "pdf",
+                _ => "text",
+            }
+            .to_owned(),
+        ),
         media_type: None,
         word_count: None,
         source_id: None,
@@ -308,21 +344,21 @@ async fn persist_parsed_book(
     let mut document = serde_json::to_value(&book).map_err(|error| error.to_string())?;
     document["original"] = serde_json::json!(format!("original.{original_extension}"));
     if original_extension == "cbz" {
-        for (index, pages) in image_pages.into_iter().enumerate() { document["chapters"][index]["pages"] = pages; }
+        for (index, pages) in image_pages.into_iter().enumerate() {
+            document["chapters"][index]["pages"] = pages;
+        }
     }
     store
-        .write_json_ref(&store.book_ref(book_id).map_err(|error| error.to_string())?, &document)
+        .write_json_ref(
+            &store.book_ref(book_id).map_err(|error| error.to_string())?,
+            &document,
+        )
         .await
         .map_err(|error| error.to_string())?;
     Ok(book)
 }
 
-fn parse_selected_file(
-    path: &Path,
-    identity_path: &Path,
-    options: &LocalImportOptions,
-    saved_toc_rules: Option<&txt_toc_rules::TxtTocRulesDocument>,
-) -> Result<ParsedBook, String> {
+fn read_selected_file(path: &Path) -> Result<Vec<u8>, String> {
     let path = std::fs::canonicalize(path)
         .map_err(|error| format!("Cannot resolve selected file: {error}"))?;
     let metadata =
@@ -335,13 +371,6 @@ fn parse_selected_file(
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
-    if options
-        .pdf_password
-        .as_deref()
-        .is_some_and(|password| password.len() > MAX_PDF_PASSWORD_BYTES)
-    {
-        return Err("PDF password exceeds the supported length limit".to_owned());
-    }
     let max_size = match extension.as_str() {
         "txt" => txt::MAX_FILE_BYTES,
         "epub" => epub::MAX_FILE_BYTES,
@@ -354,28 +383,58 @@ fn parse_selected_file(
             "Selected file size must be between 1 byte and {max_size} bytes"
         ));
     }
-    let bytes =
-        std::fs::read(&path).map_err(|error| format!("Cannot read selected file: {error}"))?;
-    let identity = local_identity(identity_path, &bytes, options);
-    let mut parsed = match extension.as_str() {
+    std::fs::read(&path).map_err(|error| format!("Cannot read selected file: {error}"))
+}
+
+fn parse_selected_file(
+    path: &Path,
+    extension: &str,
+    bytes: Vec<u8>,
+    options: &LocalImportOptions,
+    saved_toc_rules: Option<&txt_toc_rules::TxtTocRulesDocument>,
+) -> Result<ParsedBook, String> {
+    if options
+        .pdf_password
+        .as_deref()
+        .is_some_and(|password| password.len() > MAX_PDF_PASSWORD_BYTES)
+    {
+        return Err("PDF password exceeds the supported length limit".to_owned());
+    }
+    match extension {
         "txt" => txt::parse_text_file(&path, &bytes, options, saved_toc_rules),
         "epub" => epub::parse_epub_file(&bytes),
         "cbz" => cbz::parse_cbz_file(&path, &bytes),
         "pdf" => pdf::parse_pdf_file(bytes, &path, options.pdf_password.as_deref()),
         _ => unreachable!("extension was checked above"),
-    }?;
-    parsed.identity = identity;
-    Ok(parsed)
+    }
 }
 
-fn local_identity(path: &Path, bytes: &[u8], options: &LocalImportOptions) -> String {
+fn local_identity(
+    bytes: &[u8],
+    extension: &str,
+    options: &LocalImportOptions,
+    rules: Option<&txt_toc_rules::TxtTocRulesDocument>,
+) -> String {
     let mut hasher = Sha256::new();
-    hasher.update(path.as_os_str().to_string_lossy().as_bytes());
-    hasher.update([0]);
     hasher.update(bytes);
+    hasher.update([0]);
+    hasher.update(extension.as_bytes());
     hasher.update([0]);
     if let Ok(options) = serde_json::to_vec(options) {
         hasher.update(options);
+    }
+    if extension == "txt"
+        && options.toc_regex.is_none()
+        && rules.is_none_or(|rules| rules.rules.is_empty())
+    {
+        hasher.update(txt::default_toc_regex().as_str().as_bytes());
+    }
+    if let Some(rules) = rules {
+        for rule in rules.rules.iter().filter(|rule| rule.enable) {
+            hasher.update([0]);
+            hasher.update(rule.rule.as_bytes());
+            hasher.update(rule.serial_number.to_le_bytes());
+        }
     }
     hasher
         .finalize()

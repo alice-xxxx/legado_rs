@@ -28,8 +28,8 @@ impl Drop for PickerFileCleanupOwner {
 #[derive(Clone)]
 pub struct PickerFile {
     pub(super) path: PathBuf,
-    /// Path used only as an identity input for legacy-compatible local book IDs.
-    /// Parsing never reads this path after the file has been staged.
+    /// Original filename for display metadata. IDs come from content, and
+    /// parsing never reads this path after the file has been staged.
     pub(super) identity_path: PathBuf,
     pub(super) _cleanup: Option<Arc<PickerFileCleanupOwner>>,
 }
@@ -505,8 +505,8 @@ impl ApplicationService {
             return Err("Selected book file size is outside the supported range".to_owned());
         }
 
-        let staging_directory = picker_import_directory(&self.root)
-            .join(uuid::Uuid::new_v4().simple().to_string());
+        let staging_directory =
+            picker_import_directory(&self.root).join(uuid::Uuid::new_v4().simple().to_string());
         tokio::fs::create_dir_all(&staging_directory)
             .await
             .map_err(|error| format!("Cannot create managed import staging directory: {error}"))?;
@@ -520,7 +520,9 @@ impl ApplicationService {
         let staged_path = staging_directory.join(display_name);
         if let Err(error) = tokio::fs::copy(&source.path, &staged_path).await {
             let _ = tokio::fs::remove_dir_all(&staging_directory).await;
-            return Err(format!("Cannot copy selected book into managed storage: {error}"));
+            return Err(format!(
+                "Cannot copy selected book into managed storage: {error}"
+            ));
         }
         let identity_path = std::fs::canonicalize(&source.identity_path)
             .unwrap_or_else(|_| source.identity_path.clone());
@@ -558,12 +560,27 @@ impl ApplicationService {
         )
         .await?;
         let book = imported.book;
+        self.store
+            .update_json_ref(&self.store.shelf_ref(), |mut shelf| {
+                let books = shelf["books"]
+                    .as_array_mut()
+                    .ok_or_else(|| "Content library has no books array".to_owned())?;
+                if !books.iter().any(|entry| entry["id"] == book.id) {
+                    books.push(json!({ "id": book.id, "groups": [] }));
+                }
+                Ok(shelf)
+            })
+            .await
+            .map_err(|error| {
+                format!("Book cached, but adding it to the library failed: {error}")
+            })?;
         let book_ref = self
             .store
             .book_ref(&book.id)
             .map_err(|error| error.to_string())?;
         Ok(json!({
             "book": self.resource_descriptor(&book_ref),
+            "shelf": self.resource_descriptor(&self.store.shelf_ref()),
         }))
     }
 

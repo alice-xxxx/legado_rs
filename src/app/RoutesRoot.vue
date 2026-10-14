@@ -1,9 +1,13 @@
 <script setup lang="ts">
-import { KeepAlive, onBeforeUnmount } from "vue";
+import { KeepAlive, onBeforeUnmount, onMounted } from "vue";
 import { RouterView } from "vue-router";
 import { disposeSearchState } from "../features/discovery/searchState";
+import { installNativeBackNavigation } from "./nativeBack";
 
 onBeforeUnmount(disposeSearchState);
+let disposeNativeBack: (() => void) | undefined;
+onMounted(() => { disposeNativeBack = installNativeBackNavigation(); });
+onBeforeUnmount(() => disposeNativeBack?.());
 </script>
 
 <template>

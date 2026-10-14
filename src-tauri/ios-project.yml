@@ -55,6 +55,14 @@ targets:
         LSRequiresIPhoneOS: true
         # Document provider imports and user-selected TXT/EPUB/CBZ/PDF associations.
         LSSupportsOpeningDocumentsInPlace: true
+        UIBackgroundModes: [audio]
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          NSExceptionDomains:
+            "127.0.0.1":
+              NSExceptionAllowsInsecureHTTPLoads: true
+            localhost:
+              NSExceptionAllowsInsecureHTTPLoads: true
         UILaunchStoryboardName: LaunchScreen
         UIRequiredDeviceCapabilities: [arm64, metal]
         UISupportedInterfaceOrientations:

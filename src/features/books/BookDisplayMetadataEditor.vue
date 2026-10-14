@@ -198,7 +198,7 @@ function submit(): void {
 
 <template>
   <Teleport to="body">
-    <section class="book-display-editor-backdrop" @click.self="requestClose">
+    <section class="book-display-editor-backdrop" data-back-layer @click.self="requestClose">
       <article class="book-display-editor">
         <header class="book-display-editor-toolbar safe-area-top">
           <BackButton class="book-display-editor-back" :label="returnLabel" :disabled="coverPicking" @click="requestClose" />
@@ -253,12 +253,12 @@ function submit(): void {
           </footer>
         </form>
       </article>
-      <div v-if="discardPromptOpen" class="book-display-discard-scrim">
+      <div v-if="discardPromptOpen" class="book-display-discard-scrim" data-back-layer>
         <div class="book-display-discard-dialog">
           <h3 id="book-display-discard-title">放弃未保存的书籍信息？</h3>
           <p>书名、作者、简介或封面尚有修改，离开后这些修改将不会保存。</p>
           <footer>
-            <button type="button" class="button secondary" @click="keepEditing">继续编辑</button>
+            <button type="button" class="button secondary" data-back-action @click="keepEditing">继续编辑</button>
             <button type="button" class="button danger" @click="discardAndClose">放弃修改</button>
           </footer>
         </div>

@@ -1,11 +1,13 @@
 import { openedBook } from "../books/bookDetailState";
-import { computed, nextTick, onBeforeUnmount, ref, type ComponentPublicInstance, type Ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, shallowRef, type ComponentPublicInstance, type Ref } from "vue";
 import { releaseHttpTtsAudio, requestHttpTtsAudio } from "../../api/settings";
 import { type ResourceDescriptor } from "../../api/types";
 import { settings } from "../settings/settingsStore";
 import { httpTtsConfigs } from "../settings/configurationStores";
 import { clamp, type PdfPageResource } from "./readerContent";
 import { mapTtsSegmentChunks, splitTtsText, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
+import { NativeReaderAudio, usesNativeAudio, type ReaderMediaElement } from "./nativeAudio";
+import { NativeSpeechQueue } from "./nativeSpeech";
 
 type TtsAvailability = "checking" | "ready" | "empty" | "unsupported";
 type TtsPlayback = "idle" | "loading" | "speaking" | "paused";
@@ -44,6 +46,8 @@ export interface UseReaderTtsOptions {
 
 /** 管理系统朗读和 HTTP TTS 的分段、播放状态及资源释放。 */
 export function useReaderTts(options: UseReaderTtsOptions) {
+  const nativePlayback = usesNativeAudio();
+  const nativeSpeech = nativePlayback ? new NativeSpeechQueue() : null;
   const ttsAvailability = ref<TtsAvailability>("checking");
   const ttsVoices = ref<SpeechSynthesisVoice[]>([]);
   const ttsPlayback = ref<TtsPlayback>("idle");
@@ -55,7 +59,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   const ttsExpectedChapterKey = ref<string | null>(null);
 
   const httpTtsExpectedChapterKey = ref<string | null>(null);
-  const httpTtsAudioElement = ref<HTMLAudioElement | null>(null);
+  const httpTtsAudioElement = shallowRef<ReaderMediaElement | null>(null);
   const httpTtsAudioResource = ref<ResourceDescriptor | null>(null);
   const httpTtsAudioBusy = ref(false);
   const httpTtsAudioActive = ref(false);
@@ -136,6 +140,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   });
 
   function refreshTtsVoices(): void {
+    if (nativeSpeech) { void loadNativeVoices(++ttsVoiceLoadGeneration); return; }
     if (ttsAvailability.value === "unsupported" || typeof window === "undefined" || !("speechSynthesis" in window)) return;
     try {
       const voices = window.speechSynthesis.getVoices();
@@ -161,6 +166,12 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   function setupTts(): void {
     const generation = ++ttsVoiceLoadGeneration;
+    if (nativeSpeech) {
+      ttsAvailability.value = "checking";
+      if (settings.value.reader.ttsEngine === "system") settings.value.reader.ttsRate = Math.min(4, settings.value.reader.ttsRate);
+      void loadNativeVoices(generation);
+      return;
+    }
     if (ttsVoicesLoadingTimer) clearTimeout(ttsVoicesLoadingTimer);
     ttsVoicesLoadingTimer = null;
     if (ttsVoicesChangedListener && typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -201,6 +212,24 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     }
   }
 
+  async function loadNativeVoices(generation: number): Promise<void> {
+    try {
+      const voices = await nativeSpeech!.voices();
+      if (generation !== ttsVoiceLoadGeneration) return;
+      ttsVoices.value = voices.map(voice => ({ voiceURI: voice.id, name: voice.name,
+        lang: voice.language, localService: true, default: false }));
+      ttsAvailability.value = voices.length ? "ready" : "empty";
+      ttsError.value = voices.length ? "" : "没有检测到系统语音，请安装或启用设备的语音包。";
+    } catch (error) {
+      if (generation !== ttsVoiceLoadGeneration) return;
+      ttsAvailability.value = "empty";
+      ttsError.value = nativeError(error);
+    }
+  }
+  function nativeError(error: unknown): string {
+    return typeof error === "object" && error !== null && "message" in error
+      ? String(error.message) : options.errorText(error);
+  }
   function retryTtsAvailability(): void {
     ttsNotice.value = "";
     setupTts();
@@ -209,14 +238,15 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   function selectTtsVoice(value: string): void {
     ttsError.value = "";
     settings.value.reader.ttsVoiceURI = value;
-    ttsNotice.value = ttsPlayback.value === "speaking" || ttsPlayback.value === "paused"
+    ttsNotice.value = nativeSpeech ? "新语音将在下次开始朗读时使用。"
+      : ttsPlayback.value === "speaking" || ttsPlayback.value === "paused"
       ? "声音将在当前片段结束后切换；暂停中的片段会按原语音继续。"
       : "语音偏好已更新。";
   }
 
   function setTtsRate(value: number): void {
     ttsError.value = "";
-    settings.value.reader.ttsRate = clamp(value, 0.5, 5);
+    settings.value.reader.ttsRate = clamp(value, 0.5, nativeSpeech && settings.value.reader.ttsEngine === "system" ? 4 : 5);
   }
 
   function selectHttpTtsConfig(configId: string): void {
@@ -240,6 +270,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     }
     if (value.startsWith("system:")) {
       settings.value.reader.ttsEngine = "system";
+      if (nativeSpeech) settings.value.reader.ttsRate = Math.min(4, settings.value.reader.ttsRate);
       selectTtsVoice(value.slice("system:".length));
     }
   }
@@ -276,7 +307,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     ttsChunkTargets = [];
     ttsChunkIndex = 0;
     options.clearHighlight();
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+    if (nativeSpeech) void nativeSpeech.stop().catch(error => console.debug("Native speech stop failed:", error));
+    if (!nativeSpeech && typeof window !== "undefined" && "speechSynthesis" in window) {
       try {
         window.speechSynthesis.cancel();
       } catch {
@@ -360,6 +392,32 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     ttsChunkProgress.value = { current: ttsChunkIndex + 1, total: ttsChunks.length };
     const target = ttsChunkTargets[ttsChunkIndex];
     const loadRevision = options.reader.getLoadRevision();
+    if (nativeSpeech) {
+      const fail = (error: unknown) => {
+        if (generation !== ttsGeneration) return;
+        ttsPlayback.value = "idle"; ttsSelectionPlayback.value = false; ttsChunkProgress.value = null;
+        options.clearHighlight(); ttsError.value = nativeError(error);
+      };
+      void nativeSpeech.start([...ttsChunks], { voiceId: settings.value.reader.ttsVoiceURI,
+        rate: settings.value.reader.ttsRate }, {
+        start: index => {
+          if (generation !== ttsGeneration || loadRevision !== options.reader.getLoadRevision()) return;
+          ttsChunkIndex = index; ttsPlayback.value = "speaking";
+          ttsChunkProgress.value = { current: index + 1, total: ttsChunks.length };
+          options.highlightChunk(ttsChunkTargets[index], loadRevision);
+        },
+        paused: () => { if (generation === ttsGeneration) ttsPlayback.value = "paused"; },
+        resumed: () => { if (generation === ttsGeneration) ttsPlayback.value = "speaking"; },
+        finished: () => {
+          if (generation !== ttsGeneration) return;
+          ttsChunkIndex = ttsChunks.length; ttsChunkProgress.value = null; options.clearHighlight();
+          void advanceTtsChapter(generation);
+        },
+        error: fail,
+        notice: message => { if (generation === ttsGeneration) ttsNotice.value = message; },
+      }, ttsChunkIndex).catch(fail);
+      return;
+    }
     try {
       const utterance = new SpeechSynthesisUtterance(text);
       const selectedVoice = ttsVoices.value.find((voice) => voice.voiceURI === settings.value.reader.ttsVoiceURI);
@@ -487,6 +545,10 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   function pauseTts(): void {
     if (ttsPlayback.value !== "speaking") return;
+    if (nativeSpeech) {
+      void nativeSpeech.pause().catch(error => { ttsError.value = nativeError(error); });
+      return;
+    }
     try {
       const synthesis = window.speechSynthesis;
       const generation = ttsGeneration;
@@ -505,6 +567,10 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   function resumeTts(): void {
     if (ttsPlayback.value !== "paused") return;
+    if (nativeSpeech) {
+      void nativeSpeech.resume().catch(error => { ttsError.value = nativeError(error); });
+      return;
+    }
     try {
       const synthesis = window.speechSynthesis;
       const generation = ttsGeneration;
@@ -526,7 +592,9 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     httpTtsAudioId = null;
     httpTtsAudioResource.value = null;
     const audio = httpTtsAudioElement.value;
-    if (audio) {
+    if (audio instanceof NativeReaderAudio) {
+      audio.dispose(); httpTtsAudioElement.value = null;
+    } else if (audio) {
       audio.pause();
       audio.removeAttribute("src");
       audio.load();
@@ -613,7 +681,9 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       return;
     }
     try {
+      const generation = httpTtsGeneration;
       await audio.play();
+      if (generation !== httpTtsGeneration || httpTtsAudioElement.value !== audio) return;
       httpTtsAudioPaused.value = false;
       httpTtsAudioError.value = "";
       httpTtsAudioNotice.value = "网络朗读已恢复。";
@@ -701,6 +771,18 @@ export function useReaderTts(options: UseReaderTtsOptions) {
         httpTtsAudioNotice.value = "语音已准备，正在播放。";
         // 当前段开始播放时，并行生成后面两段，切段时直接使用已缓存音频。
         prefetchFollowingHttpTtsChunks(generation);
+        if (nativePlayback) {
+          const book = openedBook.value;
+          const nativeAudio = new NativeReaderAudio({ key: `tts:${book?.id}:${options.reader.chapterIndex.value}:${index}`,
+            title: book?.chapters.find(chapter => chapter.index === options.reader.chapterIndex.value)?.title || book?.title || "朗读",
+            artist: book?.author, artworkUrl: book?.coverSrc });
+          nativeAudio.src = prepared.resource.src;
+          nativeAudio.addEventListener("play", onHttpTtsAudioPlay);
+          nativeAudio.addEventListener("pause", onHttpTtsAudioPause);
+          nativeAudio.addEventListener("ended", () => { void onHttpTtsAudioEnded(); });
+          nativeAudio.addEventListener("error", onHttpTtsAudioError);
+          httpTtsAudioElement.value = nativeAudio;
+        }
         await nextTick();
         if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) return;
         const audio = httpTtsAudioElement.value;
@@ -820,6 +902,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   onBeforeUnmount(() => {
     stopTts(false);
     stopHttpTtsAudio(false);
+    if (nativeSpeech) void nativeSpeech.dispose().catch(error => console.debug("Native speech disposal failed:", error));
     ttsVoiceLoadGeneration += 1;
     if (ttsVoicesLoadingTimer) clearTimeout(ttsVoicesLoadingTimer);
     if (ttsVoicesChangedListener && typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -828,6 +911,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   });
 
   return {
+    nativePlayback,
+    refreshNativeSpeech: () => nativeSpeech?.refresh().catch(error => { ttsError.value = nativeError(error); }),
     ttsAvailability,
     ttsVoices,
     ttsPlayback,

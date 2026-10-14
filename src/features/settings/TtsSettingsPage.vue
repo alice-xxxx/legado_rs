@@ -601,7 +601,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
       <p>{{ selectedConfig.enabled ? '当前选择的网络朗读源' : '当前配置已停用' }}。参数由 Rust 保存，选择编辑后可以修改原始配置字段。</p>
       <button type="button" class="button primary small" :disabled="actionsBlocked" @click="openEditor()">编辑配置</button>
     </aside>
-    <div v-if="importUrlOpen" class="http-tts-import-scrim"
+    <div v-if="importUrlOpen" class="http-tts-import-scrim" data-back-layer
       @click.self="closeUrlImport">
       <section class="http-tts-import-dialog">
         <h3 id="http-tts-import-title">从网络链接导入</h3>
@@ -618,14 +618,14 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         </form>
         <p v-if="importUrlError" class="http-tts-import-error">{{ importUrlError }}</p>
         <div class="http-tts-import-actions">
-          <button type="button" class="button secondary" :disabled="importUrlBusy || importBusy" @click="closeUrlImport">取消</button>
+          <button type="button" class="button secondary" :disabled="importUrlBusy || importBusy" data-back-action @click="closeUrlImport">取消</button>
         </div>
       </section>
     </div>
     <section v-if="editorOpen" class="http-tts-editor-page">
       <article class="http-tts-editor-dialog">
         <header class="http-tts-editor-header safe-area-top">
-          <button type="button" class="http-tts-editor-close" @click="closeEditor"><PrototypeIcon name="left"/></button>
+          <button type="button" class="http-tts-editor-close" data-back-action data-back-local @click="closeEditor"><PrototypeIcon name="left"/></button>
           <div>
             <h2 id="http-tts-editor-title">{{ creatingConfig ? '新建 HTTP TTS 配置' : editingConfig?.name ?? '编辑朗读源' }}</h2>
           </div>
@@ -704,20 +704,20 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         </div>
       </article>
     </section>
-    <div v-if="pendingDeleteIds.length" class="http-tts-discard-mask"
+    <div v-if="pendingDeleteIds.length" class="http-tts-discard-mask" data-back-layer
       @click.self="cancelDeleteConfig">
       <section class="http-tts-discard-dialog">
         <h3 id="tts-delete-title">删除{{ pendingDeleteIds.length === 1 ? ' HTTP TTS 配置？' : ` ${pendingDeleteIds.length} 个 HTTP TTS 配置？` }}</h3>
         <p>{{ pendingDeleteIds.length === 1 ? `“${pendingDeleteConfigs[0]?.name ?? '此引擎'}”将从应用中删除。` : `选中的 ${pendingDeleteIds.length} 个配置将从应用中删除。` }}此操作不能撤销，删除当前朗读源后会切回系统朗读。</p>
-        <div><button type="button" class="button secondary" @click="cancelDeleteConfig">取消</button>
+        <div><button type="button" class="button secondary" data-back-action @click="cancelDeleteConfig">取消</button>
           <button type="button" class="button danger" :disabled="actionsBlocked" @click="confirmDeleteConfig">确认删除</button></div>
       </section>
     </div>
-    <div v-if="discardPromptOpen" class="http-tts-discard-mask" @click.self="keepEditor">
+    <div v-if="discardPromptOpen" class="http-tts-discard-mask" data-back-layer @click.self="keepEditor">
       <section class="http-tts-discard-dialog">
         <h3 id="tts-discard-title">放弃未保存的修改？</h3>
         <p>当前朗读引擎的字段尚未保存。返回、切换配置或更换当前播放引擎都会丢弃未保存的修改。</p>
-        <div><button type="button" class="button secondary" @click="keepEditor">继续编辑</button>
+        <div><button type="button" class="button secondary" data-back-action @click="keepEditor">继续编辑</button>
           <button type="button" class="button danger" @click="discardEditor">放弃修改</button></div>
       </section>
     </div>

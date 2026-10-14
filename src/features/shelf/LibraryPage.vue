@@ -241,7 +241,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
         <section class="shelf-view" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
           <header v-if="shelfBatch.selectionMode" class="library-manage-heading">
             <div class="library-manage-title">
-              <BackButton label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
+              <BackButton data-back-local label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
               <span><strong>整理内容库</strong><small>分组与批量管理</small></span>
             </div>
             <button type="button" class="library-done-button" :disabled="shelfBatch.batchBusy"
@@ -567,6 +567,8 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
   gap: 22px 16px;
 }
 
+.shelf-card { min-width: 0; }
+
 .cover-button {
   display: block;
   width: 100%;
@@ -608,6 +610,19 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 .book-title-button,
 .book-author {
   display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.book-title-button {
+  width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+  line-height: 1.4;
+}
+
+.book-author {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1204,6 +1219,9 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
   margin-top: 2px;
   color: var(--app-text);
   font-size: var(--ui-font-caption);
+  white-space: normal;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
 }
 
 .library-manage-book>small {

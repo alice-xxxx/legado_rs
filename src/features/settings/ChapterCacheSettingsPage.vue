@@ -74,30 +74,47 @@ onMounted(async () => {
   <section class="settings-detail-page">
     <SettingsDetailHeader title="正文缓存" />
     <div class="settings-detail-content">
-        <section class="settings-detail-panel">
-          <header class="settings-detail-section-header"><strong>本地正文资源</strong></header>
-          <div v-if="chapterCacheUsage" class="settings-cache-hero">
-            <span class="settings-cache-hero-icon"><PrototypeIcon name="download"/></span>
-            <div><strong>{{ formatChapterCacheBytes(chapterCacheUsage.chapterResourceBytes) }}</strong><small>{{ chapterCacheUsage.chapterResourceCount }} 个缓存章节</small></div>
-            <button type="button" class="settings-detail-reload" :disabled="cacheRefreshBlocked" @click="cacheActions.refreshChapterCacheUsage"><PrototypeIcon name="refresh"/> 刷新</button>
-          </div>
+      <div class="cache-summary">
+        <div class="cache-summary-copy">
+          <span class="cache-caption">总占用</span>
           <template v-if="chapterCacheUsage">
-            <div class="setting-control"><div><label>全部章节</label><small>{{ chapterCacheUsage.chapterResourceCount }} 个缓存项</small></div><strong>{{ formatChapterCacheBytes(chapterCacheUsage.chapterResourceBytes) }}</strong></div>
-            <div class="setting-control"><div><label>在线章节</label><small>{{ chapterCacheUsage.onlineChapterResourceCount }} 个</small></div><strong>{{ formatChapterCacheBytes(chapterCacheUsage.onlineChapterResourceBytes) }}</strong></div>
-            <div class="setting-control"><div><label>本地章节</label><small>{{ chapterCacheUsage.localChapterResourceCount }} 个</small></div><strong>{{ formatChapterCacheBytes(chapterCacheUsage.localChapterResourceBytes) }}</strong></div>
+            <strong>{{ formatChapterCacheBytes(chapterCacheUsage.chapterResourceBytes) }}</strong>
+            <small class="cache-caption">{{ chapterCacheUsage.chapterResourceCount }} 章</small>
           </template>
-          <p v-else class="settings-detail-note">{{ chapterCacheUsageBusy ? '正在读取缓存占用…' : '尚未读取缓存占用。' }}</p>
-          <p v-if="chapterCacheUsageError" class="settings-detail-error">{{ chapterCacheUsageError }}</p>
-          <div v-if="shelfChapterCacheClearResult" class="settings-detail-note">
-            <strong>成功 {{ shelfChapterCacheClearResult.clearedBooks }} 本，失败 {{ shelfChapterCacheClearResult.failedBooks }} 本，未开始 {{ shelfChapterCacheClearResult.notStartedBooks }} 本</strong>
-            <ul v-if="shelfChapterCacheClearResult.errors.length"><li v-for="error in shelfChapterCacheClearResult.errors" :key="error.bookId">{{ error.title }}：{{ error.message }}</li></ul>
-          </div>
-          <div class="settings-detail-actions">
-            <button type="button" class="button secondary" :disabled="cacheRefreshBlocked" @click="cacheActions.refreshChapterCacheUsage">{{ chapterCacheUsageBusy ? '读取中…' : '重新统计' }}</button>
-            <button type="button" class="button danger" :disabled="cacheClearBlocked" @click="pendingShelfChapterCacheClear = true">{{ shelfChapterCacheClearBusy ? '清理中…' : '清理在线章节缓存' }}</button>
-          </div>
-        </section>
+          <p v-else class="cache-caption">{{ chapterCacheUsageBusy ? '正在读取…' : '暂无统计' }}</p>
+        </div>
+        <button type="button" class="cache-refresh" :disabled="cacheRefreshBlocked" @click="cacheActions.refreshChapterCacheUsage">
+          <PrototypeIcon name="refresh" />{{ chapterCacheUsageBusy ? '读取中…' : '刷新' }}
+        </button>
       </div>
+      <dl v-if="chapterCacheUsage" class="cache-breakdown">
+        <div>
+          <dt>在线章节 <small>{{ chapterCacheUsage.onlineChapterResourceCount }} 章</small></dt>
+          <dd>{{ formatChapterCacheBytes(chapterCacheUsage.onlineChapterResourceBytes) }}</dd>
+        </div>
+        <div>
+          <dt>本地章节 <small>{{ chapterCacheUsage.localChapterResourceCount }} 章</small></dt>
+          <dd>{{ formatChapterCacheBytes(chapterCacheUsage.localChapterResourceBytes) }}</dd>
+        </div>
+      </dl>
+      <p v-if="chapterCacheUsageError" class="cache-error" role="alert">{{ chapterCacheUsageError }}</p>
+      <div class="cache-actions">
+        <button type="button" class="cache-clear" :disabled="cacheClearBlocked" @click="pendingShelfChapterCacheClear = true">
+          <PrototypeIcon name="trash" />{{ shelfChapterCacheClearBusy ? '清理中…' : '清理在线缓存' }}
+        </button>
+      </div>
+      <div v-if="shelfChapterCacheClearResult" class="cache-result" role="status">
+        <p>
+          已清理 {{ shelfChapterCacheClearResult.clearedBooks }} 本书的 {{ shelfChapterCacheClearResult.clearedChapters }} 章缓存
+          <template v-if="shelfChapterCacheClearResult.failedBooks">，{{ shelfChapterCacheClearResult.failedBooks }} 本失败</template>
+          <template v-if="shelfChapterCacheClearResult.notStartedBooks">，{{ shelfChapterCacheClearResult.notStartedBooks }} 本未开始</template>
+        </p>
+        <details v-if="shelfChapterCacheClearResult.errors.length">
+          <summary>查看详情</summary>
+          <ul><li v-for="error in shelfChapterCacheClearResult.errors" :key="error.bookId">{{ error.title }}：{{ error.message }}</li></ul>
+        </details>
+      </div>
+    </div>
   </section>
   <ShelfChapterCacheClearPrompt
     :open="pendingShelfChapterCacheClear"
@@ -109,186 +126,152 @@ onMounted(async () => {
 </template>
 <style scoped>
 .settings-detail-page {
-  width: min(820px, 100%);
+  width: 100%;
+  min-width: 0;
   min-height: 100dvh;
-  margin: 0 auto;
-  padding: 10px 0 50px;
   color: var(--app-text);
 }
 .settings-detail-content {
-  display: grid;
-  gap: 18px;
+  width: min(640px, 100%);
+  margin: 0 auto;
+  padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
 }
 
-.settings-detail-panel {
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-}
-
-.settings-detail-section-header {
-  display: grid;
-  gap: 4px;
-  margin: 0 0 9px;
-  padding: 0 2px 12px;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.settings-detail-section-header strong {
-  color: var(--app-text);
-  font-size: var(--ui-font-caption);
-}
-
-.settings-detail-panel .setting-control {
+.cache-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 68px;
-  padding: 8px 4px;
-  border-bottom: 1px solid var(--app-line);
+  gap: var(--ui-space-4);
+  padding-bottom: var(--ui-space-5);
 }
 
-.settings-detail-panel .setting-control > div {
+.cache-summary-copy {
   display: grid;
-  gap: 4px;
+  gap: var(--ui-space-1);
   min-width: 0;
 }
 
-.settings-detail-panel .setting-control label {
-  color: var(--app-text);
-  font-size: var(--ui-font-body);
-  font-weight: 650;
-}
-
-.settings-detail-panel .setting-control small,
-.settings-detail-note {
-  color: var(--app-subtle);
-  font-size: var(--ui-font-caption);
-  line-height: 1.5;
-}
-
-.settings-detail-panel .setting-control select {
-  min-width: 105px;
-  min-height: 36px;
-  padding: 5px;
-  border: 1px solid var(--app-line);
-  border-radius: 8px;
-  background: var(--app-surface);
-}
- 
-@media (max-width: 640px) {
-  .settings-detail-content { gap: 22px; }
-  .settings-detail-panel .setting-control {
-    min-height: 65px;
-    align-items: center;
-  }
-  .settings-detail-panel .setting-control > div {
-    flex: 1;
-    max-width: 60%;
-  }
-}
-
-
-.settings-detail-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  padding-top: 15px;
-}
-
-.settings-detail-actions .button {
-  min-height: 37px;
-  border-radius: 9px;
-  font-size: var(--ui-font-body);
-}
-
-.settings-detail-error {
-  padding: 9px 11px;
-  border-radius: 9px;
-  color: var(--app-danger);
-  font-size: var(--ui-font-caption);
-  background: var(--app-danger-soft);
-}
-
-.settings-cache-hero {
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  margin: 15px 0 7px;
-  padding: 17px;
-  border: 1px solid var(--app-line);
-  border-radius: 14px;
-  background: var(--app-surface);
-}
-
-.settings-cache-hero-icon {
-  display: grid;
-  place-items: center;
-  width: 43px;
-  height: 43px;
-  border-radius: 12px;
-  color: var(--app-accent);
-  background: var(--app-accent-soft);
-}
-
-.settings-cache-hero-icon .prototype-icon {
-  width: 23px;
-  height: 23px;
-}
-
-.settings-cache-hero > div {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.settings-cache-hero strong {
-  color: var(--app-text);
+.cache-summary-copy strong {
   font-size: var(--ui-font-title);
-  line-height: 1.25;
+  font-weight: 650;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
 }
 
-.settings-cache-hero small {
-  color: var(--app-subtle);
-  font-size: var(--ui-font-caption);
-}
-
-.settings-detail-reload {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-height: 35px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 9px;
+.cache-caption {
+  margin: 0;
   color: var(--app-muted);
   font-size: var(--ui-font-caption);
-  background: var(--app-panel-soft);
+}
+
+.cache-refresh,
+.cache-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  gap: var(--ui-space-2);
+  min-height: var(--ui-control-height);
+  padding: 0 var(--ui-space-3);
+  border: 1px solid transparent;
+  border-radius: var(--ui-radius);
+  background: transparent;
+  font-size: var(--ui-font-body);
+  white-space: nowrap;
   cursor: pointer;
 }
 
-.settings-detail-reload:disabled {
-  opacity: .4;
-  cursor: default;
+.cache-refresh {
+  color: var(--app-muted);
 }
 
-.settings-detail-reload .prototype-icon {
-  width: 15px;
-  height: 15px;
-}
-@media (max-width: 640px) {
-  .settings-cache-hero {
-    grid-template-columns: 37px minmax(0, 1fr) auto;
-    gap: 8px;
-    padding: 12px;
-  }
-  .settings-cache-hero-icon { width: 37px; height: 37px; }
-  .settings-cache-hero strong { font-size: var(--ui-font-heading); }
-  .settings-detail-reload { padding: 0 7px; font-size: var(--ui-font-caption); }
+.cache-refresh :deep(svg),
+.cache-clear :deep(svg) {
+  width: 18px;
+  height: 18px;
 }
 
+.cache-refresh:focus-visible,
+.cache-clear:focus-visible,
+.cache-result summary:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+
+.cache-breakdown {
+  margin: 0;
+  border-top: 1px solid var(--app-line);
+}
+
+.cache-breakdown > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-space-3);
+  min-height: 52px;
+  padding-block: var(--ui-space-3);
+  border-bottom: 1px solid var(--app-line);
+  font-size: var(--ui-font-body);
+}
+
+.cache-breakdown dt {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--ui-space-2);
+  min-width: 0;
+}
+
+.cache-breakdown small {
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
+}
+
+.cache-breakdown dd {
+  flex: none;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.cache-actions {
+  padding-top: var(--ui-space-5);
+}
+
+.cache-clear {
+  border-color: var(--app-danger-line);
+  color: var(--app-danger);
+}
+
+.cache-error,
+.cache-result {
+  margin: var(--ui-space-4) 0 0;
+  font-size: var(--ui-font-caption);
+  overflow-wrap: anywhere;
+}
+
+.cache-error {
+  color: var(--app-danger);
+}
+
+.cache-result {
+  color: var(--app-muted);
+}
+
+.cache-result p {
+  margin: 0;
+}
+
+.cache-result details {
+  margin-top: var(--ui-space-2);
+}
+
+.cache-result summary {
+  cursor: pointer;
+}
+
+.cache-result ul {
+  margin: var(--ui-space-2) 0 0;
+  padding-left: var(--ui-space-5);
+}
 </style>

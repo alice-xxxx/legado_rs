@@ -4,7 +4,7 @@ import { settings } from "../settings/settingsStore";
 import { replacementRules } from "../settings/configurationStores";
 import { applyTextRules, applyMarkupRules } from "./textReplacements";
 
-const props = defineProps<{ text?: string; markup?: string; bookId: string; title: string }>();
+const props = defineProps<{ text?: string; markup?: string; bookId: string; title: string; paragraphIndent?: boolean }>();
 const emit = defineEmits<{
   ready: [element: HTMLElement | null];
   layout: [];
@@ -13,6 +13,13 @@ const emit = defineEmits<{
 const viewport = ref<HTMLElement | null>(null);
 const displayText = computed(() => applyTextRules(props.text ?? "", replacementRules.value, props.bookId));
 const displayMarkup = computed(() => applyMarkupRules(props.markup ?? "", replacementRules.value, props.bookId));
+const showTitle = computed(() => {
+  if (props.text != null || !props.markup) return Boolean(props.title);
+  const content = new DOMParser().parseFromString(displayMarkup.value, "text/html");
+  const heading = content.body.querySelector("h1,h2");
+  const normalize = (value: string) => value.replace(/\s+/g, " ").trim();
+  return Boolean(props.title) && normalize(heading?.textContent ?? "") !== normalize(props.title);
+});
 const readerStyle = computed(() => ({
   "--novel-font-size": `${settings.value.reader.fontSizePx}px`,
   "--novel-line-height": settings.value.reader.lineHeight,
@@ -44,11 +51,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.verticalScroll }" :style="readerStyle">
+  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.verticalScroll }" :style="readerStyle" @load.capture="emit('layout')">
     <article class="chapter-content">
-      <h1 v-if="title" class="chapter-title">{{ title }}</h1>
+      <h1 v-if="showTitle" class="chapter-title">{{ title }}</h1>
       <div v-if="text != null" class="chapter-text">{{ displayText }}</div>
-      <div v-else class="chapter-markup" v-html="displayMarkup"></div>
+      <div v-else class="chapter-markup" :class="{ 'indent-paragraphs': paragraphIndent }" v-html="displayMarkup"></div>
     </article>
   </div>
 </template>
@@ -90,5 +97,6 @@ onBeforeUnmount(() => {
 .chapter-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chapter-markup :deep(img) { max-width: 100%; height: auto; }
 .chapter-markup :deep(p) { margin: 0 0 1em; }
+.chapter-markup.indent-paragraphs :deep(p) { text-indent: 2em; }
 .chapter-title { margin: 0 0 1.2em; font-size: 1.35em; line-height: 1.4; text-align: left; break-inside: avoid; break-after: avoid; }
 </style>

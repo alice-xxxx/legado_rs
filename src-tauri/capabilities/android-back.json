@@ -1,0 +1,7 @@
+{
+  "identifier": "android-back",
+  "description": "Close the Android activity when native Back reaches the root page",
+  "windows": ["main"],
+  "platforms": ["android"],
+  "permissions": ["core:app:allow-exit"]
+}

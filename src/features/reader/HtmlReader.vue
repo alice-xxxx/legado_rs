@@ -9,6 +9,7 @@ const reader = props.readerFeatures;
   <ReaderPage v-bind="props">
     <NovelContent v-if="reader.readingContent.value?.kind === 'richText'"
       :markup="reader.readingContent.value.markup"
+      :paragraph-indent="reader.readingBook.value?.original?.endsWith('.epub') === true"
       :book-id="reader.readingBook.value!.id" :title="reader.currentChapterTitle.value"
       @ready="reader.setReaderViewport" @layout="reader.onReaderLayout" @text-change="reader.onReaderTextChange" />
   </ReaderPage>

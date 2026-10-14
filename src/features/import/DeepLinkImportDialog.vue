@@ -17,7 +17,7 @@ const selected = computed({ get: () => props.selectedKeys, set: keys => emit("up
     <article class="app-modal deep-link-import" role="dialog" aria-modal="true" aria-labelledby="deep-link-import-title">
       <header>
         <h2 id="deep-link-import-title">{{ title }}</h2>
-        <button class="icon-button" :disabled="busy" aria-label="关闭" @click="emit('cancel')"><PrototypeIcon name="close" /></button>
+        <button class="icon-button" :disabled="busy" data-back-action aria-label="关闭" @click="emit('cancel')"><PrototypeIcon name="close" /></button>
       </header>
       <p v-if="busy && !entries.length" role="status">正在读取…</p>
       <p v-if="error" class="deep-link-import-error" role="alert">{{ error }}</p>

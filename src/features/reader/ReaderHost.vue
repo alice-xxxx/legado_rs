@@ -23,6 +23,8 @@ import { useAppReaderFeatures } from "./useAppReaderFeatures";
 import { useBookSourceSwitch } from "../sources/useBookSourceSwitch";
 import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import router, { routeNames } from "../../router";
+import { installReaderNativeBack } from "../../app/nativeBack";
+import { refreshNativeAudio, disposeNativeAudio } from "./nativeAudio";
 
 const HtmlReader = defineAsyncComponent(() => import("./HtmlReader.vue"));
 const NovelReader = defineAsyncComponent(() => import("./NovelReader.vue"));
@@ -121,6 +123,12 @@ const disposeBackupSession = installReaderBackupSession({
   closeReaderAfterRestore: readerFeatures.closeReaderAfterRestore,
 });
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
+const disposeNativeBack = installReaderNativeBack({
+  visible: readerFeatures.readerVisible,
+  close: async () => {
+    if (!readerFeatures.readerMediaRetrying.value) await closeReaderForNavigation();
+  },
+});
 
 function retain(unlisten: UnlistenFn): void {
   if (disposed) unlisten();
@@ -211,18 +219,19 @@ function onGlobalKeydown(event: KeyboardEvent): void {
 
 function onVisibilityChange(): void {
   if (document.visibilityState === "hidden") {
-    readerFeatures.stopHttpTtsAudio(false);
-    if (readerFeatures.getReaderMediaElement()) void readerFeatures.pauseReaderMediaAndSave();
+    if (readerFeatures.readingVideoChapter.value && readerFeatures.getReaderMediaElement()) void readerFeatures.pauseReaderMediaAndSave();
     else void readerFeatures.saveCurrentProgress();
     void readerFeatures.finishReadingSession();
   } else if (readerFeatures.readerVisible.value) {
+    void refreshNativeAudio().then(() => readerFeatures.saveCurrentProgress())
+      .catch(error => notify(errorText(error), "error"));
+    void readerFeatures.refreshNativeSpeech();
     void readerFeatures.beginReadingSession();
   }
 }
 
 function onPageHide(): void {
-  readerFeatures.stopHttpTtsAudio(false);
-  if (readerFeatures.getReaderMediaElement()) void readerFeatures.pauseReaderMediaAndSave();
+  if (readerFeatures.readingVideoChapter.value && readerFeatures.getReaderMediaElement()) void readerFeatures.pauseReaderMediaAndSave();
   else void readerFeatures.saveCurrentProgress();
   void readerFeatures.finishReadingSession();
 }
@@ -262,6 +271,8 @@ onBeforeUnmount(() => {
   disposeBookSourceSwitch();
   disposeBackupSession();
   disposeReaderSession();
+  disposeNativeBack();
+  void disposeNativeAudio().catch(error => console.debug("Native audio disposal failed:", error));
 });
 
 const bookSourceCandidates = computed(() => bookSourceSwitch.bookSourceEligibleSources);

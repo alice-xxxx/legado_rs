@@ -524,7 +524,7 @@ function toggleFilterPanel(event: MouseEvent): void {
     </div>
     <main v-if="draft" class="replacement-detail">
       <header class="replacement-editor-header safe-area-top">
-        <BackButton label="返回规则列表" @click="requestCloseEditor" />
+        <BackButton data-back-local label="返回规则列表" @click="requestCloseEditor" />
         <div class="replacement-page-title">
           <h1>{{ draft.name || (editingRule ? '未命名规则' : '新净化规则') }}</h1>
         </div>
@@ -570,7 +570,7 @@ function toggleFilterPanel(event: MouseEvent): void {
         </div>
       </form>
     </main>
-    <div v-if="replacementImportOpen" class="replacement-import-scrim"
+    <div v-if="replacementImportOpen" class="replacement-import-scrim" data-back-layer
       @click.self="!replacementImportBusy && replacementRulesFeature.cancelReplacementRulesUrlImport()">
       <section class="replacement-import-dialog">
         <h3 id="replacement-import-title">从网络链接导入</h3>
@@ -588,17 +588,17 @@ function toggleFilterPanel(event: MouseEvent): void {
         </form>
         <p v-if="replacementImportError" class="replacement-import-error">{{ replacementImportError }}</p>
         <div class="replacement-import-actions">
-          <button type="button" class="replacement-secondary-button" :disabled="replacementImportBusy" @click="replacementRulesFeature.cancelReplacementRulesUrlImport()">取消</button>
+          <button type="button" class="replacement-secondary-button" :disabled="replacementImportBusy" data-back-action @click="replacementRulesFeature.cancelReplacementRulesUrlImport()">取消</button>
         </div>
       </section>
     </div>
-    <div v-if="discardPromptOpen" class="replacement-discard-mask"
+    <div v-if="discardPromptOpen" class="replacement-discard-mask" data-back-layer
       @click.self="keepRuleEditor">
       <section class="replacement-discard-dialog">
         <h3 id="replacement-discard-title">放弃未保存的净化规则？</h3>
         <p>当前规则的内容已经修改，{{ pendingNewRule ? '创建新规则前必须先放弃当前草稿。' : '返回或切换配置会丢弃这些草稿。' }}</p>
         <div>
-          <button type="button" class="replacement-secondary-button" @click="keepRuleEditor">继续编辑</button>
+          <button type="button" class="replacement-secondary-button" data-back-action @click="keepRuleEditor">继续编辑</button>
           <button type="button" class="replacement-primary-button replacement-discard-danger" @click="abandonRuleEditor">放弃修改</button>
         </div>
       </section>

@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import type { ResourceDescriptor, SearchBookResult, SourceDebugResponse, SourceMetadata } from "../../api/types";
+import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 
 defineProps<{
   target: SourceMetadata;
-  sources: SourceMetadata[];
   keyword: string;
+  keywordLoading: boolean;
   busy: boolean;
   searchResultBatchBusy: boolean;
   recoveryRequired: boolean;
@@ -24,7 +25,6 @@ defineProps<{
 const emit = defineEmits<{
   close: [];
   "update:keyword": [value: string];
-  selectSource: [sourceId: string];
   search: [];
   inspectResult: [result: SearchBookResult];
   previewChapter: [chapter: { index: number; title: string }];
@@ -34,39 +34,36 @@ function updateKeyword(event: Event): void {
   emit("update:keyword", (event.target as HTMLInputElement).value);
 }
 
-function selectSource(event: Event): void {
-  emit("selectSource", (event.target as HTMLSelectElement).value);
-}
 </script>
 
 <template>
-  <section class="modal-backdrop" @click.self="emit('close')">
-    <article class="app-modal source-edit-modal source-debug-dialog">
-      <button class="detail-close" @click="emit('close')">×</button>
-      <h2 id="source-debug-title">测试「{{ target.name }}」</h2>
+  <section class="source-debug-backdrop" data-back-layer @click.self="emit('close')" @keydown.esc.stop.prevent="emit('close')">
+    <article class="source-debug-dialog" role="dialog" aria-modal="true" aria-labelledby="source-debug-title">
+      <header class="source-debug-header">
+        <h2 id="source-debug-title">测试来源</h2>
+        <button type="button" class="source-debug-close" data-back-action aria-label="关闭测试" @click="emit('close')"><PrototypeIcon name="close" /></button>
+      </header>
+      <div class="source-debug-body">
 
       <form class="source-debug-search" @submit.prevent="emit('search')">
-        <label class="form-field">
-          <span>源</span>
-          <select :value="target.id" :disabled="busy" @change="selectSource">
-            <option v-for="source in sources" :key="source.id" :value="source.id">{{ source.name }}</option>
-          </select>
-        </label>
-        <label class="form-field">
-          <span>测试关键词</span>
+        <div class="source-debug-field">
+          <span>来源</span>
+          <span class="source-debug-source" :title="target.name">{{ target.name }}</span>
+        </div>
+        <label class="source-debug-field">
+          <span>关键词</span>
           <input
             :value="keyword"
             autofocus
             maxlength="200"
             autocomplete="off"
-            placeholder="输入书名、作者或关键词"
-            :disabled="busy"
+            placeholder="输入测试关键词"
+            :disabled="busy || keywordLoading"
             @input="updateKeyword"
           />
         </label>
-        <div class="modal-actions">
-          <button type="button" class="button secondary" @click="emit('close')">关闭</button>
-          <button type="submit" class="button primary" :disabled="busy || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '正在处理…' : '开始单源搜索' }}</button>
+        <div class="source-debug-actions">
+          <button type="submit" class="button primary" :disabled="busy || keywordLoading || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '处理中…' : keywordLoading ? '读取中…' : '开始测试' }}</button>
         </div>
       </form>
 
@@ -107,23 +104,123 @@ function selectSource(event: Event): void {
         <pre v-if="chapterResource.format === 'json'" class="source-debug-json">{{ chapterText }}</pre>
         <iframe v-else :key="chapterResource.resourceId" :src="chapterResource.src" title="源章节正文预览" sandbox="" class="source-debug-frame"></iframe>
       </section>
+      </div>
     </article>
   </section>
 </template>
 
 <style scoped>
-.source-debug-dialog {
-  position: relative;
-  width: min(760px, 100%);
+.source-debug-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgb(25 27 35 / 36%);
 }
 
-.source-debug-dialog h2 {
-  margin: 0 0 10px;
+.source-debug-dialog {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(88dvh, 840px);
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--app-line);
+  border-radius: 12px;
+  background: var(--app-surface);
+  box-shadow: var(--app-shadow);
+}
+
+.source-debug-header {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--app-line);
+}
+
+.source-debug-header h2 {
+  margin: 0;
+  font-size: var(--ui-font-heading);
+}
+
+.source-debug-close {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--ui-radius);
+  color: var(--app-muted);
+  cursor: pointer;
+}
+
+.source-debug-close :deep(svg) {
+  width: var(--ui-icon-size);
+  height: var(--ui-icon-size);
+}
+
+.source-debug-body {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 20px 20px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  overscroll-behavior: contain;
+  font-size: var(--ui-font-body);
+}
+
+.source-debug-field {
+  display: grid;
+  grid-template-columns: 56px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.source-debug-field input {
+  width: 100%;
+  min-width: 0;
+  height: var(--ui-control-height);
+  padding: 0 10px;
+  border: 1px solid var(--app-line);
+  border-radius: var(--ui-radius);
+  color: var(--app-text);
+  background: var(--app-surface);
+  font-size: var(--ui-font-body);
+}
+
+.source-debug-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.source-debug-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.source-debug-actions .button {
+  min-height: var(--ui-control-height);
+  font-weight: 500;
+}
+
+.source-debug-close:focus-visible,
+.source-debug-field input:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
 }
 
 .source-debug-search,
 .source-debug-results,
 .source-debug-book-detail {
+  min-width: 0;
   display: grid;
   gap: 12px;
 }
@@ -133,6 +230,8 @@ function selectSource(event: Event): void {
   gap: 6px;
   margin: 12px 0;
   color: var(--app-danger);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .source-debug-errors p,
@@ -148,9 +247,11 @@ function selectSource(event: Event): void {
 
 .source-debug-heading {
   margin: 0;
+  font-size: var(--ui-font-body);
 }
 
 .source-debug-result {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -158,6 +259,10 @@ function selectSource(event: Event): void {
   padding: 10px;
   border: 1px solid var(--app-line);
   border-radius: 10px;
+}
+
+.source-debug-result > div {
+  min-width: 0;
 }
 
 .source-debug-book-detail {
@@ -173,7 +278,8 @@ function selectSource(event: Event): void {
   display: grid;
   max-height: 230px;
   gap: 4px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .source-debug-chapter-button {
@@ -193,7 +299,8 @@ function selectSource(event: Event): void {
 .source-debug-json {
   box-sizing: border-box;
   max-height: 320px;
-  overflow: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
   padding: 12px;
   white-space: pre-wrap;
 }

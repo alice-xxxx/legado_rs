@@ -125,7 +125,7 @@ function removeSelected(): void {
 
 function chooseAddAction(action: "new" | "file" | "url"): void {
   addMenuOpen.value = false;
-  if (writeLocked.value || props.editorOpen) return;
+  if (writeLocked.value || (props.editorOpen && action !== "new")) return;
   if (action === "new") emit("create-open");
   else if (action === "file") emit("import-local");
   else emit("import-url-open");
@@ -150,12 +150,12 @@ useOutsidePointerDismiss(
       <template #actions>
         <div class="source-header-add">
           <button type="button" class="source-header-import"
-            :disabled="writeLocked || editorOpen"
+            :disabled="writeLocked"
             @click="addMenuOpen = !addMenuOpen; openSourceMenuId = null; filterMenuOpen = false; actionsMenuOpen = false"><PrototypeIcon name="plus"/><span>添加</span></button>
           <div v-if="addMenuOpen" class="source-add-menu">
             <button type="button" @click="chooseAddAction('new')">新建来源</button>
-            <button type="button" @click="chooseAddAction('file')">本地 JSON 导入</button>
-            <button type="button" @click="chooseAddAction('url')">网络链接导入</button>
+            <button type="button" :disabled="editorOpen" @click="chooseAddAction('file')">本地 JSON 导入</button>
+            <button type="button" :disabled="editorOpen" @click="chooseAddAction('url')">网络链接导入</button>
           </div>
         </div>
       </template>
@@ -184,10 +184,14 @@ useOutsidePointerDismiss(
                 @click="statusFilter = 'enabled'; filterMenuOpen = false">仅启用</button>
               <button type="button" :class="{ active: statusFilter === 'disabled' }"
                 @click="statusFilter = 'disabled'; filterMenuOpen = false">仅停用</button>
-              <label><span>按分组筛选</span><select v-model="groupFilter" @change="filterMenuOpen = false">
-                <option value="">全部分组</option>
-                <option v-for="group in groups" :key="group" :value="group">{{ group }}</option>
-              </select></label>
+              <template v-if="groups.length || groupFilter">
+                <div class="source-filter-divider" role="separator"></div>
+                <button type="button" :class="{ active: !groupFilter }" :aria-pressed="!groupFilter"
+                  @click="groupFilter = ''; filterMenuOpen = false">全部分组</button>
+                <button v-for="group in groups" :key="group" type="button" :class="{ active: groupFilter === group }"
+                  :aria-pressed="groupFilter === group" :aria-label="`分组：${group}`"
+                  @click="groupFilter = group; filterMenuOpen = false">{{ group }}</button>
+              </template>
             </div>
           </template>
           <template #actions-menu>
@@ -225,22 +229,28 @@ useOutsidePointerDismiss(
         </div>
 
         <footer v-if="batchMode" class="source-master-footer">
-          <button type="button" :disabled="!filteredSources.length || toolbarBusy" @click="toggleFilteredSelection">{{ allFilteredSelected ? '取消选择当前结果' : '选择当前结果' }}</button>
-          <span v-if="selectedIds.length" class="source-selected-summary">已选 {{ selectedIds.length }}<button type="button" :disabled="toolbarBusy" @click="emit('selection-change', [])">清空</button></span>
-          <span v-else>{{ filteredSources.length }} 个来源</span>
+          <label class="source-batch-select-all" title="全选当前筛选结果">
+            <input type="checkbox" :checked="allFilteredSelected" :disabled="!filteredSources.length || toolbarBusy || editorOpen"
+              aria-label="全选当前筛选结果" @change="toggleFilteredSelection" />全选
+          </label>
+          <span class="source-selected-summary">已选 {{ selectedIds.length }}
+            <button v-if="selectedIds.length" type="button" :disabled="toolbarBusy"
+              @click="emit('selection-change', [])">取消选择</button>
+          </span>
         </footer>
         <div v-if="batchMode && selectedIds.length" class="source-master-batch-actions">
-          <div>
+          <div class="source-batch-buttons">
             <button type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">启用</button>
             <button type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">停用</button>
             <button type="button" :disabled="toolbarBusy" @click="emit('export')">导出</button>
             <button type="button" class="danger" :disabled="writeLocked" @click="removeSelected">移除</button>
           </div>
           <div class="source-master-batch-group">
-            <input v-model="batchGroup" maxlength="100" placeholder="分组名称"
+            <input v-model="batchGroup" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称"
               :disabled="writeLocked"/>
-            <button type="button" :disabled="writeLocked||!batchGroup.trim()" @click="emit('set-group', batchGroup)">设置分组</button>
-            <button type="button" :disabled="writeLocked" @click="emit('set-group', null)">清空</button>
+            <button type="button" title="设置分组" aria-label="设置分组" :disabled="writeLocked||!batchGroup.trim()"
+              @click="emit('set-group', batchGroup)">应用</button>
+            <button type="button" class="source-group-clear" :disabled="writeLocked" @click="emit('set-group', null)">清空分组</button>
           </div>
         </div>
       </aside>
@@ -338,8 +348,7 @@ useOutsidePointerDismiss(
 .source-master-empty strong { color:var(--app-text); font-size:var(--ui-font-body); }
 .source-master-empty p { margin:0; line-height:1.5; }
 .source-master-empty button { min-height:36px; padding:0 12px; border:0; border-radius:9px; color:var(--app-accent); background:var(--app-accent-soft); cursor:pointer; }
-.source-selected-summary { display:flex; align-items:center; gap:7px; }
-.source-selected-summary button { color:var(--app-accent); background:none; }
+.source-selected-summary { display:flex; align-items:center; gap:8px; white-space:nowrap; }
 .source-inspector-status { display:inline-flex; align-items:center; gap:7px; margin:13px 0 0; color:var(--app-accent); font-size:var(--ui-font-caption); }
 .source-inspector-status.off { color:var(--app-subtle); }
 
@@ -352,16 +361,20 @@ useOutsidePointerDismiss(
 .source-filter-menu,.source-toolbar-actions-menu{position:absolute;right:0;top:calc(100% + 5px);z-index:70;display:grid;gap:3px;min-width:176px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
 .source-filter-menu>button,.source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);cursor:pointer}
 .source-filter-menu>button.active{color:var(--app-accent-ink);background:var(--app-accent-soft)}
-.source-filter-menu>label{display:grid;gap:5px;padding:8px 9px 4px;border-top:1px solid var(--app-line);color:var(--app-muted);font-size:var(--ui-font-body)}
-.source-filter-menu select{height:32px;padding:0 7px;border:1px solid var(--app-line);border-radius:8px;color:var(--app-muted);background:var(--app-surface);font-size:var(--ui-font-body)}
+.source-filter-menu{max-height:min(480px,calc(100dvh - 180px));max-width:min(280px,calc(100vw - 48px));overflow-y:auto}
+.source-filter-menu>button{overflow-wrap:anywhere}
+.source-filter-menu>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
+.source-filter-divider{height:1px;margin:4px 2px;background:var(--app-line)}
 .source-toolbar-actions-menu>button:disabled{opacity:.5;cursor:default}
 .source-master-list { min-height:0; flex:1; margin-right:-14px; padding-right:14px; overflow:auto; }
 .source-dot { width:7px; height:7px; border-radius:50%; background:#5e8b6b; }
 .source-dot.off { background:var(--app-track); }
 .source-master-empty { flex:1; display:grid; place-items:center; color:var(--app-subtle); font-size:var(--ui-font-caption); text-align:center; }
-.source-master-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:10px; border-top:1px solid var(--app-line); }
-.source-master-footer button { min-height:34px; padding:0 8px; border:0; border-radius:8px; color:var(--app-accent); background:var(--app-accent-soft); font-size:var(--ui-font-body); cursor:pointer; }
-.source-master-footer span { color:var(--app-subtle); font-size:var(--ui-font-caption); }
+.source-master-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:8px; border-top:1px solid var(--app-line); }
+.source-batch-select-all { display:inline-flex; align-items:center; gap:6px; min-height:var(--ui-compact-control-height); font-size:var(--ui-font-body); white-space:nowrap; cursor:pointer; }
+.source-batch-select-all input { width:14px; height:14px; margin:0; accent-color:var(--app-accent); }
+.source-master-footer button { min-height:var(--ui-compact-control-height); padding:0 4px; border:0; border-radius:var(--ui-radius); color:var(--app-muted); background:transparent; font-size:var(--ui-font-caption); cursor:pointer; }
+.source-master-footer span { color:var(--app-muted); font-size:var(--ui-font-caption); }
 
 .source-inspector { min-width:0; overflow:auto; padding:30px 34px; }
 .source-inspector-head { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
@@ -437,10 +450,13 @@ useOutsidePointerDismiss(
 .source-verification-state button{min-height:34px;padding:5px 9px;border:1px solid var(--app-accent-soft);border-radius:9px;background:var(--app-accent-soft);color:var(--app-accent);cursor:pointer;font-size:var(--ui-font-body)}
 .source-verification-state button:disabled{opacity:.45;cursor:default}
 @media(max-width:700px){.source-capabilities{grid-template-columns:repeat(2,minmax(0,1fr))}.source-verification-state{grid-template-columns:36px minmax(0,1fr)}.source-verification-state button{grid-column:2;justify-self:start}}
-.source-master-batch-actions{display:grid;gap:7px;padding-top:10px;border-top:1px solid var(--app-line)}
-.source-master-batch-actions>div{display:flex;flex-wrap:wrap;gap:4px}
-.source-master-batch-actions button{min-height:29px;padding:0 8px;border:0;border-radius:7px;background:var(--app-accent-soft);color:var(--app-accent-ink);font-size:var(--ui-font-body);cursor:pointer}
-.source-master-batch-actions button.danger{color:var(--app-danger);background:var(--app-danger-soft)}
+.source-master-batch-actions{display:grid;gap:8px;padding-top:8px}
+.source-batch-buttons{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
+.source-master-batch-actions button{min-height:36px;padding:0 8px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body);white-space:nowrap;cursor:pointer}
+.source-master-batch-actions button.danger{color:var(--app-danger);border-color:var(--app-danger-line)}
 .source-master-batch-actions button:disabled{opacity:.5;cursor:default}
-.source-master-batch-group input{min-width:0;flex:1;padding:0 7px;border:1px solid var(--app-line);border-radius:7px;font-size:var(--ui-font-body)}
+.source-master-batch-group{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px}
+.source-master-batch-group input{min-width:0;width:100%;min-height:36px;padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
+.source-master-batch-actions .source-group-clear{padding:0 4px;border-color:transparent;color:var(--app-muted)}
+.source-master-footer button:focus-visible,.source-batch-select-all input:focus-visible,.source-master-batch-actions button:focus-visible,.source-master-batch-group input:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 </style>

@@ -1,5 +1,11 @@
-# Tauri 书源解析插件
+# source-engine 插件
 
-插件把 Rust 的 `execute_source_engine` 调用转给 Android Kotlin 或 iOS Swift 原生入口。平台入口再调用独立 KMP 解析器；解析器需要的 HTTP 和存储通过 Android JNI 或 iOS C ABI 回到 Rust。
+移动端书源引擎适配器：
 
-Android 构建先运行 Kotlin Gradle 的 `stageTauriAndroidAar`；iOS 构建先生成 `Frameworks/LegadoSourceEngine.xcframework`。这些文件是构建产物，已由本目录 `.gitignore` 排除。
+- Android：Tauri Kotlin 插件调用 KMP AAR，宿主 HTTP 和存储通过 JNI 进入 Rust。
+- iOS：Swift 插件调用 KMP XCFramework，宿主能力通过 C ABI 进入 Rust。
+- 桌面：应用通过 Rust 的 JVM/JNI 执行器调用引擎；插件的 desktop.execute 返回 UnsupportedTarget。
+
+构建前置任务与打包步骤见[开发说明](../../../docs/development.md)。Android 的 `stageTauriAndroidAar` 生成插件 AAR；iOS 流程生成 `ios/Frameworks/LegadoSourceEngine.xcframework` 和 native 静态库，插件 build.rs 校验并链接这些产物。
+
+权限定义位于 `permissions/`，自动生成的参考文件不作为手工维护入口。

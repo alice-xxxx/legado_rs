@@ -1,4 +1,4 @@
-import { ref, type Ref } from "vue";
+import { computed, ref, type Ref } from "vue";
 import { sources, bookSourceCandidates, mutateSources as mutateSource, readSourceDefinitionJson, saveSourceMetadata, saveSourceDefinition, exportSourceDefinitions, type SourceMetadataChanges } from "./sourcesStore";
 import type { SourceMetadata } from "../../api/types";
 import { shelfBatchRecoveryRequired as recoveryRequired } from "../../app/recoveryState";
@@ -29,6 +29,8 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
   const sourceEditBusy = ref(false);
   const sourceEditJson = ref("");
   const sourceEditOriginalJson = ref("");
+  const sourceEditCreating = ref(false);
+  const sourceEditorOpen = computed(() => sourceEditCreating.value || editingSource.value !== null);
   const sourceRemovalBusy = ref(false);
 
   async function changeSourceEnabled(source: SourceMetadata, enabled: boolean): Promise<void> {
@@ -121,6 +123,15 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     );
   }
 
+  function beginSourceCreate(): void {
+    if (recoveryRequired.value || sourceEditBusy.value || sourceRemovalBusy.value
+      || sourceBatchBusy.value || sourceImportBusy.value || sourceExportBusy.value) return;
+    editingSource.value = null;
+    sourceEditJson.value = "{}";
+    sourceEditOriginalJson.value = "{}";
+    sourceEditCreating.value = true;
+  }
+
   async function beginSourceEdit(source: SourceMetadata): Promise<void> {
     if (recoveryRequired.value || sourceEditBusy.value || sourceRemovalBusy.value) return;
     const revision = getRestoreFrontendRevision();
@@ -130,6 +141,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       if (revision !== getRestoreFrontendRevision() || !sources.value.some(s => s.id === source.id)) return;
       sourceEditJson.value = json;
       sourceEditOriginalJson.value = json;
+      sourceEditCreating.value = false;
       editingSource.value = sources.value.find(s => s.id === source.id) ?? source;
     } catch (error) {
       if (revision === getRestoreFrontendRevision()) notify(`读取完整源定义失败：${errorText(error)}`, "error");
@@ -141,14 +153,15 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
   function closeSourceEdit(): void {
     if (sourceEditBusy.value) return;
     editingSource.value = null;
+    sourceEditCreating.value = false;
     sourceEditJson.value = "";
     sourceEditOriginalJson.value = "";
   }
 
   async function saveSourceDefinitionJson(): Promise<void> {
     const source = editingSource.value;
-    if (!source || recoveryRequired.value || sourceEditBusy.value || sourceRemovalBusy.value
-      || sourceBatchBusy.value || sourceImportBusy.value) return;
+    if (!sourceEditorOpen.value || recoveryRequired.value || sourceEditBusy.value || sourceRemovalBusy.value
+      || sourceBatchBusy.value || sourceImportBusy.value || sourceExportBusy.value) return;
     const definitionJson = sourceEditJson.value;
     try {
       const value: unknown = JSON.parse(definitionJson);
@@ -161,9 +174,10 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceEditBusy.value = true;
     try {
-      await saveSourceDefinition(source.id, definitionJson);
+      await saveSourceDefinition(source?.id ?? null, definitionJson);
       if (revision !== getRestoreFrontendRevision()) return;
       editingSource.value = null;
+      sourceEditCreating.value = false;
       sourceEditJson.value = "";
       sourceEditOriginalJson.value = "";
       notify("源配置已保存，新规则会用于后续搜索和解析。");
@@ -171,45 +185,6 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       if (revision === getRestoreFrontendRevision()) notify(`保存源失败：${errorText(error)}`, "error");
     } finally {
       sourceEditBusy.value = false;
-    }
-  }
-
-  async function createSourceFromJson(sourceJson: string): Promise<boolean> {
-    if (recoveryRequired.value || sourceImportBusy.value || sourceBatchBusy.value
-      || sourceExportBusy.value || sourceEditBusy.value || sourceRemovalBusy.value) return false;
-    // Use the same full-schema Legado importer as file and URL imports.
-    // Rust owns source IDs, validation, and persisted definitions.
-    let definition: unknown;
-    try {
-      definition = JSON.parse(sourceJson);
-      if (!definition || typeof definition !== "object" || Array.isArray(definition))
-        throw new Error("手动新建来源必须是一个完整 JSON 对象");
-      const value = definition as Record<string, unknown>;
-      const name = value.bookSourceName ?? value.name ?? value.sourceName;
-      const url = value.bookSourceUrl ?? value.url ?? value.sourceUrl;
-      if (typeof name !== "string" || !name.trim()) throw new Error("请填写 bookSourceName");
-      if (typeof url !== "string" || !url.trim()) throw new Error("请填写 bookSourceUrl");
-    } catch (error) {
-      notify(`新建来源失败：${errorText(error)}`, "error");
-      return false;
-    }
-    const restoreRevision = getRestoreFrontendRevision();
-    sourceImportBusy.value = true;
-    try {
-      await mutateSource({
-        kind: "save",
-        id: null,
-        json: sourceJson,
-      });
-      if (restoreRevision !== getRestoreFrontendRevision()) return false;
-      sourceImportOpen.value = false;
-      notify("来源配置已保存。");
-      return true;
-    } catch (error) {
-      if (restoreRevision === getRestoreFrontendRevision()) notify(`新建来源失败：${errorText(error)}`, "error");
-      return false;
-    } finally {
-      sourceImportBusy.value = false;
     }
   }
 
@@ -315,18 +290,20 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
   return {
     sourceEditBusy,
     sourceRemovalBusy,
+    sourceEditCreating,
+    sourceEditorOpen,
     changeSourceEnabled,
     patchSelectedSources,
     setSelectedSourcesEnabled,
     setSelectedSourcesGroup,
     beginSourceEdit,
+    beginSourceCreate,
     closeSourceEdit,
     saveSourceDefinitionJson,
     sourceEditJson,
     sourceEditOriginalJson,
     importSourceFileFromPicker,
     importSourceFromUrl,
-    createSourceFromJson,
     exportSelectedSources,
     deleteSelectedSources,
   };

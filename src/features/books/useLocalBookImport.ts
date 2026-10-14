@@ -3,7 +3,8 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { ref, type Ref } from "vue";
 import { cancelPendingPdfImport, importBookFromPicker, importProtectedPdf, type LocalImportFormat } from "../../api/books";
 import { type LocalBookImportResponse } from "../../api/types";
-import { switchOpenedBook } from "./bookDetailState";
+import { openedBookFromShelf, switchOpenedBook } from "./bookDetailState";
+import { refreshContentLibrary } from "./contentLibraryState";
 
 interface LocalBookImportOptions {
   externalFileRequestBusy: Readonly<Ref<boolean>>;
@@ -31,9 +32,12 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
     if (!response.book) throw new Error("导入完成后没有返回书籍资源。");
     const restoreRevision = options.getRestoreRevision();
     try {
+      await refreshContentLibrary();
+      if (restoreRevision !== options.getRestoreRevision() || shelfBatchRecoveryRequired.value) return;
       const book = await switchOpenedBook(response.book);
       if (!book) return;
       if (restoreRevision !== options.getRestoreRevision() || shelfBatchRecoveryRequired.value) return;
+      openedBookFromShelf.value = true;
 
       if (initialPdfPassword) {
         const previous = options.pdfImportPasswords.get(book.id);
@@ -46,7 +50,7 @@ export function useLocalBookImport(options: LocalBookImportOptions) {
         };
         options.pdfImportPasswords.set(book.id, entry);
       }
-      options.notify(`《${book.title}》已导入，可在详情页加入书架。`);
+      options.notify(`《${book.title}》已导入书架。`);
     } catch (error) {
       if (restoreRevision === options.getRestoreRevision()) {
         options.notify(`文件已导入，但书籍详情读取失败：${options.errorText(error)}`, "error");

@@ -3,6 +3,7 @@ import type { ChapterMediaSource } from "../../api/types";
 import { settings } from "../settings/settingsStore";
 import { clamp } from "./readerContent";
 import type { useReaderMedia } from "./useReaderMedia";
+import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 
 type ReaderMediaBindingOptions = {
   reader: {
@@ -19,8 +20,8 @@ type ReaderMediaBindingOptions = {
     qualityChoices: Readonly<Ref<ChapterMediaSource[]>>;
     qualityIndex: Ref<number>;
     getLoadRevision: () => number;
-    getMediaElement: () => HTMLMediaElement | null;
-    setMediaElement: (media: HTMLMediaElement | null) => void;
+    getMediaElement: () => ReaderMediaElement | null;
+    setMediaElement: (media: ReaderMediaElement | null) => void;
     incrementProgressRevision: () => void;
   };
   actions: {
@@ -43,14 +44,14 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
   let saveTimer: ReturnType<typeof setTimeout> | null = null;
   let qualityResumeHandler: EventListener | null = null;
 
-  function clearQualityResumeHandler(media: HTMLMediaElement): void {
+  function clearQualityResumeHandler(media: ReaderMediaElement): void {
     if (!qualityResumeHandler) return;
     media.removeEventListener("loadedmetadata", qualityResumeHandler);
     qualityResumeHandler = null;
   }
 
   function loadReaderMediaSource(
-    media: HTMLMediaElement,
+    media: ReaderMediaElement,
     source: string,
     isHls: boolean,
     bindingRevision: number,
@@ -84,7 +85,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     mediaRevision += 1;
     restoreTargetMs = null;
     options.reader.qualityIndex.value = 0;
-    if (pause && media) {
+    if (media instanceof NativeReaderAudio) media.dispose();
+    if (pause && media && !(media instanceof NativeReaderAudio)) {
       try {
         media.pause();
       } catch {
@@ -104,7 +106,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
   }
 
   function syncReaderMediaPosition(
-    media: HTMLMediaElement,
+    media: ReaderMediaElement,
     bindingRevision: number,
     loadRevision: number,
     scheduleSave = true,
@@ -147,7 +149,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const bindingRevision = mediaRevision;
     const loadRevision = options.reader.getLoadRevision();
     clearQualityResumeHandler(media);
-    if (!media.paused) media.pause();
+    if (media instanceof NativeReaderAudio) await media.pauseAndWait();
+    else if (!media.paused) media.pause();
     await flushReaderMediaProgress(media, bindingRevision, loadRevision);
     return options.reader.getMediaElement() === media && mediaRevision === bindingRevision
       && !options.reader.progressDirty.value;
@@ -213,7 +216,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     }
   }
 
-  function bindReaderMediaElement(media: HTMLMediaElement): void {
+  function bindReaderMediaElement(media: ReaderMediaElement): void {
     clearReaderMediaBinding(false);
     const bindingRevision = ++mediaRevision;
     const loadRevision = options.reader.getLoadRevision();
@@ -228,13 +231,14 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const onLoadedMetadata = () => {
       if (!isCurrent()) return;
       options.reader.durationMs.value = Number.isFinite(media.duration) ? Math.max(0, Math.round(media.duration * 1000)) : 0;
-      const desiredMs = Math.max(0, options.reader.timeMs.value);
+      const desiredMs = Math.max(0, media instanceof NativeReaderAudio
+        ? media.resumePositionMs ?? options.reader.timeMs.value : options.reader.timeMs.value);
       const targetMs = Number.isFinite(media.duration) ? Math.min(desiredMs, Math.round(media.duration * 1000)) : desiredMs;
       options.reader.timeMs.value = targetMs;
       if (Math.abs(Math.round(media.currentTime * 1000) - targetMs) > 250) {
         restoreTargetMs = targetMs;
         try {
-          media.currentTime = targetMs / 1000;
+          seekMedia(media, targetMs / 1000);
         } catch {
           restoreTargetMs = null;
           options.reader.error.value = `无法跳转到上次的${options.reader.videoChapter.value ? "视频" : "音频"}位置，请使用媒体控制条手动定位。`;
@@ -290,6 +294,11 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
         const finishedChapter = options.reader.chapterIndex.value;
         await options.actions.changeChapter(1);
         if (options.reader.chapterIndex.value === finishedChapter + 1 && options.reader.visible.value) {
+          const next = options.reader.getMediaElement();
+          if (next instanceof NativeReaderAudio && !options.reader.videoChapter.value) {
+            await next.play();
+            return;
+          }
           options.actions.notify(`本章${options.reader.videoChapter.value ? "视频" : "音频"}已结束，下一章已打开。点击播放继续。`);
         }
       })();
@@ -303,7 +312,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       clearQualityResumeHandler(media);
       options.reader.playing.value = false;
       options.mediaPlayback.syncSession(media);
-      const detail = media.error?.code === MediaError.MEDIA_ERR_NETWORK
+      const detail = media instanceof NativeReaderAudio && media.error ? media.error.message
+        : media.error?.code === MediaError.MEDIA_ERR_NETWORK
         ? "网络读取失败"
         : media.error?.code === MediaError.MEDIA_ERR_DECODE
           ? `${options.reader.videoChapter.value ? "视频" : "音频"}解码失败`

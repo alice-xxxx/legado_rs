@@ -402,7 +402,7 @@ onBeforeUnmount(() => {
       <button class="button secondary" @click="emit('closeReader')">返回书架</button>
     </div>
 
-    <div v-if="passwordPromptOpen" class="pdf-password-backdrop">
+    <div v-if="passwordPromptOpen" class="pdf-password-backdrop" data-back-layer>
       <form class="pdf-password-dialog" @submit.prevent="submitPassword">
         <h2>输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
@@ -410,7 +410,7 @@ onBeforeUnmount(() => {
         <input id="pdf-reader-password" v-model="passwordInput" type="password" autocomplete="off" autofocus />
         <p v-if="passwordError" class="pdf-password-error">{{ passwordError }}</p>
         <div class="pdf-password-actions">
-          <button type="button" class="button secondary" @click="cancelPassword">取消阅读</button>
+          <button type="button" class="button secondary" data-back-action @click="cancelPassword">取消阅读</button>
           <button type="submit" class="button primary" :disabled="!passwordInput">打开 PDF</button>
         </div>
       </form>

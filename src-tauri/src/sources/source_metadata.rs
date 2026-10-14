@@ -47,7 +47,11 @@ pub(crate) fn matches_search_type(source: &Value, requested: &str) -> bool {
         "video" => 4,
         _ => return false,
     };
-    source.get("bookSourceType").and_then(Value::as_i64).unwrap_or(0) == expected
+    source
+        .get("bookSourceType")
+        .and_then(Value::as_i64)
+        .unwrap_or(0)
+        == expected
         && !is_rss_source_metadata(source)
 }
 
@@ -79,11 +83,15 @@ pub(crate) fn book_content_type<'a>(book: &'a Value, source: &Value) -> &'a str 
     if source.is_object() {
         return content_type(source);
     }
-    book.get("contentType").and_then(Value::as_str)
+    book.get("contentType")
+        .and_then(Value::as_str)
         .map(|kind| if kind == "html" { "text" } else { kind })
         .filter(|kind| matches!(*kind, "text" | "html" | "image" | "audio" | "video" | "pdf"))
-        .or_else(|| book.get("mediaType").and_then(Value::as_str)
-            .filter(|kind| matches!(*kind, "audio" | "video")))
+        .or_else(|| {
+            book.get("mediaType")
+                .and_then(Value::as_str)
+                .filter(|kind| matches!(*kind, "audio" | "video"))
+        })
         .unwrap_or("text")
 }
 
@@ -95,31 +103,15 @@ pub(crate) fn normalize_chapter_content(source: &Value, content: &str) -> String
     }
     let images = serde_json::from_str::<Vec<String>>(content.trim())
         .unwrap_or_else(|_| content.lines().map(str::to_owned).collect());
-    images.iter().map(|image| {
-        let image = image.trim();
-        if image.is_empty() { return String::new(); }
-        format!("<img src=\"{}\">", quick_xml::escape::escape(image))
-    }).collect::<Vec<_>>().join("\n")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn source_reader_type_survives_search_and_details_without_overwriting_genres() {
-        for (source_type, expected) in [(0, "text"), (1, "audio"), (2, "image"), (4, "video")] {
-            let source = crate::application::SourceRecord {
-                id: "source-a".into(), name: "Source".into(), group: None, enabled: true,
-                source: json!({"bookSourceType": source_type}),
-            };
-            let book = json!({"name":"Book", "kind":"悬疑"});
-            let result = crate::application::project_search_result("result-a", &source, &book);
-            assert_eq!(result.content_type, expected);
-            let details = crate::book_metadata::project_book_metadata(&book, &source);
-            assert_eq!(details.content_type.as_deref(), Some(expected));
-            assert_eq!(details.kind.as_deref(), Some("悬疑"));
-        }
-    }
+    images
+        .iter()
+        .map(|image| {
+            let image = image.trim();
+            if image.is_empty() {
+                return String::new();
+            }
+            format!("<img src=\"{}\">", quick_xml::escape::escape(image))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

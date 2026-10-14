@@ -362,7 +362,7 @@ export default defineComponent({
         <!-- The header's More action owns advanced settings, as in the prototype. -->
       </nav>
     </footer>
-    <div v-if="readerDirectoryOpen" class="reader-directory-backdrop" @click.self.stop="readerDirectoryOpen = false"
+    <div v-if="readerDirectoryOpen" class="reader-directory-backdrop" data-back-layer @click.self.stop="readerDirectoryOpen = false"
       @keydown.esc.stop.prevent="readerDirectoryOpen = false">
       <aside class="reader-directory-panel" @click.stop>
         <header class="reader-directory-header">
@@ -371,7 +371,7 @@ export default defineComponent({
                 openedBook?.chapters?.length ?? 0 }} / {{ readerChapterCount }} {{ ctx.readingPdfPage ? '页' :
                 ctx.readingVideoChapter ? '集' : ctx.readingMediaChapter ? '期' : ctx.readingImagePage ? '话' : '章' }}</span>
           </div>
-          <button type="button" aria-label="关闭目录" @click="readerDirectoryOpen = false">
+          <button type="button" data-back-action aria-label="关闭目录" @click="readerDirectoryOpen = false">
             <PrototypeIcon name="close" />
           </button>
         </header>
@@ -395,7 +395,7 @@ export default defineComponent({
         </div>
       </aside>
     </div>
-    <div v-if="ctx.readerControlsOpen" class="reader-settings-backdrop" @click.self.stop="ctx.readerControlsOpen = false"
+    <div v-if="ctx.readerControlsOpen" class="reader-settings-backdrop" data-back-layer @click.self.stop="ctx.readerControlsOpen = false"
       @keydown.esc.stop.prevent="ctx.readerControlsOpen = false">
     <aside class="reader-settings-popover" @click.stop
       :class="{ 'reader-search-popover': readerControlsMode === 'search' }">
@@ -403,7 +403,7 @@ export default defineComponent({
         (ctx.readingMediaChapter ? audioToolPanel === 'speed' ? '播放速度' : audioToolPanel === 'sleep' ? '睡眠定时' : '播放设置'
           : '朗读') : readerControlsMode === 'appearance' ? ctx.readingImagePage ? comicPanel === 'mode' ? '阅读模式' :
             comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><button
-          type="button" aria-label="关闭菜单" @click="ctx.readerControlsOpen = false">
+          type="button" data-back-action aria-label="关闭菜单" @click="ctx.readerControlsOpen = false">
           <PrototypeIcon name="close" />
         </button></div>
       <!-- Chapter seek is available in advanced tools; the reading dock keeps only prototype primary actions. -->
@@ -527,7 +527,7 @@ export default defineComponent({
             <option value="chapter">本章开头</option>
           </select></div>
         <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><input id="reader-tts-rate"
-            type="range" min="0.5" max="5" step="0.1" :value="settings.reader.ttsRate"
+            type="range" min="0.5" :max="ctx.nativePlayback && settings.reader.ttsEngine === 'system' ? 4 : 5" step="0.1" :value="settings.reader.ttsRate"
             @input="setTtsRate(Number(($event.target as HTMLInputElement).value))" /><small>{{
               settings.reader.ttsRate.toFixed(1) }}×</small></div>
         <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox"
@@ -642,7 +642,7 @@ export default defineComponent({
     </aside>
     </div>
     <!-- 播放器放在弹窗外，关闭朗读面板时不要卸载正在播放的音频。 -->
-    <audio v-if="settings.reader.ttsEngine === 'http' && httpTtsAudioResource" :ref="setHttpTtsAudioElement"
+    <audio v-if="!ctx.nativePlayback && settings.reader.ttsEngine === 'http' && httpTtsAudioResource" :ref="setHttpTtsAudioElement"
       preload="none" :src="httpTtsAudioResource.src" class="reader-audio-element" @play="onHttpTtsAudioPlay"
       @pause="onHttpTtsAudioPause" @ended="onHttpTtsAudioEnded" @error="onHttpTtsAudioError"></audio>
   </section>
@@ -654,7 +654,7 @@ export default defineComponent({
         <div><span>{{ ctx.dictionaryProvider || '维基词典' }}</span>
           <h2>{{ ctx.dictionaryTitle || '词典查词' }}</h2>
         </div>
-        <button type="button" class="reader-dialog-close" aria-label="关闭词典" @click="ctx.closeReaderDictionary"><PrototypeIcon name="close" /></button>
+        <button type="button" class="reader-dialog-close" data-back-action aria-label="关闭词典" @click="ctx.closeReaderDictionary"><PrototypeIcon name="close" /></button>
       </header>
       <form class="reader-dictionary-form" @submit.prevent="ctx.lookupReaderDictionary">
         <div class="reader-dictionary-row">
@@ -697,7 +697,7 @@ export default defineComponent({
       aria-labelledby="reader-bookmark-sheet-title" @submit.prevent="ctx.saveBookmark()">
       <header class="reader-bookmark-sheet-heading">
         <strong id="reader-bookmark-sheet-title">{{ ctx.bookmarkEditingId ? '编辑书签' : '添加书签' }}</strong>
-        <button type="button" class="reader-dialog-close" aria-label="关闭书签" @click="ctx.closeBookmarkEditor()">
+        <button type="button" class="reader-dialog-close" data-back-action aria-label="关闭书签" @click="ctx.closeBookmarkEditor()">
           <PrototypeIcon name="close" />
         </button>
       </header>

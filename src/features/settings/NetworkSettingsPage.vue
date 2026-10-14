@@ -19,11 +19,9 @@ function changeTimeout(seconds: number): void {
   <section class="settings-detail-page">
     <SettingsDetailHeader title="网络请求" />
     <div class="settings-detail-content">
-      <section class="settings-detail-panel">
-        <header class="settings-detail-section-header"><strong>来源网络请求</strong></header>
         <div class="setting-control">
           <div>
-            <label for="source-http-timeout">最长时限</label>
+            <label for="source-http-timeout">请求超时</label>
             <small>连接或读取超时后结束请求</small>
           </div>
           <select
@@ -38,53 +36,48 @@ function changeTimeout(seconds: number): void {
             <option :value="120">120 秒</option>
           </select>
         </div>
-      </section>
     </div>
   </section>
 </template>
 
 <style scoped>
 .settings-detail-page {
-  width: min(820px, 100%);
+  width: 100%;
+  min-width: 0;
   min-height: 100dvh;
-  margin: 0 auto;
-  padding: 10px 0 50px;
   color: var(--app-text);
 }
 
-.settings-detail-content { display: grid; gap: 18px; }
-.settings-detail-panel { padding: 0; border: 0; border-radius: 0; background: transparent; }
-.settings-detail-section-header {
-  display: grid;
-  gap: 4px;
-  margin: 0 0 9px;
-  padding: 0 2px 12px;
-  border-bottom: 1px solid var(--app-line);
+.settings-detail-content {
+  width: min(640px, 100%);
+  margin: 0 auto;
+  padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
 }
-.settings-detail-section-header strong { color: var(--app-text); font-size: var(--ui-font-caption); }
 .setting-control {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  min-height: 68px;
-  padding: 8px 4px;
+  gap: var(--ui-space-4);
+  min-height: 64px;
+  padding: 0 0 var(--ui-space-3);
   border-bottom: 1px solid var(--app-line);
 }
-.setting-control > div { display: grid; gap: 4px; min-width: 0; }
-.setting-control label { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 650; }
-.setting-control small { color: var(--app-subtle); font-size: var(--ui-font-caption); line-height: 1.5; }
+.setting-control > div { display: grid; gap: var(--ui-space-1); min-width: 0; }
+.setting-control label { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 500; }
+.setting-control small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.5; }
 .setting-control select {
-  min-width: 105px;
-  min-height: 36px;
-  padding: 5px;
+  flex: none;
+  width: 100px;
+  min-height: var(--ui-control-height);
+  padding: 0 var(--ui-space-2);
   border: 1px solid var(--app-line);
-  border-radius: 8px;
+  border-radius: var(--ui-radius);
   background: var(--app-surface);
+  color: var(--app-text);
+  font-size: var(--ui-font-body);
 }
-@media (max-width: 640px) {
-  .settings-detail-content { gap: 22px; }
-  .setting-control { min-height: 65px; align-items: center; }
-  .setting-control > div { flex: 1; max-width: 60%; }
+.setting-control select:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
 }
 </style>

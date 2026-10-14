@@ -1,6 +1,7 @@
 import { openedBook } from "../books/bookDetailState";
 import type { Ref } from "vue";
 import type Hls from "hls.js";
+import { NativeReaderAudio, type ReaderMediaElement } from "./nativeAudio";
 import { clamp } from "./readerContent";
 
 type ReaderMediaContext = {
@@ -8,7 +9,7 @@ type ReaderMediaContext = {
   mediaChapter: Readonly<Ref<boolean>>;
   videoChapter: Readonly<Ref<boolean>>;
   chapterTitle: Readonly<Ref<string>>;
-  getCurrentElement: () => HTMLMediaElement | null;
+  getCurrentElement: () => ReaderMediaElement | null;
   isControlBlocked: () => boolean;
   error: Ref<string>;
 };
@@ -17,7 +18,7 @@ type UseReaderMediaOptions = {
   reader: ReaderMediaContext;
   changeChapter: (direction: -1 | 1) => Promise<void>;
   pauseAndSave: () => Promise<boolean>;
-  clearQualityResumeHandler: (media: HTMLMediaElement) => void;
+  clearQualityResumeHandler: (media: ReaderMediaElement) => void;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
   getSeekSeconds: () => number;
@@ -87,8 +88,8 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
     options.notify(options.reader.error.value, "error");
   }
 
-  function setSession(audio: HTMLMediaElement, isCurrent: () => boolean): void {
-    if (typeof navigator === "undefined") return;
+  function setSession(audio: ReaderMediaElement, isCurrent: () => boolean): void {
+    if (audio instanceof NativeReaderAudio || typeof navigator === "undefined") return;
     let session: MediaSession | undefined;
     try {
       session = navigator.mediaSession;
@@ -176,10 +177,15 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
     }
   }
 
-  function loadSource(media: HTMLMediaElement, source: string, isHls: boolean, isCurrent: () => boolean): void {
+  function loadSource(media: ReaderMediaElement, source: string, isHls: boolean, isCurrent: () => boolean): void {
     destroyHlsInstance();
     if (!source) throw new Error("媒体资源地址为空。");
     options.reader.error.value = "";
+    if (media instanceof NativeReaderAudio) {
+      media.src = source;
+      media.load();
+      return;
+    }
     if (!isHls) {
       media.src = source;
       media.load();

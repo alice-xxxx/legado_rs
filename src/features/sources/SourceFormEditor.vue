@@ -103,7 +103,7 @@ defineExpose({ serialize, reset });
       <section v-if="editingField" class="source-field-overlay" role="dialog" aria-modal="true"
         aria-labelledby="source-long-field-title" @keydown="trapFieldFocus" @keydown.esc.stop.prevent="closeField(true)">
         <header>
-          <button type="button" :disabled="disabled" @click="closeField(true)">取消</button>
+          <button type="button" data-back-action :disabled="disabled" @click="closeField(true)">取消</button>
           <div><strong id="source-long-field-title">{{ editingField.label }}</strong><small>{{ editingField.key }}</small></div>
           <button type="button" :disabled="disabled" @click="closeField()">完成</button>
         </header>

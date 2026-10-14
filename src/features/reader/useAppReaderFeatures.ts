@@ -19,6 +19,7 @@ import { useReaderDictionary } from "./useReaderDictionary";
 import { useReaderBookmarksAndHistory } from "./useReaderBookmarksAndHistory";
 import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding } from "./useReaderMediaBinding";
+import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 import { registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
 import { clearOpenedBook, openedBook, switchOpenedBook } from "../books/bookDetailState";
 
@@ -89,7 +90,7 @@ const progressSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
 const readerBookDownloadBusy = ref(false);
 let progressRevision = 0;
 let readerLoadRevision = 0;
-let readerMediaElement: HTMLMediaElement | null = null;
+let readerMediaElement: ReaderMediaElement | null = null;
 
 let readerClickSuppressedUntil = 0;
 let readerMediaSleepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -138,7 +139,7 @@ function seekReaderMedia(seconds: number): void {
   if (!media || isReaderMediaControlBlocked() || !Number.isFinite(seconds)) return;
   const maximum = Number.isFinite(media.duration) && media.duration >= 0 ? media.duration : Number.POSITIVE_INFINITY;
   try {
-    media.currentTime = Math.max(0, Math.min(seconds, maximum));
+    seekMedia(media, Math.max(0, Math.min(seconds, maximum)));
     // The existing seeked listener owns durable progress saving.
   } catch (error) {
     readerMediaError.value = "无法跳转播放位置：" + errorText(error);
@@ -499,7 +500,7 @@ const readerDictionary = useReaderDictionary({
 });
 
 function setReaderMediaElement(element: unknown): void {
-  if (!(element instanceof HTMLMediaElement)) { readerMediaBinding.clearReaderMediaBinding(true); return; }
+  if (!(element instanceof HTMLMediaElement) && !(element instanceof NativeReaderAudio)) { readerMediaBinding.clearReaderMediaBinding(true); return; }
   if (readerMediaElement === element) return;
   const content = readingContent.value;
   if (content?.kind !== "media") return;

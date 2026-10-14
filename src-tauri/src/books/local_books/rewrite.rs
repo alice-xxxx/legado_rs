@@ -58,9 +58,6 @@ fn rewrite_html_attr(
                 .map_or("", |value| value.as_str())
                 .to_ascii_lowercase();
             let value = captures.get(3).map_or("", |value| value.as_str()).trim();
-            if value.starts_with('#') {
-                return captures[0].to_owned();
-            }
             let tag_start = html[..captures.get_match().start()].rfind('<');
             let tag = tag_start
                 .map(|start| &html[start..captures.get_match().start()])
@@ -79,7 +76,8 @@ fn rewrite_html_attr(
                 .unwrap_or_default();
             if name == "href" && is_anchor {
                 if let Some(path) = normalize_epub_href(html_path, value) {
-                    if let Some(chapter_id) = chapters.get(&path) {
+                    let fragment = percent_encoding::percent_decode_str(raw_fragment).decode_utf8_lossy();
+                    if let Some(chapter_id) = chapters.get(&format!("{path}#{fragment}")).or_else(|| chapters.get(&path)) {
                         let href = if raw_fragment.is_empty() {
                             "#".to_owned()
                         } else {
@@ -91,11 +89,13 @@ fn rewrite_html_attr(
                             "{name}{prefix}{}{quote} data-legado-chapter-id={quote}{}{quote} data-legado-fragment={quote}{}{quote}",
                             escape_html_attr(&href),
                             escape_html_attr(chapter_id),
-                            escape_html_attr(raw_fragment),
+                            escape_html_attr(&fragment),
                         );
                     }
                 }
             }
+
+            if value.starts_with('#') { return captures[0].to_owned(); }
 
             let fragment = if raw_fragment.is_empty() {
                 String::new()
