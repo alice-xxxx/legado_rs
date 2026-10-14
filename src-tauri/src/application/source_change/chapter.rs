@@ -13,6 +13,8 @@ impl ApplicationService {
         chapter_id: &str,
         result_id: &str,
         confirm_missing_author: bool,
+        alternative_index: Option<usize>,
+        alternative_source_id: Option<&str>,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let result: Result<Value, String> = async {
@@ -20,10 +22,12 @@ impl ApplicationService {
         validate_id(chapter_id, "chapterId")?;
         validate_id(result_id, "resultId")?;
 
-        let candidate = self
-            .read_search_result_cache(result_id)
-            .await
-            .map_err(|_| "Replacement candidate is unavailable; search again".to_owned())?;
+        let candidate = if let Some(index) = alternative_index {
+            self.saved_alternative_candidate(book_id, index, alternative_source_id).await?
+        } else {
+            self.read_search_result_cache(result_id).await
+                .map_err(|_| "Replacement candidate is unavailable; search again".to_owned())?
+        };
         let context = candidate
             .get("replacementContext")
             .cloned()
@@ -53,6 +57,7 @@ impl ApplicationService {
             .filter(|book| book.is_object())
             .cloned()
             .ok_or_else(|| "Replacement candidate has no engine result".to_owned())?;
+        if alternative_index.is_none() {
         let search_id = context["searchId"]
             .as_str()
             .ok_or_else(|| "Replacement candidate has no search binding".to_owned())?;
@@ -74,6 +79,7 @@ impl ApplicationService {
                 });
         if !belongs_to_completed_search {
             return Err("Replacement candidate is not part of a completed search".into());
+        }
         }
         if candidate["sourceRevision"].as_u64().is_none()
             || candidate["sourceDefinitionFingerprint"]
@@ -183,7 +189,7 @@ impl ApplicationService {
 
             let _book = self.book_lock(book_id).await;
             let old_private = self
-                .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+                .read_internal_json(self.book_engine_path(book_id)?)
                 .await
                 .map_err(|_| format!("Book '{book_id}' was removed"))?;
             let old_book = self
@@ -191,11 +197,12 @@ impl ApplicationService {
                 .read_json_ref(&book_ref)
                 .await
                 .map_err(|_| format!("Book '{book_id}' was removed"))?;
-            if matches!(
-                old_book.get("mediaType").and_then(Value::as_str),
-                Some("audio" | "video")
-            ) || crate::source_metadata::media_type(&original_source_definition).is_some()
+            if crate::source_metadata::content_type(&replacement_source.source)
+                != crate::source_metadata::book_content_type(&old_book, &original_source_definition)
             {
+                return Err("Replacement chapter source has a different content type".into());
+            }
+            if matches!(crate::source_metadata::book_content_type(&old_book, &original_source_definition), "audio" | "video") {
                 return Err(
                     "Single-chapter replacement is not supported for audio or video books".into(),
                 );
@@ -372,51 +379,33 @@ impl ApplicationService {
                 &replacement_source.source,
                 None,
                 None,
-                Some(replacement_engine_book),
-                Some(replacement_chapter),
+                Some(replacement_engine_book.clone()),
+                Some(replacement_chapter.clone()),
                 next_chapter_url,
             ))
             .await?;
         let replacement_content = replacement_content
             .as_str()
             .ok_or_else(|| "Source engine returned non-text chapter content".to_owned())?;
+        let replacement_content = crate::source_metadata::normalize_chapter_content(&replacement_source.source, replacement_content);
+        let replacement_content = replacement_content.as_str();
         if replacement_content.trim().is_empty() {
             return Err(
                 "Source engine returned empty chapter content; the existing chapter cache was preserved"
                     .to_owned(),
             );
         }
-        let (chapter_ref, chapter_replacement, content_format) = if looks_like_html(replacement_content) {
-            let (chapter_ref, document) = self
-                .store
-                .online_chapter_rich_text_document(
-                    book_id,
-                    chapter_id,
-                    replacement_content,
-                    content_base_url.as_deref(),
-                )
-                .map_err(|error| error.to_string())?;
-            let bytes = serde_json::to_vec_pretty(&document)
-                .map_err(|error| format!("Cannot encode replacement chapter rich text: {error}"))?;
-            let replacement = crate::resource_transactions::Replacement::public_json(
-                chapter_ref.clone(),
-                bytes,
-            )
-            .map_err(|error| error.to_string())?;
-            (chapter_ref, replacement, "richText")
+        let (chapter_ref, chapter_document, content_format) = if crate::source_metadata::is_comic_source_metadata(&replacement_source.source) {
+            let pages = self.source_image_pages(book_id, chapter_id, &replacement_source.source, &replacement_engine_book, &replacement_chapter, replacement_content, content_base_url.as_deref()).await?;
+            (None, json!({"pages": pages}), "image")
+        } else if looks_like_html(replacement_content) {
+            let (reference, document) = self.source_rich_text_document(book_id, chapter_id,
+                &replacement_source.source, &replacement_engine_book, &replacement_chapter, replacement_content, content_base_url.as_deref()).await?;
+            (Some(reference), document, "richText")
         } else {
-            let (chapter_ref, document) = self
-                .store
-                .chapter_text_document(book_id, chapter_id, replacement_content)
+            let (reference, document) = self.store.chapter_text_document(book_id, chapter_id, replacement_content)
                 .map_err(|error| error.to_string())?;
-            let bytes = serde_json::to_vec_pretty(&document)
-                .map_err(|error| format!("Cannot encode replacement chapter text: {error}"))?;
-            let replacement = crate::resource_transactions::Replacement::public_json(
-                chapter_ref.clone(),
-                bytes,
-            )
-            .map_err(|error| error.to_string())?;
-            (chapter_ref, replacement, "text")
+            (Some(reference), document, "text")
         };
 
         let _sources = self.sources_lock.lock().await;
@@ -456,7 +445,7 @@ impl ApplicationService {
             .await
             .map_err(|error| error.to_string())?;
         let latest_private = self
-            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+            .read_internal_json(self.book_engine_path(book_id)?)
             .await
             .map_err(|_| format!("Book '{book_id}' was removed during chapter replacement"))?;
         let latest_book = writer_guard
@@ -503,16 +492,20 @@ impl ApplicationService {
         {
             return Err("Chapter changed during source replacement; search again".into());
         }
-        next_book["chapters"][index]["resource"] = serde_json::to_value(
-            crate::models::ChapterResourceDescriptor::for_chapter(&chapter_ref, content_format),
-        )
-        .map_err(|error| format!("Cannot encode replaced chapter descriptor: {error}"))?;
-        let replacements = vec![
-            chapter_replacement,
-            writer_guard
-                .public_json_replacement(&book_ref, &next_book)
-                .map_err(|error| error.to_string())?,
-        ];
+        next_book["contentType"] = json!(crate::source_metadata::content_type(&replacement_source.source));
+        set_optional_public_field(&mut next_book, "mediaType", None);
+        let mut replacements = Vec::new();
+        if let Some(reference) = chapter_ref {
+            next_book["chapters"][index]["resource"] = serde_json::to_value(
+                crate::models::ChapterResourceDescriptor::for_chapter(&reference, content_format)
+            ).map_err(|error| error.to_string())?;
+            replacements.push(writer_guard.public_json_replacement(&reference, &chapter_document).map_err(|error| error.to_string())?);
+        } else {
+            let chapter = &mut next_book["chapters"][index];
+            chapter["pages"] = chapter_document["pages"].clone();
+            if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
+        }
+        replacements.push(writer_guard.public_json_replacement(&book_ref, &next_book).map_err(|error| error.to_string())?);
         let transaction_root = writer_guard.data_root().to_path_buf();
         let transaction_result = tokio::task::spawn_blocking(move || {
             let transaction = crate::resource_transactions::FileTransaction::prepare(

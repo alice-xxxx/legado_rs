@@ -6,6 +6,7 @@ import { sources, bookSourceCandidates } from "../sources/sourcesStore";
 import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
 import { checkNewChapters, refreshChapters, startBookDownload } from "../../api/tasks";
 import type { AppBootstrap, BookResource } from "../../api/types";
+import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -26,6 +27,10 @@ import { getFrontendRestoreRevision, lockShelfBatchRecovery, shelfBatchRecoveryM
 type BookTaskKind = "refreshChapters" | "checkNewChapters";
 type BookTaskAction = "download" | "refresh" | "check";
 const sourceName = (id: string): string => sources.value.find((source) => source.id === id)?.name ?? id;
+function progressTime(milliseconds = 0): string {
+  const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+}
 const readerSession = getReaderSession();
 const { readerVisible, readingBook } = readerSession;
 const bookSourceSwitch = getBookSourceSwitchSession();
@@ -355,7 +360,7 @@ async function clearOpenedBookChapterCache(): Promise<void> {
     if (response.recoveryRequired || recoveryRequired.value) {
       pendingBookChapterCacheClear.value = null;
       if (openedBook.value?.id === pending.id) {
-        replaceOpenedBook({ ...openedBook.value, chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined })) });
+        replaceOpenedBook({ ...openedBook.value, chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined, pages: undefined, media: undefined })) });
       }
       if (response.recoveryRequired) lockShelfBatchRecovery("需要重启应用完成缓存恢复", `《${pending.title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
       throw new Error(shelfBatchRecoveryMessage.value || "缓存清理需要完成恢复。");
@@ -372,7 +377,7 @@ async function clearOpenedBookChapterCache(): Promise<void> {
       if (openedBook.value?.id === pending.id) {
         replaceOpenedBook({
           ...openedBook.value,
-          chapters: openedBook.value.chapters.map(chapter => ({ ...chapter, resource: undefined })),
+          chapters: openedBook.value.chapters.map(chapter => ({ ...chapter, resource: undefined, pages: undefined, media: undefined })),
         });
       }
     }
@@ -615,7 +620,9 @@ loading="lazy" decoding="async"/>
                   <small class="detail-type-label">
                     {{ openedBook.mediaType === 'video' ? '视频'
                       : openedBook.mediaType === 'audio' ? '音频'
-                      : openedBook.kind === 'comic' ? '漫画' : '小说' }}
+                      : bookContentType(openedBook) === 'image' ? '漫画'
+                      : bookContentType(openedBook) === 'pdf' ? 'PDF'
+                      : bookContentType(openedBook) === 'html' ? 'HTML' : '小说' }}
                     {{ openedBook.kind ? ' · ' + openedBook.kind : '' }}
                   </small>
                   <h2>{{ openedBook.title }}</h2>
@@ -644,12 +651,13 @@ loading="lazy" decoding="async"/>
                     <small>{{ openedBook.mediaType === 'video' ? '观看进度' : openedBook.mediaType === 'audio' ? '收听进度' : '阅读进度' }}</small>
                     <strong v-if="hasReadingProgress(openedBook.progress)">
                       第 {{ (openedBook.progress?.chapterIndex ?? 0) + 1 }}
-                      {{ openedBook.mediaType === 'video' ? '集' : openedBook.mediaType === 'audio' ? '期' : openedBook.kind === 'comic' ? '话' : '章' }}
-                      · {{ readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length) }}%
+                      {{ openedBook.mediaType === 'video' ? '集' : openedBook.mediaType === 'audio' ? '期' : bookContentType(openedBook) === 'image' ? '话' : bookContentType(openedBook) === 'pdf' ? '页' : '章' }}
+                      <template v-if="openedBook.mediaType"> · {{ progressTime(openedBook.progress?.offset) }}</template>
+                      <template v-else> · {{ readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length) }}%</template>
                     </strong>
                     <strong v-else>尚未开始</strong>
                   </div>
-                  <div class="detail-reading-track"
+                  <div v-if="!openedBook.mediaType" class="detail-reading-track"
 
 >
                     <span :style="{ width: `${readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length)}%` }"></span>

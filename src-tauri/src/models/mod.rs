@@ -53,6 +53,10 @@ pub struct ShelfBookPosition {
 pub struct ProgressSummary {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub chapter_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub page_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub anchor: Option<String>,
     #[serde(default)]
     pub chapter_index: usize,
     #[serde(default)]
@@ -347,9 +351,6 @@ pub struct BookDocument {
     pub source_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub source_group: Option<String>,
-    /// IDs of prepared books in books/ that can be reused as source candidates.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub source_book_ids: Vec<String>,
     /// Rust-owned processed base values and user display-only overrides.
     /// Neither field contains a source definition or KMP engine book.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -412,8 +413,8 @@ impl ChapterResourceDescriptor {
         Self {
             resource_id: reference.clone(),
             src: reference.clone(),
-            content_type: "application/json; charset=utf-8".to_owned(),
-            format: "json".to_owned(),
+            content_type: match content_format { "text" => "text/plain; charset=utf-8", "richText" => "text/html; charset=utf-8", "pdf" => "application/pdf", _ => "application/octet-stream" }.to_owned(),
+            format: match content_format { "richText" => "html", kind => kind }.to_owned(),
             content_format: content_format.to_owned(),
         }
     }

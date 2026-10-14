@@ -1,5 +1,5 @@
+import { removeLibraryContent } from "./contentLibraryState";
 import type { Ref } from "vue";
-import { shelf as shelfPositions } from "../shelf/shelfStore";
 import { type BookDisplayMetadataPatch, type ResourceDescriptor } from "../../api/types";
 import { openedBook, refreshOpenedBook as refreshBookResource } from "./bookDetailState";
 
@@ -60,7 +60,7 @@ export function useBookMetadataActions(options: BookMetadataActionsOptions) {
   function removeBookFromShelf(): void {
     if (!pendingRemoval.value || recoveryRequired.value) return;
     const { id, title } = pendingRemoval.value;
-    shelfPositions.value.books = shelfPositions.value.books.filter(book => book.id !== id);
+    removeLibraryContent([id]);
     pendingRemoval.value = null;
     notify(`《${title}》已从书架移除，缓存和阅读记录保留。`);
   }

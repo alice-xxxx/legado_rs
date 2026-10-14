@@ -269,7 +269,7 @@ export default defineComponent({
           <div class="reader-audio-body">
             <small>{{ openedBook?.author || '音频内容' }}</small>
             <h2>{{ openedBook?.title }}</h2>
-            <strong class="reader-audio-episode">{{ currentChapterTitle }}</strong>
+            <strong v-if="currentChapterTitle !== openedBook?.title" class="reader-audio-episode">{{ currentChapterTitle }}</strong>
             <div class="reader-audio-progress">
               <span>{{ ctx.formatReaderMediaTime(ctx.readerMediaTimeMs) }}</span>
               <input type="range" min="0" step="1000" :max="Math.max(1000,ctx.readerMediaDurationMs)" :value="ctx.readerMediaTimeMs"

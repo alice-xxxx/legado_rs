@@ -85,8 +85,8 @@ pub(super) fn validate_target_payload(
     bytes: &[u8],
 ) -> Result<(), TransactionError> {
     match target {
-        TransactionTarget::PublicJson(_) => validate_public_json_bytes(bytes),
-        TransactionTarget::PrivateBookJson(_) => validate_json_bytes(bytes),
+        TransactionTarget::PublicJson(path) if path.ends_with(".json") => validate_public_json_bytes(bytes),
+        TransactionTarget::PublicJson(_) => { validate_json_size(bytes)?; Ok(()) },
     }
 }
 
@@ -95,7 +95,6 @@ pub(super) fn is_deletable_target(target: &TransactionTarget) -> bool {
         TransactionTarget::PublicJson(path) => {
             is_book_json_path(path)
         }
-        TransactionTarget::PrivateBookJson(_) => true,
     }
 }
 
@@ -146,36 +145,21 @@ pub(super) fn validate_identifier(id: &str) -> Result<(), TransactionError> {
 }
 
 pub(super) fn is_chapter_resource_path(path: &str) -> bool {
-    chapter_resource_id(path, ".json").is_some()
-}
-
-fn chapter_resource_id<'a>(path: &'a str, suffix: &str) -> Option<&'a str> {
-    let components = path.split('/').collect::<Vec<_>>();
-    if components.len() != 4
-        || components[0] != "books"
-        || !valid_identifier(components[1])
-        || components[2] != "chapters"
-    {
-        return None;
-    }
-    components[3]
-        .strip_suffix(suffix)
-        .filter(|id| valid_identifier(id))
+    crate::resources::content::content_path(path).is_some_and(|(_, id, name)|
+        name != format!("{id}.json") && !name.starts_with("original.")
+        && crate::resources::ResourceRef::new(format!("resource://{path}")).is_ok())
 }
 
 pub(super) fn is_book_json_path(path: &str) -> bool {
-    let components = path.split('/').collect::<Vec<_>>();
-    components.len() == 3
-        && components[0] == "books"
-        && valid_identifier(components[1])
-        && components[2] == "book.json"
+    crate::resources::content::is_content_document(path)
 }
 
 pub(super) fn is_book_directory_path(path: &str) -> bool {
     let components = path.split('/').collect::<Vec<_>>();
-    components.len() == 2
-        && components[0] == "books"
-        && valid_identifier(components[1])
+    components.len() == 3
+        && components[0] == "cache"
+        && crate::resources::content::CONTENT_TYPES.contains(&components[1])
+        && valid_identifier(components[2])
         && safe_components(path).is_ok()
 }
 

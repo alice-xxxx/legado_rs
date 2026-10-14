@@ -26,12 +26,6 @@ impl ApplicationService {
             .remove_book_resources("tts-audio")
             .await
             .map_err(|error| error.to_string())?;
-        // Search snapshots are immutable browser-session publications. No
-        // descriptor from a previous WebView process remains consumable.
-        store
-            .remove_search_snapshots()
-            .await
-            .map_err(|error| error.to_string())?;
         let http_tts_ref = store.http_tts_configs_ref();
         let empty_http_tts = crate::http_tts_config::empty_document();
         let http_tts_configs = store
@@ -122,6 +116,7 @@ impl ApplicationService {
             search_result_documents: HashMap::new(),
             search_replacement_contexts: HashMap::new(),
             search_book_group_roots: HashMap::new(),
+            published_search_results: HashMap::new(),
         };
         for task in &mut task_registry.records {
             if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") {
@@ -204,7 +199,7 @@ impl ApplicationService {
             book_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_recovery_notifier: Arc::new(std::sync::RwLock::new(None)),
-            search_snapshot_notifier: Arc::new(std::sync::RwLock::new(None)),
+            search_notifiers: Arc::new(std::sync::RwLock::new(HashMap::new())),
             admission_gate: Arc::new(tokio::sync::RwLock::new(())),
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
             webdav_backup_upload_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -244,19 +239,12 @@ impl ApplicationService {
         }
     }
 
-    pub fn set_search_snapshot_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
-        if let Ok(mut target) = self.search_snapshot_notifier.write() {
-            *target = Some(notifier);
-        }
-    }
 
     pub async fn operation_read(&self) -> OperationReadGuard {
         let mut barrier = self.restore_barrier.subscribe();
         loop {
             if *barrier.borrow() {
-                if barrier.changed().await.is_err() {
-                    continue;
-                }
+                let _ = barrier.changed().await;
                 continue;
             }
             let admission = self.admission_gate.clone().read_owned().await;
@@ -266,10 +254,7 @@ impl ApplicationService {
             }
             let operation = self.operation_gate.clone().read_owned().await;
             if !*barrier.borrow() {
-                return OperationReadGuard {
-                    _admission: admission,
-                    _operation: operation,
-                };
+                return OperationReadGuard { _admission: admission, _operation: operation };
             }
             drop(operation);
             drop(admission);
@@ -284,10 +269,21 @@ impl ApplicationService {
             "format": resource_format(resource.as_str()),
         })
     }
+    pub(crate) fn book_engine_path(&self, id: &str) -> Result<PathBuf, String> {
+        self.store.book_ref(id).map(|reference| PathBuf::from(reference.path())).map_err(|error| error.to_string())
+    }
+
     pub(crate) async fn read_internal_json(
         &self,
         relative: impl AsRef<Path>,
     ) -> Result<Value, String> {
+        let relative = relative.as_ref();
+        if crate::resources::content::is_content_document(&relative.to_string_lossy().replace('\\', "/")) {
+            let reference = ResourceRef::new(format!("resource://{}", relative.to_string_lossy().replace('\\', "/"))).map_err(|error| error.to_string())?;
+            let document = self.store.read_raw_document(&reference).map_err(|error| error.to_string())?;
+            if !document["engine"].is_object() { return Err("Content has no source execution data".into()); }
+            return Ok(crate::resources::content::source_state(&document));
+        }
         let path = self.root.join(relative);
         crate::resources::check_path_no_symlink(&self.root, &path, false)
             .map_err(|error| error.to_string())?;
@@ -303,6 +299,14 @@ impl ApplicationService {
         relative: impl AsRef<Path>,
         value: &Value,
     ) -> Result<(), String> {
+        let relative = relative.as_ref();
+        let relative_string = relative.to_string_lossy().replace('\\', "/");
+        if crate::resources::content::is_content_document(&relative_string) {
+            let (_, id, _) = crate::resources::content::content_path(&relative_string).expect("content path");
+            let reference = self.store.book_ref(id).map_err(|error| error.to_string())?;
+            let current = self.store.read_json_ref(&reference).await.unwrap_or_else(|_| json!({"id": id, "title": "Untitled", "chapters": []}));
+            return self.store.write_book_state(id, &current, value).await.map_err(|error| error.to_string());
+        }
         let path = self.root.join(relative);
         let parent = path
             .parent()

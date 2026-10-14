@@ -368,7 +368,7 @@ pub(crate) async fn list_standard_feed_articles(
     record_article_resources(service, &source.id, article_resources).await?;
     let search_ref = service
         .resource_store()
-        .search_ref(&format!("rss-{}", uuid::Uuid::new_v4().simple()))
+        .discovery_ref(&format!("rss-{}", uuid::Uuid::new_v4().simple()))
         .map_err(|error| error.to_string())?;
     let card_count = cards.len();
     let public_results = json!({
@@ -722,12 +722,12 @@ fn is_rss_article_resource_ref(
         return false;
     }
     let prefix = format!(
-        "books/{}/chapters/{:x}-",
+        "cache/html/{}/{:x}-",
         rss_resource_book_id(source_id),
         Sha256::digest(article_id.as_bytes())
     );
     reference.path().strip_prefix(&prefix)
-        .and_then(|content| content.strip_suffix(".json"))
+        .and_then(|content| content.strip_suffix(".html"))
         .is_some_and(|hash| {
             hash.len() == 64
                 && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))

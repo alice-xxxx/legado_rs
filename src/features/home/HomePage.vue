@@ -6,6 +6,7 @@ import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, react
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { listDiscoveryBooks } from "../../api/discovery";
 import { readResource } from "../../api/resources";
+import { bookContentType } from "../../api/bookContentType";
 import { sources } from "../sources/sourcesStore";
 import { settings as sharedSettings } from "../settings/settingsStore";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -53,7 +54,7 @@ const gridResults = computed(() => {
   const seen = new Set<string>();
   const items = orderedSections.value.flatMap((section) => sectionResources.value[section.id]?.results ?? []);
   return items.filter((item) => {
-    const key = item.sourceId + ":" + (item.bookUrl ?? item.resultId);
+    const key = [item.sourceId, item.title, item.author ?? "", item.contentType ?? ""].join("\0");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -79,18 +80,9 @@ async function openSearchResult(result: SearchBookResult): Promise<void> {
 
 // 使用 Rust 发布的内容类型。
 function contentType(result: SearchBookResult): "novel" | "comic" | "video" | "audio" {
-  const declared = [result.contentType, result.mediaType, result.type]
-    .find((value): value is string => typeof value === "string");
-  if (declared) {
-    if (/^(comic|manga|漫画)$/i.test(declared)) return "comic";
-    if (/^(video|视频)$/i.test(declared)) return "video";
-    if (/^(audio|音频)$/i.test(declared)) return "audio";
-    if (/^(novel|text|小说)$/i.test(declared)) return "novel";
-  }
   const source = sources.value.find((item) => item.id === result.sourceId);
-  if (source?.contentType) return source.contentType === "text" ? "novel" : source.contentType;
-  if (source?.mediaType === "video" || source?.mediaType === "audio") return source.mediaType;
-  return "novel";
+  const type = bookContentType(result) ?? bookContentType(source) ?? "text";
+  return type === "image" ? "comic" : type === "audio" || type === "video" ? type : "novel";
 }
 
 const visibleResults = computed(() => gridResults.value.filter(

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -29,8 +29,6 @@ use super::media_proxy::MediaProxyRegistry;
 use super::store::atomic_replace;
 use super::validation::{check_path_no_symlink, mime_type, percent_encode_path, valid_id};
 use super::{ResourceError, ResourceRef, ResourceStore};
-
-const MAX_PRIVATE_MEDIA_MAPPING_BYTES: usize = 1024 * 1024;
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -55,6 +53,7 @@ pub struct ResourceServer {
     base_url: String,
     media_proxy: MediaProxyRegistry,
     root: PathBuf,
+    store: ResourceStore,
     media_update_lock: Mutex<()>,
     shutdown_sender: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
@@ -99,7 +98,9 @@ impl ResourceServer {
         upstream_url: &str,
         private_headers: &[(String, String)],
     ) -> Result<ResourceRef, ResourceError> {
-        if !valid_id(book_id) { return Err(ResourceError::new("Invalid media owner book ID")); }
+        if !valid_id(book_id) {
+            return Err(ResourceError::new("Invalid media owner book ID"));
+        }
         let _guard = self.media_update_lock.lock().await;
         let reference =
             MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)?;
@@ -134,11 +135,18 @@ impl ResourceServer {
         MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)
     }
 
-    pub async fn unregister_media(&self, book_id: &str, opaque_id: &str) -> Result<(), ResourceError> {
-        if !valid_id(book_id) { return Err(ResourceError::new("Invalid media owner book ID")); }
+    pub async fn unregister_media(
+        &self,
+        book_id: &str,
+        opaque_id: &str,
+    ) -> Result<(), ResourceError> {
+        if !valid_id(book_id) {
+            return Err(ResourceError::new("Invalid media owner book ID"));
+        }
         ResourceRef::new(format!("resource://media/{opaque_id}"))?;
         let _guard = self.media_update_lock.lock().await;
-        self.delete_private_media_mapping(book_id, opaque_id).await?;
+        self.delete_private_media_mapping(book_id, opaque_id)
+            .await?;
         self.media_proxy.unregister(opaque_id).await;
         Ok(())
     }
@@ -148,13 +156,14 @@ impl ResourceServer {
     /// so mappings added after the backup are removed and restored IDs point
     /// to the restored private URLs and headers.
     pub async fn reload_private_media_mappings(&self) -> Result<(), ResourceError> {
+        self.store.reset_content_types();
         let _guard = self.media_update_lock.lock().await;
         let root = self.root.clone();
-        let mappings = tokio::task::spawn_blocking(move || {
-            read_book_media_mappings(&root, true)
-        }).await.map_err(|error| {
-            ResourceError::new(format!("Private media mapping worker failed: {error}"))
-        })??;
+        let mappings = tokio::task::spawn_blocking(move || read_book_media_mappings(&root, true))
+            .await
+            .map_err(|error| {
+                ResourceError::new(format!("Private media mapping worker failed: {error}"))
+            })??;
         let mappings = mappings
             .into_iter()
             .map(|mapping| {
@@ -177,44 +186,53 @@ impl ResourceServer {
         book_id: &str,
         mapping: PrivateMediaMapping,
     ) -> Result<(), ResourceError> {
-        let root = self.root.clone();
-        let path = root.join("books").join(book_id).join("media-maps").join(format!("{}.json", mapping.id));
-        let bytes = serde_json::to_vec_pretty(&mapping).map_err(|error| {
-            ResourceError::new(format!("Cannot encode private media mapping: {error}"))
-        })?;
-        if bytes.len() > MAX_PRIVATE_MEDIA_MAPPING_BYTES {
-            return Err(ResourceError::new("Private media mapping is too large"));
+        let reference = self.store.book_ref(book_id)?;
+        let _writer = self.store.transaction_writer_guard().await?;
+        let mut document = self.store.read_raw_document(&reference)?;
+        if document["id"].is_null() {
+            document["id"] = serde_json::json!(book_id);
         }
-        tokio::task::spawn_blocking(move || {
-            check_path_no_symlink(&root, &path, true)?;
-            atomic_replace(&path, &bytes).map_err(|error| {
-                ResourceError::new(format!("Cannot persist private media mapping: {error}"))
-            })
-        })
-        .await
-        .map_err(|error| {
-            ResourceError::new(format!("Private media write worker failed: {error}"))
-        })??;
+        if !document["media"].is_object() {
+            document["media"] = serde_json::json!({});
+        }
+        let id = mapping.id.clone();
+        let mut entry = serde_json::json!({"url": mapping.upstream_url});
+        if !mapping.headers.is_empty() {
+            entry["headers"] = serde_json::json!(mapping
+                .headers
+                .into_iter()
+                .map(|header| (header.name, Value::String(header.value)))
+                .collect::<serde_json::Map<String, Value>>());
+        }
+        document["media"][&id] = entry;
+        let bytes =
+            serde_json::to_vec(&document).map_err(|error| ResourceError::new(error.to_string()))?;
+        let path = self
+            .root
+            .join(self.store.canonical_reference(&reference)?.path());
+        check_path_no_symlink(&self.root, &path, true)?;
+        atomic_replace(&path, &bytes).map_err(ResourceError::new)?;
         Ok(())
     }
 
-    async fn delete_private_media_mapping(&self, book_id: &str, opaque_id: &str) -> Result<(), ResourceError> {
-        let root = self.root.clone();
-        let path = root.join("books").join(book_id).join("media-maps").join(format!("{opaque_id}.json"));
-        tokio::task::spawn_blocking(move || {
-            check_path_no_symlink(&root, &path, true)?;
-            match std::fs::remove_file(&path) {
-                Ok(()) => Ok(()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(ResourceError::new(format!(
-                    "Cannot remove private media mapping: {error}"
-                ))),
-            }
-        })
-        .await
-        .map_err(|error| {
-            ResourceError::new(format!("Private media delete worker failed: {error}"))
-        })??;
+    async fn delete_private_media_mapping(
+        &self,
+        book_id: &str,
+        opaque_id: &str,
+    ) -> Result<(), ResourceError> {
+        let reference = self.store.book_ref(book_id)?;
+        let _writer = self.store.transaction_writer_guard().await?;
+        let mut document = self.store.read_raw_document(&reference)?;
+        if let Some(mappings) = document["media"].as_object_mut() {
+            mappings.remove(opaque_id);
+        }
+        let bytes =
+            serde_json::to_vec(&document).map_err(|error| ResourceError::new(error.to_string()))?;
+        let path = self
+            .root
+            .join(self.store.canonical_reference(&reference)?.path());
+        check_path_no_symlink(&self.root, &path, true)?;
+        atomic_replace(&path, &bytes).map_err(ResourceError::new)?;
         Ok(())
     }
 
@@ -308,7 +326,11 @@ async fn get_resource(
             Ok(reference) => reference,
             Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
         };
-        let records = match state.store.read_json_ref_or_default(&canonical, serde_json::json!([])).await {
+        let records = match state
+            .store
+            .read_json_ref_or_default(&canonical, serde_json::json!([]))
+            .await
+        {
             Ok(records) => records,
             Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
         };
@@ -325,7 +347,9 @@ async fn get_resource(
 
     // Serve one definition on demand; complete source definitions never enter
     // the shared list resource or a second set of persistent files.
-    if let Some(source_id) = reference.path().strip_prefix("sources/")
+    if let Some(source_id) = reference
+        .path()
+        .strip_prefix("sources/")
         .and_then(|name| name.strip_suffix(".json"))
     {
         let canonical = match ResourceRef::new("resource://sources.json") {
@@ -336,9 +360,13 @@ async fn get_resource(
             Ok(records) => records,
             Err(_) => return empty_response(StatusCode::NOT_FOUND),
         };
-        let Some(source) = records.as_array().and_then(|records| records.iter()
-            .find(|record| record["id"].as_str() == Some(source_id)))
-        else { return empty_response(StatusCode::NOT_FOUND); };
+        let Some(source) = records.as_array().and_then(|records| {
+            records
+                .iter()
+                .find(|record| record["id"].as_str() == Some(source_id))
+        }) else {
+            return empty_response(StatusCode::NOT_FOUND);
+        };
         let definition_json = match serde_json::to_string_pretty(&source["source"]) {
             Ok(json) => json,
             Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
@@ -358,10 +386,23 @@ async fn get_resource(
     }
 
     if reference.path().ends_with(".json") {
-        let mut json = match state.store.read_json_ref(&reference).await {
+        let mut json = match state.store.read_raw_document(&reference) {
             Ok(json) => json,
             Err(_) => return empty_response(StatusCode::NOT_FOUND),
         };
+        if super::content::is_content_document(reference.path()) {
+            let Some((_, id, _)) = super::content::content_path(reference.path()) else {
+                return empty_response(StatusCode::NOT_FOUND);
+            };
+            let kind = match state.store.book_type(id) {
+                Ok(kind) => kind,
+                Err(_) => return empty_response(StatusCode::NOT_FOUND),
+            };
+            json = match super::content::public_book_view(&json, &kind) {
+                Ok(json) => json,
+                Err(_) => return empty_response(StatusCode::NOT_FOUND),
+            };
+        }
         if materialize_json(&mut json, &state.base_url).is_err() {
             return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
         }
@@ -593,11 +634,12 @@ impl ResourceStore {
             ));
         }
         let mappings_root = self.root().to_path_buf();
-        let mappings = tokio::task::spawn_blocking(move || {
-            read_book_media_mappings(&mappings_root, false)
-        }).await.map_err(|error| {
-            ResourceError::new(format!("Private media mapping worker failed: {error}"))
-        })??;
+        let mappings =
+            tokio::task::spawn_blocking(move || read_book_media_mappings(&mappings_root, false))
+                .await
+                .map_err(|error| {
+                    ResourceError::new(format!("Private media mapping worker failed: {error}"))
+                })??;
         let media_proxy = MediaProxyRegistry::new()?;
         for mapping in mappings {
             let headers = mapping
@@ -653,6 +695,7 @@ impl ResourceStore {
             base_url,
             media_proxy,
             root: self.root().to_path_buf(),
+            store: self.clone(),
             media_update_lock: Mutex::new(()),
             shutdown_sender: Some(shutdown_sender),
             task: Some(task),
@@ -663,139 +706,93 @@ fn read_book_media_mappings(
     root: &Path,
     strict: bool,
 ) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
-    let books = root.join("books");
-    check_path_no_symlink(root, &books, true)?;
-    let entries = match std::fs::read_dir(&books) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(ResourceError::new(format!("Cannot list cached books: {error}"))),
-    };
     let mut mappings = Vec::new();
-    let mut seen_ids = std::collections::HashSet::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| ResourceError::new(error.to_string()))?;
-        let book_id = entry.file_name().to_string_lossy().into_owned();
-        if !valid_id(&book_id) || !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let directory = entry.path().join("media-maps");
+    let mut seen = std::collections::HashSet::new();
+    for kind in super::content::CONTENT_TYPES {
+        let directory = root.join("cache").join(kind);
         check_path_no_symlink(root, &directory, true)?;
-        match std::fs::symlink_metadata(&directory) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(ResourceError::new(error.to_string())),
-            Ok(metadata) if metadata.is_dir() => {},
-            Ok(_) => return Err(ResourceError::new("Media mapping path is not a directory")),
-        }
-        for mapping in read_private_media_mappings(root, &directory, strict)? {
-            if !seen_ids.insert(mapping.id.clone()) {
-                return Err(ResourceError::new("Media mapping ID occurs in multiple cached books"));
-            }
-            mappings.push(mapping);
-        }
-    }
-    Ok(mappings)
-}
-
-fn read_private_media_mappings(
-    root: &Path,
-    directory: &Path,
-    strict: bool,
-) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
-    check_path_no_symlink(root, directory, false)?;
-    let entries = std::fs::read_dir(directory).map_err(|error| {
-        ResourceError::new(format!("Cannot list private media mappings: {error}"))
-    })?;
-    let mut mappings = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| {
-            ResourceError::new(format!("Cannot inspect private media mapping: {error}"))
-        })?;
-        let path = entry.path();
-        let Some(filename) = path.file_name().and_then(|name| name.to_str()) else {
-            if strict {
-                return Err(ResourceError::new(
-                    "Restored media mapping has an invalid filename",
-                ));
-            }
-            continue;
-        };
-        let Some(id) = filename.strip_suffix(".json") else {
-            if strict {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping has an unexpected file: {filename}"
-                )));
-            }
-            continue;
-        };
-        if !valid_id(id) {
-            if strict {
-                return Err(ResourceError::new(
-                    "Restored media mapping filename contains an invalid ID",
-                ));
-            }
+        if !directory.exists() {
             continue;
         }
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) if !metadata.file_type().is_symlink() && metadata.is_file() => metadata,
-            _ if strict => {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping {id} is not a regular file"
-                )));
-            }
-            _ => continue,
-        };
-        if metadata.len() as usize > MAX_PRIVATE_MEDIA_MAPPING_BYTES {
-            if strict {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping {id} exceeds its size limit"
-                )));
-            }
-            eprintln!("Ignoring oversized private media mapping {id}");
-            continue;
-        }
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if strict => {
-                return Err(ResourceError::new(format!(
-                    "Cannot read restored media mapping {id}: {error}"
-                )));
-            }
-            Err(_) => continue,
-        };
-        let mapping: PrivateMediaMapping = match serde_json::from_slice(&bytes) {
-            Ok(mapping) => mapping,
-            Err(error) if strict => {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping {id} is invalid JSON: {error}"
-                )));
-            }
-            Err(_) => continue,
-        };
-        if mapping.schema_version != 1 || mapping.id != id {
-            if strict {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping {id} has invalid schema or ID"
-                )));
-            }
-            continue;
-        }
-        let headers = mapping
-            .headers
-            .iter()
-            .map(|header| (header.name.clone(), header.value.clone()))
-            .collect::<Vec<_>>();
-        if MediaProxyRegistry::validate_mapping(&mapping.id, &mapping.upstream_url, &headers)
-            .is_err()
+        for entry in
+            std::fs::read_dir(directory).map_err(|error| ResourceError::new(error.to_string()))?
         {
-            if strict {
-                return Err(ResourceError::new(format!(
-                    "Restored media mapping {id} has invalid source or headers"
-                )));
+            let entry = entry.map_err(|error| ResourceError::new(error.to_string()))?;
+            if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
+                continue;
             }
-            eprintln!("Ignoring invalid private media mapping {id}");
-            continue;
+            let id = entry.file_name().to_string_lossy().into_owned();
+            if !valid_id(&id) {
+                continue;
+            }
+            let path = entry.path().join(format!("{id}.json"));
+            check_path_no_symlink(root, &path, true)?;
+            let bytes = match std::fs::read(path) {
+                Ok(bytes) => bytes,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(_) if !strict => continue,
+                Err(error) => return Err(ResourceError::new(error.to_string())),
+            };
+            let document: Value = match serde_json::from_slice(&bytes) {
+                Ok(value) => value,
+                Err(_) if !strict => continue,
+                Err(error) => return Err(ResourceError::new(error.to_string())),
+            };
+            for (key, value) in document["media"].as_object().into_iter().flatten() {
+                let Some(url) = value["url"].as_str() else {
+                    if strict {
+                        return Err(ResourceError::new("Private media entry has no URL"));
+                    }
+                    continue;
+                };
+                let mut private_headers = Vec::new();
+                if let Some(headers) = value.get("headers") {
+                    let headers = headers.as_object().ok_or_else(|| {
+                        ResourceError::new("Private media headers must be an object")
+                    })?;
+                    for (name, value) in headers {
+                        let value = value.as_str().ok_or_else(|| {
+                            ResourceError::new("Private media header must be a string")
+                        })?;
+                        private_headers.push(PrivateMediaHeader {
+                            name: name.clone(),
+                            value: value.to_owned(),
+                        });
+                    }
+                }
+                let mapping = PrivateMediaMapping {
+                    schema_version: 1,
+                    id: key.clone(),
+                    upstream_url: url.to_owned(),
+                    headers: private_headers,
+                };
+                let headers = mapping
+                    .headers
+                    .iter()
+                    .map(|header| (header.name.clone(), header.value.clone()))
+                    .collect::<Vec<_>>();
+                if mapping.id != *key
+                    || mapping.schema_version != 1
+                    || MediaProxyRegistry::validate_mapping(
+                        &mapping.id,
+                        &mapping.upstream_url,
+                        &headers,
+                    )
+                    .is_err()
+                {
+                    if strict {
+                        return Err(ResourceError::new(
+                            "Invalid private media mapping in content document",
+                        ));
+                    }
+                    continue;
+                }
+                if !seen.insert(mapping.id.clone()) {
+                    return Err(ResourceError::new("Duplicate media mapping identity"));
+                }
+                mappings.push(mapping);
+            }
         }
-        mappings.push(mapping);
     }
     Ok(mappings)
 }

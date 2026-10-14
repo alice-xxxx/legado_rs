@@ -6,6 +6,7 @@ use std::fmt;
 use serde::Serialize;
 
 mod json;
+pub(crate) mod content;
 mod media_proxy;
 mod reader_html;
 mod server;

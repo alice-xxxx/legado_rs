@@ -260,6 +260,8 @@
 
 .reader-video-episodes { width: min(1120px, 100%); padding-top: 12px; }
 .reader-video-episodes > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.reader-video-episodes > header > div { min-width: 0; display: grid; gap: 4px; }
+.reader-video-episodes > header small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-video-episodes nav { display: flex; gap: 8px; overflow-x: auto; }
 .reader-video-controls {
   display: grid; grid-template-columns: 34px auto minmax(0, 1fr) auto;

@@ -24,7 +24,7 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
     }
 
     let valid = match path_components.as_slice() {
-        ["shelf.json"]
+        ["内容库.json"]
         | ["sources.json"]
         | ["source-list.json"]
         | ["settings.json"]
@@ -34,17 +34,12 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
         | ["txt-toc-rules.json"]
         | ["tasks.json"]
         | ["rss-state.json"] => true,
-        ["search", name] => filename_id(name, ".json").is_some(),
+        ["discovery", name] => filename_id(name, ".json").is_some(),
         ["sources", name] => filename_id(name, ".json").is_some(),
         ["dictionary", name] => filename_id(name, ".html").is_some(),
         ["media", id] => valid_id(id),
-        ["books", book_id, "book.json"] => valid_id(book_id),
-        ["books", book_id, "chapters", chapter_name] => {
-            valid_id(book_id)
-                && filename_id(chapter_name, ".json").is_some()
-        }
-        ["books", book_id, "assets", asset_id] => valid_id(book_id) && valid_asset_id(asset_id),
-        ["books", "tts-audio", "media", file_name] => valid_tts_audio_file(file_name),
+        ["cache", kind, id, name] if super::content::CONTENT_TYPES.contains(kind) =>
+            valid_id(id) && (*name == format!("{id}.json") || valid_asset_id(name)),
         _ => false,
     };
     if valid {
@@ -71,7 +66,7 @@ pub(super) fn tts_audio_ref(audio_id: &str, extension: &str) -> Result<ResourceR
         ));
     }
     ResourceRef::new(format!(
-        "resource://books/tts-audio/media/{audio_id}.{extension}"
+        "resource://cache/audio/tts-audio/{audio_id}.{extension}"
     ))
 }
 
@@ -127,6 +122,16 @@ fn valid_asset_id(id: &str) -> bool {
             matches!(
                 extension.to_ascii_lowercase().as_str(),
                 "css"
+                    | "flac"
+                    | "txt"
+                    | "html"
+                    | "epub"
+                    | "cbz"
+                    | "m3u8"
+                    | "ts"
+                    | "key"
+                    | "vtt"
+                    | "srt"
                     | "bmp"
                     | "png"
                     | "jpg"
@@ -160,6 +165,9 @@ pub(super) fn mime_type(path: &str) -> &'static str {
         .as_str()
     {
         "html" | "xhtml" => "text/html; charset=utf-8",
+        "txt" => "text/plain; charset=utf-8",
+        "m3u8" => "application/vnd.apple.mpegurl",
+        "ts" => "video/mp2t",
         "css" => "text/css; charset=utf-8",
         "bmp" => "image/bmp",
         "png" => "image/png",

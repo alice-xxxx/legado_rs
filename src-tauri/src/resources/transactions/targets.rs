@@ -3,6 +3,12 @@
 use super::*;
 
 impl Replacement {
+    pub(crate) fn public_bytes(reference: ResourceRef, bytes: Vec<u8>) -> Result<Self, TransactionError> {
+        let target = TransactionTarget::public_resource(reference)?;
+        let TransactionTarget::PublicJson(path) = &target;
+        if path.ends_with(".json") { validate_public_json_bytes(&bytes)?; }
+        Ok(Self { target, bytes: Some(bytes) })
+    }
     pub(crate) fn public_json(
         reference: ResourceRef,
         bytes: Vec<u8>,
@@ -15,19 +21,6 @@ impl Replacement {
         })
     }
 
-    pub(crate) fn private_book_json(
-        book_id: &str,
-        bytes: Vec<u8>,
-    ) -> Result<Self, TransactionError> {
-        let target = TransactionTarget::private_book_json(book_id)?;
-        // Private book data may contain source-engine fields named `src` or
-        // `*Src`; only require valid JSON here, not public resource semantics.
-        validate_json_bytes(&bytes)?;
-        Ok(Self {
-            target,
-            bytes: Some(bytes),
-        })
-    }
 
 }
 

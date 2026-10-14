@@ -1,14 +1,17 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, ref } from "vue";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { clearSearchSnapshot, publishSearchSnapshot, searchSnapshot } from "./searchSnapshotState";
-import { bookSourceCandidates } from "../sources/sourcesStore";
-import type { AppBootstrap, ResourceDescriptor, SearchBookResult } from "../../api/types";
+import type { SearchBookResult, SearchType } from "../../api/types";
+import { bookContentType } from "../../api/bookContentType";
 import SearchHistory from "./SearchHistory.vue";
 import { useSearchHistory } from "./useSearchHistory";
-import { useSearchWorkflow } from "./useSearchWorkflow";
+import {
+  searchType as selectedContentType, searchSources, selectedSourceIds, searchKeyword,
+  searchPage, searchBusy, searchProgress, searchResponseErrors, searchResults,
+  searchResourceErrors, searchWasRun, activeSearchTaskId,
+  activeSearchCancellationPending, runSearch, cancelActiveSearch,
+} from "./searchState";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
@@ -18,11 +21,10 @@ defineOptions({ name: "SearchPage" });
 
 type SearchMatchMode = "contains" | "exact";
 type SearchSortMode = "relevance" | "title" | "author";
-type SearchContentType = "all" | "novel" | "comic" | "video" | "audio";
+type SearchContentType = SearchType;
 const contentTypes: Array<{ id: SearchContentType; label: string }> = [
-  { id: "all", label: "全部" },
-  { id: "novel", label: "小说" },
-  { id: "comic", label: "漫画" },
+  { id: "text", label: "文本" },
+  { id: "image", label: "图片" },
   { id: "video", label: "视频" },
   { id: "audio", label: "音频" },
 ];
@@ -36,122 +38,15 @@ function openSources(): void {
   void router.push({ name: routeNames.sources });
 }
 
-const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
-
-const restoreRevision = ref(0);
-let disposed = false;
-let lastSearchSnapshotId: string | null = null;
-const eventUnlisteners: UnlistenFn[] = [];
-
-async function consumeSearchSnapshot(descriptor: ResourceDescriptor): Promise<void> {
-  if (descriptor.resourceId === lastSearchSnapshotId) return;
-  lastSearchSnapshotId = descriptor.resourceId;
-  const currentRestoreRevision = restoreRevision.value;
-  try {
-    await searchWorkflow.consumeSearchSnapshot(descriptor);
-    if (!disposed && currentRestoreRevision === restoreRevision.value) clearSearchSnapshot(descriptor.resourceId);
-  } catch (error) {
-    if (lastSearchSnapshotId === descriptor.resourceId) lastSearchSnapshotId = null;
-    if (!disposed && currentRestoreRevision === restoreRevision.value) {
-      clearSearchSnapshot(descriptor.resourceId);
-      notify(errorText(error), "error");
-    }
-  }
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
-async function setupEvents(): Promise<void> {
-  function register(unlisten: UnlistenFn): void {
-    if (disposed) unlisten();
-    else eventUnlisteners.push(unlisten);
-  }
 
-  try {
-    register(await listen<ResourceDescriptor>("search-results-updated", (event) => {
-      publishSearchSnapshot(event.payload);
-    }));
-    register(await listen<AppBootstrap>("app-state-updated", () => {
-      restoreRevision.value += 1;
-      lastSearchSnapshotId = null;
-      clearSearchSnapshot();
-    }));
-  } catch (error) {
-    console.debug("Search page event subscription unavailable:", errorText(error));
-  }
-}
-
-onMounted(() => {
-  void setupEvents();
-});
-
-onBeforeUnmount(() => {
-  disposed = true;
-  restoreRevision.value += 1;
-  for (const unlisten of eventUnlisteners.splice(0)) unlisten();
-});
-
-const selectedSourceIds = ref<string[]>([]);
-let sourceSelectionInitialized = false;
-let previousCandidateIds: string[] = [];
-watch(() => bookSourceCandidates.value.map((source) => source.id), (candidateIds) => {
-  if (!sourceSelectionInitialized && candidateIds.length) {
-    selectedSourceIds.value = [...candidateIds];
-    sourceSelectionInitialized = true;
-  } else {
-    const eligible = new Set(candidateIds);
-    const retained = selectedSourceIds.value.filter((id) => eligible.has(id));
-    const retainedIds = new Set(retained);
-    const newlyAvailable = candidateIds.filter((id) => !previousCandidateIds.includes(id) && !retainedIds.has(id));
-    selectedSourceIds.value = [...retained, ...newlyAvailable];
-  }
-  previousCandidateIds = candidateIds;
-}, { immediate: true });
-
-const searchKeyword = ref("");
-const searchPage = ref(1);
-const searchBusy = ref(false);
-const searchProgress = ref("");
-const searchResponseErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
-const searchResults = ref<SearchBookResult[]>([]);
-const searchResourceErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
-const searchWasRun = ref(false);
-const searchWorkflow = useSearchWorkflow({
-  selectedSourceIds,
-  searchKeyword,
-  searchPage,
-  searchBusy,
-  searchProgress,
-  searchResponseErrors,
-  searchResults,
-  searchResourceErrors,
-  searchWasRun,
-  notify,
-  errorText,
-  getRestoreRevision: () => restoreRevision.value,
-});
-const {
-  activeSearchTaskId,
-  activeSearchCancellationPending,
-  runSearch,
-  cancelActiveSearch,
-} = searchWorkflow;
 const { searchHistoryEntries, removeSearchHistoryEntry, clearSearchHistoryEntries } = useSearchHistory();
-
-watch(searchSnapshot, (descriptor) => {
-  if (descriptor) void consumeSearchSnapshot(descriptor);
-  else lastSearchSnapshotId = null;
-}, { immediate: true });
-watch(() => restoreRevision.value, () => {
-  searchWorkflow.resetForRestore();
-  searchKeyword.value = "";
-  searchPage.value = 1;
-  selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
-  sourceSelectionInitialized = true;
-  previousCandidateIds = bookSourceCandidates.value.map((source) => source.id);
-});
 
 function startNewSearch(): void {
   if (shelfBatchRecoveryRequired.value) return;
-  clearSearchSnapshot();
   void runSearch();
 }
 
@@ -172,12 +67,12 @@ function reuseSearchQuery(query: string): void {
 
 function setAllSearchSources(enabled: boolean): void {
   if (shelfBatchRecoveryRequired.value) return;
-  selectedSourceIds.value = enabled ? bookSourceCandidates.value.map((source) => source.id) : [];
+  selectedSourceIds.value = enabled ? searchSources.value.map((source) => source.id) : [];
 }
 
 function toggleSearchSource(sourceId: string): void {
   if (shelfBatchRecoveryRequired.value
-    || !bookSourceCandidates.value.some((source) => source.id === sourceId)) return;
+    || !searchSources.value.some((source) => source.id === sourceId)) return;
   selectedSourceIds.value = selectedSourceIds.value.includes(sourceId)
     ? selectedSourceIds.value.filter((id) => id !== sourceId)
     : [...selectedSourceIds.value, sourceId];
@@ -202,7 +97,6 @@ const sourceFilter = ref("");
 const sortMode = ref<SearchSortMode>("relevance");
 const searchOptionsOpen = ref(false);
 const resultFiltersOpen = ref(false);
-const selectedContentType = ref<SearchContentType>("all");
 const resultCollator = new Intl.Collator("zh-CN", { numeric: true, sensitivity: "base" });
 
 function resultSourceLabel(result: SearchBookResult): string {
@@ -211,28 +105,18 @@ function resultSourceLabel(result: SearchBookResult): string {
 }
 
 function sourceNameForId(sourceId: string): string {
-  return bookSourceCandidates.value.find((source) => source.id === sourceId)?.name ?? sourceId;
+  return searchSources.value.find((source) => source.id === sourceId)?.name ?? sourceId;
 }
 
-function resultContentType(result: SearchBookResult): Exclude<SearchContentType, "all"> {
-  // Only Rust-projected metadata; never classify using title or introduction.
-  const declared = [result.mediaType, result.contentType, result.kind, result.type]
-    .find((value) => typeof value === "string");
-  if (typeof declared === "string") {
-    if (/^(video|视频)$/i.test(declared)) return "video";
-    if (/^(audio|音频)$/i.test(declared)) return "audio";
-    if (/^(comic|manga|manhua|manhwa|漫画)$/i.test(declared)) return "comic";
-    if (/^(novel|text|小说)$/i.test(declared)) return "novel";
-  }
-  const source = bookSourceCandidates.value.find((candidate) => candidate.id === result.sourceId);
-  if (source?.contentType) return source.contentType === "text" ? "novel" : source.contentType;
-  if (source?.mediaType === "video" || source?.mediaType === "audio") return source.mediaType;
-  return "novel";
+function resultContentType(result: SearchBookResult): SearchContentType {
+  const source = searchSources.value.find((candidate) => candidate.id === result.sourceId);
+  const type = bookContentType(result) ?? bookContentType(source) ?? "text";
+  return type as SearchContentType;
 }
 
-const selectedAllSources = computed(() => bookSourceCandidates.value.length > 0
-  && selectedSourceIds.value.length === bookSourceCandidates.value.length
-  && bookSourceCandidates.value.every((source) => selectedSourceIds.value.includes(source.id)));
+const selectedAllSources = computed(() => searchSources.value.length > 0
+  && selectedSourceIds.value.length === searchSources.value.length
+  && searchSources.value.every((source) => selectedSourceIds.value.includes(source.id)));
 
 const visibleSearchResults = computed(() => {
   const titleQuery = titleFilter.value.trim().toLocaleLowerCase("zh-CN");
@@ -243,7 +127,7 @@ const visibleSearchResults = computed(() => {
     return matchMode.value === "exact" ? normalizedValue === query : normalizedValue.includes(query);
   };
   const results = searchResults.value.filter((result) => {
-    return (selectedContentType.value === "all" || resultContentType(result) === selectedContentType.value)
+    return (resultContentType(result) === selectedContentType.value)
       && (!sourceFilter.value || result.sourceId === sourceFilter.value
         || result.sources?.some((source) => source.sourceId === sourceFilter.value))
       && matches(result.title, titleQuery)
@@ -285,7 +169,6 @@ function clearResultFilters(): void {
   matchMode.value = "contains";
   sourceFilter.value = "";
   sortMode.value = "relevance";
-  selectedContentType.value = "all";
 }
 </script>
 
@@ -327,11 +210,11 @@ function clearResultFilters(): void {
         </section>
         <section class="search-sidebar-section">
           <div class="search-sidebar-source-heading"><h3 class="search-prototype-sidebar-title">来源范围</h3>
-            <button type="button" :disabled="shelfBatchRecoveryRequired || !bookSourceCandidates.length"
+            <button type="button" :disabled="shelfBatchRecoveryRequired || !searchSources.length"
               @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</button></div>
-          <span class="search-sidebar-count">已选 {{ selectedSourceIds.length }} / {{ bookSourceCandidates.length }}</span>
-          <div v-if="bookSourceCandidates.length" class="source-chips">
-            <label v-for="source in bookSourceCandidates" :key="source.id" class="source-chip"
+          <span class="search-sidebar-count">已选 {{ selectedSourceIds.length }} / {{ searchSources.length }}</span>
+          <div v-if="searchSources.length" class="source-chips">
+            <label v-for="source in searchSources" :key="source.id" class="source-chip"
               :class="{ checked: selectedSourceIds.includes(source.id) }">
               <input type="checkbox" :checked="selectedSourceIds.includes(source.id)"
                 :disabled="shelfBatchRecoveryRequired"
@@ -352,7 +235,7 @@ function clearResultFilters(): void {
         <div class="results-section">
           <div class="search-list-heading">
             <div class="search-list-count">
-              <strong>{{ selectedContentType === 'all' ? '全部结果' : contentTypes.find((item) => item.id === selectedContentType)?.label + '结果' }}</strong>
+              <strong>{{ contentTypes.find((item) => item.id === selectedContentType)?.label + '结果' }}</strong>
               <small>{{ visibleSearchResults.length }} 项</small>
             </div>
             <div class="search-list-actions">
@@ -369,7 +252,7 @@ function clearResultFilters(): void {
                 @click="resultFiltersOpen = !resultFiltersOpen"><PrototypeIcon name="tune"/> {{ resultFiltersOpen ? '收起筛选' : '筛选' }}</button>
             </div>
           </div>
-          <div v-if="!searchWasRun && !bookSourceCandidates.length" class="search-start-inline">
+          <div v-if="!searchWasRun && !searchSources.length" class="search-start-inline">
             <button type="button" @click="openSources">前往来源管理</button>
           </div>
           <template v-if="searchWasRun">
@@ -386,7 +269,7 @@ function clearResultFilters(): void {
           <button v-if="hasResultFilters" class="text-button" type="button" @click="clearResultFilters">清空筛选</button>
         </div>
         <div v-if="visibleSearchResults.length" class="search-results-grid search-prototype-result-list">
-          <article v-for="result in visibleSearchResults" :key="`${result.sourceId}:${result.bookUrl || result.resultId}`"
+          <article v-for="result in visibleSearchResults" :key="result.resultId"
             class="result-card">
             <button class="result-cover" type="button"
               :disabled="shelfBatchRecoveryRequired"

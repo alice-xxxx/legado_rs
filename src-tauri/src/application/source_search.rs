@@ -3,8 +3,35 @@
 use super::*;
 
 impl ApplicationService {
+    pub async fn release_search_results(&self, task_id: &str) -> Result<(), String> {
+        let _operation = self.operation_read().await;
+        let mut registry = self.tasks.lock().await;
+        let search_id = registry.records.iter().find(|task| task.id == task_id && task.kind == "search")
+            .and_then(|task| task.search_id.clone());
+        let Some(search_id) = search_id else { return Ok(()); };
+        if let Some(signal) = registry.signals.get(task_id) { signal.send_modify(|signal| signal.cancelled = true); }
+        registry.search_documents.remove(&search_id);
+        registry.search_result_documents.retain(|_, cache| cache["searchId"].as_str() != Some(search_id.as_str()));
+        if registry.active_search_task_id.as_deref() == Some(task_id) {
+            registry.active_search_task_id = None;
+            registry.published_search_results.clear();
+        }
+        drop(registry);
+        if let Ok(mut channels) = self.search_notifiers.write() { channels.remove(task_id); }
+        Ok(())
+    }
+
+    pub async fn get_search_task_results(&self, task_id: &str) -> Result<Value, String> {
+        let registry = self.tasks.lock().await;
+        let task = registry.records.iter().find(|task| task.id == task_id)
+            .ok_or_else(|| "Search task no longer exists".to_owned())?;
+        let search_id = task.search_id.as_ref().ok_or_else(|| "Task is not a search".to_owned())?;
+        registry.search_documents.get(search_id).cloned().map(public_search_view)
+            .ok_or_else(|| "Search results have been released".to_owned())
+    }
+
     /// One-shot source-debug search. Discovery search uses `start_search`
-    /// and immutable snapshots instead of this direct response path.
+    /// and structured IPC batches instead of this direct response path.
     pub async fn search_books(
         &self,
         source_ids: &[String],
@@ -33,6 +60,10 @@ impl ApplicationService {
         };
         if selected.is_empty() {
             return Err("No enabled book sources are selected".into());
+        }
+        let selected_type = crate::source_metadata::content_type(&selected[0].0.source);
+        if selected.iter().any(|(source, _)| !crate::source_metadata::matches_search_type(&source.source, selected_type)) {
+            return Err("Search must use enabled sources of one selected content type".into());
         }
         let search_id = format!("debug-search-{}", uuid::Uuid::new_v4().simple());
 
@@ -130,7 +161,7 @@ impl ApplicationService {
             let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
-            let private_path = Path::new("books").join(book_id).join("source-state.json");
+            let private_path = self.book_engine_path(book_id)?;
             let mut private = self
                 .read_internal_json(&private_path)
                 .await
@@ -199,17 +230,20 @@ impl ApplicationService {
                     source.enabled
                         && source.id != original_source_id
                         && !crate::source_metadata::is_rss_source_metadata(&source.source)
+                        && crate::source_metadata::content_type(&source.source)
+                            == crate::source_metadata::book_content_type(&book, &original_source_definition)
                         && (source_ids.is_empty() || source_ids.contains(&source.id))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             if selected.is_empty() {
-                return Err("No other enabled novel sources are selected".into());
+                return Err("No other enabled sources of the same content type are selected".into());
             }
             let now = now_ms();
             let context = json!({
                 "schemaVersion": CURRENT_SCHEMA_VERSION,
                 "targetBookId": book_id,
+                "sourceType": crate::source_metadata::book_content_type(&book, &original_source_definition),
                 "originalSourceId": original_source_id,
                 "originalSourcePresent": original_source.is_some(),
                 "originalSourceFingerprint": original_source
@@ -273,6 +307,7 @@ impl ApplicationService {
             chapter_ids: None,
             source_ids: Some(ordered_source_ids),
             keyword: Some(effective_keyword),
+            source_type: context["sourceType"].as_str().map(str::to_owned),
             page: page.max(1),
             from_index: 0,
             total,
@@ -487,14 +522,12 @@ impl ApplicationService {
             "errors": errors,
             "complete": true,
         });
-        let (resource, _) = self.write_search_snapshot(&document).await?;
-        let descriptor = self.resource_descriptor(&resource);
         let count = document["results"]
             .as_array()
             .map(Vec::len)
             .unwrap_or_default();
         let errors = document["errors"].clone();
-        Ok(json!({ "resource": descriptor, "bookCount": count, "errors": errors }))
+        Ok(json!({ "search": public_search_view(document), "bookCount": count, "errors": errors }))
     }
 
     pub(super) async fn read_search_task_state(&self, task: &AppTask) -> Result<Value, String> {
@@ -635,35 +668,27 @@ impl ApplicationService {
         if !self.search_task_is_publisher(task_id).await {
             return Ok(());
         }
-        let (resource, _) = self.write_search_snapshot(document).await?;
-        let descriptor = self.resource_descriptor(&resource);
-
-        let registry = self.tasks.lock().await;
+        let mut registry = self.tasks.lock().await;
         if registry.active_search_task_id.as_deref() != Some(task_id) {
             return Ok(());
         }
-        if let Ok(notifier) = self.search_snapshot_notifier.read() {
-            if let Some(notifier) = notifier.as_ref() {
-                notifier(descriptor);
+        let mut batch = Value::Object(document.as_object().into_iter().flatten()
+            .filter(|(key, _)| matches!(key.as_str(), "taskId" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error"))
+            .map(|(key, value)| (key.clone(), value.clone())).collect());
+        let mut changed = Vec::new();
+        for result in document["results"].as_array().into_iter().flatten() {
+            let Some(id) = result["resultId"].as_str() else { continue; };
+            if registry.published_search_results.get(id) != Some(result) {
+                registry.published_search_results.insert(id.to_owned(), result.clone());
+                changed.push(result.clone());
             }
         }
+        batch["results"] = json!(changed);
+        batch["incremental"] = json!(true);
+        drop(registry);
+        let notifier = self.search_notifiers.read().ok().and_then(|channels| channels.get(task_id).cloned());
+        if let Some(notifier) = notifier { notifier(public_search_view(batch)); }
         Ok(())
-    }
-
-    pub(super) async fn write_search_snapshot(
-        &self,
-        document: &Value,
-    ) -> Result<(ResourceRef, Value), String> {
-        let snapshot_id = format!("search-snapshot-{}", uuid::Uuid::new_v4().simple());
-        let resource = self.store.search_ref(&snapshot_id).map_err(|error| error.to_string())?;
-        self.store.write_json_ref(&resource, document).await.map_err(|error| error.to_string())?;
-        let stable_descriptor = json!({
-            "resourceId": resource.as_str(),
-            "src": resource.as_str(),
-            "contentType": content_type(resource.as_str()),
-            "format": resource_format(resource.as_str()),
-        });
-        Ok((resource, stable_descriptor))
     }
 
     pub(super) async fn append_candidate_search_results(
@@ -1033,7 +1058,8 @@ impl ApplicationService {
                 );
             }
             let preview_id = uuid::Uuid::new_v4().simple().to_string();
-            let chapter_ref = if looks_like_html(&content) {
+            let content = crate::source_metadata::normalize_chapter_content(&source.source, &content);
+            let chapter_ref = if crate::source_metadata::is_comic_source_metadata(&source.source) || looks_like_html(&content) {
                 self.store
                     .write_chapter_rich_text(
                         "debug-source",
@@ -1080,14 +1106,14 @@ impl ApplicationService {
     }
 }
 
-/// Debug previews have unique chapter IDs and content-versioned JSON names.
+/// Debug previews have unique chapter IDs and native content filenames.
 /// Only allow a validated local ref in the dedicated debug-source namespace.
 fn parse_source_debug_preview_ref(resource_id: &str) -> Result<ResourceRef, String> {
     let reference = ResourceRef::new(resource_id).map_err(|error| error.to_string())?;
     let filename = reference
         .path()
-        .strip_prefix("books/debug-source/chapters/")
-        .and_then(|path| path.strip_suffix(".json"))
+        .strip_prefix("cache/text/debug-source/").or_else(|| reference.path().strip_prefix("cache/html/debug-source/"))
+        .and_then(|path| path.strip_suffix(".txt").or_else(|| path.strip_suffix(".html")))
         .ok_or_else(|| "Invalid source debug preview resource ID".to_owned())?;
     let (identity_hash, content_hash) = filename
         .split_once('-')
@@ -1098,4 +1124,19 @@ fn parse_source_debug_preview_ref(resource_id: &str) -> Result<ResourceRef, Stri
         return Err("Invalid source debug preview resource ID".into());
     }
     Ok(reference)
+}
+
+pub(super) fn public_search_view(mut value: Value) -> Value {
+    fn filter(value: &mut Value) {
+        match value {
+            Value::Object(values) => {
+                for key in ["bookUrl", "engine", "engineurl", "headers", "sourceRevision", "sourceDefinitionFingerprint", "replacementContext"] { values.remove(key); }
+                for value in values.values_mut() { filter(value); }
+            }
+            Value::Array(values) => for value in values { filter(value); },
+            _ => {}
+        }
+    }
+    filter(&mut value);
+    value
 }

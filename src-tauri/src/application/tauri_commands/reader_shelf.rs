@@ -17,8 +17,12 @@ pub async fn notify_reading(
     if refresh_media {
         let book_ref = service.store.book_ref(&book_id).map_err(|error| error.to_string())?;
         let book = service.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
-        let media = matches!(book["mediaType"].as_str(), Some("audio" | "video"))
-            || matches!(book["chapters"][chapter_index]["resource"]["contentFormat"].as_str(), Some("audio" | "video"));
+        let media = if let Some(source_id) = book["sourceId"].as_str() {
+            crate::source_metadata::media_type(&service.find_source(source_id).await?.source).is_some()
+        } else {
+            matches!(book["mediaType"].as_str(), Some("audio" | "video"))
+                || matches!(book["chapters"][chapter_index]["resource"]["contentFormat"].as_str(), Some("audio" | "video"))
+        };
         if book["sourceId"].is_string() && !media {
             let chapter_id = book["chapters"][chapter_index]["id"].as_str()
                 .ok_or_else(|| "Reading chapter ID is missing".to_owned())?;

@@ -44,7 +44,6 @@ pub(crate) struct Replacement {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TransactionTarget {
     PublicJson(String),
-    PrivateBookJson(String),
 }
 
 impl TransactionTarget {
@@ -62,15 +61,15 @@ impl TransactionTarget {
         Ok(Self::PublicJson(reference.path().to_owned()))
     }
 
-    fn private_book_json(book_id: &str) -> Result<Self, TransactionError> {
-        validate_identifier(book_id)?;
-        Ok(Self::PrivateBookJson(book_id.to_owned()))
+    fn public_resource(reference: ResourceRef) -> Result<Self, TransactionError> {
+        if !reference.is_local() { return Err(TransactionError::new("Transaction target must be local")); }
+        ResourceRef::new(reference.as_str()).map_err(|_| TransactionError::new("Invalid transaction resource"))?;
+        Ok(Self::PublicJson(reference.path().to_owned()))
     }
 
     fn relative_path(&self) -> String {
         match self {
             Self::PublicJson(path) => path.clone(),
-            Self::PrivateBookJson(book_id) => format!("books/{book_id}/source-state.json"),
         }
     }
 
@@ -79,26 +78,15 @@ impl TransactionTarget {
             TargetDomain::Public => {
                 let reference = ResourceRef::new(format!("resource://{path}"))
                     .map_err(|_| TransactionError::new("Unsafe public transaction target"))?;
-                Self::public_json(reference)
+                Self::public_resource(reference)
             }
-            TargetDomain::PrivateBook => {
-                let components = safe_components(path)?;
-                if components.len() != 3
-                    || components[0] != "books"
-                    || components[2] != "source-state.json"
-                {
-                    return Err(TransactionError::new("Unsafe private transaction target"));
-                }
-                let book_id = components[1];
-                Self::private_book_json(book_id)
-            }
+
         }
     }
 
     fn domain(&self) -> TargetDomain {
         match self {
             Self::PublicJson(_) => TargetDomain::Public,
-            Self::PrivateBookJson(_) => TargetDomain::PrivateBook,
         }
     }
 }
@@ -140,7 +128,6 @@ enum TransactionPhase {
 #[serde(rename_all = "snake_case")]
 enum TargetDomain {
     Public,
-    PrivateBook,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

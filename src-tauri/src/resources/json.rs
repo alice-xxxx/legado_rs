@@ -132,6 +132,7 @@ fn validate_embedded_refs_with_key(
         }
         Value::Object(values) => {
             for (key, value) in values {
+                if matches!(key.as_str(), "engine" | "engineState" | "engineData" | "media") { continue; }
                 validate_embedded_refs_with_key(value, Some(key))?;
             }
             Ok(())

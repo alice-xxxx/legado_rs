@@ -11,6 +11,14 @@ pub(super) fn engine_request(
     chapter: Option<Value>,
     next_chapter_url: Option<String>,
 ) -> SourceEngineRequest {
+    let book = book.map(|mut book| {
+        if book.is_object() {
+            // Replace only source-controlled type bits; keep local/archive/update flags.
+            let flags = book["type"].as_u64().unwrap_or_default() & !(8 | 32 | 64 | 128 | 2048 | 4096);
+            book["type"] = json!(flags | crate::source_metadata::engine_book_type(source));
+        }
+        book
+    });
     SourceEngineRequest {
         operation: operation.to_owned(),
         source: source.clone(),
@@ -453,6 +461,8 @@ pub(super) fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
             enabled: record.enabled,
             is_rss: crate::source_metadata::is_rss_source_metadata(&record.source),
             content_type: crate::source_metadata::content_type(&record.source).to_owned(),
+            search_type: ["text", "audio", "image", "video"].into_iter()
+                .find(|kind| crate::source_metadata::matches_search_type(&record.source, kind)).map(str::to_owned),
             media_type: crate::source_metadata::media_type(&record.source).map(str::to_owned),
             capabilities: source_capabilities(&record.source),
             user_agent_override: valid_user_agent_override(&record.source),
@@ -507,6 +517,15 @@ pub(super) fn set_optional_public_field(document: &mut Value, key: &str, value: 
 #[cfg(test)]
 mod login_form_tests {
     use super::*;
+
+    #[test]
+    fn requests_replace_source_type_bits_and_keep_book_flags() {
+        for (source_type, expected) in [(0, 8), (1, 32), (2, 64), (4, 2048)] {
+            let request = engine_request("content", &json!({"bookSourceType":source_type}),
+                None, None, Some(json!({"type":8 | 256 | 16})), None, None);
+            assert_eq!(request.book.unwrap()["type"], expected | 256 | 16);
+        }
+    }
 
     #[test]
     fn forwards_source_ui_effects_and_restricts_refresh_targets() {

@@ -10,13 +10,37 @@ impl<'guard> FileTransaction<'guard> {
     pub(crate) fn prepare(
         root: &Path,
         operation: &str,
-        replacements: Vec<Replacement>,
+        mut replacements: Vec<Replacement>,
         post_commit_deletes: Vec<PostCommitDelete>,
         guard: &'guard dyn ResourceWriterGuard,
     ) -> Result<Self, TransactionError> {
         let root = canonical_root(root)?;
         validate_guard_root(guard, &root)?;
         validate_operation(operation)?;
+        if !replacements.iter().any(|item| item.target.relative_path() == crate::resources::content::LIBRARY_FILE) {
+            let library_path = root.join(crate::resources::content::LIBRARY_FILE);
+            reject_symlink_components(&root, &library_path, false)?;
+            let mut library: serde_json::Value = serde_json::from_slice(&fs::read(&library_path)
+                .map_err(|error| TransactionError::new(error.to_string()))?)
+                .map_err(|error| TransactionError::new(error.to_string()))?;
+            let mut changed = false;
+            for replacement in &replacements {
+                let path = replacement.target.relative_path();
+                if crate::resources::content::is_content_document(&path) {
+                    if let Some(bytes) = replacement.bytes.as_ref() {
+                        let document = serde_json::from_slice(bytes).map_err(|error| TransactionError::new(error.to_string()))?;
+                        let (kind, _, _) = crate::resources::content::content_path(&path).expect("content path");
+                        changed |= crate::resources::content::update_library_preview(&mut library, &document, kind);
+                    }
+                }
+            }
+            if changed {
+                let reference = ResourceRef::new(format!("resource://{}", crate::resources::content::LIBRARY_FILE))
+                    .map_err(|error| TransactionError::new(error.to_string()))?;
+                replacements.push(Replacement::public_json(reference, serde_json::to_vec(&library)
+                    .map_err(|error| TransactionError::new(error.to_string()))?)?);
+            }
+        }
         if replacements.is_empty() {
             return Err(TransactionError::new(
                 "A file transaction must replace at least one target",

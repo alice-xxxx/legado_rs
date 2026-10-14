@@ -4,21 +4,28 @@ use super::*;
 impl ApplicationService {
     pub async fn start_search(
         &self,
+        source_type: &str,
         source_ids: &[String],
         keyword: &str,
         page: u32,
+        notifier: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        self.start_search_unlocked(source_ids, keyword, page).await
+        self.start_search_unlocked(source_type, source_ids, keyword, page, notifier).await
     }
 
     // Caller already holds the restore admission and operation read guards.
     pub(super) async fn start_search_unlocked(
         &self,
+        source_type: &str,
         source_ids: &[String],
         keyword: &str,
         page: u32,
+        notifier: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
+        if !matches!(source_type, "text" | "audio" | "image" | "video") {
+            return Err("Search requires one supported source type".into());
+        }
         let keyword = keyword.trim();
         if keyword.is_empty() {
             return Err("Search keyword cannot be empty".into());
@@ -30,7 +37,7 @@ impl ApplicationService {
             .into_iter()
             .filter(|source| {
                 source.enabled
-                    && !crate::source_metadata::is_rss_source_metadata(&source.source)
+                    && crate::source_metadata::matches_search_type(&source.source, source_type)
                     && (source_ids.is_empty() || source_ids.contains(&source.id))
             })
             .collect::<Vec<_>>();
@@ -51,6 +58,7 @@ impl ApplicationService {
             chapter_ids: None,
             source_ids: Some(selected.iter().map(|source| source.id.clone()).collect()),
             keyword: Some(keyword.to_owned()),
+            source_type: Some(source_type.to_owned()),
             page,
             from_index: 0,
             total: selected.len(),
@@ -63,6 +71,10 @@ impl ApplicationService {
             updated_at_ms: now,
         };
         let receiver = self.create_task(task).await?;
+        if let Ok(mut channels) = self.search_notifiers.write() {
+            channels.clear();
+            if let Some(notifier) = notifier { channels.insert(task_id.clone(), notifier); }
+        }
         self.spawn_task_worker(task_id.clone(), receiver);
         Ok(json!({
             "taskId": task_id.clone(),
@@ -110,6 +122,7 @@ impl ApplicationService {
             .iter()
             .skip(from_index)
             .take(total)
+            .filter(|chapter| chapter["volume"] != true)
             .map(|chapter| {
                 chapter["id"]
                     .as_str()
@@ -149,6 +162,7 @@ impl ApplicationService {
             chapter_ids: Some(chapter_ids.clone()),
             source_ids: None,
             keyword: None,
+            source_type: None,
             page: 1,
             from_index,
             total: chapter_ids.len(),
@@ -197,7 +211,7 @@ impl ApplicationService {
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
         let _ = self
-            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+            .read_internal_json(self.book_engine_path(book_id)?)
             .await?;
         let now = now_ms();
         let task = AppTask {
@@ -213,6 +227,7 @@ impl ApplicationService {
             chapter_ids: None,
             source_ids: None,
             keyword: None,
+            source_type: None,
             page: 1,
             from_index: 0,
             total: 1,

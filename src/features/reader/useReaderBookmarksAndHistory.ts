@@ -1,17 +1,19 @@
+import type { ReaderPosition } from "./readerPosition";
 import { computed, ref, type Ref } from "vue";
 import type { Bookmark, BookResource } from "../../api/types";
 import { history, removeHistoryBookmark } from "../settings/historyStore";
 import { openedBook, openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 export function useReaderBookmarksAndHistory(options: {
   readingChapterIndex: Ref<number>;
+  getReaderCurrentPosition: () => ReaderPosition;
   getReaderCurrentOffset: () => number; isBackupRestoreInProgress: () => boolean;
   getRestoreRevision: () => number;
-  startReading: (book: BookResource, index?: number, offset?: number) => Promise<void>;
+  startReading: (book: BookResource, index?: number, offset?: number, positionHint?: ReaderPosition) => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void; errorText: (error: unknown) => string;
 }) {
   const bookmarkEditorOpen = ref(false), bookmarkNote = ref(""), bookmarkEditingId = ref<string | null>(null);
   const currentBookmark = computed(() => (history.value.bookmarks[openedBook.value?.id ?? ""] ?? [])
-    .find(record => record.chapterIndex === options.readingChapterIndex.value && record.offset === options.getReaderCurrentOffset()) ?? null);
+    .find(record => record.chapterIndex === options.readingChapterIndex.value && record.offset === options.getReaderCurrentOffset() && record.pageId === options.getReaderCurrentPosition().pageId && record.anchor === options.getReaderCurrentPosition().anchor) ?? null);
   let readingSession: { bookId: string; sessionId: string; startedAtMs: number; restoreRevision: number } | null = null;
   function closeBookmarkEditor(): void { bookmarkEditorOpen.value = false; bookmarkEditingId.value = null; bookmarkNote.value = ""; }
   function toggleCurrentBookmark(): void {
@@ -56,7 +58,7 @@ export function useReaderBookmarksAndHistory(options: {
     try {
       openedBookFromShelf.value = false;
       const book = await switchOpenedBook(bookmark.bookId);
-      if (book) await options.startReading(book, bookmark.chapterIndex, bookmark.offset);
+      if (book) await options.startReading(book, bookmark.chapterIndex, bookmark.offset, bookmark);
     } catch (error) {
       options.notify(`打开书签失败：${options.errorText(error)}`, "error");
     }
@@ -74,7 +76,7 @@ export function useReaderBookmarksAndHistory(options: {
       record.note = bookmarkNote.value.trim(); record.updatedAtMs = now;
     } else {
       records.push({ id: globalThis.crypto.randomUUID(), chapterId: chapter.id, chapterIndex: chapter.index,
-        chapterTitle: chapter.title, offset: options.getReaderCurrentOffset(), note: bookmarkNote.value.trim(), createdAtMs: now, updatedAtMs: now });
+        chapterTitle: chapter.title, ...options.getReaderCurrentPosition(), note: bookmarkNote.value.trim(), createdAtMs: now, updatedAtMs: now });
     }
     closeBookmarkEditor();
   }

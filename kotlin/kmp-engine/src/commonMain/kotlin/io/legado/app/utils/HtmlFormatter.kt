@@ -80,7 +80,9 @@ object HtmlFormatter {
 
                                 else -> node.absUrl("src").ifEmpty { node.attr("src") }
                             }
-                            str.append("<img src=\"$src\"")
+                            val escapedSrc = src.replace("&", "&amp;").replace("\"", "&quot;")
+                                .replace("<", "&lt;").replace(">", "&gt;")
+                            str.append("<img src=\"$escapedSrc\"")
                             node.attribute("style")?.let { str.append(" style=\"${it.value}\"") }
                             node.attribute("onclick")
                                 ?.let { str.append(" onclick=\"${it.value}\"") }

@@ -1,5 +1,5 @@
 import { onBeforeUnmount, type ComputedRef, type Ref } from "vue";
-import { shelf } from "./shelfStore";
+import { contentLibrary } from "../books/contentLibraryState";
 
 interface ShelfGroupActionsOptions {
   groups: ComputedRef<string[]>;
@@ -36,25 +36,27 @@ export function useShelfGroupActions(options: ShelfGroupActionsOptions) {
       notify("这个分组已经存在。", "error");
       return;
     }
-    shelf.value.groups = [...(shelf.value.groups ?? []), normalized];
+    (contentLibrary.value.groups ??= []).push({ name: normalized, id: [] });
     notify("书架分组已创建，空分组也会保留。");
   }
 
   function renameGroup(oldName: string, newName: string): void {
     const normalized = newName.trim();
     if (!normalized || batchBusy.value) return;
-    shelf.value.groups = [...new Set((shelf.value.groups ?? []).map((name) => name === oldName ? normalized : name))];
-    for (const book of shelf.value.books) {
-      book.groups = [...new Set((book.groups ?? []).map((name) => name === oldName ? normalized : name))];
-    }
+    const group = contentLibrary.value.groups?.find(group => group.name === oldName);
+    if (!group) return;
+    const duplicate = contentLibrary.value.groups?.find(group => group.name === normalized && group.name !== oldName);
+    if (duplicate && duplicate !== group) {
+      duplicate.id = [...new Set([...duplicate.id, ...group.id])];
+      contentLibrary.value.groups = contentLibrary.value.groups!.filter(entry => entry !== group);
+    } else group.name = normalized;
     if (activeGroup.value === oldName) activeGroup.value = normalized;
     notify("分组名称已更新。");
   }
 
   function removeShelfGroup(groupName: string): void {
     if (batchBusy.value) return;
-    shelf.value.groups = (shelf.value.groups ?? []).filter((name) => name !== groupName);
-    for (const book of shelf.value.books) book.groups = (book.groups ?? []).filter((name) => name !== groupName);
+    contentLibrary.value.groups = contentLibrary.value.groups?.filter(group => group.name !== groupName);
     if (activeGroup.value === groupName) activeGroup.value = "";
     notify("分组已删除，书籍仍保留在书架。");
   }

@@ -199,7 +199,9 @@ impl ApplicationService {
                         "Task retry is unsupported because the search request has no page".into(),
                     );
                 }
-                self.start_search_unlocked(source_ids, keyword, task.page).await
+                let source_type = task.source_type.as_deref()
+                    .ok_or_else(|| "Search task has no source type".to_owned())?;
+                self.start_search_unlocked(source_type, source_ids, keyword, task.page, None).await
             }
             "bookSourceCandidates" => {
                 let book_id = task

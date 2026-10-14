@@ -200,7 +200,7 @@ fn reconcile_progress(
 ) -> ProgressSummary {
     if new_chapters.is_empty() {
         return ProgressSummary {
-            chapter_id: None,
+            chapter_id: None, page_id: None, anchor: None,
             chapter_index: 0,
             offset: 0,
             updated_at_ms: refreshed_at_ms,
@@ -241,7 +241,7 @@ fn reconcile_progress(
     if let Some(new_index) = direct_match.or(preserved_match) {
         let chapter = &new_chapters[new_index];
         return ProgressSummary {
-            chapter_id: Some(chapter.id.clone()),
+            chapter_id: Some(chapter.id.clone()), page_id: progress.page_id.clone(), anchor: progress.anchor.clone(),
             chapter_index: new_index,
             offset: progress.offset,
             updated_at_ms: progress.updated_at_ms,
@@ -267,7 +267,7 @@ fn reconcile_progress(
     });
     let chapter = &new_chapters[new_index];
     ProgressSummary {
-        chapter_id: Some(chapter.id.clone()),
+        chapter_id: Some(chapter.id.clone()), page_id: None, anchor: None,
         chapter_index: new_index,
         offset: 0,
         updated_at_ms: refreshed_at_ms,

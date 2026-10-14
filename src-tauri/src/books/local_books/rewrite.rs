@@ -107,7 +107,7 @@ fn rewrite_html_attr(
             } else if let Some(path) = normalize_epub_href(html_path, value) {
                 assets
                     .get(&path)
-                    .map(|asset_id| format!("../assets/{asset_id}{fragment}"))
+                    .map(|asset_id| if allow_external_links { format!("../assets/{asset_id}{fragment}") } else { format!("{asset_id}{fragment}") })
             } else {
                 None
             };

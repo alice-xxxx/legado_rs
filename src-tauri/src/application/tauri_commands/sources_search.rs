@@ -354,14 +354,15 @@ pub async fn debug_search_result(
 #[tauri::command]
 pub async fn start_search(
     app: tauri::AppHandle,
+    source_type: String,
+    on_results: tauri::ipc::Channel<Value>,
     source_ids: Vec<String>,
     keyword: String,
     page: Option<u32>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    let result = service
-        .start_search(&source_ids, &keyword, page.unwrap_or(1))
-        .await?;
+    let notifier = std::sync::Arc::new(move |batch| { let _ = on_results.send(batch); });
+    let result = service.start_search(&source_type, &source_ids, &keyword, page.unwrap_or(1), Some(notifier)).await?;
     let history = service.history_resource().await?;
     let _ = app.emit(
         "history-updated",
@@ -381,4 +382,14 @@ pub async fn search_book_source_candidates(
     service
         .search_book_source_candidates(&book_id, &source_ids, keyword.as_deref(), page.unwrap_or(1))
         .await.map(super::tasks::task_resource_response)
+}
+
+#[tauri::command]
+pub async fn get_search_task_results(state: State<'_, ApplicationService>, task_id: String) -> Result<Value, String> {
+    state.get_search_task_results(&task_id).await
+}
+
+#[tauri::command]
+pub async fn release_search_results(state: State<'_, ApplicationService>, task_id: String) -> Result<(), String> {
+    state.release_search_results(&task_id).await
 }

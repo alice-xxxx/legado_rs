@@ -4,7 +4,7 @@ use std::path::Path;
 
 use lopdf::{Dictionary, Document as PdfDocument, LoadOptions, Object};
 
-use super::{ParsedAsset, ParsedBook, ParsedChapter, common::short_hash};
+use super::{ParsedAsset, ParsedBook, ParsedChapter};
 
 pub(super) const MAX_FILE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_PDF_DECOMPRESSED_STREAM_BYTES: usize = 64 * 1024 * 1024;
@@ -65,7 +65,7 @@ pub(super) fn parse_pdf_file(
             pdf_page_index: Some(index as u32),
         })
         .collect::<Vec<_>>();
-    let pdf_asset_id = format!("pdf-{}.pdf", short_hash(path.to_string_lossy().as_ref()));
+    let pdf_asset_id = "original.pdf".to_owned();
     Ok(ParsedBook {
         identity: String::new(),
         title,

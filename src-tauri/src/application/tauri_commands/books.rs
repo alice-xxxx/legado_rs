@@ -20,6 +20,16 @@ pub async fn prepare_search_result_book(
 }
 
 #[tauri::command]
+pub async fn prepare_alternative_book(
+    book_id: String,
+    alternative_index: usize,
+    source_id: String,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    service.prepare_alternative_book(&book_id, alternative_index, &source_id).await
+}
+
+#[tauri::command]
 pub async fn change_book_source(
     app: tauri::AppHandle,
     book_id: String,
@@ -44,10 +54,12 @@ pub async fn change_chapter_source(
     chapter_id: String,
     result_id: String,
     confirm_missing_author: bool,
+    alternative_index: Option<usize>,
+    alternative_source_id: Option<String>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let result = service
-        .change_chapter_source(&book_id, &chapter_id, &result_id, confirm_missing_author)
+        .change_chapter_source(&book_id, &chapter_id, &result_id, confirm_missing_author, alternative_index, alternative_source_id.as_deref())
         .await?;
     if result["commitState"] == "committed" {
         let _ = app.emit(

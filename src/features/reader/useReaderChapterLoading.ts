@@ -1,15 +1,18 @@
+import type { ReaderPosition } from "./readerPosition";
 import { openedBook } from "../books/bookDetailState";
 import { nextTick, ref, watch, type Ref } from "vue";
-import { readResource } from "../../api/resources";
+import { readTextResource } from "../../api/resources";
+import { bookContentType } from "../../api/bookContentType";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import type { BookResource, ChapterMediaResource, ChapterPdfPageResource, ChapterRichTextResource, ChapterTextResource } from "../../api/types";
+import type { BookResource, ChapterImagesResource, ChapterMediaResource, ChapterPdfPageResource, ChapterRichTextResource, ChapterTextResource } from "../../api/types";
 import type { PdfPageResource } from "./readerContent";
 import type { ReaderPendingFragmentState } from "./useReaderPageInteraction";
-export type CachedChapterContent = ChapterTextResource | ChapterRichTextResource | ChapterMediaResource | ChapterPdfPageResource;
+export type CachedChapterContent = ChapterTextResource | ChapterRichTextResource | ChapterImagesResource | ChapterMediaResource | ChapterPdfPageResource;
 
 export interface ReaderChapterLoadingOptions {
   reader: {
     chapterIndex: Ref<number>;
+    pendingPosition: Ref<ReaderPosition | null>;
     content: Ref<CachedChapterContent | null>;
     pdfPage: Readonly<Ref<PdfPageResource | null>>;
     pdfZoomOverride: Ref<PdfPageResource["defaultZoom"] | null>;
@@ -50,6 +53,8 @@ export interface ReaderChapterLoadingOptions {
     clearReaderScrollListeners: () => void;
     applyPendingReaderFragment: () => void;
     applyComicScrollPosition: () => void;
+    restoreReadingPosition: (position: ReaderPosition) => void;
+    captureReadingPosition: () => ReaderPosition;
     measureReaderPages: () => void;
     beginReadingSession: () => void;
     isBackupRestoreInProgress: () => boolean;
@@ -77,19 +82,33 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     if (!reader.visible.value) return null;
     const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === reader.chapterIndex.value);
-    return chapter?.resource ? JSON.stringify([book!.id, chapter.id, chapter.resource.src, request.value]) : null;
+    if (!book || !chapter) return null;
+    const type = bookContentType(book);
+    const ready = type === "image" ? chapter.pages?.length && JSON.stringify(chapter.pages.map(page => [page.id, page.src])) : type === "audio" || type === "video"
+      ? chapter.media?.src : type === "pdf" ? chapter.pdfPage?.src : chapter.resource?.src;
+    if (!ready) return null;
+    return JSON.stringify([book.id, type, chapter.id, ready, request.value]);
   }, async (key, _previous, onCleanup) => {
     if (!key) { if (!reader.visible.value) complete(false); return; }
     const book = openedBook.value!;
     const chapter = book.chapters.find(entry => entry.index === reader.chapterIndex.value)!;
     const controller = new AbortController();
     onCleanup(() => controller.abort());
+    if (!reader.pendingPosition.value) reader.pendingPosition.value = actions.captureReadingPosition();
     reader.busy.value = true;
     actions.clearReaderFindMatches();
     actions.clearReaderScrollListeners();
     actions.clearReaderMediaBinding(true);
     try {
-      const content = await readResource<CachedChapterContent>(chapter.resource!, controller.signal);
+      const type = bookContentType(book);
+      let content: CachedChapterContent;
+      if (type === "image") content = { kind: "images", pages: chapter.pages! };
+      else if (type === "audio" || type === "video") content = chapter.media!;
+      else if (type === "pdf") content = chapter.pdfPage!;
+      else {
+        const body = await readTextResource(chapter.resource!, controller.signal);
+        content = type === "html" ? { schemaVersion: 1, kind: "richText", markup: body } : { schemaVersion: 1, kind: "text", text: body };
+      }
       if (controller.signal.aborted || actions.isBackupRestoreInProgress()) return;
       reader.content.value = content;
       reader.pdfInitialPassword.value = reader.pdfPage.value ? reader.pdfImportPasswords.get(book.id)?.password ?? "" : "";
@@ -97,8 +116,11 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       reader.busy.value = false;
       await nextTick();
       if (controller.signal.aborted) return;
-      if (reader.imagePage.value) actions.applyComicScrollPosition();
-      else if (!reader.mediaChapter.value && !reader.pdfPage.value) actions.measureReaderPages();
+      if (!reader.imagePage.value && !reader.mediaChapter.value && !reader.pdfPage.value) actions.measureReaderPages();
+      if (!reader.mediaChapter.value && !reader.pdfPage.value && reader.pendingPosition.value) {
+        actions.restoreReadingPosition(reader.pendingPosition.value);
+      }
+      reader.pendingPosition.value = null;
       actions.beginReadingSession();
       actions.applyPendingReaderFragment();
       complete(true);
@@ -107,25 +129,24 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     }
   });
 
-  async function loadReaderChapter(index: number, offset?: number, fragment?: string): Promise<boolean> {
+  async function loadReaderChapter(index: number, offset?: number, fragment?: string, positionHint?: ReaderPosition): Promise<boolean> {
     const book = openedBook.value;
     const chapter = book?.chapters.find(entry => entry.index === index);
-    if (!book || !chapter || actions.isBackupRestoreInProgress()) return false;
+    if (!book || !chapter || chapter.volume || actions.isBackupRestoreInProgress()) return false;
     if (reader.getMediaElement() && !(await actions.pauseReaderMediaAndSave())) return false;
     complete(false);
     if (reader.getExpectedTtsChapter() !== book.id + ":" + index) actions.stopTts(false);
     actions.clearReaderMediaBinding(true);
     actions.clearReaderFindMatches();
     actions.clearReaderScrollListeners();
-    const sameChapter = reader.chapterIndex.value === index;
-    const position = Math.max(0, offset ?? (sameChapter ? reader.mediaChapter.value ? reader.mediaTimeMs.value
-      : reader.imagePage.value ? reader.comicScrollTop.value : reader.pageIndex.value
-      : book.progress?.chapterIndex === index ? book.progress.offset ?? 0 : 0));
+    const saved = book.progress?.chapterIndex === index ? book.progress : undefined;
+    const position = Math.max(0, offset ?? saved?.offset ?? 0);
+    reader.pendingPosition.value = positionHint ?? { offset: position, pageId: saved?.pageId, anchor: saved?.anchor, quality: saved?.quality };
     reader.advanceLoadRevision();
     reader.chapterIndex.value = index;
-    reader.pageIndex.value = position;
+    reader.pageIndex.value = 0;
     reader.pageCount.value = 1;
-    reader.comicScrollTop.value = position;
+    reader.comicScrollTop.value = 0;
     reader.mediaTimeMs.value = position;
     reader.mediaDurationMs.value = 0;
     reader.mediaError.value = "";
@@ -142,7 +163,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     request.value += 1;
     return done;
   }
-  async function startReading(book: BookResource, index?: number, offset?: number): Promise<void> {
+  async function startReading(book: BookResource, index?: number, offset?: number, positionHint?: ReaderPosition): Promise<void> {
     await actions.showShelfBehindReader(book);
     reader.visible.value = true;
     reader.controlsOpen.value = false;
@@ -151,7 +172,13 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     reader.menuOpen.value = false;
     reader.pdfZoomOverride.value = null;
     reader.resetClickSuppression();
-    await loadReaderChapter(index ?? book.progress?.chapterIndex ?? 0, offset ?? (index == null ? book.progress?.offset ?? 0 : 0));
+    const requested = index ?? book.progress?.chapterIndex ?? 0;
+    const target = book.chapters.find(chapter => chapter.index >= requested && !chapter.volume)
+      ?? book.chapters.find(chapter => !chapter.volume);
+    if (!target) { reader.chapterError.value = "没有可阅读的内容。"; reader.menuOpen.value = true; return; }
+    await loadReaderChapter(target.index, target.index === requested
+      ? offset ?? (index == null ? book.progress?.offset ?? 0 : 0) : 0, undefined,
+      target.index === requested ? positionHint : undefined);
   }
   async function reloadCurrentChapter(): Promise<void> {
     const book = openedBook.value;

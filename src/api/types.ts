@@ -24,7 +24,8 @@ export interface SourceMetadata {
   group?: string;
   enabled: boolean;
   isRss?: boolean;
-  contentType?: "text" | "comic" | "audio" | "video";
+  contentType?: "text" | "image" | "audio" | "video";
+  searchType?: SearchType;
   mediaType?: "audio" | "video";
   capabilities?: { search: boolean; detail: boolean; toc: boolean; content: boolean };
   userAgentOverride?: string | null;
@@ -92,7 +93,34 @@ export interface SourceWebLoginResult {
   message: string;
 }
 
-export type ChapterContentFormat = "text" | "richText" | "audio" | "video" | "pdf";
+export type SearchType = "text" | "audio" | "image" | "video";
+export type ContentType = SearchType | "html" | "pdf";
+
+export interface ContentPreview {
+  id: string;
+  title: string;
+  author?: string;
+  cover?: string;
+  total?: number;
+  latest?: string;
+  read?: number;
+  readAt?: number;
+  updatedAt?: number;
+}
+export interface ContentGroup { id: string[]; name: string; }
+export type ContentLibrary = Partial<Record<ContentType, ContentPreview[]>> & { groups?: ContentGroup[] };
+
+export interface ContentAlternative {
+  sourceId: string;
+  sourceName: string;
+  title: string;
+  author?: string;
+  cover?: string;
+  latest?: string;
+}
+export interface ImagePage { id: string; src: string; url?: string; }
+export interface ChapterImagesResource { kind: "images"; pages: ImagePage[]; }
+export type ChapterContentFormat = "text" | "richText" | "image" | "audio" | "video" | "pdf";
 
 export interface ChapterResourceDescriptor extends ResourceDescriptor {
   /** Semantic chapter kind supplied by Rust; do not infer it from URL or MIME type. */
@@ -100,11 +128,15 @@ export interface ChapterResourceDescriptor extends ResourceDescriptor {
 }
 
 export interface ChapterResource {
+  volume?: boolean;
   id: string;
   title: string;
   index: number;
   /** The sole location and semantic format for a prepared chapter. */
   resource?: ChapterResourceDescriptor;
+  pages?: ImagePage[];
+  media?: ChapterMediaResource;
+  pdfPage?: ChapterPdfPageResource;
 }
 
 export interface ChapterTextResource {
@@ -151,15 +183,16 @@ export interface BookResource {
   author?: string;
   intro?: string;
   kind?: string;
-  contentType?: "text" | "comic" | "audio" | "video";
+  contentType?: ContentType;
+  updatedAtMs?: number;
+  cover?: string;
+  alternatives?: ContentAlternative[];
   /** Audio and video sources store progress.offset in milliseconds. */
   mediaType?: "audio" | "video";
   wordCount?: string;
   sourceId?: string;
   sourceName?: string;
   sourceGroup?: string;
-  /** IDs of cached books that hold source-specific catalogs. */
-  sourceBookIds?: string[];
   displayBase?: BookDisplayMetadataValues;
   displayOverrides?: Partial<Record<keyof BookDisplayMetadataValues, string>>;
   canChangeSource?: boolean;
@@ -168,6 +201,9 @@ export interface BookResource {
   latestChapter?: string;
   progress?: {
     chapterId?: string | null;
+    pageId?: string;
+    anchor?: string;
+    quality?: string;
     chapterIndex?: number;
     offset?: number;
     updatedAtMs?: number;
@@ -223,7 +259,7 @@ export interface ShelfResource {
   sort?: ShelfSortKey;
   sortOrder?: ShelfSortOrder;
   groups?: string[];
-  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { bookSrc: string; groups?: string[] }>;
+  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { bookSrc: string; groups?: string[]; updatedAt?: number }>;
 }
 
 export type ResetBookProgressResponse =
@@ -277,6 +313,8 @@ export type ShelfSortKey = "updatedAt" | "title" | "author" | "latestChapter" | 
 export type ShelfSortOrder = "ascending" | "descending";
 
 export interface Bookmark {
+  pageId?: string;
+  anchor?: string;
   id: string;
   bookId: string;
   chapterId: string;
@@ -318,10 +356,11 @@ export interface ReplacementRulesResource {
 
 /** Rust 处理后的单个书源候选；resultId 用于详情、入架和换源操作。 */
 export interface SearchResultSource {
+  alternativeIndex?: number;
   resultId: string;
   sourceId: string;
   sourceName: string;
-  contentType?: "text" | "comic" | "audio" | "video";
+  contentType?: SearchType;
   mediaType?: "audio" | "video";
   kind?: string;
   articleId?: string;
@@ -331,7 +370,6 @@ export interface SearchResultSource {
   title: string;
   author?: string;
   coverSrc?: string;
-  bookUrl?: string;
   intro?: string;
   latestChapter?: string;
   requiresIdentityConfirmation?: boolean;
@@ -344,6 +382,7 @@ export interface SearchBookResult extends SearchResultSource {
 }
 
 export interface SearchResource {
+  incremental?: boolean;
   schemaVersion: number;
   searchId?: string;
   taskId?: string;
@@ -359,6 +398,10 @@ export interface SearchResource {
   cancelled?: boolean;
   error?: string;
 }
+
+export type SearchBatch = Pick<SearchResource,
+  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error"
+> & { incremental: true };
 
 export interface SearchHistoryEntry {
   query: string;
@@ -515,7 +558,7 @@ export interface AppBootstrap {
 }
 
 export interface SearchResponse {
-  resource: ResourceDescriptor;
+  search: SearchResource;
   bookCount: number;
   errors: Array<{ sourceId?: string; message: string }>;
 }

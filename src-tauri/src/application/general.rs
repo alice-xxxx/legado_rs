@@ -245,6 +245,11 @@ impl ApplicationService {
 
     pub async fn save_shelf(&self, mut shelf: Value) -> Result<Value, String> {
         let _operation = self.operation_read().await;
+        let library = if shelf.get("books").is_none() {
+            crate::resources::content::validate_library(&shelf).map_err(|error| error.to_string())?;
+            Some(shelf.clone())
+        } else { None };
+        if shelf.get("books").is_none() { shelf = crate::resources::content::library_positions(&shelf); }
         crate::reading_tools::normalize_shelf_groups(&mut shelf)?;
         if let Some(sort) = shelf.get("sort") {
             serde_json::from_value::<crate::reading_tools::ShelfSortKey>(sort.clone())
@@ -267,7 +272,8 @@ impl ApplicationService {
             self.store.read_json_ref(&reference).await.map_err(|error| error.to_string())?;
         }
         let reference = self.store.shelf_ref();
-        self.store.write_json_ref(&reference, &serde_json::to_value(shelf).map_err(|error| error.to_string())?)
+        let document = library.unwrap_or(serde_json::to_value(shelf).map_err(|error| error.to_string())?);
+        self.store.write_json_ref(&reference, &document)
             .await.map_err(|error| error.to_string())?;
         Ok(self.resource_descriptor(&reference))
     }

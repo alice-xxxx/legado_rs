@@ -13,7 +13,7 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::models::{
-    BookDocument, CURRENT_SCHEMA_VERSION, SettingsDocument, ShelfDocument,
+    CURRENT_SCHEMA_VERSION, SettingsDocument,
 };
 use crate::resources::ResourceStore;
 
@@ -122,7 +122,7 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
 
 pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
     let mut files = Vec::new();
-    for required in ["shelf.json", "settings.json", "http-tts.json", "history.json"] {
+    for required in [crate::resources::content::LIBRARY_FILE, "settings.json", "http-tts.json", "history.json"] {
         let path = root.join(required);
         if !path.is_file() {
             return Err(format!("Required app data file is missing: {required}"));
@@ -147,7 +147,7 @@ pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, S
             }
         }
     }
-    for directory in ["books"] {
+    for directory in ["cache"] {
         collect_tree(root, &root.join(directory), directory, &mut files)?;
     }
 
@@ -311,9 +311,9 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
             format!("Cannot read {} for validation: {error}", file.archive_path)
         })?;
         match file.archive_path.as_str() {
-            "shelf.json" => {
-                serde_json::from_slice::<ShelfDocument>(&bytes)
-                    .map_err(|error| format!("Invalid shelf JSON: {error}"))?;
+            crate::resources::content::LIBRARY_FILE => {
+                let library: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+                crate::resources::content::validate_library(&library).map_err(|error| error.to_string())?;
             }
             "settings.json" => {
                 let document: SettingsDocument = serde_json::from_slice(&bytes)
@@ -347,93 +347,18 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                     .map_err(|error| format!("Invalid source JSON: {error}"))?;
                 crate::application::validate_source_records(&records)?;
             }
-            path if path.starts_with("books/") && path.ends_with("/book.json") => {
-                let book: BookDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid book JSON at {path}: {error}"))?;
-                let expected_id = path
-                    .strip_prefix("books/")
-                    .and_then(|value| value.strip_suffix("/book.json"))
-                    .ok_or_else(|| format!("Invalid book resource path: {path}"))?;
-                if book.id != expected_id {
-                    return Err(format!("Book id does not match resource path: {path}"));
-                }
-            }
-            path if path.starts_with("search/") && path.ends_with(".json") => {
-                let document: crate::models::SearchResultsDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid search resource at {path}: {error}"))?;
-                if document.schema_version != CURRENT_SCHEMA_VERSION {
-                    return Err(format!("Search resource has an unsupported schema: {path}"));
-                }
+            path if crate::resources::content::is_content_document(path) => {
+                let document: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+                let (kind, id, _) = crate::resources::content::content_path(path).ok_or("Invalid content path")?;
+                if document["id"].as_str() != Some(id) { return Err(format!("Content ID does not match path: {path}")); }
+                crate::resources::content::book_view(&document, kind).map_err(|error| error.to_string())?;
+                crate::resources::validate_persistable_json_bytes(&bytes).map_err(|error| error.to_string())?;
             }
             "tasks.json" => {
                 let document: Value = serde_json::from_slice(&bytes)
                     .map_err(|error| format!("Invalid tasks JSON: {error}"))?;
                 if !document["tasks"].is_array() || document["schemaVersion"].as_u64() != Some(CURRENT_SCHEMA_VERSION as u64) {
                     return Err("Invalid tasks document".into());
-                }
-            }
-            path if path.starts_with("books/") && path.contains("/media-maps/") && path.ends_with(".json") => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase", deny_unknown_fields)]
-                struct MediaMapping {
-                    schema_version: u32,
-                    id: String,
-                    upstream_url: String,
-                    headers: Vec<MediaHeader>,
-                }
-                #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct MediaHeader {
-                    name: String,
-                    value: String,
-                }
-                let mapping: MediaMapping = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid private media mapping at {path}: {error}"))?;
-                let expected_id = path
-                    .rsplit('/').next()
-                    .and_then(|value| value.strip_suffix(".json"))
-                    .ok_or_else(|| format!("Invalid private media mapping path: {path}"))?;
-                let upstream_url = reqwest::Url::parse(&mapping.upstream_url)
-                    .map_err(|_| format!("Private media mapping has an invalid URL: {path}"))?;
-                if mapping.schema_version != 1
-                    || mapping.id != expected_id
-                    || !valid_resource_id(&mapping.id)
-                    || !matches!(upstream_url.scheme(), "http" | "https")
-                    || upstream_url.host_str().is_none()
-                    || !upstream_url.username().is_empty()
-                    || upstream_url.password().is_some()
-                    || mapping.headers.len() > 64
-                {
-                    return Err(format!("Private media mapping has invalid fields: {path}"));
-                }
-                for header in &mapping.headers {
-                    let name = reqwest::header::HeaderName::from_bytes(header.name.as_bytes())
-                        .map_err(|_| {
-                            format!("Private media mapping has an invalid header: {path}")
-                        })?;
-                    reqwest::header::HeaderValue::from_str(&header.value).map_err(|_| {
-                        format!("Private media mapping has an invalid header: {path}")
-                    })?;
-                    if header.name.len() > 256
-                        || header.value.len() > 8 * 1024
-                        || matches!(
-                            name.as_str(),
-                            "connection"
-                                | "content-length"
-                                | "host"
-                                | "keep-alive"
-                                | "proxy-authenticate"
-                                | "proxy-authorization"
-                                | "te"
-                                | "trailer"
-                                | "transfer-encoding"
-                                | "upgrade"
-                        )
-                    {
-                        return Err(format!(
-                            "Private media mapping has an unsupported header: {path}"
-                        ));
-                    }
                 }
             }
             "http-tts.json" => {
@@ -444,65 +369,15 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
                 }
                 crate::http_tts_config::list_configs(&value)?;
             }
-            path if (path.starts_with("books/") && path.ends_with("/source-state.json"))
-                || (path.starts_with("source-engine/discovery-categories/") && path.ends_with(".json")) => {
-                let value: serde_json::Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid private JSON data at {path}: {error}"))?;
-                if !value.is_object() {
-                    return Err(format!("Private resource must be a JSON object: {path}"));
+            path if path.starts_with("source-engine/discovery-categories/") && path.ends_with(".json") => {
+                let value: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+                if !value.is_object() { return Err(format!("Invalid discovery categories: {path}")); }
+            }
+            path if crate::resources::content::content_path(path).is_some() => {
+                if path.ends_with(".txt") || path.ends_with(".html") || path.ends_with(".m3u8") {
+                    std::str::from_utf8(&bytes).map_err(|_| format!("Native text is not UTF-8: {path}"))?;
                 }
             }
-            path if path.starts_with("books/") && path.ends_with(".html") => {
-                std::str::from_utf8(&bytes)
-                    .map_err(|_| format!("Cached chapter is not UTF-8 HTML: {path}"))?;
-            }
-            path if path.starts_with("books/") && path.contains("/chapters/") && path.ends_with(".json") => {
-                let document: serde_json::Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid structured chapter JSON at {path}: {error}"))?;
-                if document["schemaVersion"].as_u64() != Some(CURRENT_SCHEMA_VERSION as u64) {
-                    return Err(format!("Structured chapter resource has invalid schema: {path}"));
-                }
-                let valid = match document["kind"].as_str() {
-                    Some("text") => document["text"].is_string(),
-                    Some("richText") => document["markup"].is_string(),
-                    Some("pdfPage") => {
-                        document["src"].is_string()
-                            && document["pageIndex"].as_u64().is_some()
-                            && matches!(
-                                document["defaultZoom"].as_str(),
-                                Some("page-fit" | "page-width" | "actual-size")
-                            )
-                    }
-                    Some("media") => {
-                        let media_type = document["mediaType"].as_str();
-                        let format = document["format"].as_str();
-                        let sources = document["sources"].as_array();
-                        matches!(media_type, Some("audio" | "video"))
-                            && document["src"].is_string()
-                            && matches!(format, Some("direct" | "hls"))
-                            && sources.is_some_and(|sources| {
-                                sources.iter().all(|source| {
-                                    source["label"].is_string()
-                                        && source["selected"].is_boolean()
-                                        && source.get("src").is_none_or(|value| value.is_null() || value.is_string())
-                                        && source.get("format").is_none_or(|value| {
-                                            value.is_null()
-                                                || matches!(value.as_str(), Some("direct" | "hls"))
-                                        })
-                                        && source.get("unavailableReason").is_none_or(|value| {
-                                            value.is_null() || value.is_string()
-                                        })
-                                })
-                            })
-                    }
-                    _ => false,
-                };
-                if !valid {
-                    return Err(format!("Structured chapter resource has invalid fields: {path}"));
-                }
-            }
-            path if path.starts_with("books/") && path.contains("/assets/") => {}
-            path if is_local_original_archive_path(path) => {}
             path if path.starts_with("source-engine/storage/") && path.ends_with(".json") => {
                 #[derive(Deserialize)]
                 #[serde(deny_unknown_fields)]
@@ -548,15 +423,13 @@ pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), Strin
 }
 
 pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
-    if path.starts_with("books/debug-source/")
-        || path == "books/tts-audio"
-        || path.starts_with("books/tts-audio/")
+    if crate::resources::content::content_path(path).is_some_and(|(_, id, _)| id == "debug-source" || id == "tts-audio")
     {
         return false;
     }
     if matches!(
         path,
-        "shelf.json"
+        crate::resources::content::LIBRARY_FILE
             | "settings.json"
             | "http-tts.json"
             | "history.json"
@@ -570,24 +443,9 @@ pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
     }
     let parts = path.split('/').collect::<Vec<_>>();
     match parts.as_slice() {
-        ["books", book_id, "book.json" | "source-state.json"] => valid_resource_id(book_id),
-        ["books", book_id, original_file] => {
-            valid_resource_id(book_id) && valid_local_original_file(original_file)
-        }
-        ["books", book_id, "chapters", chapter_file] => {
-            valid_resource_id(book_id)
-                && (chapter_file
-                    .strip_suffix(".html")
-                    .is_some_and(valid_resource_id)
-                    || chapter_file
-                        .strip_suffix(".json")
-                        .is_some_and(valid_resource_id))
-        }
-        ["books", book_id, "assets", asset_file] => {
-            valid_resource_id(book_id) && valid_asset_file(asset_file)
-        }
-        ["books", book_id, "media-maps", media_file] => valid_resource_id(book_id)
-            && media_file.strip_suffix(".json").is_some_and(valid_resource_id),
+        ["cache", kind, id, name] => crate::resources::content::CONTENT_TYPES.contains(kind)
+            && valid_resource_id(id)
+            && (name == &format!("{id}.json") || crate::resources::ResourceRef::new(format!("resource://{path}")).is_ok()),
         ["source-engine", "discovery-categories", source_file] => source_file
             .strip_suffix(".json").is_some_and(valid_source_record_id),
         ["source-engine", "storage", storage_file] => BACKED_SOURCE_STORAGE
@@ -608,8 +466,8 @@ fn is_local_original_archive_path(path: &str) -> bool {
     let parts = path.split('/').collect::<Vec<_>>();
     matches!(
         parts.as_slice(),
-        ["books", book_id, original_file]
-            if valid_resource_id(book_id) && valid_local_original_file(original_file)
+        ["cache", kind, book_id, original_file]
+            if crate::resources::content::CONTENT_TYPES.contains(kind) && valid_resource_id(book_id) && valid_local_original_file(original_file)
     )
 }
 

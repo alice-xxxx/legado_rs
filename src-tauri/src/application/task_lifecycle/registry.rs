@@ -98,6 +98,13 @@ impl ApplicationService {
         let (sender, receiver) = tokio::sync::watch::channel(TaskSignal::default());
         let (previous_to_notify, candidates_to_notify) = {
             let mut registry = self.tasks.lock().await;
+            let previous_page = if task.page > 1 {
+                registry.records.iter().rev().find(|previous| previous.kind == "search"
+                    && previous.keyword == task.keyword && previous.source_type == task.source_type
+                    && previous.source_ids == task.source_ids)
+                    .and_then(|previous| previous.search_id.as_ref())
+                    .and_then(|id| registry.search_documents.get(id)).cloned()
+            } else { None };
             let previous_id = registry.active_search_task_id.clone();
             let previous_backup = previous_id.as_ref().and_then(|id| {
                 registry.records.iter().position(|record| record.id == *id)
@@ -162,16 +169,24 @@ impl ApplicationService {
             // leaving unrelated home/debug result caches available.
             let old_round_ids = registry.search_documents.keys().cloned().collect::<HashSet<_>>();
             registry.search_documents.clear();
-            registry.search_result_documents.retain(|_, cache| {
-                !cache.get("searchId").and_then(Value::as_str)
-                    .is_some_and(|search_id| old_round_ids.contains(search_id))
-            });
+            registry.published_search_results.clear();
+            if previous_page.is_none() {
+                registry.search_result_documents.retain(|_, cache| {
+                    !cache.get("searchId").and_then(Value::as_str)
+                        .is_some_and(|search_id| old_round_ids.contains(search_id))
+                });
+            }
             registry.search_replacement_contexts.clear();
             registry.search_book_group_roots.clear();
             if let Some(search_id) = task.search_id.as_deref() {
-                registry
-                    .search_documents
-                    .insert(search_id.to_owned(), empty_search_task_document(&task));
+                if previous_page.is_some() {
+                    for cache in registry.search_result_documents.values_mut() {
+                        if cache["searchId"].as_str().is_some_and(|id| old_round_ids.contains(id)) { cache["searchId"] = json!(search_id); }
+                    }
+                }
+                let mut document = empty_search_task_document(&task);
+                if let Some(previous) = previous_page { document["results"] = previous["results"].clone(); }
+                registry.search_documents.insert(search_id.to_owned(), document);
             }
 
             for candidate in &candidates_to_notify {
@@ -421,7 +436,12 @@ impl ApplicationService {
             .store
             .document_ref("tasks")
             .map_err(|error| error.to_string())?;
-        let value = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": records });
+        let persistent = records.iter().map(|task| {
+            let mut task = task.clone();
+            if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") { task.result = None; }
+            task
+        }).collect::<Vec<_>>();
+        let value = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": persistent });
         self.store
             .write_json_ref(&reference, &value)
             .await
@@ -640,7 +660,7 @@ pub(super) fn task_summary(task: &AppTask) -> Value {
         summary["error"] = json!(error);
     }
     if let Some(result) = &task.result {
-        summary["result"] = result.clone();
+        summary["result"] = super::super::source_search::public_search_view(result.clone());
     }
     summary
 }

@@ -149,6 +149,8 @@ pub(crate) async fn import_local_book_with_outcome(
     .map_err(|error| format!("Local book import worker failed: {error}"))??;
 
     let book_id = format!("local-{}", parsed.identity);
+    let content_type = match original_extension.as_str() { "epub" => "html", "cbz" => "image", "pdf" => "pdf", _ => "text" };
+    store.bind_book_type(&book_id, content_type).await.map_err(|error| error.to_string())?;
     // Re-importing the same file is idempotent. In particular, do not rewrite
     // the user's progress or cached chapters merely because the picker was
     // opened again for an already imported file.
@@ -216,10 +218,19 @@ async fn persist_parsed_book(
     }
 
     let mut chapters = Vec::with_capacity(parsed.chapters.len());
+    let mut image_pages = Vec::new();
     for (index, parsed_chapter) in parsed.chapters.into_iter().enumerate() {
         let chapter_id = format!("chapter-{:05}", index + 1);
         let is_pdf_page = parsed.pdf_asset_id.is_some() && parsed_chapter.pdf_page_index.is_some();
         let is_rich_text = parsed_chapter.html.is_some();
+        if original_extension == "cbz" {
+            let pages = parsed.assets.iter().enumerate().map(|(page_index, asset)| {
+                serde_json::json!({"id": format!("p{}", page_index + 1), "url": asset.id})
+            }).collect::<Vec<_>>();
+            image_pages.push(serde_json::json!(pages));
+            chapters.push(ChapterDescriptor { id: chapter_id, title: parsed_chapter.title, index, resource: None });
+            continue;
+        }
         let src = if let (Some(pdf_asset_id), Some(page_index)) = (
             parsed.pdf_asset_id.as_deref(),
             parsed_chapter.pdf_page_index,
@@ -281,13 +292,12 @@ async fn persist_parsed_book(
         cover_src,
         intro: None,
         kind: (original_extension == "cbz").then(|| "comic".to_owned()),
-        content_type: Some(if original_extension == "cbz" { "comic" } else { "text" }.to_owned()),
+        content_type: Some(match original_extension { "cbz" => "image", "epub" => "html", "pdf" => "pdf", _ => "text" }.to_owned()),
         media_type: None,
         word_count: None,
         source_id: None,
         source_name: None,
         source_group: None,
-        source_book_ids: Vec::new(),
         display_base: Some(display_base),
         display_overrides: None,
         chapter_count: chapters.len(),
@@ -295,8 +305,13 @@ async fn persist_parsed_book(
         progress: ProgressSummary::default(),
         chapters,
     };
+    let mut document = serde_json::to_value(&book).map_err(|error| error.to_string())?;
+    document["original"] = serde_json::json!(format!("original.{original_extension}"));
+    if original_extension == "cbz" {
+        for (index, pages) in image_pages.into_iter().enumerate() { document["chapters"][index]["pages"] = pages; }
+    }
     store
-        .write_book(&book)
+        .write_json_ref(&store.book_ref(book_id).map_err(|error| error.to_string())?, &document)
         .await
         .map_err(|error| error.to_string())?;
     Ok(book)

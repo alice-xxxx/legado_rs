@@ -33,7 +33,7 @@ impl ApplicationService {
             let sources = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
             let private = self
-                .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+                .read_internal_json(self.book_engine_path(book_id)?)
                 .await?;
             let book = self
                 .store
@@ -48,12 +48,7 @@ impl ApplicationService {
                 .iter()
                 .find(|source| source.id == source_id)
                 .ok_or_else(|| "Book source is no longer available".to_owned())?;
-            if book
-                .get("mediaType")
-                .and_then(Value::as_str)
-                .is_some_and(|media_type| matches!(media_type, "audio" | "video"))
-                || crate::source_metadata::media_type(&source.source).is_some()
-            {
+            if crate::source_metadata::media_type(&source.source).is_some() {
                 return Err("当前刷新操作只适用于文本章节".to_owned());
             }
             let engine_book = private
@@ -127,43 +122,24 @@ impl ApplicationService {
             .as_str()
             .ok_or_else(|| "Source engine returned non-text chapter content".to_owned())?
             .to_owned();
+        let content = crate::source_metadata::normalize_chapter_content(&source_definition, &content);
         if content.trim().is_empty() {
             return Err(
                 "Source engine returned empty chapter content; the existing cache was preserved"
                     .into(),
             );
         }
-        let (chapter_ref, chapter_replacement, content_format) = if looks_like_html(&content) {
-            let (chapter_ref, document) = self
-                .store
-                .online_chapter_rich_text_document(
-                    book_id,
-                    chapter_id,
-                    &content,
-                    content_base_url.as_deref(),
-                )
-                .map_err(|error| error.to_string())?;
-            let bytes = serde_json::to_vec_pretty(&document)
-                .map_err(|error| format!("Cannot encode chapter rich-text resource: {error}"))?;
-            let replacement = crate::resource_transactions::Replacement::public_json(
-                chapter_ref.clone(),
-                bytes,
-            )
-            .map_err(|error| error.to_string())?;
-            (chapter_ref, replacement, "richText")
+        let (chapter_ref, chapter_document, content_format) = if crate::source_metadata::is_comic_source_metadata(&source_definition) {
+            let pages = self.source_image_pages(book_id, chapter_id, &source_definition, &engine_book, &chapter_raw, &content, content_base_url.as_deref()).await?;
+            (None, json!({"pages": pages}), "image")
+        } else if looks_like_html(&content) {
+            let (reference, document) = self.source_rich_text_document(book_id, chapter_id,
+                &source_definition, &engine_book, &chapter_raw, &content, content_base_url.as_deref()).await?;
+            (Some(reference), document, "richText")
         } else {
-            let (chapter_ref, document) = self
-                .store
-                .chapter_text_document(book_id, chapter_id, &content)
+            let (reference, document) = self.store.chapter_text_document(book_id, chapter_id, &content)
                 .map_err(|error| error.to_string())?;
-            let bytes = serde_json::to_vec_pretty(&document)
-                .map_err(|error| format!("Cannot encode chapter text resource: {error}"))?;
-            let replacement = crate::resource_transactions::Replacement::public_json(
-                chapter_ref.clone(),
-                bytes,
-            )
-            .map_err(|error| error.to_string())?;
-            (chapter_ref, replacement, "text")
+            (Some(reference), document, "text")
         };
 
         let _sources = self.sources_lock.lock().await;
@@ -186,7 +162,7 @@ impl ApplicationService {
             .await
             .map_err(|error| error.to_string())?;
         let latest_private = self
-            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+            .read_internal_json(self.book_engine_path(book_id)?)
             .await
             .map_err(|_| "Book was removed while refreshing the chapter".to_owned())?;
         let mut latest_book = writer_guard
@@ -232,16 +208,20 @@ impl ApplicationService {
                 "Chapter changed while refreshing; the existing cache was preserved".into(),
             );
         }
-        latest_book["chapters"][latest_index]["resource"] = serde_json::to_value(
-            crate::models::ChapterResourceDescriptor::for_chapter(&chapter_ref, content_format),
-        )
-        .map_err(|error| format!("Cannot encode refreshed chapter descriptor: {error}"))?;
-        let replacements = vec![
-            chapter_replacement,
-            writer_guard
-                .public_json_replacement(&book_ref, &latest_book)
-                .map_err(|error| error.to_string())?,
-        ];
+        latest_book["contentType"] = json!(crate::source_metadata::content_type(&source_definition));
+        set_optional_public_field(&mut latest_book, "mediaType", None);
+        let mut replacements = Vec::new();
+        if let Some(reference) = chapter_ref {
+            latest_book["chapters"][latest_index]["resource"] = serde_json::to_value(
+                crate::models::ChapterResourceDescriptor::for_chapter(&reference, content_format)
+            ).map_err(|error| error.to_string())?;
+            replacements.push(writer_guard.public_json_replacement(&reference, &chapter_document).map_err(|error| error.to_string())?);
+        } else {
+            let chapter = &mut latest_book["chapters"][latest_index];
+            chapter["pages"] = chapter_document["pages"].clone();
+            if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
+        }
+        replacements.push(writer_guard.public_json_replacement(&book_ref, &latest_book).map_err(|error| error.to_string())?);
         let transaction_root = writer_guard.data_root().to_path_buf();
         let transaction_result = tokio::task::spawn_blocking(move || {
             let transaction = crate::resource_transactions::FileTransaction::prepare(

@@ -24,6 +24,7 @@ import { useBookSourceSwitch } from "../sources/useBookSourceSwitch";
 import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import router, { routeNames } from "../../router";
 
+const HtmlReader = defineAsyncComponent(() => import("./HtmlReader.vue"));
 const NovelReader = defineAsyncComponent(() => import("./NovelReader.vue"));
 const ComicReader = defineAsyncComponent(() => import("./ComicReader.vue"));
 const AudioReader = defineAsyncComponent(() => import("./AudioReader.vue"));
@@ -235,7 +236,7 @@ const readerVisible = readerFeatures.readerVisible;
 </script>
 
 <template>
-  <component :is="readerFeatures.readingPdfPage.value ? PdfReader : readerFeatures.readingVideoChapter.value ? VideoReader : readerFeatures.readingMediaChapter.value ? AudioReader : readerFeatures.readingImagePage.value ? ComicReader : NovelReader"
+  <component :is="readerFeatures.readingPdfPage.value ? PdfReader : readerFeatures.readingVideoChapter.value ? VideoReader : readerFeatures.readingMediaChapter.value ? AudioReader : readerFeatures.readingImagePage.value ? ComicReader : readerFeatures.readingContentType.value === 'html' ? HtmlReader : NovelReader"
     v-if="readerVisible"
     :reader-features="readerFeatures"
     :close-reader="closeReaderForNavigation"

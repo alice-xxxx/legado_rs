@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// Only picker copies are temporary. Imported originals live in books/{id}/.
+/// Only picker copies are temporary. Imported originals live in cache/{type}/{id}/.
 pub(super) fn picker_import_directory(root: &Path) -> PathBuf {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let key = stable_hash(&root.to_string_lossy());

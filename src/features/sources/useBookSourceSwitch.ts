@@ -1,15 +1,14 @@
+import { replaceLibraryContent, libraryType } from "../books/contentLibraryState";
 import { computed, ref, type Ref } from "vue";
-import { shelf as shelfPositions } from "../shelf/shelfStore";
 import { cancelTask } from "../../api/tasks";
 import { tasks } from "../tasks/tasksStore";
 import { bookSourceCandidates } from "./sourcesStore";
 import { shelfBatchRecoveryRequired, shelfBatchRecoveryTitle, shelfBatchRecoveryMessage } from "../../app/recoveryState";
-import { changeBookSource, changeChapterSource, searchBookSourceCandidates } from "../../api/search";
-import { prepareSearchResultBook } from "../../api/books";
-import { readResource } from "../../api/resources";
-import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult, type SearchResource } from "../../api/types";
+import { changeBookSource, changeChapterSource, searchBookSourceCandidates, getSearchTaskResults } from "../../api/search";
+import { prepareSearchResultBook, prepareAlternativeBook } from "../../api/books";
+import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
-import { bookPreviews, loadBookPreview, loadBookPreviews, clearOpenedBook, switchOpenedBook, openedBookFromShelf, openedBook } from "../books/bookDetailState";
+import { loadBookPreview, clearOpenedBook, switchOpenedBook, openedBook } from "../books/bookDetailState";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
@@ -59,15 +58,12 @@ export function useBookSourceSwitch({
   const searchedCandidates = ref<SearchBookResult[]>([]);
   const showCachedSources = ref(false);
   const bookSourceCandidateResults = computed<SearchBookResult[]>(() => showCachedSources.value
-    ? (bookSourceSwitchBook.value?.sourceBookIds ?? []).flatMap(id => {
-      const candidate = bookPreviews.value[id];
-      return candidate ? [{
-        resultId: id, sourceBookId: id,
-        sourceId: candidate.sourceId ?? "", sourceName: candidate.sourceName ?? "",
-        title: candidate.title, author: candidate.author, coverSrc: candidate.coverSrc,
-        latestChapter: candidate.latestChapter,
-      }] : [];
-    }) : searchedCandidates.value);
+    ? (bookSourceSwitchBook.value?.alternatives ?? []).map((candidate, index) => ({
+        resultId: `alternative-${index}`, alternativeIndex: index,
+        sourceId: candidate.sourceId, sourceName: candidate.sourceName,
+        title: candidate.title, author: candidate.author, coverSrc: candidate.cover,
+        latestChapter: candidate.latest, requiresIdentityConfirmation: !candidate.author,
+      })) : searchedCandidates.value);
   const bookSourceCandidateErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
   const selectedBookSourceCandidate = ref<SearchBookResult | null>(null);
   const bookSourceIdentityConfirmationNeeded = ref(false);
@@ -148,7 +144,7 @@ export function useBookSourceSwitch({
     } else {
       const generation = bookSourceSearchGeneration;
       showCachedSources.value = true;
-      await loadBookPreviews(book.sourceBookIds ?? []);
+
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration) return;
       bookSourceSearchStatus.value = bookSourceCandidateResults.value.length ? "已缓存的可换来源" : "尚无可换来源，点击刷新搜索。";
     }
@@ -247,14 +243,8 @@ export function useBookSourceSwitch({
       return;
     }
     // 任务完成状态与这一不可变结果版本由 Rust 一起提交。
-    const descriptor = task.result?.resource;
-    if (!descriptor) {
-      bookSourceSearchStatus.value = "候选资源不可用";
-      bookSourceSwitchError.value = "搜索已完成，但候选资源地址缺失。";
-      return;
-    }
     try {
-      const resource = await readResource<SearchResource>(descriptor);
+      const resource = await getSearchTaskResults(taskId);
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
       searchedCandidates.value = Array.isArray(resource.results) ? resource.results : [];
       bookSourceCandidateErrors.value = Array.isArray(resource.errors) ? resource.errors : [];
@@ -308,7 +298,7 @@ export function useBookSourceSwitch({
     chapterSourceError.value = "";
     bookSourceSwitchBusy.value = true;
     try {
-      const response = await changeChapterSource(bookId, chapter.id, candidate.resultId, confirmMissingAuthor);
+      const response = await changeChapterSource(bookId, chapter.id, candidate.resultId, confirmMissingAuthor, candidate.alternativeIndex, candidate.sourceId);
       if (!currentRestore(restoreRevision)) return;
       const warning = response.warning?.trim() ?? "";
       const operationError = response.error?.trim() ?? "";
@@ -395,12 +385,13 @@ export function useBookSourceSwitch({
     bookSourceChangeError.value = "";
     let response: BookSourceMutationResponse;
     let cachedSourceBookId = "";
-    const replaceOnShelf = openedBookFromShelf.value;
+    const replaceOnShelf = libraryType(book.id) !== undefined;
     try {
-      const sourceBookId = typeof candidate.sourceBookId === "string" ? candidate.sourceBookId : null;
-      const cachedCandidate = sourceBookId ? null : await prepareSearchResultBook(candidate.resultId);
+      const cachedCandidate = candidate.alternativeIndex !== undefined
+        ? await prepareAlternativeBook(book.id, candidate.alternativeIndex, candidate.sourceId)
+        : await prepareSearchResultBook(candidate.resultId);
       if (!currentRestore(restoreRevision)) return;
-      const cachedBook = await loadBookPreview(sourceBookId ?? cachedCandidate!.book);
+      const cachedBook = await loadBookPreview(cachedCandidate.book);
       if (!cachedBook) return;
       cachedSourceBookId = cachedBook.id;
       if (!currentRestore(restoreRevision)) return;
@@ -441,11 +432,7 @@ export function useBookSourceSwitch({
           return;
         }
       }
-      if (replaceOnShelf && shelfPositions.value.books.some(position => position.id === book.id)) {
-        shelfPositions.value.books = shelfPositions.value.books
-          .filter(position => position.id !== cachedSourceBookId || position.id === book.id)
-          .map(position => position.id === book.id ? { ...position, id: cachedSourceBookId } : position);
-      }
+      if (replaceOnShelf && openedBook.value) replaceLibraryContent(book.id, openedBook.value);
       searchedCandidates.value = [];
       bookSourceCandidateErrors.value = [];
       bookSourceSwitchBookId.value = cachedSourceBookId;

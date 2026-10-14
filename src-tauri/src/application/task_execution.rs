@@ -262,16 +262,7 @@ impl ApplicationService {
                     object.remove("error");
                 }
                 let snapshot = document.clone();
-                match self.write_search_snapshot(&snapshot).await {
-                    Ok((_, descriptor)) => candidate_result = Some(json!({ "resource": descriptor })),
-                    Err(error) => {
-                        registry.search_documents.insert(
-                            search_id.to_owned(),
-                            previous_search_document.take().unwrap_or_else(|| snapshot.clone()),
-                        );
-                        return Err(error);
-                    }
-                }
+                candidate_result = Some(json!({ "search": snapshot }));
             }
             registry.records[position].status = final_status.to_owned();
             registry.records[position].error =
@@ -471,6 +462,16 @@ impl ApplicationService {
                         task.total,
                     )
                 })?;
+            if !self.cache_chapter_files_unlocked(book_id, &chapter_id, signal).await? {
+                drop(_operation); drop(permit);
+                continue;
+            }
+            if let Ok(notifier) = self.book_notifier.read() {
+                if let Some(notifier) = notifier.as_ref() {
+                    let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+                    notifier(json!({"requestId": 0, "resource": self.resource_descriptor(&reference)}));
+                }
+            }
             self.update_task(task_id, |task| {
                 task.completed = task.completed.saturating_add(1)
             })
@@ -607,7 +608,8 @@ impl ApplicationService {
                         ));
                         continue;
                     };
-                    if !source.enabled || crate::source_metadata::is_rss_source_metadata(&source.source) {
+                    if !source.enabled || crate::source_metadata::is_rss_source_metadata(&source.source)
+                        || task.source_type.as_deref().is_some_and(|kind| !crate::source_metadata::matches_search_type(&source.source, kind)) {
                         slots.push((
                             source_id.clone(),
                             None,
@@ -915,7 +917,7 @@ impl ApplicationService {
         commit: bool,
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
-        let private_path = Path::new("books").join(book_id).join("source-state.json");
+        let private_path = self.book_engine_path(book_id)?;
         let book_ref = self
             .store
             .book_ref(book_id)
@@ -1134,26 +1136,27 @@ impl ApplicationService {
                 }));
             }
 
+            if current_raw != new_raw { current_book["updatedAtMs"] = json!(refreshed_at_ms); }
             let mut next_private = current_private.clone();
             next_private["chapters"] = json!(new_raw);
-            current_book["chapters"] =
-                serde_json::to_value(&plan.chapters).map_err(|error| error.to_string())?;
+            let mut chapters = serde_json::to_value(&plan.chapters).map_err(|error| error.to_string())?;
+            for (index, chapter) in chapters.as_array_mut().into_iter().flatten().enumerate() {
+                if let Some(previous) = current_book["chapters"].as_array().into_iter().flatten().find(|old| old["id"] == chapter["id"]) {
+                    let previous_index = previous["index"].as_u64().unwrap_or(0) as usize;
+                    if text_at(&current_raw[previous_index], &["url", "chapterUrl"]) != text_at(&new_raw[index], &["url", "chapterUrl"]) { continue; }
+                    for key in ["pages", "sources", "protocol", "files", "url", "media", "volume"] {
+                        if let Some(value) = previous.get(key) { chapter[key] = value.clone(); }
+                    }
+                    if previous["media"].is_object() { chapter["resource"] = previous["resource"].clone(); }
+                }
+            }
+            current_book["chapters"] = chapters;
             current_book["chapterCount"] = json!(plan.chapters.len());
             current_book["latestChapter"] = json!(plan.latest_chapter);
             current_book["progress"] =
                 serde_json::to_value(&plan.progress).map_err(|error| error.to_string())?;
-            let private_bytes = serde_json::to_vec_pretty(&next_private)
-                .map_err(|error| format!("Cannot encode refreshed private book: {error}"))?;
-            let replacements = vec![
-                crate::resource_transactions::Replacement::private_book_json(
-                    book_id,
-                    private_bytes,
-                )
-                .map_err(|error| error.to_string())?,
-                writer_guard
-                    .public_json_replacement(&book_ref, &current_book)
-                    .map_err(|error| error.to_string())?,
-            ];
+            let replacements = vec![writer_guard.content_replacement(&book_ref, &current_book, &next_private)
+                .map_err(|error| error.to_string())?];
             let transaction_root = writer_guard.data_root().to_path_buf();
             let transaction_result = tokio::task::spawn_blocking(move || {
                 let transaction = crate::resource_transactions::FileTransaction::prepare(

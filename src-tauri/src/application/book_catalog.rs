@@ -8,6 +8,39 @@ struct AddBookSnapshot {
 }
 
 impl ApplicationService {
+    pub(super) async fn saved_alternative_candidate(&self, book_id: &str, index: usize, expected_source: Option<&str>) -> Result<Value, String> {
+        let _sources = self.sources_lock.lock().await;
+        let records = self.read_sources().await?;
+        let _book = self.book_lock(book_id).await;
+        let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+        let book = self.store.read_json_ref(&reference).await.map_err(|error| error.to_string())?;
+        let private = self.read_internal_json(self.book_engine_path(book_id)?).await?;
+        let alternative = book["alternatives"].as_array().and_then(|items| items.get(index)).ok_or("Saved alternative no longer exists")?;
+        let source_id = alternative["sourceId"].as_str().ok_or("Saved alternative has no source")?;
+        if Some(source_id) != expected_source { return Err("Alternative list changed; choose the source again".into()); }
+        let source = records.iter().find(|source| source.id == source_id && source.enabled).ok_or("Alternative source is unavailable")?;
+        let fingerprint = source_definition_fingerprint(&source.source)?;
+        if alternative["sourceDefinitionFingerprint"].as_str() != Some(fingerprint.as_str()) { return Err("Alternative source changed; search again".into()); }
+        let original_id = private["sourceId"].as_str().ok_or("Content has no source")?;
+        let original = records.iter().find(|source| source.id == original_id);
+        let original_definition = original.map(|source| source.source.clone()).unwrap_or(Value::Null);
+        let mut engine = alternative["engine"].clone();
+        engine["bookUrl"] = alternative["engineurl"].clone();
+        let identity = json!({"targetTitle": text_at(&private["book"], &["name", "title"]).unwrap_or_default(),
+            "targetAuthor": text_at(&private["book"], &["author"]).unwrap_or_default()});
+        let confirmation = candidate_identity_match(&identity, &engine).ok_or("Alternative content identity differs")?;
+        Ok(json!({"sourceId": source_id, "book": engine, "sourceRevision": self.source_revision(source_id).await?,
+            "sourceDefinitionFingerprint": fingerprint,
+            "replacementContext": {"targetBookId": book_id, "originalSourceId": original_id,
+                "originalSourcePresent": original.is_some(),
+                "originalSourceFingerprint": original.map(|source| source_definition_fingerprint(&source.source)).transpose()?,
+                "originalSourceRevision": self.source_revision(original_id).await?,
+                "catalogFingerprint": book_source_fingerprint(original_id, &original_definition, &private, &book)?,
+                "catalogGeneration": private["catalogGeneration"], "bookInstanceId": private["bookInstanceId"],
+                "candidateSourceFingerprint": fingerprint, "requiresIdentityConfirmation": confirmation,
+                "expiresAtMs": now_ms().saturating_add(BOOK_SOURCE_CANDIDATE_TTL_MS)}}))
+    }
+
     /// Resolve original /read and /addToBookshelf links through the existing book preparation flow.
     pub async fn prepare_book_from_url(&self, book_url: &str, read: bool) -> Result<Value, String> {
         let _operation = self.operation_read().await;
@@ -38,7 +71,7 @@ impl ApplicationService {
             };
             let _book = self.book_lock(id).await;
             let Ok(private) = self
-                .read_internal_json(&Path::new("books").join(id).join("source-state.json"))
+                .read_internal_json(&self.book_engine_path(id)?)
                 .await
             else {
                 continue;
@@ -98,38 +131,40 @@ impl ApplicationService {
     pub async fn prepare_search_result_book(&self, result_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let selected = self.materialize_search_result_book(result_id).await?;
-        let selected_book = self.store.read_json_ref(&self.store.book_ref(
-            selected["book"]["resourceId"].as_str().and_then(|id| id.strip_prefix("resource://books/"))
-                .and_then(|id| id.strip_suffix("/book.json")).ok_or_else(|| "Invalid cached book descriptor".to_owned())?
-        ).map_err(|error| error.to_string())?).await.map_err(|error| error.to_string())?;
-        let book_id = selected_book["id"].as_str().ok_or_else(|| "Cached book has no ID".to_owned())?;
-        let result_ids = {
+        let reference = selected["book"]["resourceId"].as_str().ok_or_else(|| "Prepared content has no reference".to_owned())?;
+        let (_, book_id, _) = crate::resources::content::content_path(reference.trim_start_matches("resource://"))
+            .ok_or_else(|| "Invalid prepared content reference".to_owned())?;
+        let alternatives = {
             let registry = self.tasks.lock().await;
-            registry.search_documents.values()
-                .filter_map(|document| document["results"].as_array())
-                .flatten()
-                .find(|result| result["resultId"].as_str() == Some(result_id)
-                    || result["sources"].as_array().is_some_and(|sources| sources.iter()
-                        .any(|source| source["resultId"].as_str() == Some(result_id))))
-                .and_then(|result| result["sources"].as_array())
-                .map(|sources| sources.iter().filter_map(|source| source["resultId"].as_str())
-                    .filter(|id| *id != result_id).map(str::to_owned).collect::<Vec<_>>())
-                .unwrap_or_default()
+            registry.search_documents.values().filter_map(|document| document["results"].as_array()).flatten()
+                .find(|result| result["resultId"] == result_id || result["sources"].as_array().is_some_and(|sources| sources.iter().any(|source| source["resultId"] == result_id)))
+                .and_then(|result| result["sources"].as_array()).into_iter().flatten()
+                .filter(|leaf| leaf["resultId"] != result_id)
+                .filter_map(|leaf| registry.search_result_documents.get(leaf["resultId"].as_str()?).map(|cache| alternative_from_search(leaf, cache)))
+                .collect::<Vec<_>>()
         };
-        let mut alternatives = Vec::new();
-        for id in result_ids {
-            let cached = self.materialize_search_result_book(&id).await?;
-            let candidate = cached["book"]["resourceId"].as_str()
-                .and_then(|id| id.strip_prefix("resource://books/"))
-                .and_then(|id| id.strip_suffix("/book.json")).ok_or_else(|| "Invalid cached source descriptor".to_owned())?;
-            if candidate != book_id && !alternatives.iter().any(|id| id == candidate) {
-                alternatives.push(candidate.to_owned());
-            }
-        }
-        if !alternatives.is_empty() {
-            self.set_source_book_ids(book_id, alternatives).await?;
-        }
+        self.set_alternatives(book_id, alternatives).await?;
         Ok(selected)
+    }
+
+    pub async fn prepare_alternative_book(&self, book_id: &str, index: usize, expected_source_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+        let current = self.store.read_json_ref(&reference).await.map_err(|error| error.to_string())?;
+        let alternative = current["alternatives"].as_array().and_then(|items| items.get(index)).cloned()
+            .ok_or_else(|| "Alternative source changed; reopen the source list".to_owned())?;
+        if alternative["sourceId"] != expected_source_id { return Err("Alternative source changed; reopen the source list".into()); }
+        let source = self.find_source(expected_source_id).await?;
+        let fingerprint = source_definition_fingerprint(&source.source)?;
+        if alternative["sourceDefinitionFingerprint"].as_str().is_some_and(|saved| saved != fingerprint) {
+            return Err("Alternative source rules changed; search for sources again".into());
+        }
+        let mut engine_book = alternative["engine"].clone();
+        if !engine_book.is_object() { return Err("Alternative is missing source execution parameters".into()); }
+        engine_book["bookUrl"] = alternative["engineurl"].clone();
+        let cache = json!({"sourceId": expected_source_id, "sourceRevision": self.source_revision(expected_source_id).await?,
+            "sourceDefinitionFingerprint": fingerprint, "book": engine_book});
+        self.materialize_source_book("alternative", cache).await
     }
 
     async fn materialize_search_result_book(
@@ -165,11 +200,8 @@ impl ApplicationService {
         }
         let url = text_at(&raw_book, &["bookUrl", "url", "origin"])
             .unwrap_or_else(|| result_id.to_owned());
-        let book_id = format!("cache-{:016x}", stable_hash(&format!("{source_id}\0{url}")));
-        let book_ref = self
-            .store
-            .book_ref(&book_id)
-            .map_err(|error| error.to_string())?;
+        let source_kind = crate::source_metadata::content_type(&self.find_source(&source_id).await?.source);
+        let book_id = format!("cache-{:016x}", stable_hash(&format!("{source_id}\0{source_kind}\0{url}")));
         let (source, source_revision, initial_state) = {
             let _sources = self.sources_lock.lock().await;
             let source = self
@@ -199,6 +231,10 @@ impl ApplicationService {
             }
             (source, source_revision, state)
         };
+        if initial_state.is_none() {
+            self.store.bind_book_type(&book_id, crate::source_metadata::content_type(&source.source)).await.map_err(|error| error.to_string())?;
+        }
+        let book_ref = self.store.book_ref(&book_id).map_err(|error| error.to_string())?;
         if initial_state.is_some() {
             return Ok(json!({ "book": self.resource_descriptor(&book_ref) }));
         }
@@ -365,8 +401,7 @@ impl ApplicationService {
             source_id: Some(display_metadata.source_id.clone()),
             source_name: Some(display_metadata.source_name.clone()),
             source_group: display_metadata.source_group.clone(),
-            source_book_ids: Vec::new(),
-            display_base: None,
+                display_base: None,
             display_overrides: None,
             chapter_count: descriptors.len(),
             latest_chapter: latest,
@@ -375,13 +410,21 @@ impl ApplicationService {
         };
         let mut book_json = serde_json::to_value(book).map_err(|error| error.to_string())?;
         if let Some(existing) = latest_state.as_ref() {
+            for chapter in book_json["chapters"].as_array_mut().into_iter().flatten() {
+                if let Some(previous) = existing.public["chapters"].as_array().into_iter().flatten().find(|old| old["id"] == chapter["id"]) {
+                    for key in ["pages", "sources", "protocol", "files", "url", "media"] {
+                        if let Some(value) = previous.get(key) { chapter[key] = value.clone(); }
+                    }
+                    if previous["media"].is_object() { chapter["resource"] = previous["resource"].clone(); }
+                }
+            }
             if let (Some(target), Some(previous)) =
                 (book_json.as_object_mut(), existing.public.as_object())
             {
                 for key in [
                     "displayBase",
                     "displayOverrides",
-                    "sourceBookIds",
+                    "alternatives",
                 ] {
                     if let Some(value) = previous.get(key) {
                         target.insert(key.to_owned(), value.clone());
@@ -390,6 +433,9 @@ impl ApplicationService {
             }
         }
         crate::book_display_metadata::update_base(&mut book_json, &display_metadata)?;
+        book_json["updatedAtMs"] = if latest_state.as_ref().is_some_and(|old| old.private["chapters"] == json!(raw_chapters)) {
+            latest_state.as_ref().map(|old| old.public["updatedAtMs"].clone()).unwrap_or(Value::Null)
+        } else { json!(now_ms()) };
         let mut private_json = latest_state
             .as_ref()
             .map(|state| state.private.clone())
@@ -399,23 +445,8 @@ impl ApplicationService {
         private_json["catalogGeneration"] = json!(uuid::Uuid::new_v4().simple().to_string());
         private_json["book"] = engine_book;
         private_json["chapters"] = json!(raw_chapters);
-        self.write_internal_json(
-            Path::new("books").join(&book_id).join("source-state.json"),
-            &private_json,
-        )
-        .await?;
-        if let Err(error) = self.store.write_json_ref(&book_ref, &book_json).await {
-            let rollback = self
-                .restore_add_book_snapshot(&book_id, &book_ref, initial_state.as_ref(), false)
-                .await;
-            let rollback = rollback
-                .map(|_| "ok".to_owned())
-                .unwrap_or_else(|error| error);
-            return Err(format!(
-                "Cannot save prepared book resource: {error}; private rollback: {}",
-                rollback
-            ));
-        }
+        self.store.write_book_state(&book_id, &book_json, &private_json).await
+            .map_err(|error| format!("Cannot save prepared content: {error}"))?;
         if let Some(search_id) = cache.get("searchId").and_then(Value::as_str) {
             let mut registry = self.tasks.lock().await;
             let group_root = registry.search_documents.get(search_id)
@@ -439,52 +470,43 @@ impl ApplicationService {
         Ok(json!({ "book": self.resource_descriptor(&book_ref) }))
     }
 
-    pub(super) async fn set_source_book_ids(&self, book_id: &str, alternatives: Vec<String>) -> Result<(), String> {
+    pub(super) async fn set_alternatives(&self, book_id: &str, alternatives: Vec<Value>) -> Result<(), String> {
         let _book = self.book_lock(book_id).await;
         let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
         self.store.update_json_ref(&reference, move |mut book| {
-            book["sourceBookIds"] = json!(alternatives);
+            let mut merged = book["alternatives"].as_array().cloned().unwrap_or_default();
+            for candidate in alternatives {
+                merged.retain(|old| !(old["sourceId"] == candidate["sourceId"] && old["engineurl"] == candidate["engineurl"]));
+                merged.push(candidate);
+            }
+            book["alternatives"] = json!(merged);
             Ok(book)
         }).await.map_err(|error| error.to_string())?;
         if let Ok(notifier) = self.book_notifier.read() {
-            if let Some(notifier) = notifier.as_ref() {
-                notifier(json!({ "requestId": 0, "resource": self.resource_descriptor(&reference) }));
-            }
+            if let Some(notifier) = notifier.as_ref() { notifier(json!({"requestId": 0, "resource": self.resource_descriptor(&reference)})); }
         }
         Ok(())
     }
 
     pub(super) async fn cache_source_candidates(&self, search_id: &str) -> Result<(), String> {
-        let (book_id, result_ids) = {
+        let (book_id, alternatives) = {
             let registry = self.tasks.lock().await;
-            let context = registry.search_replacement_contexts.get(search_id)
-                .ok_or_else(|| "Candidate search expired".to_owned())?;
-            let book_id = context["targetBookId"].as_str().ok_or_else(|| "Candidate search has no book".to_owned())?.to_owned();
-            let results = registry.search_documents.get(search_id)
-                .and_then(|document| document["results"].as_array())
-                .into_iter().flatten().filter_map(|result| result["resultId"].as_str())
-                .map(str::to_owned).collect::<Vec<_>>();
-            (book_id, results)
+            let context = registry.search_replacement_contexts.get(search_id).ok_or_else(|| "Candidate search expired".to_owned())?;
+            let book_id = context["targetBookId"].as_str().ok_or_else(|| "Candidate search has no content".to_owned())?.to_owned();
+            let alternatives = registry.search_documents.get(search_id).and_then(|doc| doc["results"].as_array())
+                .into_iter().flatten().filter_map(|leaf| registry.search_result_documents.get(leaf["resultId"].as_str()?).map(|cache| alternative_from_search(leaf, cache)))
+                .collect::<Vec<_>>();
+            (book_id, alternatives)
         };
-        let mut alternatives = Vec::new();
-        for result_id in result_ids {
-            let result = self.materialize_search_result_book(&result_id).await?;
-            let candidate_id = result["book"]["resourceId"].as_str()
-                .and_then(|id| id.strip_prefix("resource://books/"))
-                .and_then(|id| id.strip_suffix("/book.json")).ok_or_else(|| "Invalid cached candidate".to_owned())?;
-            if candidate_id != book_id && !alternatives.iter().any(|id| id == candidate_id) {
-                alternatives.push(candidate_id.to_owned());
-            }
-        }
-        self.set_source_book_ids(&book_id, alternatives).await
+        self.set_alternatives(&book_id, alternatives).await
     }
 
     async fn read_add_book_snapshot(
         &self,
         book_id: &str,
     ) -> Result<Option<AddBookSnapshot>, String> {
-        let public_path = self.root.join("books").join(book_id).join("book.json");
-        let private_relative = Path::new("books").join(book_id).join("source-state.json");
+        let public_path = self.root.join(self.book_engine_path(book_id)?);
+        let private_relative = self.book_engine_path(book_id)?;
         let private_path = self.root.join(&private_relative);
         let public_exists = tokio::fs::try_exists(&public_path)
             .await
@@ -531,7 +553,7 @@ impl ApplicationService {
         previous: Option<&AddBookSnapshot>,
         restore_public: bool,
     ) -> Result<(), String> {
-        let private_relative = Path::new("books").join(book_id).join("source-state.json");
+        let private_relative = self.book_engine_path(book_id)?;
         if let Some(previous) = previous {
             self.write_internal_json(&private_relative, &previous.private)
                 .await?;
@@ -545,7 +567,7 @@ impl ApplicationService {
         }
         remove_file_if_present(&self.root.join(private_relative)).await?;
         if restore_public {
-            remove_file_if_present(&self.root.join("books").join(book_id).join("book.json"))
+            remove_file_if_present(&self.root.join(self.book_engine_path(book_id)?))
                 .await?;
         }
         Ok(())
@@ -568,7 +590,7 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
         let original_book = book.clone();
         let private = self
-            .read_internal_json(Path::new("books").join(book_id).join("source-state.json"))
+            .read_internal_json(self.book_engine_path(book_id)?)
             .await
             .ok();
         let can_change_source = private.as_ref().is_some_and(can_change_source_from_private);
@@ -625,7 +647,7 @@ impl ApplicationService {
     pub async fn refresh_book_info(&self, book_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;
-        let private_path = Path::new("books").join(book_id).join("source-state.json");
+        let private_path = self.book_engine_path(book_id)?;
         let book_ref = self
             .store
             .book_ref(book_id)
@@ -860,15 +882,8 @@ impl ApplicationService {
         next_private["book"] = refreshed_engine_book;
         let mut next_book = old_book.clone();
         apply_refreshed_book_metadata(&mut next_book, &display_metadata)?;
-        let private_bytes = serde_json::to_vec_pretty(&next_private)
-            .map_err(|error| format!("Cannot encode refreshed private book: {error}"))?;
-        let replacements = vec![
-            crate::resource_transactions::Replacement::private_book_json(book_id, private_bytes)
-                .map_err(|error| error.to_string())?,
-            writer_guard
-                .public_json_replacement(&book_ref, &next_book)
-                .map_err(|error| error.to_string())?,
-        ];
+        let replacements = vec![writer_guard.content_replacement(&book_ref, &next_book, &next_private)
+            .map_err(|error| error.to_string())?];
         let transaction_root = writer_guard.data_root().to_path_buf();
         let transaction_result = tokio::task::spawn_blocking(move || {
             let transaction = crate::resource_transactions::FileTransaction::prepare(
@@ -1007,6 +1022,8 @@ pub(super) fn apply_cached_book_metadata(
     crate::book_display_metadata::update_base(book, metadata)?;
     if let Some(content_type) = metadata.content_type.as_deref() {
         book["contentType"] = json!(content_type);
+        set_optional_public_field(book, "mediaType",
+            matches!(content_type, "audio" | "video").then(|| json!(content_type)));
     }
     if let Some(kind) = metadata.kind.as_deref() {
         book["kind"] = json!(kind);
@@ -1039,6 +1056,8 @@ pub(super) fn apply_refreshed_book_metadata(
     crate::book_display_metadata::update_base(book, metadata)?;
     if let Some(content_type) = metadata.content_type.as_deref() {
         book["contentType"] = json!(content_type);
+        set_optional_public_field(book, "mediaType",
+            matches!(content_type, "audio" | "video").then(|| json!(content_type)));
     }
     if let Some(kind) = metadata.kind.as_deref() {
         book["kind"] = json!(kind);
@@ -1061,4 +1080,17 @@ pub(super) fn apply_refreshed_book_metadata(
         metadata.source_group.as_deref().map(|group| json!(group)),
     );
     Ok(())
+}
+
+pub(super) fn alternative_from_search(leaf: &Value, cache: &Value) -> Value {
+    let mut engine = cache["book"].clone();
+    let engine_url = text_at(&engine, &["bookUrl", "url"]).unwrap_or_default();
+    if let Some(engine) = engine.as_object_mut() { engine.remove("bookUrl"); engine.remove("url"); }
+    let mut alternative = json!({"sourceId": leaf["sourceId"], "sourceName": leaf["sourceName"],
+        "title": leaf["title"], "engineurl": engine_url, "engine": engine,
+        "sourceDefinitionFingerprint": cache["sourceDefinitionFingerprint"]});
+    for (from, to) in [("author", "author"), ("coverSrc", "cover"), ("latestChapter", "latest")] {
+        if let Some(value) = leaf.get(from).filter(|value| !value.is_null()) { alternative[to] = value.clone(); }
+    }
+    alternative
 }

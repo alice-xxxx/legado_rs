@@ -33,12 +33,13 @@ mod reading_notification_tests {
             id: "source-a".into(), name: "Source".into(), group: None, enabled: true,
             source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":source_type}),
         }]).await.unwrap();
+        service.store.bind_book_type("book-a", match source_type { 1 => "audio", 2 => "image", 4 => "video", _ => "text" }).await.unwrap();
         let chapters: Vec<Value> = (0..5).map(|index| json!({"id":format!("chapter-{index}"),"index":index,"title":format!("Chapter {index}")})).collect();
         let raw: Vec<Value> = (0..5).map(|index| json!({"url":format!("https://example.invalid/{index}"),"title":format!("Chapter {index}")})).collect();
         service.store.write_json_ref(&service.store.book_ref("book-a").unwrap(), &json!({
             "schemaVersion":1,"id":"book-a","title":"Book","sourceId":"source-a","chapterCount":5,"chapters":chapters
         })).await.unwrap();
-        service.write_internal_json(Path::new("books/book-a/source-state.json"), &json!({
+        service.write_internal_json(service.book_engine_path("book-a").unwrap(), &json!({
             "sourceId":"source-a","book":{"bookUrl":"https://example.invalid/book","name":"Book"},"chapters":raw
         })).await.unwrap();
         service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":2}})).await.unwrap();
@@ -80,24 +81,23 @@ mod reading_notification_tests {
     const COMIC: &str = "<img src=\"https://images.example.invalid/1.webp\"><img src=\"https://images.example.invalid/2.webp\"><script>alert(1)</script>";
 
     #[tokio::test]
-    async fn comic_img_list_is_cached_as_markup_and_opened_as_comic() {
+    async fn comic_img_list_is_indexed_as_pages_without_a_chapter_json() {
         let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
         service.get_book("book-a").await.unwrap();
         service.prepare_chapters("book-a", 0, 1).await.unwrap();
-        let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
-        assert_eq!(book["contentType"], "comic");
-        assert_eq!(book["chapters"][0]["resource"]["contentFormat"], "richText");
-        let reference = scoped_chapter_cache_ref("book-a", book["chapters"][0]["resource"]["resourceId"].as_str().unwrap()).unwrap();
-        let content = service.store.read_json_ref(&reference).await.unwrap();
-        assert_eq!(content["kind"], "richText");
-        let markup = content["markup"].as_str().unwrap();
-        assert_eq!(markup.matches("<img ").count(), 2);
-        assert!(!markup.contains("<script"));
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let reference = service.store.book_ref("book-a").unwrap();
+        let book = service.store.read_json_ref(&reference).await.unwrap();
+        assert_eq!(book["contentType"], "image");
+        assert_eq!(book["chapters"][0]["pages"].as_array().unwrap().len(), 2);
+        assert!(book["chapters"][0]["resource"].is_null());
+        let public = crate::resources::content::public_book_view(&service.store.read_raw_document(&reference).unwrap(), "image").unwrap();
+        assert!(public.get("media").is_none());
+        assert!(public.get("engine").is_none());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]
-    async fn old_comic_text_cache_is_repaired_and_published_without_network() {
+    async fn old_comic_text_cache_is_repaired_without_refetching_chapter() {
         let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
         let original = service.store.write_chapter_text("book-a", "chapter-0", COMIC).await.unwrap();
         let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(&original, "text")).unwrap();
@@ -112,12 +112,53 @@ mod reading_notification_tests {
         let epoch = service.restore_epoch.load(Ordering::Acquire);
         service.prepare_reading_chapters("book-a", 0, epoch, |resource| published.lock().unwrap().push(resource)).await.unwrap();
         let book = service.store.read_json_ref(&book_ref).await.unwrap();
-        assert_eq!(book["contentType"], "comic");
-        assert_eq!(book["chapters"][0]["resource"]["contentFormat"], "richText");
-        assert_ne!(book["chapters"][0]["resource"]["resourceId"].as_str(), Some(original.as_str()));
+        assert_eq!(book["contentType"], "image");
+        assert!(book["chapters"][0]["resource"].is_null());
+        assert_eq!(book["chapters"][0]["pages"].as_array().unwrap().len(), 2);
         assert_eq!(service.store.read_json_ref(&original).await.unwrap()["kind"], "text");
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "Only image requests are resolved; cached chapter content is reused");
         assert_eq!(published.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn comic_url_lists_become_private_image_resources() {
+        for content in [
+            "https://images.example.invalid/1.webp\nhttps://images.example.invalid/2.webp",
+            "[\"https://images.example.invalid/1.webp\",\"https://images.example.invalid/2.webp\"]",
+        ] {
+            let (_directory, service, calls) = fixture_with_content(2, content).await;
+            service.prepare_chapters("book-a", 0, 1).await.unwrap();
+            let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
+            assert_eq!(book["contentType"], "image");
+            let pages = book["chapters"][0]["pages"].as_array().unwrap();
+            assert_eq!(pages.len(), 2);
+            assert!(pages.iter().all(|page| page["src"].as_str().unwrap().starts_with("resource://media/")));
+            assert_eq!(calls.load(Ordering::SeqCst), 3);
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_source_type_does_not_reuse_an_audio_cache_for_a_comic() {
+        let (_directory, service, calls) = fixture_with_content(2, "https://images.example.invalid/1.webp").await;
+        let original = ResourceRef::new("resource://media/obsolete-audio").unwrap();
+        let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(&original, "audio")).unwrap();
+        let book_ref = service.store.book_ref("book-a").unwrap();
+        service.store.update_json_ref(&book_ref, |mut book| {
+            book["contentType"] = json!("audio");
+            book["mediaType"] = json!("audio");
+            book["chapters"][0]["resource"] = descriptor;
+            Ok(book)
+        }).await.unwrap();
+        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+        service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
+        let epoch = service.restore_epoch.load(Ordering::Acquire);
+        service.prepare_reading_chapters("book-a", 0, epoch, |_| {}).await.unwrap();
+        let book = service.store.read_json_ref(&book_ref).await.unwrap();
+        assert_eq!(book["contentType"], "image");
+        assert!(book["mediaType"].is_null());
+        assert!(book["chapters"][0]["resource"].is_null());
+        assert!(book["chapters"][0]["pages"].as_array().is_some_and(|pages| !pages.is_empty()));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -130,8 +171,7 @@ mod reading_notification_tests {
             assert_eq!(book["contentType"], expected);
             assert_eq!(book["mediaType"], expected);
             assert_eq!(book["chapters"][0]["resource"]["contentFormat"], expected);
-            let reference = scoped_chapter_cache_ref("book-a", book["chapters"][0]["resource"]["resourceId"].as_str().unwrap()).unwrap();
-            let content = service.store.read_json_ref(&reference).await.unwrap();
+            let content = &book["chapters"][0]["media"];
             assert_eq!(content["kind"], "media");
             assert_eq!(content["mediaType"], expected);
             assert!(content.get("text").is_none());
@@ -164,26 +204,8 @@ impl ApplicationService {
             if self.restore_epoch.load(std::sync::atomic::Ordering::Acquire) != epoch { break; }
             let current = self.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
             if current["progress"]["chapterIndex"].as_u64() != Some(chapter_index as u64) { break; }
-            if let Some(src) = current["chapters"][index]["resource"]["resourceId"].as_str() {
-                let reference = scoped_chapter_cache_ref(book_id, src)?;
-                // Online books written before source type projection must pass
-                // through preparation once, even when a cache file exists.
-                if let Some(format) = self.cached_chapter_format(&reference).await?
-                    .filter(|_| current["sourceId"].as_str().is_none() || current["contentType"].is_string()) {
-                    let reusable = match current["contentType"].as_str() {
-                        Some("audio") => format == "audio",
-                        Some("video") => format == "video",
-                        Some("comic") => format == "richText",
-                        _ if format == "text" => {
-                            let cached = self.store.read_json_ref(&reference).await
-                                .map_err(|error| error.to_string())?;
-                            !looks_like_html(cached["text"].as_str().unwrap_or_default())
-                        }
-                        _ => true,
-                    };
-                    if reusable { continue; }
-                }
-            }
+            if current["chapters"][index]["volume"] == true { continue; }
+            if self.indexed_chapter_ready(&current, index).await? { continue; }
             let result = self.prepare_chapters_unlocked(book_id, index, 1).await?;
             if result["changed"].as_bool() == Some(true) { updated(result["book"].clone()); }
         }
@@ -212,7 +234,10 @@ impl ApplicationService {
         if let Some(chapter_id) = chapter_id.as_deref() {
             validate_id(chapter_id, "chapterId")?;
         }
-        let progress_summary = json!({
+        let page_id = progress["pageId"].as_str().map(str::to_owned);
+        let anchor = progress["anchor"].as_str().map(str::to_owned);
+        if let Some(page_id) = &page_id { validate_id(page_id, "pageId")?; }
+        let progress_summary = json!({"pageId": page_id, "anchor": anchor, "quality": progress["quality"],
             "chapterId": chapter_id,
             "chapterIndex": chapter_index,
             "offset": offset,
@@ -243,6 +268,17 @@ impl ApplicationService {
                         return Err("Progress chapterId does not match chapterIndex".into());
                     }
                 }
+                if let Some(quality) = progress_summary["quality"].as_str() {
+                    if !book["chapters"][chapter_index]["sources"].as_array().is_some_and(|sources| sources.iter().any(|source| source["label"] == quality)) {
+                        return Err("Video quality does not belong to the chapter".into());
+                    }
+                }
+                if let Some(page_id) = progress_summary["pageId"].as_str() {
+                    if !book["chapters"][chapter_index]["pages"].as_array().is_some_and(|pages| pages.iter().any(|page| page["id"] == page_id)) {
+                        return Err("Progress image page does not belong to the chapter".into());
+                    }
+                }
+                if book["contentType"] == "image" && offset > 1_000_000 { return Err("Image position ratio is outside the page".into()); }
                 book["progress"] = progress_summary;
                 Ok(book)
             })
@@ -365,7 +401,7 @@ impl ApplicationService {
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        let private_path = Path::new("books").join(book_id).join("source-state.json");
+        let private_path = self.book_engine_path(book_id)?;
 
         // Take an unlocked catalog snapshot first, then acquire every chapter
         // lock before the source/book/writer locks. prepare_chapters holds a
@@ -508,6 +544,7 @@ impl ApplicationService {
         let mut cleanup_paths = HashSet::new();
         let mut cached_count = 0usize;
         for chapter in latest_descriptors.iter_mut() {
+            if chapter["pages"].as_array().is_some_and(|pages| !pages.is_empty()) { cached_count += 1; }
             let chapter_ref = chapter
                 .get("resource")
                 .and_then(|resource| resource.get("resourceId"))
@@ -515,7 +552,10 @@ impl ApplicationService {
                 .filter(|src| !src.is_empty())
                 .map(|src| scoped_chapter_cache_ref(book_id, src))
                 .transpose()?;
-            if let Some(chapter_ref) = chapter_ref {
+            if chapter_ref.as_ref().is_some_and(|reference| reference.path().starts_with("media/")) {
+                cached_count += 1;
+            }
+            if let Some(chapter_ref) = chapter_ref.filter(|reference| !reference.path().starts_with("media/")) {
                 let cache_path = writer_guard.data_root().join(chapter_ref.path());
                 match tokio::fs::symlink_metadata(&cache_path).await {
                     Ok(metadata) if metadata.file_type().is_file() => cached_count += 1,
@@ -538,7 +578,7 @@ impl ApplicationService {
                 }
             }
             if let Some(object) = chapter.as_object_mut() {
-                object.remove("resource");
+                for key in ["resource", "url", "pages", "sources", "media", "protocol", "files"] { object.remove(key); }
             }
         }
         if latest_raw_chapters.len() != latest_descriptors.len() {
@@ -644,110 +684,44 @@ impl ApplicationService {
             .transaction_writer_guard()
             .await
             .map_err(|error| error.to_string())?;
-        let shelf = writer_guard
-            .read_json_ref(&self.store.shelf_ref())
-            .map_err(|error| error.to_string())?;
-        let shelf_books = shelf
-            .get("books")
-            .and_then(Value::as_array)
-            .ok_or_else(|| "Invalid shelf JSON: books must be an array".to_owned())?;
-
-        let mut seen_books = HashSet::with_capacity(shelf_books.len());
-        let mut seen_chapter_resources = HashSet::new();
         let mut chapter_count = 0u64;
         let mut chapter_bytes = 0u64;
         let mut online_chapter_count = 0u64;
         let mut online_chapter_bytes = 0u64;
         let mut local_chapter_count = 0u64;
         let mut local_chapter_bytes = 0u64;
-        let root = writer_guard.data_root().to_path_buf();
-
-        for shelf_book in shelf_books {
-            let book_id = shelf_book
-                .get("id")
-                .and_then(Value::as_str)
-                .ok_or_else(|| "Invalid shelf JSON: book ID is missing".to_owned())?;
-            validate_id(book_id, "bookId")?;
-            if !seen_books.insert(book_id.to_owned()) {
-                continue;
-            }
-            let book_ref = self
-                .store
-                .book_ref(book_id)
-                .map_err(|error| error.to_string())?;
-            let book = writer_guard
-                .read_json_ref(&book_ref)
-                .map_err(|_| format!("Cannot read book '{book_id}' while checking cache usage"))?;
-            if book.get("id").and_then(Value::as_str) != Some(book_id) {
-                return Err(format!(
-                    "Book resource ID does not match its catalog path for '{book_id}'"
-                ));
-            }
-            let online = book.get("canChangeSource").and_then(Value::as_bool) == Some(true)
-                && book
-                    .get("sourceId")
-                    .and_then(Value::as_str)
-                    .is_some_and(|source_id| !source_id.is_empty());
-            let chapters = book
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("Book '{book_id}' has no valid chapter directory"))?;
-
-            for chapter in chapters {
-                let Some(src) = chapter
-                    .get("resource")
-                    .and_then(|resource| resource.get("resourceId"))
-                    .and_then(Value::as_str)
-                    .filter(|src| !src.is_empty())
-                else {
-                    continue;
-                };
-                let reference = scoped_chapter_cache_ref(book_id, src)?;
-                if !seen_chapter_resources.insert(reference.as_str().to_owned()) {
-                    continue;
-                }
-
-                let path_components = reference.path().split('/').collect::<Vec<_>>();
-                let mut path = root.clone();
-                let mut file_bytes = None;
-                let mut unsafe_path = false;
-                for (index, component) in path_components.iter().enumerate() {
-                    path.push(*component);
-                    match tokio::fs::symlink_metadata(&path).await {
-                        Ok(metadata) if metadata.file_type().is_symlink() => {
-                            unsafe_path = true;
-                            break;
-                        }
-                        Ok(metadata) if index + 1 < path_components.len() => {
-                            if !metadata.is_dir() {
-                                unsafe_path = true;
-                                break;
-                            }
-                        }
-                        Ok(metadata) if metadata.file_type().is_file() => {
-                            file_bytes = Some(metadata.len());
-                        }
-                        Ok(_) => {}
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
-                        Err(error) => {
-                            return Err(format!(
-                                "Cannot inspect a chapter cache entry for book '{book_id}': {error}"
-                            ));
-                        }
-                    }
-                }
-                if unsafe_path {
-                    continue;
-                }
-                if let Some(bytes) = file_bytes {
+        let root = writer_guard.data_root();
+        for kind in crate::resources::content::CONTENT_TYPES {
+            let directory = root.join("cache").join(kind);
+            crate::resources::check_path_no_symlink(root, &directory, true).map_err(|error| error.to_string())?;
+            if !directory.exists() { continue; }
+            for entry in std::fs::read_dir(&directory).map_err(|error| error.to_string())? {
+                let entry = entry.map_err(|error| error.to_string())?;
+                if !entry.file_type().map_err(|error| error.to_string())?.is_dir() { continue; }
+                let id = entry.file_name().to_string_lossy().into_owned();
+                if id == "debug-source" || id == "tts-audio" || id.starts_with("rss-") || id == READER_BACKGROUND_BOOK_ID { continue; }
+                let reference = self.store.book_ref(&id).map_err(|error| error.to_string())?;
+                let Some(book) = writer_guard.read_optional_json_ref(&reference).map_err(|error| error.to_string())? else { continue; };
+                let online = book["canChangeSource"] == true;
+                let cover = book["coverSrc"].as_str().and_then(|url| ResourceRef::new(url).ok());
+                for file in std::fs::read_dir(entry.path()).map_err(|error| error.to_string())? {
+                    let file = file.map_err(|error| error.to_string())?;
+                    let name = file.file_name().to_string_lossy().into_owned();
+                    let path = file.path();
+                    crate::resources::check_path_no_symlink(root, &path, false).map_err(|error| error.to_string())?;
+                    if name == format!("{id}.json") || name.starts_with("original.")
+                        || cover.as_ref().is_some_and(|cover| root.join(cover.path()) == path)
+                        || name.starts_with("user-book-cover-") { continue; }
+                    let metadata = file.metadata().map_err(|error| error.to_string())?;
+                    if !metadata.is_file() { continue; }
                     chapter_count = chapter_count.saturating_add(1);
-                    chapter_bytes = chapter_bytes.saturating_add(bytes);
+                    chapter_bytes = chapter_bytes.saturating_add(metadata.len());
                     if online {
                         online_chapter_count = online_chapter_count.saturating_add(1);
-                        online_chapter_bytes = online_chapter_bytes.saturating_add(bytes);
+                        online_chapter_bytes = online_chapter_bytes.saturating_add(metadata.len());
                     } else {
                         local_chapter_count = local_chapter_count.saturating_add(1);
-                        local_chapter_bytes = local_chapter_bytes.saturating_add(bytes);
+                        local_chapter_bytes = local_chapter_bytes.saturating_add(metadata.len());
                     }
                 }
             }
@@ -894,7 +868,8 @@ async fn collect_book_chapter_cache_deletes(
     deletions: &mut Vec<crate::resource_transactions::PostCommitDelete>,
 ) -> Result<(), String> {
     validate_id(book_id, "bookId")?;
-    let chapter_directory = root.join("books").join(book_id).join("chapters");
+    let Some(chapter_directory) = crate::resources::content::find_content_dir(root, book_id).map_err(|e| e.to_string())? else { return Ok(()); };
+    let kind = chapter_directory.parent().and_then(|p| p.file_name()).and_then(|p| p.to_str()).ok_or("Invalid cache directory")?;
     match tokio::fs::symlink_metadata(&chapter_directory).await {
         Ok(metadata) if metadata.file_type().is_dir() => {
             let mut files = tokio::fs::read_dir(&chapter_directory).await
@@ -904,14 +879,14 @@ async fn collect_book_chapter_cache_deletes(
             {
                 let name = entry.file_name();
                 let Some(name) = name.to_str() else { continue };
-                if !name.ends_with(".json") { continue; }
+                if name == format!("{book_id}.json") || name.starts_with("original.") || name.starts_with("user-cover-") || name.starts_with("user-book-cover-") || name.starts_with("cover-") || name.starts_with("cover.") { continue; }
                 let file_type = entry.file_type().await
                     .map_err(|error| format!("Cannot inspect chapter cache entry: {error}"))?;
                 if !file_type.is_file() || file_type.is_symlink() {
                     return Err("Refusing to clear a non-regular chapter cache file".into());
                 }
                 let reference = ResourceRef::new(format!(
-                    "resource://books/{book_id}/chapters/{name}"
+                    "resource://cache/{kind}/{book_id}/{name}"
                 )).map_err(|error| error.to_string())?;
                 if cleanup_paths.insert(reference.as_str().to_owned()) {
                     deletions.push(

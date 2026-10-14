@@ -60,6 +60,7 @@ use file_import::{
 // 书源执行、搜索、切换与状态。
 mod chapter_refresh;
 mod chapter_resources;
+mod chapter_download;
 mod general;
 mod reader_state;
 mod source_change;
@@ -140,7 +141,7 @@ pub struct ApplicationService {
     book_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_recovery_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
-    search_snapshot_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
+    search_notifiers: Arc<std::sync::RwLock<HashMap<String, Arc<dyn Fn(Value) + Send + Sync>>>>,
     admission_gate: Arc<tokio::sync::RwLock<()>>,
     operation_gate: Arc<tokio::sync::RwLock<()>>,
     webdav_backup_upload_gate: Arc<tokio::sync::Mutex<()>>,
@@ -185,6 +186,8 @@ struct AppTask {
     source_ids: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keyword: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_type: Option<String>,
     #[serde(default)]
     page: u32,
     #[serde(default)]
@@ -225,6 +228,8 @@ struct TaskRegistry {
     search_replacement_contexts: HashMap<String, Value>,
     /// Associates a prepared shelf book with the discovery group it came from.
     search_book_group_roots: HashMap<String, String>,
+    /// Last published groups, used to send IPC deltas rather than file snapshots.
+    published_search_results: HashMap<String, Value>,
 }
 
 fn empty_search_task_document(task: &AppTask) -> Value {
@@ -264,6 +269,8 @@ pub struct SourceMetadata {
     pub enabled: bool,
     pub is_rss: bool,
     pub content_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub media_type: Option<String>,
     pub capabilities: SourceCapabilities,
@@ -343,7 +350,7 @@ pub(crate) fn project_search_result(
     } else if let Some(kind) = book
         .get("kind")
         .and_then(Value::as_str)
-        .filter(|kind| matches!(*kind, "comic" | "manga" | "manhua" | "manhwa" | "漫画"))
+        .filter(|kind| matches!(*kind, "image" | "manga" | "manhua" | "manhwa" | "漫画"))
     {
         result.kind = Some(kind.to_owned());
     }
@@ -363,17 +370,18 @@ pub(crate) fn project_search_result(
     result
 }
 
-fn search_result_identity(title: &str, author: Option<&str>) -> (String, String) {
+fn search_result_identity(title: &str, author: Option<&str>, content_type: &str) -> (String, String, String) {
     (
         source_change::normalize_identity(title),
         source_change::normalize_identity(author.unwrap_or_default()),
+        content_type.to_owned(),
     )
 }
 
-/// Add one source leaf to the display group for its normalized title and
-/// author. The primary leaf remains the top-level result used by existing
+/// Add one source leaf to the display group for its content type, normalized title
+/// and author. The primary leaf remains the top-level result used by existing
 /// add/open commands; `sources` contains every distinct source candidate.
-type SearchResultGroupIndexes = HashMap<(String, String), usize>;
+type SearchResultGroupIndexes = HashMap<(String, String, String), usize>;
 
 fn search_result_group_indexes(results: &[Value]) -> SearchResultGroupIndexes {
     let mut indexes = SearchResultGroupIndexes::new();
@@ -381,7 +389,7 @@ fn search_result_group_indexes(results: &[Value]) -> SearchResultGroupIndexes {
         let title = result.get("title").and_then(Value::as_str).unwrap_or_default();
         let author = result.get("author").and_then(Value::as_str);
         indexes
-            .entry(search_result_identity(title, author))
+            .entry(search_result_identity(title, author, result["contentType"].as_str().unwrap_or("text")))
             .or_insert(index);
     }
     indexes
@@ -392,7 +400,7 @@ fn merge_search_result(
     indexes: &mut SearchResultGroupIndexes,
     source: SearchResultSource,
 ) -> Result<bool, String> {
-    let identity = search_result_identity(&source.title, source.author.as_deref());
+    let identity = search_result_identity(&source.title, source.author.as_deref(), &source.content_type);
     if let Some(index) = indexes.get(&identity).copied() {
         let existing = results
             .get_mut(index)
@@ -430,4 +438,27 @@ fn merge_search_result(
         .map_err(|error| format!("Cannot encode grouped search result: {error}"))?);
     indexes.insert(identity, index);
     Ok(true)
+}
+
+#[cfg(test)]
+mod search_content_type_tests {
+    use super::*;
+
+    #[test]
+    fn same_title_groups_sources_only_within_the_same_content_type() {
+        let mut results = Vec::new();
+        let mut indexes = SearchResultGroupIndexes::new();
+        let book = json!({"name":"Same title", "author":"Same author", "kind":"悬疑"});
+        for (index, source_type) in [0, 1, 2, 4, 0].into_iter().enumerate() {
+            let source = SourceRecord {
+                id: format!("source-{index}"), name: "Source".into(), group: None, enabled: true,
+                source: json!({"bookSourceType":source_type}),
+            };
+            let result = project_search_result(&format!("result-{index}"), &source, &book);
+            merge_search_result(&mut results, &mut indexes, result).unwrap();
+        }
+        assert_eq!(results.len(), 4);
+        assert_eq!(results[0]["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(search_result_group_indexes(&results).len(), 4);
+    }
 }

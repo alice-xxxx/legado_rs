@@ -1,7 +1,7 @@
+import { addLibraryContent } from "./contentLibraryState";
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
 import { prepareSearchResultBook } from "../../api/books";
 import type { BookResource, SearchBookResult } from "../../api/types";
-import { shelf as shelfPositions } from "../shelf/shelfStore";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { clearOpenedBook, closeBookDetail, switchOpenedBook, openedBookFromShelf, openedBook } from "./bookDetailState";
 import type { BookDetailOpenRequest, BookDetailTab } from "./bookDetailOpenRequest";
@@ -160,7 +160,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   async function addSearchResultFromDetails(): Promise<void> {
     const book = openedBook.value;
     if (!book || searchResultDetailsShelfBook.value) return;
-    shelfPositions.value.books.push({ id: book.id, groups: [] });
+    addLibraryContent(book);
     if (searchResultDetails.value) searchResultDetails.value.inShelf = true;
   }
 

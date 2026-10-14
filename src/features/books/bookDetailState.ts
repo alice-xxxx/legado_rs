@@ -1,6 +1,8 @@
 import { nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { saveBook } from "../../api/books";
+import { command } from "../../api/ipc";
+import { contentUrl, libraryType, refreshContentLibrary } from "./contentLibraryState";
 import { readResource } from "../../api/resources";
 import type { AppBootstrap, BookPreview, BookResource, ResourceDescriptor } from "../../api/types";
 
@@ -9,7 +11,6 @@ export const openedBookFromShelf = ref(false);
 export const bookPreviews = ref<Record<string, BookPreview>>({});
 type BookReference = string | ResourceDescriptor;
 type BookUpdatedEvent = { requestId: number; resource: ResourceDescriptor };
-let root: ResourceDescriptor;
 let requestId = 0;
 let stopWatch: WatchStopHandle = () => {};
 const previewLoads = new Map<string, Promise<void>>();
@@ -17,7 +18,7 @@ const updates = new Map<string, symbol>();
 
 function referenceId(reference: BookReference): string {
   if (typeof reference === "string") return reference;
-  const id = /^(?:resource:\/\/)?books\/([^/]+)\/book\.json$/.exec(reference.resourceId)?.[1];
+  const id = /^(?:resource:\/\/)?cache\/(?:text|html|image|audio|video|pdf)\/([^/]+)\/\1\.json$/.exec(reference.resourceId)?.[1];
   if (!id) throw new Error("书籍资源地址无效。");
   return id;
 }
@@ -26,7 +27,7 @@ function referenceId(reference: BookReference): string {
 async function readBook(reference: BookReference): Promise<BookResource> {
   const id = referenceId(reference);
   const resource = typeof reference === "string"
-    ? new URL(`books/${encodeURIComponent(id)}/book.json`, root.src).href : reference;
+    ? await command<ResourceDescriptor>("get_book", { bookId: id }) : reference;
   const book = await readResource<BookResource>(resource);
   if (book.id !== id) throw new Error("读取的书籍与缓存 ID 不匹配。");
   return book;
@@ -42,7 +43,7 @@ function previewOf(book: BookResource): BookPreview {
       chapterId: book.progress.chapterId, chapterIndex: book.progress.chapterIndex,
       offset: book.progress.offset, updatedAtMs: book.progress.updatedAtMs,
     } : undefined,
-    bookSrc: new URL(`books/${encodeURIComponent(book.id)}/book.json`, root.src).href,
+    bookSrc: contentUrl(book.contentType ?? "text", book.id),
   };
 }
 
@@ -109,10 +110,10 @@ async function updateBook(reference: BookReference, eventRequestId = 0): Promise
   } finally { if (updates.get(id) === token) updates.delete(id); }
 }
 
-export async function initializeBookStore(descriptor: ResourceDescriptor): Promise<void> {
-  root = descriptor;
+export async function initializeBookStore(_descriptor: ResourceDescriptor): Promise<void> {
   await listen<BookUpdatedEvent>("book-updated", ({ payload }) => {
     const id = referenceId(payload.resource);
+    if (libraryType(id)) void refreshContentLibrary().catch(console.error);
     if (openedBook.value?.id === id || bookPreviews.value[id] || previewLoads.has(id)) {
       void (async () => {
         await previewLoads.get(id);
@@ -120,8 +121,7 @@ export async function initializeBookStore(descriptor: ResourceDescriptor): Promi
       })().catch(console.error);
     }
   });
-  await listen<AppBootstrap>("app-state-updated", ({ payload }) => {
-    root = payload.shelf;
+  await listen<AppBootstrap>("app-state-updated", () => {
     clearOpenedBook(); bookPreviews.value = {};
     previewLoads.clear(); updates.clear();
   });

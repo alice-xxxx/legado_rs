@@ -42,6 +42,10 @@ pub struct Bookmark {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chapter_title: Option<String>,
     pub offset: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor: Option<String>,
     #[serde(default)]
     pub note: String,
     #[serde(default, skip_serializing_if = "is_false")]

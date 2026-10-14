@@ -16,11 +16,11 @@ export async function readResource<T>(resource: ResourceDescriptor | string, sig
   return (await response.json()) as T;
 }
 
-async function readTextFromSrc(src: string): Promise<string> {
+async function readTextFromSrc(src: string, signal?: AbortSignal): Promise<string> {
   if (!src) throw new Error("章节内容暂时不可用。");
   let response: Response;
   try {
-    response = await fetch(src, { cache: "no-store" });
+    response = await fetch(src, { cache: "no-store", signal });
   } catch (error) {
     throw new Error(`无法读取章节资源：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -28,8 +28,8 @@ async function readTextFromSrc(src: string): Promise<string> {
   return response.text();
 }
 
-export const readTextResource = (descriptor: ResourceDescriptor): Promise<string> =>
-  readTextFromSrc(descriptor.src);
+export const readTextResource = (descriptor: ResourceDescriptor, signal?: AbortSignal): Promise<string> =>
+  readTextFromSrc(descriptor.src, signal);
 
 export class ResourceHttpError extends Error {
   constructor(readonly status: number, message: string) {

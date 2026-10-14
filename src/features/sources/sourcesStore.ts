@@ -7,7 +7,7 @@ import type { AppBootstrap, ResourceDescriptor, SourceDefinitionResource, Source
 
 export const sources = shallowRef<SourceMetadata[]>([]);
 export const enabledSources = computed(() => sources.value.filter(source => source.enabled));
-export const bookSourceCandidates = computed(() => enabledSources.value.filter(source => source.isRss !== true));
+export const bookSourceCandidates = computed(() => enabledSources.value.filter(source => source.isRss !== true && source.searchType !== undefined));
 
 export type SourceMetadataChanges = { enabled?: boolean; group?: string | null };
 

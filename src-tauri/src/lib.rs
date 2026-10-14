@@ -143,10 +143,6 @@ pub fn run() {
             service.set_task_recovery_notifier(std::sync::Arc::new(move |payload| {
                 let _ = task_recovery_app.emit("task-recovery-required", payload);
             }));
-            let search_app = app.handle().clone();
-            service.set_search_snapshot_notifier(std::sync::Arc::new(move |descriptor| {
-                let _ = search_app.emit("search-results-updated", descriptor);
-            }));
             let background_service = service.clone();
             let backup_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -186,6 +182,8 @@ pub fn run() {
         application::search_books,
         application::debug_search_result,
         application::start_search,
+        application::get_search_task_results,
+        application::release_search_results,
         application::search_book_source_candidates,
         application::tasks_resource,
         application::clear_finished_tasks,
@@ -198,6 +196,7 @@ pub fn run() {
         application::resume_task,
         application::cancel_task,
         application::prepare_search_result_book,
+        application::prepare_alternative_book,
             application::prepare_book_from_url,
         application::change_book_source,
         application::change_chapter_source,

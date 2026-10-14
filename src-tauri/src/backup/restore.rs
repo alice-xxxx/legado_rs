@@ -486,7 +486,7 @@ fn extract_and_validate(archive_path: &Path, stage: &Path) -> Result<(), String>
 }
 
 fn validate_extracted_snapshot(stage: &Path) -> Result<(), String> {
-    for required in ["shelf.json", "settings.json", "http-tts.json"] {
+    for required in [crate::resources::content::LIBRARY_FILE, "settings.json", "http-tts.json"] {
         if !stage.join(required).is_file() {
             return Err(format!("Backup is missing required app data: {required}"));
         }

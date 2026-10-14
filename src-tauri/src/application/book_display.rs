@@ -340,8 +340,8 @@ pub(super) fn user_selected_cover_reference(cover_ref: &str) -> Option<ResourceR
     let reference = ResourceRef::new(cover_ref).ok()?;
     let components = reference.path().split('/').collect::<Vec<_>>();
     if components.len() != 4
-        || components[0] != "books"
-        || components[2] != "assets"
+        || components[0] != "cache"
+        || !crate::resources::content::CONTENT_TYPES.contains(&components[1])
         || !is_user_book_cover_asset_id(components[3])
     {
         return None;
@@ -356,9 +356,9 @@ pub(super) fn user_reader_background_reference(background_ref: &str) -> Option<R
     }
     let components = reference.path().split('/').collect::<Vec<_>>();
     if components.len() != 4
-        || components[0] != "books"
-        || components[1] != READER_BACKGROUND_BOOK_ID
-        || components[2] != "assets"
+        || components[0] != "cache"
+        || components[1] != "image"
+        || components[2] != READER_BACKGROUND_BOOK_ID
     {
         return None;
     }
@@ -378,7 +378,9 @@ pub(super) fn public_book_resources_reference_cover(
     writer_guard: &ResourceStoreWriterGuard,
     cover_ref: &str,
 ) -> Result<bool, String> {
-    let books_directory = store.root().join("books");
+    for kind in crate::resources::content::CONTENT_TYPES {
+    let books_directory = store.root().join("cache").join(kind);
+    if !books_directory.exists() { continue; }
     let entries = std::fs::read_dir(&books_directory)
         .map_err(|_| "Cannot inspect book resources before cover cleanup".to_owned())?;
     for entry in entries {
@@ -410,6 +412,8 @@ pub(super) fn public_book_resources_reference_cover(
         {
             return Ok(true);
         }
+    }
+
     }
 
     let settings = writer_guard

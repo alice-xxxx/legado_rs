@@ -1,7 +1,7 @@
 import { ref, type Ref } from "vue";
-import { type ResourceDescriptor, type SearchBookResult, type SearchResource, type ChapterRichTextResource, type ChapterTextResource, type SourceDebugResponse, type SourceMetadata } from "../../api/types";
+import { type ResourceDescriptor, type SearchBookResult, type SearchResource, type SourceDebugResponse, type SourceMetadata } from "../../api/types";
 import { clearSourceDebugPreview, debugSearchResult, searchBooks } from "../../api/search";
-import { readResource } from "../../api/resources";
+import { readTextResource } from "../../api/resources";
 import { sources, bookSourceCandidates } from "./sourcesStore";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 
@@ -155,7 +155,7 @@ export function useSourceDebugActions({
       const response = await searchBooks([currentSource.id], keyword, 1);
       if (!isCurrentSourceDebug(generation, currentSource.id)) return;
       sourceDebugStage.value = "catalog";
-      const resource = await readResource<SearchResource>(response.resource);
+      const resource: SearchResource = response.search;
       if (!isCurrentSourceDebug(generation, currentSource.id)) return;
       sourceDebugResults.value = Array.isArray(resource.results) ? resource.results : [];
       sourceDebugErrors.value = Array.isArray(resource.errors) ? resource.errors : response.errors;
@@ -226,20 +226,14 @@ export function useSourceDebugActions({
       const chapterResource = response.chapterResource ?? null;
       sourceDebugChapterResource.value = chapterResource;
       sourceDebugChapterText.value = "";
-      if (chapterResource?.format === "json") {
-        const document = await readResource<ChapterTextResource | ChapterRichTextResource>(chapterResource);
+      if (chapterResource) {
+        const body = await readTextResource(chapterResource);
         if (!isCurrentSourceDebug(generation, source.id)) {
           await cleanupSourceDebugPreview(chapterResource.resourceId);
           return;
         }
-        if (document.kind === "text" && typeof document.text === "string") {
-          sourceDebugChapterText.value = document.text;
-        } else if (document.kind === "richText" && typeof document.markup === "string") {
-          const parsed = new DOMParser().parseFromString(document.markup, "text/html");
-          sourceDebugChapterText.value = parsed.body.textContent ?? "";
-        } else {
-          throw new Error("章节调试资源格式无效。");
-        }
+        sourceDebugChapterText.value = chapterResource.format === "html"
+          ? new DOMParser().parseFromString(body, "text/html").body.textContent ?? "" : body;
       }
       sourceDebugStage.value = "chapter";
     } catch (error) {

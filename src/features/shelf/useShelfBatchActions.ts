@@ -1,5 +1,5 @@
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
-import { shelf as shelfPositions } from "./shelfStore";
+import { removeLibraryContent, setContentGroups } from "../books/contentLibraryState";
 import { shelfBooks as shelf } from "./shelfBooks";
 import { tasks, refreshTasks } from "../tasks/tasksStore";
 import type { AppTask, ShelfResource, TaskResponse } from "../../api/types";
@@ -268,7 +268,7 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
   function submitRemoval(): void {
     const bookIds = new Set(removalTargets.value.map(book => book.id));
     if (!bookIds.size || batchBusy.value || recoveryRequired.value) return;
-    shelfPositions.value.books = shelfPositions.value.books.filter(book => !bookIds.has(book.id));
+    removeLibraryContent(bookIds);
     selectedBookIds.value = selectedBookIds.value.filter(id => !bookIds.has(id));
     removalTargets.value = [];
     removeConfirmOpen.value = false;
@@ -325,8 +325,7 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     const bookIds = [...groupBookIds.value];
     if (!bookIds.length || batchBusy.value || recoveryRequired.value || (!groupDraft.value.length && !clearGroups.value)) return;
     const nextGroups = clearGroups.value ? [] : [...groupDraft.value];
-    for (const book of shelfPositions.value.books) if (bookIds.includes(book.id)) book.groups = [...nextGroups];
-    shelfPositions.value.groups = [...new Set([...(shelfPositions.value.groups ?? []), ...nextGroups])];
+    setContentGroups(bookIds, nextGroups);
     selectedBookIds.value = selectedBookIds.value.filter((id) => !bookIds.includes(id));
     closeGroups();
     notify(`已为 ${bookIds.length} 本书替换分组。`);

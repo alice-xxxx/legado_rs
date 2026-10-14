@@ -4,11 +4,12 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue"
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import { refreshChapters, startBookDownload } from "../../api/tasks";
 import type { AppBootstrap, ShelfResource, ShelfSortKey, ShelfSortOrder } from "../../api/types";
+import { bookContentType } from "../../api/bookContentType";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { taskRecoveryRequired, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
 import ShelfLoadState from "./ShelfLoadState.vue";
-import { shelf as shelfPositions } from "./shelfStore";
+import { contentLibrary, librarySort, librarySortOrder } from "../books/contentLibraryState";
 import { shelfBooks as shelf } from "./shelfBooks";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -105,17 +106,22 @@ async function setupEvents(): Promise<void> {
   }
 }
 
-const visibleBooks = computed(() => activeGroup.value
-  ? shelf.value.books.filter((book) => book.groups?.includes(activeGroup.value))
-  : shelf.value.books);
+const visibleBooks = computed(() => {
+  if (!activeGroup.value) return shelf.value.books;
+  const group = contentLibrary.value.groups?.find(group => group.name === activeGroup.value);
+  if (!group) return [];
+  if (librarySort.value !== "custom") return shelf.value.books.filter(book => group.id.includes(book.id));
+  const books = new Map(shelf.value.books.map(book => [book.id, book]));
+  return group.id.flatMap(id => books.has(id) ? [books.get(id)!] : []);
+});
 const groups = computed(() => shelf.value.groups ?? []);
 const shelfSortKey = computed<ShelfSortKey>(() => shelf.value.sort ?? "updatedAt");
 const shelfSortOrder = computed<ShelfSortOrder>(() => shelf.value.sortOrder ?? "descending");
 
 function changeShelfSort(key: ShelfSortKey, order = shelfSortOrder.value): void {
   if (mutationLocked.value) return;
-  shelfPositions.value.sort = key;
-  shelfPositions.value.sortOrder = order;
+  librarySort.value = key;
+  librarySortOrder.value = order;
 }
 
 const shelfBatch = reactive(useShelfBatchActions({
@@ -167,12 +173,14 @@ onBeforeUnmount(() => {
   for (const unlisten of unlisteners.splice(0)) unlisten();
 });
 
-type LibraryType = "all" | "novel" | "comic" | "video" | "audio";
+type LibraryType = "all" | "text" | "html" | "image" | "video" | "audio" | "pdf";
 const typeFilters: { key: LibraryType; title: string }[] = [
   { key: "all", title: "全部" },
-  { key: "novel", title: "小说" },
-  { key: "comic", title: "漫画" },
+  { key: "text", title: "小说" },
+  { key: "image", title: "漫画" },
   { key: "video", title: "视频" },
+  { key: "html", title: "HTML" },
+  { key: "pdf", title: "PDF" },
   { key: "audio", title: "音频" },
 ];
 const activeType = ref<LibraryType>("all");
@@ -180,13 +188,8 @@ const manageGroupsOpen = ref(false);
 
 /** 只使用 Rust 投影的书籍类型；未知类型归入小说/文本，不按书名猜测。 */
 function bookType(book: ShelfResource["books"][number]): Exclude<LibraryType, "all"> {
-  if (book.contentType) return book.contentType === "text" ? "novel" : book.contentType;
-  if (book.mediaType === "video" || book.mediaType === "audio") return book.mediaType;
-  const kind = book.kind?.trim().toLowerCase() ?? "";
-  if (/漫画|comic|manga|manhua|manhwa|cbz/.test(kind)) return "comic";
-  if (/^(video|视频)$/.test(kind)) return "video";
-  if (/^(audio|音频)$/.test(kind)) return "audio";
-  return "novel";
+  const type = bookContentType(book) ?? "text";
+  return type;
 }
 const displayedBooks = computed(() => shelfBatch.selectionMode || activeType.value === "all"
   ? shelfView.visibleBooks
@@ -219,7 +222,12 @@ function groupBookCount(group: string): number {
     : shelfView.shelf.books.length;
 }
 function chapterCountLabel(book: ShelfResource["books"][number]): string {
-  return book.chapterCount ? `目录 ${book.chapterCount} 项` : "目录待更新";
+  const unit = book.contentType === "image" ? "话" : book.contentType === "audio" ? "期"
+    : book.contentType === "video" ? "集" : book.contentType === "pdf" ? "页" : "章";
+  if (!book.chapterCount) return "目录待更新";
+  return book.progress?.updatedAtMs
+    ? `${(book.progress.chapterIndex ?? 0) + 1} / ${book.chapterCount} ${unit}`
+    : `${book.chapterCount} ${unit}`;
 }
 </script>
 
@@ -401,7 +409,7 @@ title="整理内容库"
                 <div class="shelf-card-info library-cardcopy">
                   <button class="book-title-button" @click="openBookInfo(book.id)">{{ book.title }}</button>
                   <span class="book-author">{{ book.author || '作者未知' }}</span>
-                  <div class="book-card-meta"><span v-if="readingProgressPercent(book.progress, book.chapterCount)">{{ chapterCountLabel(book) }} · {{ readingProgressPercent(book.progress, book.chapterCount) }}%</span><span v-else>{{ chapterCountLabel(book) }}</span></div>
+                  <div class="book-card-meta"><span>{{ chapterCountLabel(book) }}</span></div>
                 </div>
               </article>
             </div>

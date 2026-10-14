@@ -1,5 +1,6 @@
 //! 管理应用公开资源文件存储与原子更新。
 
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -28,11 +29,12 @@ const MAX_TTS_AUDIO_FILES: usize = 32;
 struct StoreInner {
     root: PathBuf,
     update_lock: Arc<Mutex<()>>,
+    content_types: std::sync::RwLock<HashMap<String, String>>,
 }
 
 /// JSON-file storage for public app state and the resources consumed by the UI.
-/// Private engine data should live in another directory and is never routed by
-/// this store's HTTP server.
+/// Complete content documents include private engine state. The HTTP response
+/// is a filtered runtime view and never exposes that private state.
 #[derive(Clone)]
 pub struct ResourceStore {
     inner: Arc<StoreInner>,
@@ -53,6 +55,7 @@ impl ResourceStore {
             inner: Arc::new(StoreInner {
                 root,
                 update_lock: Arc::new(Mutex::new(())),
+                content_types: std::sync::RwLock::new(HashMap::new()),
             }),
         };
 
@@ -61,10 +64,7 @@ impl ResourceStore {
         settings["lastBackupAtMs"] = Value::Null;
 
         for (resource, value) in [
-            (
-                store.shelf_ref(),
-                serde_json::to_value(ShelfDocument::default()).expect("serializable default"),
-            ),
+            (store.shelf_ref(), json!({})),
             (store.settings_ref(), settings),
             (
                 store.http_tts_configs_ref(),
@@ -84,12 +84,6 @@ impl ResourceStore {
         // Cache garbage collection is maintenance, not app-data recovery.
         // A locked, damaged or read-only orphan file must not prevent the
         // user from opening an otherwise valid library.
-        if let Err(error) = prune_unreferenced_chapter_versions(&store.inner.root) {
-            eprintln!("Chapter cache maintenance skipped: {error}");
-        }
-        if let Err(error) = prune_unused_chapter_media_mappings(&store.inner.root) {
-            eprintln!("Chapter media mapping maintenance skipped: {error}");
-        }
         Ok(store)
     }
 
@@ -112,7 +106,7 @@ impl ResourceStore {
     }
 
     pub fn shelf_ref(&self) -> ResourceRef {
-        ResourceRef::from_validated_path("shelf.json")
+        ResourceRef::from_validated_path(super::content::LIBRARY_FILE)
     }
 
     pub fn settings_ref(&self) -> ResourceRef {
@@ -133,30 +127,149 @@ impl ResourceStore {
 
     pub fn book_ref(&self, book_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(book_id)?;
-        ResourceRef::new(format!("resource://books/{book_id}/book.json"))
+        let kind = self.book_type(book_id)?;
+        ResourceRef::new(format!("resource://cache/{kind}/{book_id}/{book_id}.json"))
+    }
+
+    pub(crate) fn book_type(&self, book_id: &str) -> Result<String, ResourceError> {
+        validate_id(book_id)?;
+        if let Some(kind) = self
+            .inner
+            .content_types
+            .read()
+            .map_err(|_| ResourceError::new("Content type lock poisoned"))?
+            .get(book_id)
+        {
+            return Ok(kind.clone());
+        }
+        if let Some(dir) = super::content::find_content_dir(self.root(), book_id)? {
+            let kind = dir
+                .parent()
+                .and_then(|path| path.file_name())
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| ResourceError::new("Invalid content directory"))?
+                .to_owned();
+            self.inner
+                .content_types
+                .write()
+                .map_err(|_| ResourceError::new("Content type lock poisoned"))?
+                .insert(book_id.to_owned(), kind.clone());
+            return Ok(kind);
+        }
+        Ok(if book_id.starts_with("rss-") {
+            "html"
+        } else if book_id == "reader-theme-backgrounds" {
+            "image"
+        } else if book_id == "tts-audio" {
+            "audio"
+        } else {
+            "text"
+        }
+        .to_owned())
+    }
+
+    pub(crate) async fn bind_book_type(
+        &self,
+        book_id: &str,
+        kind: &str,
+    ) -> Result<(), ResourceError> {
+        let _writer = self.transaction_writer_guard().await?;
+        validate_id(book_id)?;
+        let kind = super::content::canonical_type(kind);
+        if !super::content::CONTENT_TYPES.contains(&kind) {
+            return Err(ResourceError::new("Unsupported content type"));
+        }
+        let current = self.book_type(book_id)?;
+        if current != kind {
+            let old = self.root().join("cache").join(&current).join(book_id);
+            let target = self.root().join("cache").join(kind).join(book_id);
+            check_path_no_symlink(self.root(), &old, true)?;
+            check_path_no_symlink(self.root(), &target, true)?;
+            if old.join(format!("{book_id}.json")).is_file() {
+                if target.exists() {
+                    return Err(ResourceError::new(
+                        "Content already exists in the target type",
+                    ));
+                }
+                std::fs::create_dir_all(target.parent().expect("content parent"))
+                    .map_err(|error| ResourceError::new(error.to_string()))?;
+                std::fs::rename(&old, &target)
+                    .map_err(|error| ResourceError::new(error.to_string()))?;
+                if current == "text" && kind == "html" {
+                    let metadata = target.join(format!("{book_id}.json"));
+                    check_path_no_symlink(self.root(), &metadata, false)?;
+                    let mut document: Value = serde_json::from_slice(
+                        &std::fs::read(&metadata).map_err(|e| ResourceError::new(e.to_string()))?,
+                    )
+                    .map_err(|e| ResourceError::new(e.to_string()))?;
+                    for chapter in document["chapters"].as_array_mut().into_iter().flatten() {
+                        if let Some(name) = chapter["url"]
+                            .as_str()
+                            .filter(|name| !name.contains('/') && name.ends_with(".txt"))
+                            .map(str::to_owned)
+                        {
+                            let from = target.join(&name);
+                            check_path_no_symlink(self.root(), &from, true)?;
+                            if from.is_file() {
+                                let text = std::fs::read_to_string(&from)
+                                    .map_err(|e| ResourceError::new(e.to_string()))?;
+                                let name = format!("{}.html", name.trim_end_matches(".txt"));
+                                let html =
+                                    format!("<pre>{}</pre>", quick_xml::escape::escape(&text));
+                                let to = target.join(&name);
+                                check_path_no_symlink(self.root(), &to, true)?;
+                                atomic_replace(&to, html.as_bytes()).map_err(ResourceError::new)?;
+                                chapter["url"] = json!(name);
+                                std::fs::remove_file(from)
+                                    .map_err(|e| ResourceError::new(e.to_string()))?;
+                            }
+                        }
+                    }
+                    atomic_replace(
+                        &metadata,
+                        &serde_json::to_vec(&document)
+                            .map_err(|e| ResourceError::new(e.to_string()))?,
+                    )
+                    .map_err(ResourceError::new)?;
+                }
+            }
+        }
+        self.inner
+            .content_types
+            .write()
+            .map_err(|_| ResourceError::new("Content type lock poisoned"))?
+            .insert(book_id.to_owned(), kind.to_owned());
+        Ok(())
     }
 
     /// Versioned chapter bodies are addressed by identity and content.
     /// Changing a source chapter does not silently retarget older descriptors.
-    fn chapter_version_ref(
+    pub(crate) fn chapter_version_ref(
+        &self,
         book_id: &str,
         chapter_id: &str,
         document: &Value,
     ) -> Result<ResourceRef, ResourceError> {
         validate_id(book_id)?;
         validate_id(chapter_id)?;
-        let serialized = serde_json::to_vec(document)
-            .map_err(|error| ResourceError::new(format!("Cannot encode chapter payload: {error}")))?;
+        let serialized = serde_json::to_vec(document).map_err(|error| {
+            ResourceError::new(format!("Cannot encode chapter payload: {error}"))
+        })?;
         let chapter_hash = Sha256::digest(chapter_id.as_bytes());
         let content_hash = Sha256::digest(&serialized);
+        let kind = self.book_type(book_id)?;
+        let extension = match document["kind"].as_str() {
+            Some("text") => "txt",
+            Some("richText") => "html",
+            _ => {
+                return Err(ResourceError::new(
+                    "Chapter bodies must be native text or HTML files",
+                ))
+            }
+        };
         ResourceRef::new(format!(
-            "resource://books/{book_id}/chapters/{chapter_hash:x}-{content_hash:x}.json"
+            "resource://cache/{kind}/{book_id}/{chapter_hash:x}-{content_hash:x}.{extension}"
         ))
-    }
-
-    pub fn search_ref(&self, search_id: &str) -> Result<ResourceRef, ResourceError> {
-        validate_id(search_id)?;
-        ResourceRef::new(format!("resource://search/{search_id}.json"))
     }
 
     pub fn document_ref(&self, document_name: &str) -> Result<ResourceRef, ResourceError> {
@@ -166,7 +279,7 @@ impl ResourceStore {
 
     pub fn discovery_ref(&self, discovery_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(discovery_id)?;
-        self.search_ref(&format!("discovery-{discovery_id}"))
+        ResourceRef::new(format!("resource://discovery/{discovery_id}.json"))
     }
 
     pub fn dictionary_ref(&self, dictionary_id: &str) -> Result<ResourceRef, ResourceError> {
@@ -181,7 +294,8 @@ impl ResourceStore {
     pub fn asset_ref(&self, book_id: &str, asset_id: &str) -> Result<ResourceRef, ResourceError> {
         validate_id(book_id)?;
         validate_asset_id(asset_id)?;
-        ResourceRef::new(format!("resource://books/{book_id}/assets/{asset_id}"))
+        let kind = self.book_type(book_id)?;
+        ResourceRef::new(format!("resource://cache/{kind}/{book_id}/{asset_id}"))
     }
 
     pub async fn write_asset(
@@ -191,11 +305,10 @@ impl ResourceStore {
         bytes: &[u8],
     ) -> Result<ResourceRef, ResourceError> {
         let reference = self.asset_ref(book_id, asset_id)?;
-        let path = self.path_for(&reference)?;
         let root = self.inner.root.clone();
-        let write_path = path;
         let bytes = bytes.to_vec();
         let _guard = self.inner.update_lock.lock().await;
+        let write_path = self.path_for(&reference)?;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &write_path, true)?;
@@ -209,7 +322,7 @@ impl ResourceStore {
     }
 
     /// Store one bounded HTTP TTS response as a private-lifetime local media file.
-    /// The reference namespace is deliberately limited to `books/tts-audio/media`.
+    /// The reference namespace is deliberately limited to `cache/audio/tts-audio/`.
     pub async fn write_tts_audio(
         &self,
         audio_id: &str,
@@ -269,68 +382,6 @@ impl ResourceStore {
         Ok(removed)
     }
 
-    /// Search result snapshots are WebView-session resources. They have no
-    /// stable business identity and must not accumulate across app restarts.
-    pub(crate) async fn remove_search_snapshots(&self) -> Result<usize, ResourceError> {
-        self.remove_session_json_snapshots("search", "search-snapshot-")
-            .await
-    }
-
-    async fn remove_session_json_snapshots(
-        &self,
-        directory_name: &'static str,
-        filename_prefix: &'static str,
-    ) -> Result<usize, ResourceError> {
-        let _guard = self.inner.update_lock.lock().await;
-        let root = self.inner.root.clone();
-        tokio::task::spawn_blocking(move || {
-            ensure_resource_writes_recovered(&root)?;
-            let directory = root.join(directory_name);
-            check_path_no_symlink(&root, &directory, true)?;
-            let entries = match std::fs::read_dir(&directory) {
-                Ok(entries) => entries,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    return Ok(0);
-                }
-                Err(error) => {
-                    return Err(ResourceError::new(format!(
-                        "Cannot inspect resource snapshots: {error}"
-                    )));
-                }
-            };
-            let mut removed = 0usize;
-            for entry in entries {
-                let entry = entry.map_err(|error| {
-                    ResourceError::new(format!("Cannot inspect resource snapshot entry: {error}"))
-                })?;
-                let file_type = entry.file_type().map_err(|error| {
-                    ResourceError::new(format!("Cannot inspect resource snapshot type: {error}"))
-                })?;
-                if !file_type.is_file() || file_type.is_symlink() {
-                    continue;
-                }
-                let name = entry.file_name();
-                let Some(name) = name.to_str() else {
-                    continue;
-                };
-                if !name.starts_with(filename_prefix) || !name.ends_with(".json") {
-                    continue;
-                }
-                let path = entry.path();
-                check_path_no_symlink(&root, &path, false)?;
-                std::fs::remove_file(&path).map_err(|error| {
-                    ResourceError::new(format!("Cannot remove stale resource snapshot: {error}"))
-                })?;
-                removed = removed.saturating_add(1);
-            }
-            Ok(removed)
-        })
-        .await
-        .map_err(|error| {
-            ResourceError::new(format!("Resource snapshot cleanup worker failed: {error}"))
-        })?
-    }
-
     pub(crate) async fn regular_file_exists(
         &self,
         reference: &ResourceRef,
@@ -356,9 +407,117 @@ impl ResourceStore {
         let bytes = tokio::fs::read(&path).await.map_err(|error| {
             ResourceError::new(format!("Cannot read {}: {error}", reference.path()))
         })?;
-        serde_json::from_slice(&bytes).map_err(|error| {
+        if !reference.path().ends_with(".json") {
+            let text =
+                String::from_utf8(bytes).map_err(|error| ResourceError::new(error.to_string()))?;
+            return Ok(if reference.path().ends_with(".html") {
+                json!({"kind": "richText", "markup": text})
+            } else {
+                json!({"kind": "text", "text": text})
+            });
+        }
+        let value = serde_json::from_slice(&bytes).map_err(|error| {
             ResourceError::new(format!("Cannot decode {}: {error}", reference.path()))
-        })
+        })?;
+        self.document_view(reference, value)
+    }
+
+    pub(crate) fn document_view(
+        &self,
+        reference: &ResourceRef,
+        value: Value,
+    ) -> Result<Value, ResourceError> {
+        if reference.path() == super::content::LIBRARY_FILE {
+            return Ok(super::content::library_positions(&value));
+        }
+        if let Some((_, id, _)) = super::content::content_path(reference.path())
+            .filter(|_| super::content::is_content_document(reference.path()))
+        {
+            return super::content::book_view(&value, &self.book_type(id)?);
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn read_raw_document(
+        &self,
+        reference: &ResourceRef,
+    ) -> Result<Value, ResourceError> {
+        let path = self.path_for(reference)?;
+        check_path_no_symlink(self.root(), &path, true)?;
+        match std::fs::read(path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)
+                .map_err(|error| ResourceError::new(error.to_string())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
+            Err(error) => Err(ResourceError::new(error.to_string())),
+        }
+    }
+
+    pub(crate) fn encode_document(
+        &self,
+        reference: &ResourceRef,
+        value: &Value,
+        state: Option<&Value>,
+    ) -> Result<Value, ResourceError> {
+        if reference.path() == super::content::LIBRARY_FILE {
+            return super::content::encode_library(value, self.root());
+        }
+        if let Some((_, id, _)) = super::content::content_path(reference.path())
+            .filter(|_| super::content::is_content_document(reference.path()))
+        {
+            return super::content::encode_book(
+                value,
+                state,
+                &self.read_raw_document(reference)?,
+                &self.book_type(id)?,
+            );
+        }
+        Ok(value.clone())
+    }
+
+    fn refresh_library_preview(
+        &self,
+        reference: &ResourceRef,
+        document: &Value,
+    ) -> Result<(), ResourceError> {
+        if !super::content::is_content_document(reference.path()) {
+            return Ok(());
+        }
+        let id = document["id"]
+            .as_str()
+            .ok_or_else(|| ResourceError::new("Content has no ID"))?;
+        let kind = self.book_type(id)?;
+        let mut library = self.read_raw_document(&self.shelf_ref())?;
+        let mut changed = false;
+        for ty in super::content::CONTENT_TYPES {
+            if let Some(items) = library.get_mut(ty).and_then(Value::as_array_mut) {
+                if let Some(index) = items.iter().position(|item| item["id"] == id) {
+                    items.remove(index);
+                    if ty == kind {
+                        items.insert(index, super::content::preview(document, &kind));
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let already_present = library[kind.as_str()]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| item["id"] == id));
+            if !already_present {
+                if !library[kind.as_str()].is_array() {
+                    library[kind.as_str()] = json!([]);
+                }
+                library[kind.as_str()]
+                    .as_array_mut()
+                    .expect("array")
+                    .push(super::content::preview(document, &kind));
+            }
+            let bytes = serde_json::to_vec(&library)
+                .map_err(|error| ResourceError::new(error.to_string()))?;
+            atomic_replace(&self.path_for(&self.shelf_ref())?, &bytes)
+                .map_err(|error| ResourceError::new(error.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Read mutable app-owned JSON state and atomically initialize a missing
@@ -386,7 +545,7 @@ impl ResourceStore {
             }
         };
         match serde_json::from_slice(&bytes) {
-            Ok(value) => Ok(value),
+            Ok(value) => self.document_view(reference, value),
             Err(_) => {
                 self.update_json_ref_or_default(reference, default, |value| Ok(value))
                     .await
@@ -401,18 +560,28 @@ impl ResourceStore {
         reference: &ResourceRef,
         value: &Value,
     ) -> Result<(), ResourceError> {
-        let path = self.path_for(reference)?;
         if !reference.path().ends_with(".json") {
-            return Err(ResourceError::new("JSON data requires a .json resource"));
+            let body = value["text"]
+                .as_str()
+                .or_else(|| value["markup"].as_str())
+                .ok_or_else(|| ResourceError::new("Native content has no body"))?;
+            let _writer = self.transaction_writer_guard().await?;
+            let path = self.path_for(reference)?;
+            check_path_no_symlink(self.root(), &path, true)?;
+            atomic_replace(&path, body.as_bytes())
+                .map_err(|error| ResourceError::new(error.to_string()))?;
+            return Ok(());
         }
         // Source definitions are opaque Legado input: a nested `src` can be a
         // parsing rule rather than an application resource reference.
         if reference.path() != "sources.json" {
             validate_embedded_refs(value)?;
         }
-        let bytes = serde_json::to_vec_pretty(value)
-            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
         let _guard = self.inner.update_lock.lock().await;
+        let path = self.path_for(reference)?;
+        let encoded = self.encode_document(reference, value, None)?;
+        let bytes = serde_json::to_vec(&encoded)
+            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
         let root = self.inner.root.clone();
         let write_path = path.clone();
         tokio::task::spawn_blocking(move || {
@@ -424,6 +593,7 @@ impl ResourceStore {
         })
         .await
         .map_err(|error| ResourceError::new(format!("JSON storage worker failed: {error}")))??;
+        self.refresh_library_preview(reference, &encoded)?;
         Ok(())
     }
 
@@ -466,13 +636,13 @@ impl ResourceStore {
     where
         F: FnOnce(Value) -> Result<Value, String> + Send,
     {
-        let path = self.path_for(reference)?;
         if !reference.is_local() || !reference.path().ends_with(".json") {
             return Err(ResourceError::new(
                 "JSON update requires a local .json resource",
             ));
         }
         let _guard = self.inner.update_lock.lock().await;
+        let path = self.path_for(reference)?;
         ensure_resource_writes_recovered(&self.inner.root)?;
         check_path_no_symlink(&self.inner.root, &path, true)?;
         let current = match tokio::fs::read(&path).await {
@@ -498,9 +668,11 @@ impl ResourceStore {
                 )));
             }
         };
+        let current = self.document_view(reference, current)?;
         let updated = update(current).map_err(ResourceError::new)?;
         validate_embedded_refs(&updated)?;
-        let bytes = serde_json::to_vec_pretty(&updated)
+        let encoded = self.encode_document(reference, &updated, None)?;
+        let bytes = serde_json::to_vec(&encoded)
             .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
         let root = self.inner.root.clone();
         let write_path = path;
@@ -513,6 +685,7 @@ impl ResourceStore {
         })
         .await
         .map_err(|error| ResourceError::new(format!("JSON storage worker failed: {error}")))??;
+        self.refresh_library_preview(reference, &encoded)?;
         Ok(updated)
     }
 
@@ -537,8 +710,30 @@ impl ResourceStore {
     }
 
     pub async fn write_book(&self, book: &BookDocument) -> Result<(), ResourceError> {
+        if let Some(kind) = book.content_type.as_deref() {
+            self.bind_book_type(&book.id, kind).await?;
+        }
         let reference = self.book_ref(&book.id)?;
         self.write_serializable(&reference, book).await
+    }
+
+    pub(crate) async fn write_book_state(
+        &self,
+        book_id: &str,
+        view: &Value,
+        state: &Value,
+    ) -> Result<(), ResourceError> {
+        let writer = self.transaction_writer_guard().await?;
+        let reference = self.book_ref(book_id)?;
+        let encoded = self.encode_document(&reference, view, Some(state))?;
+        let bytes =
+            serde_json::to_vec(&encoded).map_err(|error| ResourceError::new(error.to_string()))?;
+        let path = self.path_for(&reference)?;
+        check_path_no_symlink(self.root(), &path, true)?;
+        atomic_replace(&path, &bytes).map_err(|error| ResourceError::new(error.to_string()))?;
+        self.refresh_library_preview(&reference, &encoded)?;
+        drop(writer);
+        Ok(())
     }
 
     /// Store engine-processed plain text as data. Rendering belongs to Vue.
@@ -591,7 +786,7 @@ impl ResourceStore {
             .ok_or_else(|| ResourceError::new("Rich-text document has no markup"))?;
         let stable_markup = Self::local_epub_asset_refs(book_id, markup)?;
         document["markup"] = json!(stable_markup);
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
+        let reference = self.chapter_version_ref(book_id, chapter_id, &document)?;
         self.write_json_ref(&reference, &document).await?;
         Ok(reference)
     }
@@ -602,17 +797,20 @@ impl ResourceStore {
         chapter_id: &str,
         processed_text: &str,
     ) -> Result<(ResourceRef, Value), ResourceError> {
+        if self.book_type(book_id)? == "html" {
+            let markup = format!("<pre>{}</pre>", quick_xml::escape::escape(processed_text));
+            return self.chapter_rich_text_document(book_id, chapter_id, &markup);
+        }
         let document = serde_json::json!({
             "schemaVersion": crate::models::CURRENT_SCHEMA_VERSION,
             "kind": "text",
             "text": processed_text,
         });
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
+        let reference = self.chapter_version_ref(book_id, chapter_id, &document)?;
         Ok((reference, document))
     }
 
-    /// Store resolved media metadata as data. The actual media remains in the
-    /// private media registry and Vue owns the final <audio>/<video> rendering.
+    /// Validate resolved media. Its index belongs in the complete content document.
     pub(crate) async fn write_chapter_media(
         &self,
         book_id: &str,
@@ -630,7 +828,7 @@ impl ResourceStore {
             media_format,
             video_sources,
         )?;
-        self.write_json_ref(&reference, &document).await?;
+        let _ = document;
         Ok(reference)
     }
 
@@ -742,8 +940,8 @@ impl ResourceStore {
             "format": media_format,
             "sources": source_documents,
         });
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
-        Ok((reference, document))
+        let _ = (book_id, chapter_id);
+        Ok((media_ref.clone(), document))
     }
 
     /// Write one processed Wiktionary entry as a short-lived reader resource.
@@ -819,7 +1017,7 @@ impl ResourceStore {
             "kind": "richText",
             "markup": markup,
         });
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
+        let reference = self.chapter_version_ref(book_id, chapter_id, &document)?;
         Ok((reference, document))
     }
 
@@ -842,12 +1040,11 @@ impl ResourceStore {
             "kind": "richText",
             "markup": markup,
         });
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
+        let reference = self.chapter_version_ref(book_id, chapter_id, &document)?;
         Ok((reference, document))
     }
 
-    /// Store one local-PDF page as typed data. The PDF stays a binary asset
-    /// and the JSON document only describes which page Vue should render.
+    /// Validate the shared PDF entry. Page descriptors are generated in memory.
     pub async fn write_pdf_page(
         &self,
         book_id: &str,
@@ -873,31 +1070,23 @@ impl ResourceStore {
             return Err(ResourceError::new("PDF asset is not a regular file"));
         }
 
-        let document = json!({
-            "schemaVersion": CURRENT_SCHEMA_VERSION,
-            "kind": "pdfPage",
-            "src": pdf_ref.as_str(),
-            "pageIndex": page_index,
-            "defaultZoom": default_zoom,
-        });
-        let reference = Self::chapter_version_ref(book_id, chapter_id, &document)?;
-        self.write_json_ref(&reference, &document).await?;
-        Ok(reference)
+        let _ = (chapter_id, page_index);
+        Ok(pdf_ref)
     }
 
-fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, ResourceError> {
-    validate_id(book_id)?;
-    let base = format!("resource://books/{book_id}/assets/");
-    let mut output = markup.to_owned();
-    for attribute in ["src", "href", "poster"] {
-        for quote in ['"', '\''] {
-            let from = format!("{attribute}={quote}../assets/");
-            let to = format!("{attribute}={quote}{base}");
-            output = output.replace(&from, &to);
+    fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, ResourceError> {
+        validate_id(book_id)?;
+        let base = format!("resource://cache/html/{book_id}/");
+        let mut output = markup.to_owned();
+        for attribute in ["src", "href", "poster"] {
+            for quote in ['"', '\''] {
+                let from = format!("{attribute}={quote}../assets/");
+                let to = format!("{attribute}={quote}{base}");
+                output = output.replace(&from, &to);
+            }
         }
+        Ok(output)
     }
-    Ok(output)
-}
 
     async fn write_html_resource(
         &self,
@@ -936,12 +1125,21 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
         let extension = String::from(extension);
         let source_metadata = tokio::fs::symlink_metadata(source_path)
             .await
-            .map_err(|error| ResourceError::new(format!("Cannot inspect managed import: {error}")))?;
+            .map_err(|error| {
+                ResourceError::new(format!("Cannot inspect managed import: {error}"))
+            })?;
         if !source_metadata.file_type().is_file() || source_metadata.file_type().is_symlink() {
-            return Err(ResourceError::new("Managed local original must be a regular file"));
+            return Err(ResourceError::new(
+                "Managed local original must be a regular file",
+            ));
         }
 
-        let book_dir = self.inner.root.join("books").join(book_id);
+        let book_dir = self
+            .inner
+            .root
+            .join("cache")
+            .join(self.book_type(book_id)?)
+            .join(book_id);
         let target = book_dir.join(format!("original.{extension}"));
         let root = self.inner.root.clone();
         let source_path = source_path.to_path_buf();
@@ -981,19 +1179,24 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
     /// part of the same application operation.
     pub async fn remove_book_resources(&self, book_id: &str) -> Result<(), ResourceError> {
         validate_id(book_id)?;
-        let book_dir = self.inner.root.join("books").join(book_id);
+        let directories = super::content::CONTENT_TYPES
+            .iter()
+            .map(|kind| self.inner.root.join("cache").join(kind).join(book_id))
+            .collect::<Vec<_>>();
         let root = self.inner.root.clone();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
-            check_path_no_symlink(&root, &book_dir, true)?;
-            match std::fs::remove_dir_all(&book_dir) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(ResourceError::new(format!(
-                        "Cannot remove book resources: {error}"
-                    )));
+            for book_dir in directories {
+                check_path_no_symlink(&root, &book_dir, true)?;
+                match std::fs::remove_dir_all(&book_dir) {
+                    Ok(()) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => {
+                        return Err(ResourceError::new(format!(
+                            "Cannot remove book resources: {error}"
+                        )));
+                    }
                 }
             }
             Ok(())
@@ -1010,8 +1213,8 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
         validate_id(source_id)?;
         let rss_book_id = format!("rss-{source_id}");
         validate_id(&rss_book_id)?;
-        let book_dir = self.inner.root.join("books").join(rss_book_id);
-        let directories = [book_dir.join("chapters"), book_dir.join("assets")];
+        let book_dir = self.inner.root.join("cache").join("html").join(rss_book_id);
+        let directories = [book_dir];
         let root = self.inner.root.clone();
         let _guard = self.inner.update_lock.lock().await;
         tokio::task::spawn_blocking(move || {
@@ -1035,6 +1238,23 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
         Ok(())
     }
 
+    pub(crate) fn canonical_reference(
+        &self,
+        reference: &ResourceRef,
+    ) -> Result<ResourceRef, ResourceError> {
+        if let Some((_, id, name)) = super::content::content_path(reference.path()) {
+            let kind = self.book_type(id)?;
+            return ResourceRef::new(format!("resource://cache/{kind}/{id}/{name}"));
+        }
+        Ok(reference.clone())
+    }
+
+    pub(crate) fn reset_content_types(&self) {
+        if let Ok(mut types) = self.inner.content_types.write() {
+            types.clear();
+        }
+    }
+
     pub(super) fn path_for(&self, reference: &ResourceRef) -> Result<PathBuf, ResourceError> {
         // Revalidate even though ResourceRef itself is validated: deserialized
         // data and future constructors should never weaken the filesystem guard.
@@ -1044,7 +1264,10 @@ fn local_epub_asset_refs(book_id: &str, markup: &str) -> Result<String, Resource
             ));
         }
         validate_public_path(reference.path())?;
-        Ok(self.inner.root.join(reference.path()))
+        Ok(self
+            .inner
+            .root
+            .join(self.canonical_reference(reference)?.path()))
     }
 }
 
@@ -1102,337 +1325,74 @@ impl ResourceStoreWriterGuard {
         Ok(true)
     }
 
-    /// Read a persisted public document while the caller holds the shared
-    /// writer mutex, without trying to acquire it recursively.
     pub(crate) fn read_json_ref(&self, reference: &ResourceRef) -> Result<Value, ResourceError> {
-        if !reference.is_local() || !reference.path().ends_with(".json") {
-            return Err(ResourceError::new(
-                "Transaction reads require a local .json resource",
-            ));
-        }
         let path = self.store.path_for(reference)?;
         check_path_no_symlink(self.store.root(), &path, false)?;
-        let bytes = std::fs::read(&path).map_err(|error| {
-            ResourceError::new(format!("Cannot read {}: {error}", reference.path()))
-        })?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            ResourceError::new(format!("Cannot decode {}: {error}", reference.path()))
-        })
+        let value = self.store.read_raw_document(reference)?;
+        self.store.document_view(reference, value)
     }
 
-    /// Read an optional public JSON resource under the writer mutex. A missing
-    /// target remains missing until the caller commits it with replacements.
     pub(crate) fn read_optional_json_ref(
         &self,
         reference: &ResourceRef,
     ) -> Result<Option<Value>, ResourceError> {
-        if !reference.is_local() || !reference.path().ends_with(".json") {
-            return Err(ResourceError::new(
-                "Transaction reads require a local .json resource",
-            ));
+        if !self.asset_exists(reference)? {
+            return Ok(None);
         }
-        let path = self.store.path_for(reference)?;
-        check_path_no_symlink(self.store.root(), &path, true)?;
-        let bytes = match std::fs::read(&path) {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => {
-                return Err(ResourceError::new(format!(
-                    "Cannot read {}: {error}",
-                    reference.path()
-                )));
-            }
-        };
-        serde_json::from_slice(&bytes).map(Some).map_err(|error| {
-            ResourceError::new(format!("Cannot decode {}: {error}", reference.path()))
-        })
+        self.read_json_ref(reference).map(Some)
     }
 
-    /// Construct a public transaction replacement using the same JSON
-    /// serialization and resource-reference validation as ordinary writes.
     pub(crate) fn public_json_replacement(
         &self,
         reference: &ResourceRef,
         value: &Value,
     ) -> Result<crate::resource_transactions::Replacement, ResourceError> {
-        if !reference.is_local() || !reference.path().ends_with(".json") {
-            return Err(ResourceError::new(
-                "Transaction replacements require a local .json resource",
-            ));
+        if !reference.is_local() {
+            return Err(ResourceError::new("Transaction target must be local"));
         }
         self.store.path_for(reference)?;
-        let bytes = serde_json::to_vec_pretty(value)
-            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
-        crate::resource_transactions::Replacement::public_json(reference.clone(), bytes)
-            .map_err(|error| ResourceError::new(error.to_string()))
+        if !reference.path().ends_with(".json") {
+            let body = value["text"]
+                .as_str()
+                .or_else(|| value["markup"].as_str())
+                .ok_or_else(|| ResourceError::new("Native content has no body"))?;
+            return crate::resource_transactions::Replacement::public_bytes(
+                self.store.canonical_reference(reference)?,
+                body.as_bytes().to_vec(),
+            )
+            .map_err(|error| ResourceError::new(error.to_string()));
+        }
+        let encoded = self.store.encode_document(reference, value, None)?;
+        let bytes =
+            serde_json::to_vec(&encoded).map_err(|error| ResourceError::new(error.to_string()))?;
+        crate::resource_transactions::Replacement::public_json(
+            self.store.canonical_reference(reference)?,
+            bytes,
+        )
+        .map_err(|error| ResourceError::new(error.to_string()))
     }
-}
 
-/// Reclaim stale typed versions after crash recovery, before any WebView can
-/// hold a descriptor. During normal operation an older published resource is
-/// retained, even when the book switches to a newer version.
-fn prune_unreferenced_chapter_versions(root: &Path) -> Result<(), ResourceError> {
-    use std::collections::HashSet;
-    use std::fs;
-
-    // RSS has its own Rust-owned article catalog instead of book.json.
-    // If that catalog cannot be read, retain all RSS versions conservatively.
-    let rss_path = root.join("rss-state.json");
-    check_path_no_symlink(root, &rss_path, true)?;
-    let rss_state: Option<crate::rss::RssStateDocument> =
-        fs::read(&rss_path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .filter(|document| crate::rss::validate_rss_state(document).is_ok())
-            .and_then(|document| serde_json::from_value(document).ok());
-    let books_dir = root.join("books");
-    check_path_no_symlink(root, &books_dir, true)?;
-    let books = match fs::read_dir(&books_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(ResourceError::new(format!("Cannot inspect book cache: {error}")));
-        }
-    };
-    for book in books {
-        let book = book.map_err(|error| ResourceError::new(error.to_string()))?;
-        // Never descend into symlinks or special files.
-        if !book.file_type().map_err(|error| ResourceError::new(error.to_string()))?.is_dir() {
-            continue;
-        }
-        let Some(book_id) = book.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if validate_id(&book_id).is_err() {
-            continue;
-        }
-        let book_path = book.path();
-        let book_json_path = book_path.join("book.json");
-        check_path_no_symlink(root, &book_json_path, true)?;
-        let referenced: HashSet<String> = match fs::read(&book_json_path) {
-            Ok(bytes) => {
-                let Ok(document) = serde_json::from_slice::<BookDocument>(&bytes) else {
-                    // Corrupt or incomplete catalogs are not permission to
-                    // delete potentially recoverable user content.
-                    continue;
-                };
-                // An invalid catalog must never become permission to remove
-                // files merely because its refs point outside this book.
-                if document.id != book_id {
-                    continue;
-                }
-                let prefix = format!("books/{book_id}/chapters/");
-                if document.chapters.iter().any(|chapter| {
-                    chapter.resource.as_ref().is_some_and(|resource| {
-                        !resource.resource_id.is_local()
-                            || !resource.resource_id.path().starts_with(&prefix)
-                            || !resource.resource_id.path().ends_with(".json")
-                    })
-                }) {
-                    continue;
-                }
-                document.chapters.iter()
-                    .filter_map(|chapter| chapter.resource.as_ref())
-                    .filter_map(|resource| resource.resource_id.path().strip_prefix(&prefix))
-                    .map(str::to_owned)
-                    .collect()
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound
-                && book_id.starts_with("rss-") =>
-            {
-                let Some(state) = rss_state.as_ref() else {
-                    continue;
-                };
-                let prefix = format!("books/{book_id}/chapters/");
-                state.articles.iter()
-                    .filter(|article| format!("rss-{}", article.source_id) == book_id)
-                    .filter_map(|article| article.content_ref.as_ref())
-                    .filter_map(|reference| reference.path().strip_prefix(&prefix))
-                    .map(str::to_owned)
-                    .collect()
-            }
-            // Source debug previews and import staging also lack book.json.
-            // Their lifecycle is managed separately; do not treat their files
-            // as orphaned book content.
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(ResourceError::new(format!("Cannot read book cache: {error}")));
-            }
-        };
-        let chapter_dir = book_path.join("chapters");
-        check_path_no_symlink(root, &chapter_dir, true)?;
-        let chapters = match fs::read_dir(&chapter_dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(ResourceError::new(format!("Cannot inspect chapter cache: {error}")));
-            }
-        };
-        for chapter in chapters {
-            let chapter = chapter.map_err(|error| ResourceError::new(error.to_string()))?;
-            let name = chapter.file_name().to_string_lossy().into_owned();
-            if chapter.file_type().is_ok_and(|type_| type_.is_file())
-                && name.ends_with(".json")
-                && !referenced.contains(&name)
-            {
-                fs::remove_file(chapter.path()).map_err(|error| {
-                    ResourceError::new(format!("Cannot reclaim chapter cache: {error}"))
-                })?;
-            }
-        }
+    pub(crate) fn content_replacement(
+        &self,
+        reference: &ResourceRef,
+        view: &Value,
+        state: &Value,
+    ) -> Result<crate::resource_transactions::Replacement, ResourceError> {
+        let encoded = self.store.encode_document(reference, view, Some(state))?;
+        let bytes =
+            serde_json::to_vec(&encoded).map_err(|error| ResourceError::new(error.to_string()))?;
+        crate::resource_transactions::Replacement::public_json(
+            self.store.canonical_reference(reference)?,
+            bytes,
+        )
+        .map_err(|error| ResourceError::new(error.to_string()))
     }
-    Ok(())
-}
-
-/// Only chapter-media identities are eligible: other opaque media mappings
-/// may be owned by independent subsystems. Scan current typed chapter bodies,
-/// not stale versions, and fail closed (preserve mappings) if any book/catalog
-/// or referenced media document cannot be inspected safely.
-fn prune_unused_chapter_media_mappings(root: &Path) -> Result<(), ResourceError> {
-    use std::collections::HashSet;
-    use std::fs;
-
-    let books_dir = root.join("books");
-    check_path_no_symlink(root, &books_dir, true)?;
-    let mut live_ids = HashSet::new();
-    let mut mapping_directories = Vec::new();
-    let books = match fs::read_dir(&books_dir) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(ResourceError::new(format!(
-                "Cannot inspect book catalogs for media cleanup: {error}"
-            )));
-        }
-    };
-    for book in books {
-        let book = book.map_err(|error| ResourceError::new(error.to_string()))?;
-        if !book.file_type().map_err(|error| ResourceError::new(error.to_string()))?.is_dir() {
-            continue;
-        }
-        let Some(book_id) = book.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if validate_id(&book_id).is_err() {
-            continue;
-        }
-        let catalog_path = book.path().join("book.json");
-        check_path_no_symlink(root, &catalog_path, true)?;
-        let catalog = match fs::read(&catalog_path) {
-            Ok(bytes) => serde_json::from_slice::<BookDocument>(&bytes)
-                .map_err(|error| ResourceError::new(format!(
-                    "Cannot decode book catalog before media cleanup: {error}"
-                )))?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(ResourceError::new(format!(
-                "Cannot read book catalog before media cleanup: {error}"
-            ))),
-        };
-        if catalog.id != book_id {
-            return Err(ResourceError::new(
-                "Book catalog identity mismatch; refusing media mapping cleanup"
-            ));
-        }
-        for chapter in catalog.chapters {
-            let Some(resource) = chapter.resource else {
-                continue;
-            };
-            if !matches!(resource.content_format.as_str(), "audio" | "video") {
-                continue;
-            }
-            let expected_prefix = format!("books/{book_id}/chapters/");
-            if !resource.resource_id.is_local()
-                || !resource.resource_id.path().starts_with(&expected_prefix)
-                || !resource.resource_id.path().ends_with(".json")
-            {
-                return Err(ResourceError::new(
-                    "Cannot validate a media chapter path for mapping cleanup"
-                ));
-            }
-            let path = root.join(resource.resource_id.path());
-            check_path_no_symlink(root, &path, false)?;
-            let bytes = fs::read(&path).map_err(|error| ResourceError::new(format!(
-                "Cannot read media chapter for mapping cleanup: {error}"
-            )))?;
-            let document: Value = serde_json::from_slice(&bytes).map_err(|error| {
-                ResourceError::new(format!("Cannot decode media chapter for mapping cleanup: {error}"))
-            })?;
-            if document.get("kind").and_then(Value::as_str) != Some("media") {
-                return Err(ResourceError::new(
-                    "Media chapter is not typed media; refusing mapping cleanup"
-                ));
-            }
-            let mut refs = Vec::new();
-            refs.push(document.get("src").and_then(Value::as_str));
-            if let Some(sources) = document.get("sources").and_then(Value::as_array) {
-                refs.extend(sources.iter().map(|source| source.get("src").and_then(Value::as_str)));
-            }
-            for reference in refs.into_iter().flatten() {
-                if let Some(id) = reference.strip_prefix("resource://media/") {
-                    if is_chapter_media_mapping_id(id) {
-                        live_ids.insert(id.to_owned());
-                    }
-                }
-            }
-        }
-    }
-    for book in fs::read_dir(&books_dir).map_err(|error| ResourceError::new(error.to_string()))? {
-        let book = book.map_err(|error| ResourceError::new(error.to_string()))?;
-        if !book.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let book_id = book.file_name().to_string_lossy().into_owned();
-        if validate_id(&book_id).is_ok() {
-            mapping_directories.push(book.path().join("media-maps"));
-        }
-    }
-    for directory in mapping_directories {
-        check_path_no_symlink(root, &directory, true)?;
-        let mappings = match fs::read_dir(&directory) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(ResourceError::new(format!(
-                "Cannot inspect private chapter media mappings: {error}"
-            ))),
-        };
-        for mapping in mappings {
-            let mapping = mapping.map_err(|error| ResourceError::new(error.to_string()))?;
-            let name = mapping.file_name().to_string_lossy().into_owned();
-            let Some(id) = name.strip_suffix(".json") else {
-                continue;
-            };
-            if !is_chapter_media_mapping_id(id) || live_ids.contains(id) {
-                continue;
-            }
-            // Symlinks and special files are never removed by this collector.
-            if !mapping.file_type().is_ok_and(|kind| kind.is_file()) {
-                continue;
-            }
-            fs::remove_file(mapping.path()).map_err(|error| {
-                ResourceError::new(format!("Cannot remove obsolete chapter media mapping: {error}"))
-            })?;
-        }
-    }
-    Ok(())
-}
-
-fn is_chapter_media_mapping_id(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("chapter-media-") else {
-        return false;
-    };
-    let (hash, variant) = match rest.split_once("-variant-") {
-        Some((hash, variant)) => (hash, Some(variant)),
-        None => (rest, None),
-    };
-    hash.len() == 64
-        && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && variant.is_none_or(|number| !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit()))
 }
 
 fn ensure_resource_writes_recovered(root: &Path) -> Result<(), ResourceError> {
     crate::resource_transactions::ensure_no_unrecovered_transaction(root).map_err(|error| {
         ResourceError::new(format!(
-            "Resource writes are blocked until transaction recovery succeeds: {error}"
+            "Resource writes require transaction recovery: {error}"
         ))
     })
 }

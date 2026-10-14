@@ -1,3 +1,4 @@
+import { imagePosition, textPosition, restoreImagePosition, restoreTextPosition, type ReaderPosition } from "./readerPosition";
 import type { Ref } from "vue";
 import { settings } from "../settings/settingsStore";
 import type { ReaderTouchStartState } from "./useReaderPageInteraction";
@@ -27,6 +28,28 @@ export function useReaderDisplay(options: {
   };
 }) {
   const { reader, actions } = options;
+  let imageResume: ReaderPosition | null = null;
+  let lastPosition: ReaderPosition | null = null;
+  let viewportWidth = 0;
+  let viewportHeight = 0;
+  function rememberPosition(): void {
+    const viewport = reader.viewport.value;
+    if (!viewport || reader.mediaChapter.value) return;
+    viewportWidth = viewport.clientWidth;
+    viewportHeight = viewport.clientHeight;
+    lastPosition = reader.imagePage.value ? imagePosition(viewport)
+      : textPosition(viewport, settings.value.reader.verticalScroll);
+  }
+  function handleReaderResize(): void {
+    const viewport = reader.viewport.value;
+    if (!viewport || reader.busy.value || reader.mediaChapter.value) return;
+    const position = lastPosition;
+    viewportWidth = viewport.clientWidth;
+    viewportHeight = viewport.clientHeight;
+    measureReaderPages(false);
+    if (position) restoreReadingPosition(position);
+    else rememberPosition();
+  }
   function measureReaderPages(preserveRatio = false): void {
     const viewport = reader.viewport.value;
     if (!viewport || reader.imagePage.value || reader.mediaChapter.value) return;
@@ -51,6 +74,11 @@ export function useReaderDisplay(options: {
   function onReaderFrameScroll(): void {
     const viewport = reader.viewport.value;
     if (!viewport || !reader.visible.value || reader.busy.value) return;
+    if (viewport.clientWidth !== viewportWidth || viewport.clientHeight !== viewportHeight) {
+      handleReaderResize();
+      return;
+    }
+    rememberPosition();
     if (reader.imagePage.value) {
       const offset = Math.max(0, Math.round(viewport.scrollTop));
       if (offset === reader.comicScrollTop.value) return;
@@ -115,8 +143,33 @@ export function useReaderDisplay(options: {
     if (Math.abs(dx) >= 48 && Math.abs(dy) <= 52 && Math.abs(dx) >= Math.abs(dy) * 1.35) actions.turnPage(dx < 0 ? 1 : -1);
     else scrollReaderFrameToPage();
   }
+  function restoreReadingPosition(position: ReaderPosition): void {
+    const viewport = reader.viewport.value;
+    if (!viewport) return;
+    lastPosition = { ...position };
+    viewportWidth = viewport.clientWidth;
+    viewportHeight = viewport.clientHeight;
+    if (reader.imagePage.value) {
+      imageResume = position;
+      applyComicScrollPosition();
+    } else {
+      restoreTextPosition(viewport, position, settings.value.reader.verticalScroll);
+      const vertical = settings.value.reader.verticalScroll;
+      reader.pageIndex.value = Math.max(0, Math.floor((vertical ? viewport.scrollTop : viewport.scrollLeft)
+        / Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth)));
+    }
+  }
   function applyComicScrollPosition(): void {
-    if (reader.imagePage.value && reader.viewport.value) reader.viewport.value.scrollTop = reader.comicScrollTop.value;
+    const viewport = reader.viewport.value;
+    if (!reader.imagePage.value || !viewport) return;
+    if (imageResume) {
+      const images = Array.from(viewport.querySelectorAll<HTMLImageElement>("img[data-page-id]"));
+      const target = Math.max(0, images.findIndex(image => image.dataset.pageId === imageResume!.pageId));
+      if (!images.length || images.slice(0, target + 1).some(image => !image.complete)) return;
+      restoreImagePosition(viewport, imageResume);
+      reader.comicScrollTop.value = viewport.scrollTop;
+      imageResume = null;
+    } else viewport.scrollTop = reader.comicScrollTop.value;
   }
   function clearReaderScrollListeners(): void {
     const element = reader.viewport.value;
@@ -133,6 +186,9 @@ export function useReaderDisplay(options: {
   function setReaderViewport(element: HTMLElement | null): void {
     clearReaderScrollListeners();
     reader.viewport.value = element;
+    lastPosition = null;
+    viewportWidth = element?.clientWidth ?? 0;
+    viewportHeight = element?.clientHeight ?? 0;
     if (!element) return;
     element.addEventListener("scroll", onReaderFrameScroll, { passive: true });
     element.addEventListener("touchstart", onReaderFrameTouchStart, { passive: true });
@@ -145,8 +201,8 @@ export function useReaderDisplay(options: {
   function onReaderTextChange(): void {
     actions.stopTts(); actions.clearTtsHighlight(); options.getPageInteraction().clearReaderFindMatches();
   }
-  function onReaderLayout(): void { measureReaderPages(true); options.getPageInteraction().rebuildReaderFind(); }
-  return { clearReaderScrollListeners, setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
+  function onReaderLayout(): void { handleReaderResize(); options.getPageInteraction().rebuildReaderFind(); }
+  return { restoreReadingPosition, handleReaderResize, clearReaderScrollListeners, setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
     scrollReaderFrameToPage, onReaderFrameScroll, shouldIgnoreReaderKeydown,
     onReaderFrameTouchStart, onReaderFrameTouchMove, onReaderFrameTouchEnd, applyComicScrollPosition };
 }
