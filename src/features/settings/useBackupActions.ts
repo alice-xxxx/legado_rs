@@ -78,7 +78,7 @@ export function useBackupActions() {
         notify(result.warning, "error");
         return;
       }
-      notify("备份文件已保存。请妥善保管其中的书源与登录状态。");
+      notify("备份文件已保存。请妥善保管其中的源与登录状态。");
     } catch (error) {
       notify(`创建备份失败：${errorText(error)}`, "error");
     } finally {
@@ -88,7 +88,7 @@ export function useBackupActions() {
 
   async function restoreBackup(): Promise<void> {
     if (backupBusy.value || shelfBatchRecoveryRequired.value) return;
-    if (!window.confirm("恢复备份会替换当前书架、阅读数据、书源和登录状态。要继续选择备份文件吗？")) return;
+    if (!window.confirm("恢复备份会替换当前书架、阅读数据、源和登录状态。要继续选择备份文件吗？")) return;
     beginBackupRestore();
     try {
       const result: RestoreBackupResponse = await restoreBackupFromPicker();
@@ -165,7 +165,7 @@ export function useBackupActions() {
     const config = webDavBackupConfig.value;
     if (backupBusy.value || shelfBatchRecoveryRequired.value
       || !config?.url) return;
-    if (!window.confirm("将使用 WebDAV 目录中的 legado-rs-backup.zip 替换当前本地书架、阅读数据、书源和设置。恢复成功后会重新载入应用数据。要继续吗？")) return;
+    if (!window.confirm("将使用 WebDAV 目录中的 legado-rs-backup.zip 替换当前本地书架、阅读数据、源和设置。恢复成功后会重新载入应用数据。要继续吗？")) return;
     beginBackupRestore();
     webDavBackupError.value = "";
     try {

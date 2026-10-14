@@ -63,7 +63,7 @@ function save(): void {
   const definition = JSON.parse(json) as Record<string, unknown>;
   if (!String(definition.bookSourceName ?? definition.sourceName ?? definition.name ?? "").trim()
       || !String(definition.bookSourceUrl ?? definition.sourceUrl ?? definition.url ?? "").trim()) {
-    saveError.value = "请填写书源名称和地址。";
+    saveError.value = "请填写源名称和地址。";
     return;
   }
   saveError.value = "";
@@ -77,11 +77,11 @@ const saveError = ref("");
  <section class="source-edit-screen">
   <header class="source-edit-bar safe-area-top">
    <button type="button" class="source-edit-back" :disabled="busy" @click="cancel"><PrototypeIcon name="left"/> 返回来源</button>
-   <strong>编辑书源</strong>
+   <strong>编辑源</strong>
    <div class="source-edit-tools">
     <button type="button" class="button primary" :disabled="busy||locked||(!changed&&!fieldPending)||!parsed.value" @click="save">{{busy?'保存中…':'保存'}}</button>
     <details class="source-edit-menu">
-     <summary aria-label="书源操作"><PrototypeIcon name="more"/></summary>
+     <summary aria-label="源操作"><PrototypeIcon name="more"/></summary>
      <div>
       <button type="button" :disabled="busy||locked||!source.enabled||source.isRss" @click="emit('test')"><PrototypeIcon name="debug"/> 测试配置</button>
       <button v-if="!source.isRss" type="button" :disabled="busy||locked" @click="emit('login')"><PrototypeIcon name="login"/> 登录</button>
@@ -106,7 +106,7 @@ const saveError = ref("");
    />
   </div>
   <div v-if="discardPrompt" class="source-discard-prompt">
-    <div><strong>放弃未保存的书源修改？</strong><p>未保存的字段修改将丢失。</p>
+    <div><strong>放弃未保存的源修改？</strong><p>未保存的字段修改将丢失。</p>
       <button type="button" class="button secondary" @click="discardPrompt=false">继续编辑</button>
       <button type="button" class="button danger" @click="emit('cancel')">放弃修改</button>
     </div>

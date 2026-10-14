@@ -42,7 +42,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       notify(`${source.name} 已${enabled ? "启用" : "停用"}。`);
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
-      notify(`更新书源状态失败：${errorText(error)}`, "error");
+      notify(`更新源状态失败：${errorText(error)}`, "error");
     }
   }
 
@@ -98,17 +98,17 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     sourceBatchBusy.value = false;
     if (restoreRevision !== getRestoreFrontendRevision()) return;
     if (failure) {
-      notify(`批量操作中断，已确认完成 ${completed}/${targets.length} 个书源：${errorText(failure)}`, "error");
+      notify(`批量操作中断，已确认完成 ${completed}/${targets.length} 个源：${errorText(failure)}`, "error");
       return;
     }
-    notify(`已${operation} ${completed} 个所选书源。`);
+    notify(`已${operation} ${completed} 个所选源。`);
   }
 
   async function setSelectedSourcesEnabled(enabled: boolean): Promise<void> {
     await patchSelectedSources(
       { enabled },
       enabled ? "启用" : "停用",
-      `所选书源已全部${enabled ? "启用" : "停用"}。`,
+      `所选源已全部${enabled ? "启用" : "停用"}。`,
     );
   }
 
@@ -117,7 +117,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     await patchSelectedSources(
       { group: normalizedGroup },
       normalizedGroup ? `分组为“${normalizedGroup}”` : "清除分组",
-      normalizedGroup ? `所选书源已全部属于“${normalizedGroup}”分组。` : "所选书源已全部未分组。",
+      normalizedGroup ? `所选源已全部属于“${normalizedGroup}”分组。` : "所选源已全部未分组。",
     );
   }
 
@@ -132,7 +132,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       sourceEditOriginalJson.value = json;
       editingSource.value = sources.value.find(s => s.id === source.id) ?? source;
     } catch (error) {
-      if (revision === getRestoreFrontendRevision()) notify(`读取完整书源定义失败：${errorText(error)}`, "error");
+      if (revision === getRestoreFrontendRevision()) notify(`读取完整源定义失败：${errorText(error)}`, "error");
     } finally {
       sourceEditBusy.value = false;
     }
@@ -153,7 +153,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     try {
       const value: unknown = JSON.parse(definitionJson);
       if (!value || typeof value !== "object" || Array.isArray(value)) {
-        notify("书源 JSON 必须是一个对象。", "error"); return;
+        notify("源 JSON 必须是一个对象。", "error"); return;
       }
     } catch (error) {
       notify(`JSON 语法错误：${errorText(error)}`, "error"); return;
@@ -166,9 +166,9 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       editingSource.value = null;
       sourceEditJson.value = "";
       sourceEditOriginalJson.value = "";
-      notify("书源配置已保存，新规则会用于后续搜索和解析。");
+      notify("源配置已保存，新规则会用于后续搜索和解析。");
     } catch (error) {
-      if (revision === getRestoreFrontendRevision()) notify(`保存书源失败：${errorText(error)}`, "error");
+      if (revision === getRestoreFrontendRevision()) notify(`保存源失败：${errorText(error)}`, "error");
     } finally {
       sourceEditBusy.value = false;
     }
@@ -224,10 +224,10 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       if (revision !== getRestoreFrontendRevision()) return;
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportOpen.value = false;
-      notify("书源已导入。");
+      notify("源已导入。");
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
-      notify(`书源导入失败：${errorText(error)}`, "error");
+      notify(`源导入失败：${errorText(error)}`, "error");
     } finally {
       sourceImportBusy.value = false;
     }
@@ -248,10 +248,10 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportUrl.value = "";
       sourceImportOpen.value = false;
-      notify("书源已从链接导入。");
+      notify("源已从链接导入。");
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
-      notify(`链接导入书源失败：${errorText(error)}`, "error");
+      notify(`链接导入源失败：${errorText(error)}`, "error");
     } finally {
       sourceImportBusy.value = false;
     }
@@ -271,13 +271,13 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       window.document.body.append(anchor);
       try {
         anchor.click();
-        notify(`已导出 ${sourceIds.length} 个书源。`);
+        notify(`已导出 ${sourceIds.length} 个源。`);
       } finally {
         anchor.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 1000);
       }
     } catch (error) {
-      notify(`导出书源失败：${errorText(error)}`, "error");
+      notify(`导出源失败：${errorText(error)}`, "error");
     } finally {
       sourceExportBusy.value = false;
     }
@@ -303,10 +303,10 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       if (revision !== getRestoreFrontendRevision()) return;
       const cleanupWarning = "cleanupWarning" in result ? result.cleanupWarning : undefined;
       const cleanupPending = "cleanupPending" in result && result.cleanupPending;
-      notify(cleanupWarning || "所选书源已移除。", cleanupPending ? "error" : "success");
+      notify(cleanupWarning || "所选源已移除。", cleanupPending ? "error" : "success");
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
-      notify(`删除书源失败：${errorText(error)}`, "error");
+      notify(`删除源失败：${errorText(error)}`, "error");
     } finally {
       sourceRemovalBusy.value = false;
     }

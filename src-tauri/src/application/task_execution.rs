@@ -595,11 +595,19 @@ impl ApplicationService {
             if pending_source_ids.is_empty() {
                 return Err("Search task source list is incomplete".to_owned());
             }
+            let exhausted = if task.kind == "search" {
+                self.read_search_task_state(&task).await?["exhaustedSourceIds"].as_array()
+                    .into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>()
+            } else { HashSet::new() };
             let source_slots = {
                 let _sources = self.sources_lock.lock().await;
                 let current_sources = self.read_sources().await?;
                 let mut slots = Vec::with_capacity(pending_source_ids.len());
                 for source_id in &pending_source_ids {
+                    if exhausted.contains(source_id) {
+                        slots.push((source_id.clone(), None, None));
+                        continue;
+                    }
                     let Some(source) = current_sources.iter().find(|source| &source.id == source_id).cloned() else {
                         slots.push((
                             source_id.clone(),
@@ -631,12 +639,11 @@ impl ApplicationService {
                 .as_deref()
                 .ok_or_else(|| "Search task has no keyword".to_owned())?;
             let result = if sources.is_empty() {
-                Ok(json!({ "results": [] }))
+                Some(Ok(json!({ "results": [] })))
             } else {
                 let request_sources =
                     Value::Array(sources.iter().map(|(source, _)| source.source.clone()).collect());
-                self.executor
-                    .execute(engine_request(
+                let request = engine_request(
                         "searchBatch",
                         &request_sources,
                         Some(keyword.to_owned()),
@@ -644,8 +651,14 @@ impl ApplicationService {
                         None,
                         None,
                         None,
-                    ))
-                    .await
+                    );
+                self.execute_search_batch(request, signal).await
+            };
+            let Some(result) = result else {
+                drop(permit);
+                drop(_operation);
+                if !self.task_checkpoint(task_id, signal).await? { return Ok(None); }
+                continue;
             };
             let responses = match result {
                 Ok(value) => {
@@ -713,16 +726,17 @@ impl ApplicationService {
                         .await?;
                     } else {
                         let error = response.err().unwrap_or_else(|| "Search source is unavailable".to_owned());
-                        let errors = vec![json!({
+                        let errors = if exhausted.contains(&source_id) { Vec::new() } else { vec![json!({
                             "sourceId": source_id,
                             "message": error,
-                        })];
+                        })] };
                         if committed_task.kind == "search" {
                             self.append_and_publish_search_snapshot(
                                 &committed_task,
                                 Vec::new(),
                                 errors,
                                 index + 1 == batch_result_count,
+                                None,
                             ).await?;
                         } else {
                             self.append_candidate_search_results(&committed_task, Vec::new(), errors)
@@ -735,6 +749,30 @@ impl ApplicationService {
                     .await?;
                     break;
                 }
+            }
+        }
+    }
+
+    async fn execute_search_batch(
+        &self,
+        mut request: SourceEngineRequest,
+        signal: &mut tokio::sync::watch::Receiver<TaskSignal>,
+    ) -> Option<Result<Value, String>> {
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = cancellation.clone().drop_guard();
+        request.cancellation = Some(cancellation);
+        let execution = self.executor.execute(request);
+        tokio::pin!(execution);
+        loop {
+            if signal.borrow().cancelled { return None; }
+            tokio::select! {
+                biased;
+                changed = signal.changed() => {
+                    if changed.is_err() || signal.borrow().cancelled { return None; }
+                    // Pausing retains this batch; its result is committed only
+                    // after the ordinary task checkpoint allows work again.
+                }
+                result = &mut execution => return Some(result),
             }
         }
     }
@@ -770,6 +808,7 @@ impl ApplicationService {
         };
         let mut results = Vec::new();
         let mut errors = Vec::new();
+        let mut has_next_page = None;
         let replacement_context = if task.kind == "bookSourceCandidates" {
             Some(self.read_search_replacement_context(search_id).await?)
         } else {
@@ -777,6 +816,7 @@ impl ApplicationService {
         };
         match response {
             Ok(value) => {
+                has_next_page = value.get("hasNextPage").and_then(Value::as_bool);
                 let books = value
                     .get("books")
                     .and_then(Value::as_array)
@@ -837,7 +877,8 @@ impl ApplicationService {
             ),
         }
         if task.kind == "search" {
-            self.append_and_publish_search_snapshot(task, results, errors, publish_search_snapshot)
+            self.append_and_publish_search_snapshot(task, results, errors, publish_search_snapshot,
+                has_next_page.map(|has_next| (source.id.as_str(), has_next)))
                 .await?;
         } else {
             self.append_candidate_search_results(task, results, errors).await?;
@@ -1211,5 +1252,116 @@ impl ApplicationService {
             result
         };
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod search_task_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct PendingExecutor {
+        entered: tokio::sync::Notify,
+        dropped: Arc<AtomicBool>,
+        token: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    }
+    struct DropNotice(Arc<AtomicBool>);
+    impl Drop for DropNotice {
+        fn drop(&mut self) { self.0.store(true, Ordering::SeqCst); }
+    }
+    impl SourceExecutor for PendingExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async move {
+                *self.token.lock().unwrap() = request.cancellation;
+                let _drop = DropNotice(self.dropped.clone());
+                self.entered.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    fn source(id: &str, source_type: u8) -> SourceRecord {
+        SourceRecord {
+            id: id.into(), name: id.into(), group: None, enabled: true,
+            source: json!({"bookSourceName": id, "bookSourceUrl": format!("https://fixture/{id}"), "bookSourceType": source_type, "enabled": true}),
+        }
+    }
+
+    async fn wait_for_terminal(service: &ApplicationService, id: &str) -> AppTask {
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let task = service.task_summary_record(id).await.unwrap();
+                if matches!(task.status.as_str(), "completed" | "cancelled" | "failed") { return task; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.expect("Search should finish without waiting for a stuck source request")
+    }
+
+    #[tokio::test]
+    async fn search_task_cancel_and_release_interrupt_pending_execution() {
+        for release in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let executor = Arc::new(PendingExecutor {
+                entered: tokio::sync::Notify::new(), dropped: Arc::new(AtomicBool::new(false)),
+                token: std::sync::Mutex::new(None),
+            });
+            let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
+            service.write_sources(&[source("text-1", 0)]).await.unwrap();
+            let response = service.start_search("text", &["text-1".into()], "凡人", 1, true, None).await.unwrap();
+            let id = response["taskId"].as_str().unwrap();
+            tokio::time::timeout(Duration::from_secs(2), executor.entered.notified()).await.unwrap();
+            if release { service.release_search_results(id).await.unwrap(); }
+            else { service.cancel_task(id).await.unwrap(); }
+            let terminal = wait_for_terminal(&service, id).await;
+            assert_eq!(terminal.status, "cancelled");
+            assert_eq!(terminal.completed, 0);
+            assert!(executor.dropped.load(Ordering::SeqCst));
+            assert!(executor.token.lock().unwrap().as_ref().unwrap().is_cancelled());
+            // Cancel-after-finish and repeat cancellation are both harmless.
+            service.cancel_task(id).await.unwrap();
+            if release { assert!(service.get_search_task_results(id).await.is_err()); }
+        }
+    }
+
+    #[derive(Default)]
+    struct PagingExecutor(std::sync::Mutex<Vec<(i32, Vec<String>)>>);
+    impl SourceExecutor for PagingExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async move {
+                let page = request.page.unwrap();
+                let sources = request.source.as_array().unwrap();
+                assert!(sources.iter().all(|source| source["bookSourceType"] == 0));
+                let ids = sources.iter().map(|source| source["bookSourceName"].as_str().unwrap().to_owned()).collect();
+                self.0.lock().unwrap().push((page, ids));
+                Ok(json!({"results": sources.iter().map(|source| json!({
+                    "books": [{"name": "凡人", "author": "作者", "bookUrl": format!("{}/book", source["bookSourceUrl"].as_str().unwrap())}],
+                    "hasNextPage": source["bookSourceName"] == "text-2" && page == 1,
+                })).collect::<Vec<_>>()}))
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn search_task_paging_skips_exhausted_and_other_type_sources() {
+        let directory = tempfile::tempdir().unwrap();
+        let executor = Arc::new(PagingExecutor::default());
+        let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
+        service.write_sources(&[source("text-1", 0), source("text-2", 0), source("image-1", 2), source("audio-1", 1)]).await.unwrap();
+        let ids = vec!["text-1".into(), "text-2".into(), "image-1".into(), "audio-1".into()];
+        let first = service.start_search("text", &ids, "凡人", 1, true, None).await.unwrap();
+        let first_id = first["taskId"].as_str().unwrap();
+        assert_eq!(wait_for_terminal(&service, first_id).await.status, "completed");
+        assert_eq!(service.get_search_task_results(first_id).await.unwrap()["hasMore"], true);
+        let second = service.start_search("text", &ids, "凡人", 2, true, None).await.unwrap();
+        let second_id = second["taskId"].as_str().unwrap();
+        assert_eq!(wait_for_terminal(&service, second_id).await.status, "completed");
+        let document = service.get_search_task_results(second_id).await.unwrap();
+        assert_eq!(document["hasMore"], false);
+        assert_eq!(document["results"].as_array().unwrap().len(), 1);
+        assert_eq!(document["results"][0]["sources"].as_array().unwrap().len(), 2);
+        assert_eq!(*executor.0.lock().unwrap(), vec![(1, vec!["text-1".to_owned(), "text-2".to_owned()]), (2, vec!["text-2".to_owned()])]);
+        assert!(service.start_search("text", &ids, "凡人", 3, true, None).await.is_err());
+        // A different precision policy cannot inherit a previous page's results.
+        assert!(service.start_search("text", &ids, "凡人", 2, false, None).await.is_err());
     }
 }

@@ -546,33 +546,6 @@ impl ApplicationService {
         Ok(Some(AddBookSnapshot { public, private }))
     }
 
-    async fn restore_add_book_snapshot(
-        &self,
-        book_id: &str,
-        book_ref: &ResourceRef,
-        previous: Option<&AddBookSnapshot>,
-        restore_public: bool,
-    ) -> Result<(), String> {
-        let private_relative = self.book_engine_path(book_id)?;
-        if let Some(previous) = previous {
-            self.write_internal_json(&private_relative, &previous.private)
-                .await?;
-            if restore_public {
-                self.store
-                    .write_json_ref(book_ref, &previous.public)
-                    .await
-                    .map_err(|error| error.to_string())?;
-            }
-            return Ok(());
-        }
-        remove_file_if_present(&self.root.join(private_relative)).await?;
-        if restore_public {
-            remove_file_if_present(&self.root.join(self.book_engine_path(book_id)?))
-                .await?;
-        }
-        Ok(())
-    }
-
     pub async fn get_book(&self, book_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;

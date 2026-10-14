@@ -20,6 +20,7 @@ pub(super) fn engine_request(
         book
     });
     SourceEngineRequest {
+        cancellation: None,
         operation: operation.to_owned(),
         source: source.clone(),
         keyword,
@@ -229,14 +230,14 @@ pub(super) fn sanitize_source_login_result(result: Value) -> Result<Value, Strin
         .and_then(Value::as_str)
         .ok_or_else(|| "Source login returned an invalid result".to_owned())?;
     let message = match (status, code) {
-        ("executed", "login_executed") => "登录操作已执行。此书源没有提供独立的认证验证。",
+        ("executed", "login_executed") => "登录操作已执行。此源没有提供独立的认证验证。",
         ("executed", "login_action_executed") => "登录操作已执行。",
-        ("failed", "login_unavailable") => "此书源没有可执行的表单登录规则。",
-        ("failed", "invalid_credentials") => "登录输入与此书源表单不匹配。",
+        ("failed", "login_unavailable") => "此源没有可执行的表单登录规则。",
+        ("failed", "invalid_credentials") => "登录输入与此源表单不匹配。",
         ("failed", "storage_unavailable" | "storage_failed") => "登录信息无法保存，请稍后重试。",
-        ("failed", "login_failed") => "登录请求执行失败。请检查凭据、网络或书源登录规则后重试。",
-        ("failed", "login_action_unavailable") => "此书源登录操作不可用。",
-        ("failed", "login_action_failed") => "登录操作执行失败。请检查网络或书源登录规则后重试。",
+        ("failed", "login_failed") => "登录请求执行失败。请检查凭据、网络或源登录规则后重试。",
+        ("failed", "login_action_unavailable") => "此源登录操作不可用。",
+        ("failed", "login_action_failed") => "登录操作执行失败。请检查网络或源登录规则后重试。",
         _ => return Err("Source login returned an invalid result".to_owned()),
     };
     let mut sanitized = json!({

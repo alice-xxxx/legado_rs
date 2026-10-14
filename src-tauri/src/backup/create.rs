@@ -455,22 +455,6 @@ pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
     }
 }
 
-fn valid_local_original_file(file_name: &str) -> bool {
-    matches!(
-        file_name,
-        "original.txt" | "original.epub" | "original.cbz" | "original.pdf"
-    )
-}
-
-fn is_local_original_archive_path(path: &str) -> bool {
-    let parts = path.split('/').collect::<Vec<_>>();
-    matches!(
-        parts.as_slice(),
-        ["cache", kind, book_id, original_file]
-            if crate::resources::content::CONTENT_TYPES.contains(kind) && valid_resource_id(book_id) && valid_local_original_file(original_file)
-    )
-}
-
 fn valid_resource_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 255
@@ -492,36 +476,6 @@ fn valid_source_record_id(id: &str) -> bool {
                 .bytes()
                 .all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
     })
-}
-
-fn valid_asset_file(filename: &str) -> bool {
-    let Some((id, extension)) = filename.rsplit_once('.') else {
-        return false;
-    };
-    valid_resource_id(id)
-        && matches!(
-            extension.to_ascii_lowercase().as_str(),
-            "css"
-                | "png"
-                | "jpg"
-                | "jpeg"
-                | "webp"
-                | "gif"
-                | "pdf"
-                | "bmp"
-                | "woff"
-                | "woff2"
-                | "ttf"
-                | "otf"
-                | "mp3"
-                | "m4a"
-                | "aac"
-                | "wav"
-                | "ogg"
-                | "opus"
-                | "mp4"
-                | "webm"
-        )
 }
 
 pub(super) fn validate_archive_path(path: &str) -> Result<(), String> {

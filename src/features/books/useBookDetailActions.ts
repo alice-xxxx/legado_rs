@@ -198,7 +198,7 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
       } else if (response.recoveryRequired) {
         notify("阅读进度已重置，但恢复待完成；请重启应用。", "error");
       } else {
-        notify(`《${title}》的阅读进度已重置。目录、缓存、书源、书签和阅读历史已保留。${warning ? ` ${warning}` : ""}`);
+        notify(`《${title}》的阅读进度已重置。目录、缓存、源、书签和阅读历史已保留。${warning ? ` ${warning}` : ""}`);
       }
     } catch (error) {
       if (isCurrentRestore()) {

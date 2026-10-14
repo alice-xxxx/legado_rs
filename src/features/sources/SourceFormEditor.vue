@@ -71,7 +71,7 @@ defineExpose({ serialize, reset });
 
 <template>
   <div class="source-field-editor" :inert="!!editingField">
-    <nav class="source-field-tabs" aria-label="书源配置分类" role="tablist">
+    <nav class="source-field-tabs" aria-label="源配置分类" role="tablist">
       <button v-for="tab in tabs" :key="tab.id" type="button" role="tab"
         :aria-selected="currentTab.id === tab.id" :class="{ active: currentTab.id === tab.id }"
         @click="activeTab = tab.id">{{ tab.label }}</button>

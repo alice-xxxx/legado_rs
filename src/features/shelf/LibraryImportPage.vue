@@ -83,7 +83,7 @@ async function importFile(format: LocalImportFormat): Promise<void> {
 const formats = [
   { format: "txt", title: "TXT", desc: "纯文本与自动目录", icon: "text" },
   { format: "epub", title: "EPUB", desc: "电子书与元数据", icon: "book" },
-  { format: "cbz", title: "CBZ", desc: "漫画压缩包", icon: "image" },
+  { format: "cbz", title: "CBZ", desc: "图片压缩包", icon: "image" },
   { format: "pdf", title: "PDF", desc: "文档阅读", icon: "pdf" },
 ] as const;
 const linkInput = ref("");
@@ -110,7 +110,7 @@ async function openLocalBook(bookId: string): Promise<void> {
   }
 }
 function bookFormat(book: ShelfResource["books"][number]): string {
-  if (book.kind === "comic") return "CBZ / 漫画";
+  if (book.kind === "comic") return "CBZ / 图片";
   if (book.mediaType === "audio") return "音频";
   if (book.mediaType === "video") return "视频";
   return "本地书";
@@ -140,7 +140,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 
       <section class="library-import-section">
         <h2 id="library-import-link-title">通过链接导入</h2>
-        <p>支持书源、RSS、替换规则、TXT 目录规则和 HTTP TTS 配置。</p>
+        <p>支持源、RSS、替换规则、TXT 目录规则和 HTTP TTS 配置。</p>
         <form class="library-import-form" @submit.prevent="parseLink">
           <input v-model="linkInput" type="text" inputmode="url" autocomplete="url"
             placeholder="粘贴链接或 JSON"

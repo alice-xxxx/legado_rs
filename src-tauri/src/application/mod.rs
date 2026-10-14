@@ -188,6 +188,8 @@ struct AppTask {
     keyword: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    precision_search: Option<bool>,
     #[serde(default)]
     page: u32,
     #[serde(default)]
@@ -239,8 +241,12 @@ fn empty_search_task_document(task: &AppTask) -> Value {
         "taskId": task.id,
         "keyword": task.keyword,
         "sourceIds": task.source_ids,
+        "precisionSearch": task.precision_search.unwrap_or(true),
         "page": task.page,
         "results": [],
+        "hasMore": false,
+        "exhaustedSourceIds": [],
+        "nextPageSourceIds": [],
         "errors": [],
         "status": task.status,
         "completedSources": task.completed,
@@ -440,6 +446,39 @@ fn merge_search_result(
     Ok(true)
 }
 
+// Keep punctuation significant for keyword matching (e.g. C++ and C#), while
+// ignoring surrounding whitespace and letter case across source responses.
+fn search_match_rank(title: &str, author: Option<&str>, keyword: &str) -> u8 {
+    let title = title.trim().to_lowercase();
+    let author = author.unwrap_or_default().trim().to_lowercase();
+    if title == keyword || author == keyword {
+        0
+    } else if title.contains(keyword) || author.contains(keyword) {
+        1
+    } else {
+        2
+    }
+}
+
+fn sort_search_results(results: &mut [Value], keyword: &str) {
+    let keyword = keyword.trim().to_lowercase();
+    // Stable ties preserve the original source order, like Legado's mergeItems.
+    results.sort_by_cached_key(|result| {
+        let rank = search_match_rank(
+            result["title"].as_str().unwrap_or_default(),
+            result["author"].as_str(),
+            &keyword,
+        );
+        let source_count = if rank < 2 {
+            result["sources"].as_array().map(|sources| {
+                sources.iter().filter_map(|source| source["sourceId"].as_str())
+                    .collect::<HashSet<_>>().len()
+            }).unwrap_or(1)
+        } else { 0 };
+        (rank, std::cmp::Reverse(source_count))
+    });
+}
+
 #[cfg(test)]
 mod search_content_type_tests {
     use super::*;
@@ -460,5 +499,34 @@ mod search_content_type_tests {
         assert_eq!(results.len(), 4);
         assert_eq!(results[0]["sources"].as_array().unwrap().len(), 2);
         assert_eq!(search_result_group_indexes(&results).len(), 4);
+    }
+
+    #[test]
+    fn search_relevance_prioritizes_exact_matches_and_counts_distinct_sources() {
+        let group = |id: &str, title: &str, author: &str, sources: &[&str]| json!({
+            "resultId": id, "title": title, "author": author,
+            "sources": sources.iter().map(|id| json!({"sourceId": id})).collect::<Vec<_>>()
+        });
+        let mut results = vec![
+            group("unrelated-first", "推荐书", "其他作者", &["1"]),
+            group("partial-one", "凡人修仙后传", "甲", &["1", "1", "1"]),
+            group("exact-author", "另一部作品", "凡人修仙", &["1"]),
+            group("partial-many", "凡人修仙传", "乙", &["1", "2"]),
+            group("exact-title", "凡人修仙", "丙", &["1", "2"]),
+            group("unrelated-last", "热榜小说", "丁", &["1", "2", "3"]),
+        ];
+        sort_search_results(&mut results, "凡人修仙");
+        assert_eq!(results.iter().map(|result| result["resultId"].as_str().unwrap())
+            .collect::<Vec<_>>(), vec!["exact-title", "exact-author", "partial-many", "partial-one",
+                "unrelated-first", "unrelated-last"]);
+    }
+
+    #[test]
+    fn search_matching_ignores_case_and_edge_whitespace_but_keeps_punctuation() {
+        assert_eq!(search_match_rank(" DUNE ", None, "dune"), 0);
+        assert_eq!(search_match_rank("Children of Dune", None, "dune"), 1);
+        assert_eq!(search_match_rank("其他书", Some(" Dune "), "dune"), 0);
+        assert_eq!(search_match_rank("C# 入门", None, "c++"), 2);
+        assert_eq!(search_match_rank("其他书", Some("作者"), "dune"), 2);
     }
 }

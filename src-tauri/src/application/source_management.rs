@@ -106,7 +106,7 @@ impl ApplicationService {
                 "message": result
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("此书源使用网页登录。"),
+                    .unwrap_or("此源使用网页登录。"),
             }));
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             return Ok(json!({
@@ -114,7 +114,7 @@ impl ApplicationService {
                 "message": result
                     .get("message")
                     .and_then(Value::as_str)
-                    .unwrap_or("此书源使用网页登录。"),
+                    .unwrap_or("此源使用网页登录。"),
             }));
         }
         if result.get("status").and_then(Value::as_str) == Some("unavailable") {
@@ -387,7 +387,7 @@ impl ApplicationService {
             input,
             MAX_SOURCE_IMPORT_BODY_BYTES,
             Duration::from_secs(30),
-            "书源 JSON",
+            "源 JSON",
         )
         .await?;
         self.import_sources(&source_json).await
@@ -421,7 +421,7 @@ impl ApplicationService {
         }
         if cleanup_pending {
             result["cleanupPending"] = json!(true);
-            result["cleanupWarning"] = json!("书源已移除，但部分 RSS 缓存未能清理。");
+            result["cleanupWarning"] = json!("源已移除，但部分 RSS 缓存未能清理。");
             if rss_state.is_none() {
                 rss_state = crate::rss::rss_state_resource(&self.store).await.ok();
             }

@@ -16,10 +16,10 @@ export const clearSourceDebugPreview = (resourceId: string) =>
   command<SourceDebugResponse>("debug_search_result", { cleanupResourceId: resourceId });
 
 export function startSearch(sourceType: SearchType, sourceIds: string[], keyword: string,
-  page: number, onResults: (batch: SearchBatch) => void) {
+  page: number, precisionSearch: boolean, onResults: (batch: SearchBatch) => void) {
   const channel = new Channel<SearchBatch>();
   channel.onmessage = onResults;
-  return command<{ taskId: string }>("start_search", { sourceType, sourceIds, keyword, page, onResults: channel });
+  return command<{ taskId: string }>("start_search", { sourceType, sourceIds, keyword, page, precisionSearch, onResults: channel });
 }
 
 export const searchBookSourceCandidates = (bookId: string, sourceIds: string[], keyword?: string, page = 1) =>
@@ -40,3 +40,6 @@ export const getSearchTaskResults = (taskId: string) =>
   command<SearchResource>("get_search_task_results", { taskId });
 
 export const releaseSearchResults = (taskId: string) => command<void>("release_search_results", { taskId });
+
+// Discovery cancellation does not wait for the task-center resource to reload.
+export const stopSearch = (taskId: string) => command("cancel_task", { taskId });

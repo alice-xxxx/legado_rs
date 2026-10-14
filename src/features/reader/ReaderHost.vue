@@ -163,7 +163,40 @@ function onGlobalKeydown(event: KeyboardEvent): void {
     void router.push({ name: routeNames.search });
     return;
   }
-  if (!readerFeatures.readerVisible.value || readerFeatures.shouldIgnoreReaderKeydown(event, document)) return;
+  if (!readerFeatures.readerVisible.value) return;
+  if (event.key === "Escape") {
+    if (readerFeatures.bookmarkEditorOpen.value) {
+      event.preventDefault();
+      readerFeatures.closeBookmarkEditor();
+      return;
+    }
+    if (readerFeatures.dictionaryOpen.value) {
+      event.preventDefault();
+      readerFeatures.closeReaderDictionary();
+      return;
+    }
+    if (bookSourceSwitch.bookSourceSwitchOpen) {
+      event.preventDefault();
+      bookSourceSwitch.closeBookSourceSwitch();
+      return;
+    }
+    if (readerFeatures.readerDirectoryOpen.value || readerFeatures.readerControlsOpen.value) {
+      event.preventDefault();
+      readerFeatures.readerDirectoryOpen.value = false;
+      readerFeatures.readerControlsOpen.value = false;
+      return;
+    }
+  }
+  if (readerFeatures.shouldIgnoreReaderKeydown(event, document)) return;
+  if (readerFeatures.readingMediaChapter.value && event.key !== "Escape") {
+    if (event.key === " " || event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      if (readerFeatures.isReaderMediaControlBlocked()) return;
+      if (event.key === " ") readerFeatures.toggleReaderMediaPlayback();
+      else readerFeatures.skipReaderMedia(event.key === "ArrowLeft" ? -10 : 10);
+    }
+    return;
+  }
   if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {
     event.preventDefault();
     readerFeatures.turnPage(1);

@@ -207,6 +207,11 @@ impl ApplicationService {
             let signal = registry.signals.get(task_id).cloned();
             let previous = registry.records[position].clone();
             let task = &mut registry.records[position];
+            // A stop can race with the final source response. Repeating cancel
+            // after that response is successful and must not surface an error.
+            if operation == "cancel" && matches!(task.status.as_str(), "completed" | "failed" | "cancelled" | "cancelling") {
+                return Ok(json!({ "task": task_summary(task), "resource": self.task_resource_descriptor()? }));
+            }
             if matches!(
                 task.status.as_str(),
                 "completed" | "failed" | "cancelled" | "cancelling" | "recoveryRequired"

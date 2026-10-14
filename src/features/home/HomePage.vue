@@ -41,8 +41,8 @@ const activeTabId = ref("");
 const activeType = ref<"all" | "novel" | "comic" | "video" | "audio">("all");
 const typeFilters = [
   { id: "all", title: "全部" },
-  { id: "novel", title: "小说" },
-  { id: "comic", title: "漫画" },
+  { id: "novel", title: "文本" },
+  { id: "comic", title: "图片" },
   { id: "video", title: "视频" },
   { id: "audio", title: "音频" },
 ] as const;
@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
     <PrimaryNavigation />
     <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
       @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
-      <section class="home-discovery">
+      <section class="home-discovery" :class="{ 'home-discovery-empty': !visibleResults.length }">
         <!-- 标签靠左，分类筛选和操作按钮靠右。 -->
         <div class="discover-filter-bar">
           <nav v-if="orderedTabs.length" class="home-tabs" aria-label="发现页面">
@@ -403,8 +403,8 @@ onBeforeUnmount(() => {
           <span class="mini-loader"></span>
           <span>正在从源加载发现内容…</span>
         </div>
-        <div v-else class="discover-grid-state discover-grid-empty">
-          <strong>{{ activeType !== 'all' && gridResults.length ? '当前类型还没有内容' : '暂无可显示的发现内容' }}</strong>
+        <div v-else class="page-empty-state discover-grid-state">
+          <strong>{{ activeType !== 'all' && gridResults.length ? '暂无匹配内容' : '暂无发现内容' }}</strong>
         </div>
         <p v-if="loadError" class="discover-grid-warning">{{ loadError }}</p>
       </section>
@@ -424,6 +424,8 @@ onBeforeUnmount(() => {
 .home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
 /* 标签靠左，分类筛选和操作按钮靠右排列。 */
 .home-discovery { width:100%; max-width:1180px; min-width:0; margin:0 auto; padding:10px 0 26px; }
+.home-discovery-empty { display:flex; flex-direction:column; min-height:100%; }
+.home-discovery-empty .discover-filter-bar { flex:none; }
 .discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
 .home-tabs { display:flex; min-width:0; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .home-tabs::-webkit-scrollbar { display:none; }
@@ -454,8 +456,7 @@ onBeforeUnmount(() => {
 .discovery-cover-copy small { overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
 .discovery-cover-copy>span { overflow:hidden; color:var(--app-subtle); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
 .discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; color:var(--app-muted); }
-.discover-grid-empty { min-height:0; padding:24px 0; }
-.discover-grid-empty strong { font-size:var(--ui-font-body); color:var(--app-text); }
+.home-discovery-empty .discover-grid-state { flex:1; min-height:160px; text-align:center; }
 .discover-grid-warning { font-size:var(--ui-font-caption); color:var(--app-warning); overflow-wrap:anywhere; }
 .mini-loader { display:inline-block; width:16px; height:16px; border:2px solid var(--app-accent-soft); border-top-color:var(--app-accent); border-radius:50%; animation:home-spin .8s linear infinite; }
 @keyframes home-spin { to {transform:rotate(360deg)} }

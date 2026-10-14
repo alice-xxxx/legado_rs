@@ -75,15 +75,15 @@ export function useSourceDebugActions({
     if (selectedSourceRows.value.length !== 1 || sourceBatchBusy.value || sourceExportBusy.value || searchBusy.value) return;
     const source = sources.value.find((entry) => entry.id === selectedSourceRows.value[0]);
     if (!source) {
-      notify("所选书源已不存在，请刷新列表后重试。", "error");
+      notify("所选源已不存在，请刷新列表后重试。", "error");
       return;
     }
     if (source.isRss === true) {
-      notify("RSS 书源请从订阅文章页面调试。", "error");
+      notify("RSS 源请从订阅文章页面调试。", "error");
       return;
     }
     if (!source.enabled) {
-      notify("请先启用这个书源，再运行单源搜索。", "error");
+      notify("请先启用这个源，再运行单源搜索。", "error");
       return;
     }
 
@@ -134,7 +134,7 @@ export function useSourceDebugActions({
     }
     const currentSource = sources.value.find((entry) => entry.id === source.id);
     if (!currentSource || !currentSource.enabled || currentSource.isRss === true) {
-      notify("这个书源当前不可用于书籍搜索，请确认它仍已启用。", "error");
+      notify("这个源当前不可用于书籍搜索，请确认它仍已启用。", "error");
       closeSourceDebug();
       return;
     }

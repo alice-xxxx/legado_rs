@@ -47,7 +47,7 @@ function selectSource(event: Event): void {
 
       <form class="source-debug-search" @submit.prevent="emit('search')">
         <label class="form-field">
-          <span>书源</span>
+          <span>源</span>
           <select :value="target.id" :disabled="busy" @change="selectSource">
             <option v-for="source in sources" :key="source.id" :value="source.id">{{ source.name }}</option>
           </select>
@@ -71,7 +71,7 @@ function selectSource(event: Event): void {
       </form>
 
       <p v-if="busy">正在处理{{ stage === 'result' ? '搜索' : stage === 'detail' ? '书籍详情' : stage === 'catalog' ? '章节目录' : stage === 'chapter' ? '章节正文' : '结果' }}…</p>
-      <p v-if="error" class="error-message">{{ stage ? `阶段：${stage === 'result' ? '搜索结果' : stage === 'source' ? '书源状态' : stage === 'detail' ? '详情' : stage === 'catalog' ? '目录' : '正文'}。` : '' }}{{ error }}</p>
+      <p v-if="error" class="error-message">{{ stage ? `阶段：${stage === 'result' ? '搜索结果' : stage === 'source' ? '源状态' : stage === 'detail' ? '详情' : stage === 'catalog' ? '目录' : '正文'}。` : '' }}{{ error }}</p>
 
       <div v-if="searchErrors.length" class="source-debug-errors">
         <strong>搜索阶段错误</strong>
@@ -105,7 +105,7 @@ function selectSource(event: Event): void {
       <section v-if="chapterResource" class="source-debug-preview">
         <strong>章节正文预览</strong>
         <pre v-if="chapterResource.format === 'json'" class="source-debug-json">{{ chapterText }}</pre>
-        <iframe v-else :key="chapterResource.resourceId" :src="chapterResource.src" title="书源章节正文预览" sandbox="" class="source-debug-frame"></iframe>
+        <iframe v-else :key="chapterResource.resourceId" :src="chapterResource.src" title="源章节正文预览" sandbox="" class="source-debug-frame"></iframe>
       </section>
     </article>
   </section>

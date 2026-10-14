@@ -467,8 +467,8 @@ onBeforeUnmount(() => {
     <section v-if="confirmRouteLeave" class="modal-backdrop source-leave-guard"
 >
       <article class="app-modal">
-        <h2>{{ pendingSourceSwitch ? '切换编辑来源？' : '放弃书源修改？' }}</h2>
-        <p class="modal-description">当前书源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
+        <h2>{{ pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2>
+        <p class="modal-description">当前源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
         <div class="modal-actions">
           <button type="button" class="button secondary" @click="chooseRouteLeave(false)">继续编辑</button>
           <button type="button" class="button danger" @click="chooseRouteLeave(true)">{{ pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</button>
@@ -531,7 +531,7 @@ onBeforeUnmount(() => {
       @keydown.esc.stop.prevent="!login.sourceLoginBusy && login.closeSourceLogin()">
       <article class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
         <header class="source-login-heading">
-          <div><h2 id="source-login-title">书源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
+          <div><h2 id="source-login-title">源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
           <button type="button" :disabled="login.sourceLoginBusy" aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
         </header>
         <div class="source-login-body">
@@ -597,7 +597,7 @@ onBeforeUnmount(() => {
 
 
 
-    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些书源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
+    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
 </template>
 <style scoped>
 .source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}

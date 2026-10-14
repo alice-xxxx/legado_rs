@@ -214,6 +214,8 @@ async function closeReader(discardProgress = false): Promise<void> {
   readerPageInteraction.clearReaderFindMatches();
   readerFindQuery.value = "";
   readerChapterLoading.cancel();
+  readerBookmarksAndHistory.closeBookmarkEditor();
+  readerDictionary.closeReaderDictionary();
   readerVisible.value = false;
   readerControlsOpen.value = false;
   readerDirectoryOpen.value = false;

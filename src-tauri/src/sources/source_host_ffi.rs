@@ -2,7 +2,7 @@
 //! 移动端 KMP 使用的稳定 C ABI。Android 通过 JNI 调用 Rust Host，iOS 通过
 //! Kotlin/Native cinterop 调用同一组 Rust HTTP 与存储实现。
 
-use crate::source_http::{SourceHttpRequest, execute_source_http_request};
+use crate::source_http::{SourceHttpRequest, SourceHttpResponse, execute_source_http_request};
 use crate::source_storage::{SourceStorageRequest, execute_source_storage_request};
 use serde::Serialize;
 use serde_json::json;
@@ -15,11 +15,54 @@ use tokio::runtime::Runtime;
 
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
 
+// Native rule executors serialize their provider/QuickJS scope. HTTP callbacks
+// run on other threads, so the same cancellation lease must be visible there.
+static EXECUTION_CANCELLATION: std::sync::RwLock<Option<tokio_util::sync::CancellationToken>> =
+    std::sync::RwLock::new(None);
+
+pub(crate) struct ExecutionCancellationScope(Option<tokio_util::sync::CancellationToken>);
+
+impl ExecutionCancellationScope {
+    pub(crate) fn enter(token: Option<tokio_util::sync::CancellationToken>) -> Result<Self, String> {
+        if token.as_ref().is_some_and(|token| token.is_cancelled()) {
+            return Err("Source execution cancelled".into());
+        }
+        let mut current = EXECUTION_CANCELLATION.write()
+            .map_err(|_| "Source cancellation scope lock is poisoned".to_owned())?;
+        Ok(Self(std::mem::replace(&mut *current, token)))
+    }
+}
+
+impl Drop for ExecutionCancellationScope {
+    fn drop(&mut self) {
+        if let Ok(mut current) = EXECUTION_CANCELLATION.write() { *current = self.0.take(); }
+    }
+}
+
+pub(crate) fn execution_cancelled() -> bool {
+    EXECUTION_CANCELLATION.read().ok()
+        .is_some_and(|token| token.as_ref().is_some_and(|token| token.is_cancelled()))
+}
+
+pub(crate) async fn execute_cancellable_http(request: SourceHttpRequest) -> Result<SourceHttpResponse, String> {
+    let token = EXECUTION_CANCELLATION.read()
+        .map_err(|_| "Source cancellation scope lock is poisoned".to_owned())?.clone();
+    if let Some(token) = token {
+        tokio::select! {
+            biased;
+            _ = token.cancelled() => Err("Source HTTP request cancelled".into()),
+            response = execute_source_http_request(request) => response,
+        }
+    } else {
+        execute_source_http_request(request).await
+    }
+}
+
 pub(crate) fn http_json(input: &str) -> String {
     let result = (|| {
         let request: SourceHttpRequest = serde_json::from_str(input)
             .map_err(|error| format!("Invalid source HTTP request: {error}"))?;
-        run_on_runtime(async move { execute_source_http_request(request).await })
+        run_on_runtime(async move { execute_cancellable_http(request).await })
     })();
     envelope(result)
 }
@@ -130,5 +173,28 @@ pub unsafe extern "C" fn legado_source_host_string_free(value: *mut c_char) {
     if !value.is_null() {
         // SAFETY: `value` was created by `CString::into_raw` in this library.
         drop(CString::from_raw(value));
+    }
+}
+
+#[cfg(test)]
+mod search_http_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn search_http_cancellation_drops_a_request_waiting_for_response() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let token = tokio_util::sync::CancellationToken::new();
+        let scope = ExecutionCancellationScope::enter(Some(token.clone())).unwrap();
+        let request: SourceHttpRequest = serde_json::from_value(json!({
+            "url": format!("http://{}/pending", listener.local_addr().unwrap()),
+        })).unwrap();
+        let execution = tokio::spawn(execute_cancellable_http(request));
+        let (_socket, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await.unwrap().unwrap();
+        token.cancel();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), execution).await.unwrap().unwrap();
+        assert!(result.unwrap_err().contains("cancelled"));
+        assert!(execution_cancelled());
+        drop(scope);
+        assert!(!execution_cancelled());
     }
 }

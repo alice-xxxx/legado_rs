@@ -359,6 +359,9 @@ fn seed_login_cookies(
 
 pub(crate) fn browser_json(request_json: &str) -> String {
     let result = std::panic::catch_unwind(|| {
+        if crate::source_host_ffi::execution_cancelled() {
+            return Err("Source browser request cancelled".to_owned());
+        }
         if request_json.len() > MAX_BROWSER_REQUEST_BYTES {
             return Err("Private browser request exceeds its input-size limit".to_owned());
         }
@@ -501,9 +504,7 @@ fn render_interactive_page(request: &BrowserRequest) -> Result<Value, String> {
             let _ = sender_for_close.send(Err("Source browser was closed without a result".into()));
         }
     });
-    let result = receiver
-        .recv_timeout(Duration::from_secs(30 * 60))
-        .map_err(|_| "Source browser result wait timed out".to_owned())
+    let result = recv_until(&receiver, Instant::now() + Duration::from_secs(30 * 60), "source interaction")
         .and_then(|v| v)
         .and_then(|mut value| {
             if let Some(url) = value["finalUrl"]
@@ -928,15 +929,20 @@ fn recv_until<T>(
     deadline: Instant,
     operation: &str,
 ) -> Result<T, String> {
-    let remaining = deadline.saturating_duration_since(Instant::now());
-    if remaining.is_zero() {
-        return Err(format!(
-            "Private source browser timed out during {operation}"
-        ));
+    loop {
+        if crate::source_host_ffi::execution_cancelled() {
+            return Err("Source browser request cancelled".into());
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(format!("Private source browser timed out during {operation}"));
+        }
+        match receiver.recv_timeout(remaining.min(Duration::from_millis(100))) {
+            Ok(value) => return Ok(value),
+            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(mpsc::RecvTimeoutError::Disconnected) => return Err(format!("Private source browser closed during {operation}")),
+        }
     }
-    receiver
-        .recv_timeout(remaining)
-        .map_err(|_| format!("Private source browser timed out during {operation}"))
 }
 
 fn decode_prepare_result(raw: &str, request: &BrowserRequest) -> Result<(), String> {

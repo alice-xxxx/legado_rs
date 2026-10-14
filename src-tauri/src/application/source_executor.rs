@@ -46,11 +46,18 @@ impl SourceExecutor for TauriSourceExecutor {
                     "nextChapterUrl": request.next_chapter_url,
                 })
                 .to_string();
-                let response = self
-                    ._app
-                    .source_engine()
-                    .execute(SourceEngineCall { request_json })
-                    .map_err(|error| error.to_string())?;
+                // The plugin bridge waits synchronously for the native call.
+                // Keep it off Tokio's worker lane so search cancellation can run.
+                let app = self._app.clone();
+                let cancellation = request.cancellation.clone();
+                let response = tokio::task::spawn_blocking(move || {
+                    static EXECUTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+                    let _execution = EXECUTION_LOCK.lock()
+                        .map_err(|_| "Native source execution lock is poisoned".to_owned())?;
+                    let _cancellation = crate::source_host_ffi::ExecutionCancellationScope::enter(cancellation)?;
+                    app.source_engine().execute(SourceEngineCall { request_json })
+                        .map_err(|error| error.to_string())
+                }).await.map_err(|error| format!("Native source worker failed: {error}"))??;
                 let result: Value =
                     serde_json::from_str(&response.result_json).map_err(|error| {
                         format!("Kotlin source engine returned invalid JSON: {error}")

@@ -8,10 +8,11 @@ impl ApplicationService {
         source_ids: &[String],
         keyword: &str,
         page: u32,
+        precision_search: bool,
         notifier: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        self.start_search_unlocked(source_type, source_ids, keyword, page, notifier).await
+        self.start_search_unlocked(source_type, source_ids, keyword, page, precision_search, notifier).await
     }
 
     // Caller already holds the restore admission and operation read guards.
@@ -21,6 +22,7 @@ impl ApplicationService {
         source_ids: &[String],
         keyword: &str,
         page: u32,
+        precision_search: bool,
         notifier: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
         if !matches!(source_type, "text" | "audio" | "image" | "video") {
@@ -59,6 +61,7 @@ impl ApplicationService {
             source_ids: Some(selected.iter().map(|source| source.id.clone()).collect()),
             keyword: Some(keyword.to_owned()),
             source_type: Some(source_type.to_owned()),
+            precision_search: Some(precision_search),
             page,
             from_index: 0,
             total: selected.len(),
@@ -163,6 +166,7 @@ impl ApplicationService {
             source_ids: None,
             keyword: None,
             source_type: None,
+            precision_search: None,
             page: 1,
             from_index,
             total: chapter_ids.len(),
@@ -228,6 +232,7 @@ impl ApplicationService {
             source_ids: None,
             keyword: None,
             source_type: None,
+            precision_search: None,
             page: 1,
             from_index: 0,
             total: 1,

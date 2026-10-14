@@ -178,14 +178,14 @@ export function useBookSourceSwitch({
     const generation = ++bookSourceSearchGeneration;
     const sourceIds = bookSourceCandidates.value.map((source) => source.id);
     if (!sourceIds.length) {
-      bookSourceSwitchError.value = "没有可用于换源的已启用书源。";
+      bookSourceSwitchError.value = "没有可用于换源的已启用源。";
       return;
     }
     bookSourceSwitchError.value = "";
     chapterSourceError.value = "";
     chapterSourceIdentityConfirmResultId.value = null;
     showCachedSources.value = false;
-    bookSourceSearchStatus.value = "正在搜索其他书源…";
+    bookSourceSearchStatus.value = "正在搜索其他源…";
     searchedCandidates.value = [];
     bookSourceCandidateErrors.value = [];
     selectedBookSourceCandidate.value = null;
@@ -225,7 +225,7 @@ export function useBookSourceSwitch({
       bookSourceSearchBusy.value = task.status !== "paused";
       bookSourceSearchStatus.value = task.status === "paused"
         ? "候选搜索已暂停"
-        : `正在搜索其他书源${task.total ? `（${task.completed} / ${task.total}）` : "…"}`;
+        : `正在搜索其他源${task.total ? `（${task.completed} / ${task.total}）` : "…"}`;
       return;
     }
     if (!["completed", "failed", "cancelled", "interrupted", "recoveryRequired"].includes(task.status)) return;
@@ -239,7 +239,7 @@ export function useBookSourceSwitch({
         : task.status === "cancelled" ? "候选搜索已取消" : "候选搜索未能完成";
       bookSourceSwitchError.value = task.status === "recoveryRequired"
         ? "候选搜索异常退出，任务状态未能完整保存。请重启应用检查后再重新搜索。"
-        : task.error ?? (task.status === "cancelled" ? "搜索已取消。" : "请重新搜索候选书源。");
+        : task.error ?? (task.status === "cancelled" ? "搜索已取消。" : "请重新搜索候选源。");
       return;
     }
     // 任务完成状态与这一不可变结果版本由 Rust 一起提交。
@@ -248,7 +248,7 @@ export function useBookSourceSwitch({
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
       searchedCandidates.value = Array.isArray(resource.results) ? resource.results : [];
       bookSourceCandidateErrors.value = Array.isArray(resource.errors) ? resource.errors : [];
-      bookSourceSearchStatus.value = resource.complete === false ? "候选结果尚未完整" : `找到 ${bookSourceCandidateResults.value.length} 个可用书源`;
+      bookSourceSearchStatus.value = resource.complete === false ? "候选结果尚未完整" : `找到 ${bookSourceCandidateResults.value.length} 个可用源`;
       if (resource.complete === false) bookSourceSwitchError.value = "候选结果尚未准备完整，请重新搜索。";
     } catch (error) {
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;

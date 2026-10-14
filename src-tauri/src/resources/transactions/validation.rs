@@ -56,15 +56,6 @@ pub(super) fn has_cleanup_ancestor(path: &str, cleanup_paths: &HashSet<&str>) ->
     })
 }
 
-pub(super) fn validate_json_bytes(bytes: &[u8]) -> Result<(), TransactionError> {
-    validate_json_size(bytes)?;
-    serde_json::from_slice::<serde_json::Value>(bytes)
-        .map(|_| ())
-        .map_err(|error| {
-            TransactionError::new(format!("Transaction target is not valid JSON: {error}"))
-        })
-}
-
 pub(super) fn validate_public_json_bytes(bytes: &[u8]) -> Result<(), TransactionError> {
     validate_json_size(bytes)?;
     crate::resources::validate_persistable_json_bytes(bytes)
@@ -126,20 +117,6 @@ pub(super) fn validate_transaction_id(transaction_id: &str) -> Result<(), Transa
     };
     if uuid.len() != 32 || !uuid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(TransactionError::new("Invalid transaction identifier"));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_identifier(id: &str) -> Result<(), TransactionError> {
-    if id.is_empty()
-        || id.len() > 255
-        || id == "."
-        || id == ".."
-        || id.chars().any(|ch| {
-            ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
-        })
-    {
-        return Err(TransactionError::new("Invalid transaction book identifier"));
     }
     Ok(())
 }

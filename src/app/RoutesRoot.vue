@@ -1,6 +1,9 @@
 <script setup lang="ts">
-import { KeepAlive } from "vue";
+import { KeepAlive, onBeforeUnmount } from "vue";
 import { RouterView } from "vue-router";
+import { disposeSearchState } from "../features/discovery/searchState";
+
+onBeforeUnmount(disposeSearchState);
 </script>
 
 <template>

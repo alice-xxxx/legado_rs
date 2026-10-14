@@ -17,7 +17,7 @@ function applySourceMetadataChanges(
 ): string {
   const parsed: unknown = JSON.parse(definitionJson);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("书源 JSON 必须是一个对象");
+    throw new Error("源 JSON 必须是一个对象");
   }
   const definition = parsed as Record<string, unknown>;
   let result = definitionJson;
@@ -49,7 +49,7 @@ async function updateSources(resource: ResourceDescriptor): Promise<void> {
   const revision = ++readRevision;
   root = resource;
   const document = await readResource<SourceListResource>(resource);
-  if (document.schemaVersion !== 1 || !Array.isArray(document.sources)) throw new Error("书源列表格式无效。");
+  if (document.schemaVersion !== 1 || !Array.isArray(document.sources)) throw new Error("源列表格式无效。");
   if (revision === readRevision) sources.value = document.sources;
 }
 
@@ -67,11 +67,11 @@ export async function loadSources(resource: ResourceDescriptor): Promise<void> {
 }
 
 export async function readSourceDefinitionJson(sourceId: string): Promise<string> {
-  if (!sources.value.some(source => source.id === sourceId)) throw new Error("书源已不存在。");
+  if (!sources.value.some(source => source.id === sourceId)) throw new Error("源已不存在。");
   const url = new URL(`sources/${encodeURIComponent(sourceId)}.json`, root.src).href;
   const document = await readResource<SourceDefinitionResource>(url);
   if (document.schemaVersion !== 1 || document.id !== sourceId || typeof document.definitionJson !== "string") {
-    throw new Error("书源定义格式无效。");
+    throw new Error("源定义格式无效。");
   }
   return document.definitionJson;
 }

@@ -382,6 +382,7 @@ export interface SearchBookResult extends SearchResultSource {
 }
 
 export interface SearchResource {
+  hasMore?: boolean;
   incremental?: boolean;
   schemaVersion: number;
   searchId?: string;
@@ -400,8 +401,8 @@ export interface SearchResource {
 }
 
 export type SearchBatch = Pick<SearchResource,
-  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error"
-> & { incremental: true };
+  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"
+> & { incremental: true; resultOrder: string[] };
 
 export interface SearchHistoryEntry {
   query: string;

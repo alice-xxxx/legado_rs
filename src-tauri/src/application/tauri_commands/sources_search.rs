@@ -359,10 +359,12 @@ pub async fn start_search(
     source_ids: Vec<String>,
     keyword: String,
     page: Option<u32>,
+    precision_search: Option<bool>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let notifier = std::sync::Arc::new(move |batch| { let _ = on_results.send(batch); });
-    let result = service.start_search(&source_type, &source_ids, &keyword, page.unwrap_or(1), Some(notifier)).await?;
+    let result = service.start_search(&source_type, &source_ids, &keyword, page.unwrap_or(1),
+        precision_search.unwrap_or(true), Some(notifier)).await?;
     let history = service.history_resource().await?;
     let _ = app.emit(
         "history-updated",

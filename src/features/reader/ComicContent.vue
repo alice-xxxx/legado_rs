@@ -16,7 +16,7 @@ onBeforeUnmount(() => emit("ready", null));
   </div>
 </template>
 <style scoped>
-.comic-reader { width: 100%; height: 100%; overflow: auto; touch-action: pan-y; background: var(--reader-background); }
+.comic-reader { width: 100%; height: 100%; overflow: auto; touch-action: pan-y; background: var(--app-background); }
 .comic-reader :deep(img) { display: block; width: 100%; height: auto; scroll-snap-align: start; }
 .comic-reader.original :deep(img) { width: auto; max-width: none; }
 .comic-reader :deep(p) { margin: 0; }

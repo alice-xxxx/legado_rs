@@ -6,7 +6,7 @@
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod desktop {
-    use crate::source_http::{SourceHttpRequest, execute_source_http_request};
+    use crate::source_http::SourceHttpRequest;
     use crate::source_storage::{SourceStorageRequest, execute_source_storage_request};
     use jni::objects::{JClass, JString, JValue};
     use jni::{
@@ -76,11 +76,13 @@ mod desktop {
         request_json: &str,
         data_dir: PathBuf,
         bundled_java_home: Option<PathBuf>,
+        cancellation: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String, String> {
         let _execution = EXECUTION_LOCK
             .lock()
             .map_err(|_| "Embedded source-engine execution lock is poisoned".to_owned())?;
         let _data_dir = DataDirScope::enter(data_dir);
+        let _cancellation = crate::source_host_ffi::ExecutionCancellationScope::enter(cancellation)?;
         let vm = get_or_start_vm(classpath, quickjs_library, bundled_java_home)?;
         vm.attach_current_thread(|env| call_kotlin(env, request_json))
             .map_err(|error| format!("JNI call to Kotlin source engine failed: {error}"))
@@ -249,7 +251,7 @@ mod desktop {
                     .ok_or_else(|| "JNI HTTP event has no request".to_owned())?,
             )
             .map_err(|error| format!("Invalid JNI HTTP request: {error}"))?;
-            run_on_host_runtime(async move { execute_source_http_request(request).await })
+            run_on_host_runtime(async move { crate::source_host_ffi::execute_cancellable_http(request).await })
         })();
         match result {
             Ok(response) => {
@@ -408,6 +410,7 @@ pub(super) fn execute(
     _request_json: &str,
     _data_dir: std::path::PathBuf,
     _bundled_java_home: Option<std::path::PathBuf>,
+    _cancellation: Option<tokio_util::sync::CancellationToken>,
 ) -> Result<String, String> {
     Err("Desktop JVM embedding is unavailable on mobile targets".to_owned())
 }

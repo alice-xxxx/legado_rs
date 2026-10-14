@@ -52,11 +52,3 @@ pub(in crate::application) fn source_definition_fingerprint(
         .map_err(|error| format!("Cannot fingerprint source definition: {error}"))?;
     Ok(sha256_hex(&bytes))
 }
-
-pub(in crate::application) async fn remove_file_if_present(path: &Path) -> Result<(), String> {
-    match tokio::fs::remove_file(path).await {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Cannot remove partial book resource: {error}")),
-    }
-}

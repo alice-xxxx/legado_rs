@@ -1,33 +1,21 @@
 <script setup lang="ts">
-// 搜索历史只负责排序、确认和展示；记录的读取与保存由发现页处理。
 import { computed, ref } from "vue";
+import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import type { SearchHistoryEntry } from "../../api/types";
 
-interface SearchHistoryEntry {
-  query: string;
-  normalizedQuery: string;
-  usage: number;
-  firstUseTimeMs: number;
-  lastUseTimeMs: number;
-}
-
-const props = withDefaults(
-  defineProps<{
-    entries: SearchHistoryEntry[];
-    busy?: boolean;
-    error?: string;
-  }>(),
-  { busy: false, error: "" },
-);
+const props = withDefaults(defineProps<{
+  entries: SearchHistoryEntry[];
+  busy?: boolean;
+  error?: string;
+}>(), { busy: false, error: "" });
 
 const emit = defineEmits<{
   useQuery: [query: string];
   deleteQuery: [query: string];
   clearAll: [];
 }>();
-
 const sortMode = ref<"recent" | "popular">("recent");
 const clearConfirmOpen = ref(false);
-
 const sortedEntries = computed(() => [...props.entries].sort((left, right) => {
   const recency = right.lastUseTimeMs - left.lastUseTimeMs;
   if (sortMode.value === "popular") return right.usage - left.usage || recency || left.query.localeCompare(right.query, "zh-CN");
@@ -42,61 +30,35 @@ function clearAll(): void {
 </script>
 
 <template>
-  <section class="search-history">
-    <header class="search-history__header">
-      <div>
-        <h2 id="search-history-title">搜索历史</h2>
+  <section class="search-history" aria-label="搜索历史">
+    <div class="search-history__row">
+      <span class="search-history__label">历史</span>
+      <div class="search-history__list">
+        <span v-for="entry in sortedEntries" :key="entry.normalizedQuery" class="search-history__entry">
+          <button type="button" class="search-history__query" :disabled="busy" :title="entry.query"
+            @click="emit('useQuery', entry.query)">{{ entry.query }}</button>
+          <button type="button" class="search-history__delete" :disabled="busy"
+            :aria-label="'删除搜索记录：' + entry.query" @click="emit('deleteQuery', entry.query)">
+            <PrototypeIcon name="close" />
+          </button>
+        </span>
       </div>
-      <button
-        type="button"
-        class="search-history__button search-history__button--clear"
-        :disabled="busy || !entries.length"
-        @click="clearConfirmOpen = true"
-      >清空历史</button>
-    </header>
-
-    <div class="search-history__toolbar">
-      <div class="search-history__sort">
-        <button type="button" :class="{ active: sortMode === 'recent' }" :disabled="busy" @click="sortMode = 'recent'">最近使用</button>
-        <button type="button" :class="{ active: sortMode === 'popular' }" :disabled="busy" @click="sortMode = 'popular'">常用搜索</button>
-      </div>
-      <span class="search-history__count">{{ entries.length }} 条记录</span>
+      <select v-model="sortMode" class="search-history__sort" aria-label="历史排序" :disabled="busy">
+        <option value="recent">最近</option>
+        <option value="popular">常用</option>
+      </select>
+      <button type="button" class="search-history__clear" :disabled="busy || !entries.length"
+        @click="clearConfirmOpen = true">清空</button>
     </div>
-
     <p v-if="error" class="search-history__error">{{ error }}</p>
-
-    <div v-if="entries.length" class="search-history__list">
-      <article
-        v-for="entry in sortedEntries"
-        :key="entry.normalizedQuery"
-        class="search-history__entry"
-      >
-        <button
-          type="button"
-          class="search-history__query"
-          :disabled="busy"
-          @click="emit('useQuery', entry.query)"
-        >
-          <span class="search-history__query-copy">
-            <strong>{{ entry.query }}</strong>
-          </span>
-        </button>
-        <button
-          type="button"
-          class="search-history__delete"
-          :disabled="busy"
-          @click="emit('deleteQuery', entry.query)"
-        >删除</button>
-      </article>
-    </div>
-
     <section v-if="clearConfirmOpen" class="search-history__confirm-backdrop" @click.self="clearConfirmOpen = false">
-      <div class="search-history__confirm">
+      <div class="search-history__confirm" role="dialog" aria-modal="true"
+        aria-labelledby="search-history-confirm-title" aria-describedby="search-history-confirm-description">
         <h3 id="search-history-confirm-title">清空搜索历史？</h3>
-        <p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。此操作无法撤销。</p>
+        <p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。</p>
         <div class="search-history__confirm-actions">
-          <button type="button" class="search-history__button" :disabled="busy" @click="clearConfirmOpen = false">保留记录</button>
-          <button type="button" class="search-history__button search-history__button--danger" :disabled="busy" @click="clearAll">{{ busy ? '正在清空…' : '确认清空' }}</button>
+          <button type="button" class="button secondary small" :disabled="busy" @click="clearConfirmOpen = false">保留记录</button>
+          <button type="button" class="button secondary small" :disabled="busy" @click="clearAll">{{ busy ? '正在清空…' : '确认清空' }}</button>
         </div>
       </div>
     </section>
@@ -106,165 +68,88 @@ function clearAll(): void {
 <style scoped>
 .search-history {
   min-width: 0;
-  margin: 8px 0 14px;
+  margin: 0 0 8px;
   color: var(--app-text);
+  font-size: var(--ui-font-caption);
 }
-
-.search-history__header {
+.search-history__row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  height: 34px;
 }
-
-.search-history__header h2 {
-  margin: 0;
-  color: var(--app-text);
-  font-size: var(--ui-font-heading);
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.search-history__button {
-  min-height: 34px;
-  padding: 0 11px;
-  border: 1px solid var(--app-line);
-  border-radius: 9px;
-  color: var(--app-text);
-  background: var(--app-surface);
-  font: inherit;
-  font-size: var(--ui-font-body);
-  cursor: pointer;
-}
-
-.search-history__button:disabled,
-.search-history__sort button:disabled,
-.search-history__query:disabled,
-.search-history__delete:disabled {
-  opacity: .5;
-  cursor: not-allowed;
-}
-
-.search-history__button--clear {
+.search-history__label, .search-history__sort, .search-history__clear {
   flex: none;
-}
-
-.search-history__toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 8px;
-  margin-top: 5px;
-}
-
-.search-history__sort {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 3px;
-  border: 1px solid var(--app-line);
-  border-radius: 10px;
-  background: var(--app-panel-soft);
-}
-
-.search-history__sort button {
-  min-height: 29px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 7px;
   color: var(--app-muted);
-  background: transparent;
-  font: inherit;
-  font-size: var(--ui-font-body);
-  cursor: pointer;
 }
-
-.search-history__sort button.active {
-  color: var(--app-accent-ink);
-  background: var(--app-surface);
-  box-shadow: 0 1px 3px rgb(30 33 45 / 8%);
-  font-weight: 700;
-}
-
-.search-history__count {
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-  white-space: nowrap;
-}
-
-.search-history__error {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border-radius: 9px;
-  color: var(--app-danger);
-  background: var(--app-danger-soft);
-  font-size: var(--ui-font-caption);
-  line-height: 1.4;
-}
-
 .search-history__list {
   display: flex;
-  max-height: 76px;
-  flex-wrap: wrap;
+  flex: 1;
+  align-items: center;
   gap: 5px;
-  margin-top: 6px;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
-
 .search-history__entry {
   display: flex;
-  min-width: 0;
+  flex: none;
   align-items: center;
-  gap: 4px;
-  padding: 2px 4px 2px 9px;
-  border: 1px solid var(--app-line);
-  border-radius: 9px;
-  background: var(--app-surface);
+  border-radius: 6px;
+  background: var(--app-panel-soft);
 }
-
-.search-history__query {
-  display: flex;
-  min-width: 0;
-  max-width: min(210px, 55vw);
-  min-height: 27px;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 0;
-  border: 0;
-  color: inherit;
-  background: transparent;
-  text-align: left;
+.search-history button, .search-history select {
+  font: inherit;
   cursor: pointer;
 }
-
-.search-history__query-copy {
-  min-width: 0;
-}
-
-.search-history__query-copy strong {
+.search-history__query {
+  max-width: min(180px, 40vw);
+  min-height: 28px;
   overflow: hidden;
+  padding: 0 7px;
+  border: 0;
   color: var(--app-text);
-  font-size: var(--ui-font-body);
-  font-weight: 600;
+  background: transparent;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-
 .search-history__delete {
-  min-width: 26px;
-  min-height: 26px;
-  padding: 0 5px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
   border: 0;
-  border-radius: 6px;
-  color: var(--app-danger);
+  border-radius: 5px;
+  color: var(--app-muted);
   background: transparent;
-  font: inherit;
-  font-size: var(--ui-font-caption);
-  line-height: 1;
-  cursor: pointer;
 }
-
+.search-history__delete svg {
+  width: 12px;
+  height: 12px;
+}
+.search-history__delete:hover {
+  color: var(--app-danger);
+}
+.search-history__sort, .search-history__clear {
+  min-height: 28px;
+  padding: 0 3px;
+  border: 0;
+  background: transparent;
+}
+.search-history button:disabled, .search-history select:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.search-history button:focus-visible, .search-history select:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 2px;
+}
+.search-history__error {
+  margin: 4px 0;
+  color: var(--app-danger);
+}
 .search-history__confirm-backdrop {
   position: fixed;
   z-index: 60;
@@ -274,48 +159,26 @@ function clearAll(): void {
   padding: 16px;
   background: rgb(24 25 29 / 36%);
 }
-
 .search-history__confirm {
   width: min(390px, 100%);
   padding: 20px;
   border: 1px solid var(--app-line);
   border-radius: 16px;
-  color: var(--app-text);
   background: var(--app-surface);
   box-shadow: var(--app-shadow);
 }
-
 .search-history__confirm h3 {
   margin: 0;
   font-size: var(--ui-font-title);
 }
-
 .search-history__confirm p {
   margin: 9px 0 18px;
   color: var(--app-muted);
-  font-size: var(--ui-font-caption);
   line-height: 1.55;
 }
-
 .search-history__confirm-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.search-history__button--danger {
-  border-color: var(--app-danger-line);
-  color: var(--app-danger);
-  background: var(--app-panel-soft);
-}
-
-@media (max-width: 560px) {
-  .search-history__sort button {
-    padding: 0 7px;
-  }
-
-  .search-history__query {
-    max-width: min(170px, 52vw);
-  }
 }
 </style>

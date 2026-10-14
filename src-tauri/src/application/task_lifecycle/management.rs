@@ -201,7 +201,10 @@ impl ApplicationService {
                 }
                 let source_type = task.source_type.as_deref()
                     .ok_or_else(|| "Search task has no source type".to_owned())?;
-                self.start_search_unlocked(source_type, source_ids, keyword, task.page, None).await
+                // A retry creates a fresh discovery round; accumulated pages
+                // belong to the previous in-memory session.
+                self.start_search_unlocked(source_type, source_ids, keyword, 1,
+                    task.precision_search.unwrap_or(true), None).await
             }
             "bookSourceCandidates" => {
                 let book_id = task

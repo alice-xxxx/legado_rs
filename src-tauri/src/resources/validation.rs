@@ -24,7 +24,7 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
     }
 
     let valid = match path_components.as_slice() {
-        ["内容库.json"]
+        [super::content::LIBRARY_FILE]
         | ["sources.json"]
         | ["source-list.json"]
         | ["settings.json"]
@@ -68,20 +68,6 @@ pub(super) fn tts_audio_ref(audio_id: &str, extension: &str) -> Result<ResourceR
     ResourceRef::new(format!(
         "resource://cache/audio/tts-audio/{audio_id}.{extension}"
     ))
-}
-
-pub(super) fn valid_tts_audio_file(file_name: &str) -> bool {
-    let Some((audio_id, extension)) = file_name.rsplit_once('.') else {
-        return false;
-    };
-    audio_id.len() == 32
-        && audio_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && matches!(
-            extension,
-            "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus" | "flac"
-        )
 }
 
 fn filename_id<'a>(filename: &'a str, extension: &str) -> Option<&'a str> {

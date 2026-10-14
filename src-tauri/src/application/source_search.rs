@@ -6,9 +6,21 @@ impl ApplicationService {
     pub async fn release_search_results(&self, task_id: &str) -> Result<(), String> {
         let _operation = self.operation_read().await;
         let mut registry = self.tasks.lock().await;
-        let search_id = registry.records.iter().find(|task| task.id == task_id && task.kind == "search")
-            .and_then(|task| task.search_id.clone());
+        let position = registry.records.iter().position(|task| task.id == task_id && task.kind == "search");
+        let Some(position) = position else { return Ok(()); };
+        let search_id = registry.records[position].search_id.clone();
         let Some(search_id) = search_id else { return Ok(()); };
+        let previous = registry.records[position].clone();
+        let changed = !matches!(previous.status.as_str(), "completed" | "failed" | "cancelled" | "cancelling" | "recoveryRequired");
+        if changed {
+            registry.records[position].status = if registry.signals.contains_key(task_id) { "cancelling" } else { "cancelled" }.into();
+            registry.records[position].updated_at_ms = now_ms();
+            if let Err(error) = self.persist_tasks_locked(&registry).await {
+                registry.records[position] = previous;
+                return Err(error);
+            }
+        }
+        let stopped = registry.records[position].clone();
         if let Some(signal) = registry.signals.get(task_id) { signal.send_modify(|signal| signal.cancelled = true); }
         registry.search_documents.remove(&search_id);
         registry.search_result_documents.retain(|_, cache| cache["searchId"].as_str() != Some(search_id.as_str()));
@@ -17,6 +29,7 @@ impl ApplicationService {
             registry.published_search_results.clear();
         }
         drop(registry);
+        if changed { self.notify_task(&stopped).await; }
         if let Ok(mut channels) = self.search_notifiers.write() { channels.remove(task_id); }
         Ok(())
     }
@@ -308,6 +321,7 @@ impl ApplicationService {
             source_ids: Some(ordered_source_ids),
             keyword: Some(effective_keyword),
             source_type: context["sourceType"].as_str().map(str::to_owned),
+            precision_search: None,
             page: page.max(1),
             from_index: 0,
             total,
@@ -512,6 +526,7 @@ impl ApplicationService {
                 private_results.push((result_id, cache));
             }
         }
+        sort_search_results(&mut public_results, keyword);
         self.tasks.lock().await.search_result_documents.extend(private_results);
         let document = json!({
             "schemaVersion": CURRENT_SCHEMA_VERSION,
@@ -616,6 +631,7 @@ impl ApplicationService {
         results: Vec<(SearchResultSource, Value)>,
         errors: Vec<Value>,
         publish: bool,
+        pagination: Option<(&str, bool)>,
     ) -> Result<(), String> {
         let document = {
             let mut registry = self.tasks.lock().await;
@@ -638,11 +654,30 @@ impl ApplicationService {
             let grouped_results = document.get_mut("results").and_then(Value::as_array_mut)
                 .ok_or_else(|| "Search state has no results array".to_owned())?;
             let mut result_indexes = search_result_group_indexes(grouped_results);
+            let keyword = task.keyword.as_deref().unwrap_or_default().trim().to_lowercase();
             for (result, cache) in results {
+                if task.precision_search.unwrap_or(true)
+                    && search_match_rank(&result.title, result.author.as_deref(), &keyword) == 2 {
+                    continue;
+                }
                 let result_id = result.result_id.clone();
                 if merge_search_result(grouped_results, &mut result_indexes, result)? {
                     search_result_documents.insert(result_id, cache);
                 }
+            }
+            sort_search_results(grouped_results, &keyword);
+            if let Some((source_id, has_next_page)) = pagination {
+                let exhausted = document["exhaustedSourceIds"].as_array_mut()
+                    .ok_or_else(|| "Search state has no exhausted source list".to_owned())?;
+                if !has_next_page && !exhausted.iter().any(|id| id.as_str() == Some(source_id)) {
+                    exhausted.push(json!(source_id));
+                }
+                let next = document["nextPageSourceIds"].as_array_mut()
+                    .ok_or_else(|| "Search state has no next-page source list".to_owned())?;
+                if has_next_page && !next.iter().any(|id| id.as_str() == Some(source_id)) {
+                    next.push(json!(source_id));
+                }
+                document["hasMore"] = json!(!next.is_empty());
             }
             document.get_mut("errors").and_then(Value::as_array_mut)
                 .ok_or_else(|| "Search state has no errors array".to_owned())?
@@ -673,7 +708,7 @@ impl ApplicationService {
             return Ok(());
         }
         let mut batch = Value::Object(document.as_object().into_iter().flatten()
-            .filter(|(key, _)| matches!(key.as_str(), "taskId" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error"))
+            .filter(|(key, _)| matches!(key.as_str(), "taskId" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"))
             .map(|(key, value)| (key.clone(), value.clone())).collect());
         let mut changed = Vec::new();
         for result in document["results"].as_array().into_iter().flatten() {
@@ -684,6 +719,10 @@ impl ApplicationService {
             }
         }
         batch["results"] = json!(changed);
+        // Group content can stay unchanged while its rank moves. Publish order
+        // separately so the frontend never has to recreate relevance rules.
+        batch["resultOrder"] = json!(document["results"].as_array().into_iter().flatten()
+            .filter_map(|result| result["resultId"].as_str()).collect::<Vec<_>>());
         batch["incremental"] = json!(true);
         drop(registry);
         let notifier = self.search_notifiers.read().ok().and_then(|channels| channels.get(task_id).cloned());
@@ -1130,7 +1169,7 @@ pub(super) fn public_search_view(mut value: Value) -> Value {
     fn filter(value: &mut Value) {
         match value {
             Value::Object(values) => {
-                for key in ["bookUrl", "engine", "engineurl", "headers", "sourceRevision", "sourceDefinitionFingerprint", "replacementContext"] { values.remove(key); }
+                for key in ["bookUrl", "engine", "engineurl", "headers", "sourceRevision", "sourceDefinitionFingerprint", "replacementContext", "exhaustedSourceIds", "nextPageSourceIds"] { values.remove(key); }
                 for value in values.values_mut() { filter(value); }
             }
             Value::Array(values) => for value in values { filter(value); },
@@ -1139,4 +1178,104 @@ pub(super) fn public_search_view(mut value: Value) -> Value {
     }
     filter(&mut value);
     value
+}
+
+#[cfg(test)]
+mod search_stream_tests {
+    use super::*;
+
+    struct UnusedExecutor;
+    impl SourceExecutor for UnusedExecutor {
+        fn execute<'a>(&'a self, _request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async { Err("Search stream fixtures do not execute source rules".into()) })
+        }
+    }
+
+    fn leaf(id: &str, source_id: &str, title: &str, author: &str) -> (SearchResultSource, Value) {
+        let source = SourceRecord {
+            id: source_id.into(), name: source_id.into(), group: None, enabled: true,
+            source: json!({"bookSourceType": 0}),
+        };
+        let book = json!({"name": title, "author": author, "bookUrl": format!("https://fixture/{id}")});
+        (project_search_result(id, &source, &book), json!({"book": book}))
+    }
+
+    #[tokio::test]
+    async fn search_stream_filters_noise_and_reorders_existing_groups_when_sources_arrive() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+            .await.unwrap();
+        // A legacy task without precisionSearch also uses the default precision policy.
+        let mut task: AppTask = serde_json::from_value(json!({
+            "id": "task-fixture", "kind": "search", "status": "running",
+            "keyword": "凡人", "searchId": "search-fixture", "total": 3,
+            "createdAtMs": 1, "updatedAtMs": 1,
+        })).unwrap();
+        {
+            let mut registry = service.tasks.lock().await;
+            registry.active_search_task_id = Some(task.id.clone());
+            registry.search_documents.insert("search-fixture".into(), empty_search_task_document(&task));
+        }
+        let batches = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let captured = batches.clone();
+        service.search_notifiers.write().unwrap().insert(task.id.clone(), Arc::new(move |batch| {
+            captured.lock().unwrap().push(batch);
+        }));
+        service.append_and_publish_search_snapshot(&task, vec![
+            leaf("noise", "source-1", "热榜推荐", "其他"),
+            leaf("partial", "source-1", "凡人修仙传", "甲"),
+            leaf("author", "source-1", "另一部作品", "凡人"),
+            leaf("exact", "source-1", "凡人", "乙"),
+        ], vec![], true, Some(("source-1", true))).await.unwrap();
+        {
+            let batches = batches.lock().unwrap();
+            assert_eq!(batches[0]["resultOrder"], json!(["author", "exact", "partial"]));
+            assert!(batches[0]["results"][0].get("bookUrl").is_none());
+        }
+        assert!(!service.tasks.lock().await.search_result_documents.contains_key("noise"));
+        task.completed += 1;
+        service.append_and_publish_search_snapshot(&task, vec![
+            leaf("exact-2", "source-2", "凡人", "乙"),
+        ], vec![], true, Some(("source-2", false))).await.unwrap();
+        {
+            let batches = batches.lock().unwrap();
+            // Only one group changed, yet the unchanged author match moved down.
+            assert_eq!(batches[1]["results"].as_array().unwrap().len(), 1);
+            assert_eq!(batches[1]["resultOrder"], json!(["exact", "author", "partial"]));
+        }
+        task.completed += 1;
+        service.append_and_publish_search_snapshot(&task, vec![
+            leaf("duplicate", "source-2", "凡人", "乙"),
+        ], vec![], true, None).await.unwrap();
+        let registry = service.tasks.lock().await;
+        let results = registry.search_documents["search-fixture"]["results"].as_array().unwrap();
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[0]["resultId"], "exact");
+        assert_eq!(registry.search_documents["search-fixture"]["completedSources"], 3);
+    }
+
+    #[tokio::test]
+    async fn search_stream_broad_mode_keeps_unrelated_results_after_keyword_matches() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+            .await.unwrap();
+        let task: AppTask = serde_json::from_value(json!({
+            "id": "task-broad", "kind": "search", "status": "running",
+            "keyword": "凡人", "searchId": "search-broad", "precisionSearch": false,
+            "total": 1, "createdAtMs": 1, "updatedAtMs": 1,
+        })).unwrap();
+        {
+            let mut registry = service.tasks.lock().await;
+            registry.active_search_task_id = Some(task.id.clone());
+            registry.search_documents.insert("search-broad".into(), empty_search_task_document(&task));
+        }
+        service.append_and_publish_search_snapshot(&task, vec![
+            leaf("noise", "source-1", "热榜推荐", "其他"),
+            leaf("match", "source-1", "凡人", "作者"),
+        ], vec![], true, Some(("source-1", false))).await.unwrap();
+        let registry = service.tasks.lock().await;
+        assert_eq!(registry.search_documents["search-broad"]["results"][0]["resultId"], "match");
+        assert_eq!(registry.search_documents["search-broad"]["results"][1]["resultId"], "noise");
+        assert!(registry.search_result_documents.contains_key("noise"));
+    }
 }

@@ -191,6 +191,12 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
 
   function handleReaderTapAt(x: number): void {
     if (reader.busy.value || reader.sourceRefreshBusy.value) return;
+    if (reader.menuOpen.value) {
+      reader.menuOpen.value = false;
+      reader.controlsOpen.value = false;
+      reader.directoryOpen.value = false;
+      return;
+    }
     const width = window.innerWidth;
     if (x < width / 3) {
       actions.turnPage(-1);
@@ -213,11 +219,12 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function onReaderSurfaceClick(event: MouseEvent): void {
+    if (reader.mediaChapter.value) return;
     if (Date.now() < reader.getClickSuppressedUntil()) return;
     const node = event.target as Node | null;
     const target = node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement;
     if (!target?.closest(".reader-main")
-      || target.closest("button,input,select,textarea,[role='button'],.reader-edge,.reader-settings-popover,.reader-topbar,.reader-footer,.reader-video-quality-control")) return;
+      || target.closest("button,input,select,textarea,[role='button'],.reader-edge,.reader-settings-popover,.reader-topbar,.reader-footer")) return;
     handleReaderTapAt(event.clientX);
   }
 

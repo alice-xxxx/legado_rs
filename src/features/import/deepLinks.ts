@@ -4,7 +4,7 @@ export type DeepLinkKind = ImportKind | "auto" | "read" | "addToBookshelf" | "th
 export type PendingImportLink = { kind: DeepLinkKind; url: string };
 
 export const deepLinkLabels: Record<DeepLinkKind, string> = {
-  sources: "书源 / RSS", replacementRules: "替换规则", txtTocRules: "TXT 目录规则",
+  sources: "源", replacementRules: "替换规则", txtTocRules: "TXT 目录规则",
   httpTtsConfigs: "HTTP TTS", auto: "配置", read: "阅读书籍", addToBookshelf: "书籍详情",
   theme: "主题", dictRule: "词典规则", readConfig: "ZIP 排版配置",
 };

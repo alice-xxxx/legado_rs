@@ -18,7 +18,7 @@ function parseSourceDocument(text: string): JsonNode {
   // Validate the whole document before using the lightweight location scanner.
   const parsed: unknown = JSON.parse(text);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("书源 JSON 必须是一个对象");
+    throw new Error("源 JSON 必须是一个对象");
   let index = 0;
   function whitespace(): void {
     while (index < text.length && /[\t\n\r ]/.test(text[index]!)) index++;
@@ -112,7 +112,7 @@ function validatedValue(value: string): void { JSON.parse(value); }
 
 export function sourceJsonValue(text: string, path: SourceJsonPath): string {
   const selected = at(parseSourceDocument(text), path);
-  if (!selected) throw new Error("字段已不存在，请重新读取书源");
+  if (!selected) throw new Error("字段已不存在，请重新读取源");
   return text.slice(selected.start, selected.end);
 }
 
@@ -184,7 +184,7 @@ export function sourceFormFieldJsonValue(key: string, label: string, original: u
 
 export function setSourceJsonValue(text: string, path: SourceJsonPath, raw: string): string {
   validatedValue(raw);
-  if (!path.length) throw new Error("不能替换整个书源根对象");
+  if (!path.length) throw new Error("不能替换整个源根对象");
   const root = parseSourceDocument(text);
   const existing = at(root, path);
   if (existing) return replaceRange(text, existing.start, existing.end, raw);

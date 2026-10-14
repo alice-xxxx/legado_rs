@@ -4,7 +4,7 @@ use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
 
 pub(crate) const CONTENT_TYPES: [&str; 6] = ["text", "html", "image", "audio", "video", "pdf"];
-pub(crate) const LIBRARY_FILE: &str = "内容库.json";
+pub(crate) const LIBRARY_FILE: &str = "content-library.json";
 
 pub(crate) fn canonical_type(kind: &str) -> &str {
     match kind {

@@ -77,6 +77,9 @@ pub(crate) fn cancel_source_login_web(source_id: &str, session_id: &str) -> Resu
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceEngineRequest {
+    /// Rust-only execution lease; never part of the source-rule wire format.
+    #[serde(skip)]
+    pub cancellation: Option<tokio_util::sync::CancellationToken>,
     pub operation: String,
     pub source: Value,
     pub keyword: Option<String>,
@@ -151,6 +154,9 @@ pub async fn execute_with_resource_dir(
     data_dir: PathBuf,
     resource_dir: Option<PathBuf>,
 ) -> Result<Value, String> {
+    if request.cancellation.as_ref().is_some_and(|token| token.is_cancelled()) {
+        return Err("Source execution cancelled".into());
+    }
     let bundled_runtime = resource_dir
         .map(|directory| directory.join("source-engine"))
         .filter(|directory| directory.join("classpath.txt").is_file());
@@ -236,6 +242,7 @@ pub async fn execute_with_resource_dir(
     })
     .map_err(|error| format!("Cannot serialize source-engine input: {error}"))?;
     let quickjs_for_thread = quickjs_library.clone();
+    let cancellation = request.cancellation.clone();
     let result = tokio::task::spawn_blocking(move || {
         crate::source_jni::execute(
             &classpath,
@@ -243,6 +250,7 @@ pub async fn execute_with_resource_dir(
             &request_json,
             data_dir,
             bundled_java_home,
+            cancellation,
         )
     })
     .await

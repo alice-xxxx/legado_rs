@@ -65,7 +65,7 @@ export function useSourceLoginActions({
     const source = sources.value.find((entry) => entry.id === selectedSourceRows.value[0]);
     if (!source) return;
     if (source.isRss) {
-      notify("当前登录状态管理适用于普通书源。", "error");
+      notify("当前登录状态管理适用于普通源。", "error");
       return;
     }
 
@@ -182,7 +182,7 @@ export function useSourceLoginActions({
     const source = sourceLoginTarget.value;
     if (!source || sourceLoginBusy.value || sourceHasLoginState.value === null || shelfBatchRecoveryRequired.value) return;
     const generation = sourceLoginGeneration;
-    if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他书源也可能需要重新登录。`)) return;
+    if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他源也可能需要重新登录。`)) return;
     if (!isCurrentSourceLogin(source.id, generation) || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     sourceLoginBusy.value = true;
     sourceLoginError.value = "";

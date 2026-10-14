@@ -52,7 +52,7 @@ export function useReaderBookmarksAndHistory(options: {
 
   async function openBookmark(bookmark: Bookmark): Promise<void> {
     if (bookmark.orphaned) {
-      options.notify(`“${bookmark.chapterTitle || `第 ${bookmark.chapterIndex + 1} 章`}”无法与新书源目录匹配，书签仍保留在列表中。`, "error");
+      options.notify(`“${bookmark.chapterTitle || `第 ${bookmark.chapterIndex + 1} 章`}”无法与新源目录匹配，书签仍保留在列表中。`, "error");
       return;
     }
     try {

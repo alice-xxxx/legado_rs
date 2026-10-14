@@ -62,10 +62,10 @@ const sourceCapabilities = [
 ] as const;
 function sourceKindLabel(source: SourceMetadata): string {
   if (source.isRss) return "RSS";
-  if (source.contentType === "image") return "漫画";
+  if (source.contentType === "image") return "图片";
   if (source.mediaType === "audio") return "音频";
   if (source.mediaType === "video") return "视频";
-  return "书籍";
+  return source.searchType === "text" ? "文本" : "其他";
 }
 const filtersActive = computed(() => Boolean(query.value.trim() || groupFilter.value || statusFilter.value !== "all"));
 function clearFilters(): void {

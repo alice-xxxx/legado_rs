@@ -101,10 +101,15 @@ impl ApplicationService {
             let previous_page = if task.page > 1 {
                 registry.records.iter().rev().find(|previous| previous.kind == "search"
                     && previous.keyword == task.keyword && previous.source_type == task.source_type
-                    && previous.source_ids == task.source_ids)
+                    && previous.precision_search.unwrap_or(true) == task.precision_search.unwrap_or(true)
+                    && previous.source_ids == task.source_ids
+                    && previous.page.saturating_add(1) == task.page && previous.status == "completed")
                     .and_then(|previous| previous.search_id.as_ref())
                     .and_then(|id| registry.search_documents.get(id)).cloned()
             } else { None };
+            if task.page > 1 && previous_page.as_ref().is_none_or(|document| document["hasMore"].as_bool() != Some(true)) {
+                return Err("Search has no next page; start a new search".into());
+            }
             let previous_id = registry.active_search_task_id.clone();
             let previous_backup = previous_id.as_ref().and_then(|id| {
                 registry.records.iter().position(|record| record.id == *id)
@@ -177,7 +182,7 @@ impl ApplicationService {
                 });
             }
             registry.search_replacement_contexts.clear();
-            registry.search_book_group_roots.clear();
+            if previous_page.is_none() { registry.search_book_group_roots.clear(); }
             if let Some(search_id) = task.search_id.as_deref() {
                 if previous_page.is_some() {
                     for cache in registry.search_result_documents.values_mut() {
@@ -185,7 +190,10 @@ impl ApplicationService {
                     }
                 }
                 let mut document = empty_search_task_document(&task);
-                if let Some(previous) = previous_page { document["results"] = previous["results"].clone(); }
+                if let Some(previous) = previous_page {
+                    document["results"] = previous["results"].clone();
+                    document["exhaustedSourceIds"] = previous["exhaustedSourceIds"].clone();
+                }
                 registry.search_documents.insert(search_id.to_owned(), document);
             }
 

@@ -109,7 +109,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
       return;
     }
     if (nextIndex >= count) {
-      options.notify("已经到达书源提供的最后一章。", "error");
+      options.notify("已经到达源提供的最后一章。", "error");
       return;
     }
     await selectReaderChapter(nextIndex);

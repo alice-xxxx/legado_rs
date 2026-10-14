@@ -1,9 +1,9 @@
 // Keep the label mapping aligned with KMP's BookSourceType constants.
 // Imported custom values remain selectable alongside known types.
 export const knownBookSourceTypes = [
-  { value: "0", label: "小说 / 文本" },
+  { value: "0", label: "文本" },
   { value: "1", label: "音频" },
-  { value: "2", label: "图片 / 漫画" },
+  { value: "2", label: "图片" },
   { value: "3", label: "下载" },
   { value: "4", label: "视频" },
   { value: "5", label: "订阅" },

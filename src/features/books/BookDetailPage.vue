@@ -17,7 +17,7 @@ import { hasReadingProgress, readingProgressPercent } from "./readingProgress";
 import { getReaderSession } from "../reader/readerSession";
 import { getBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
-import { consumeBookDetailOpenRequest } from "./bookDetailOpenRequest";
+import { consumeBookDetailOpenRequest, returnFromBookDetail } from "./bookDetailOpenRequest";
 import { useBookDetailSession } from "./useBookDetailSession";
 import { clearOpenedBook, openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
 import { errorText, notify } from "../../app/notifications";
@@ -50,13 +50,14 @@ const bookChapterCacheClearError = ref("");
 const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(null);
 let pageResourceRevision = 0;
 let disposed = false;
+let closing = false;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
 async function loadPageResources(expectedRevision = getRestoreRevision()): Promise<boolean> {
   const requestRevision = ++pageResourceRevision;
   await ensureTasksLoaded();
-  return expectedRevision === getRestoreRevision() && requestRevision === pageResourceRevision;
+  return !disposed && !closing && expectedRevision === getRestoreRevision() && requestRevision === pageResourceRevision;
 }
 const canRefreshOpenedBookInfo = computed(() => {
   const book = openedBook.value;
@@ -102,7 +103,7 @@ const currentSearchResultDetails = computed(() => searchResultDetails.value ?? {
 });
 let openRequestStarted = false;
 async function startOpenRequestOnce(): Promise<void> {
-  if (!openRequest || openRequestStarted) return;
+  if (!openRequest || openRequestStarted || disposed || closing) return;
   openRequestStarted = true;
   await detailSession.openRequest(openRequest);
 }
@@ -219,11 +220,11 @@ onBeforeUnmount(() => {
   bookSourceSwitch.closeBookSourceSwitch();
 });
 function closeBookDetails(): void {
+  if (closing || router.currentRoute.value.name !== routeNames.bookDetail) return;
+  closing = true;
   detailSession.clear({ preserveOpenedBook: readerVisible.value });
   bookSourceSwitch.closeBookSourceSwitch();
-  if (router.currentRoute.value.name !== routeNames.bookDetail) return;
-  if (router.options.history.state.back) void router.back();
-  else void router.replace({ name: routeNames.shelf });
+  returnFromBookDetail(openRequest);
 }
 watch(() => {
   const activeDetails = searchResultDetails.value;
@@ -596,11 +597,11 @@ title="更换章节来源"
                   </article>
                 </div>
                 <div v-else class="detail-alternates-empty">
-                  尚未搜索到可用候选。点击「搜索候选」使用已启用书源进行真实匹配；结果不会包含推测的响应时间。
+                  尚未搜索到可用候选。点击「搜索候选」使用已启用源进行真实匹配；结果不会包含推测的响应时间。
                 </div>
                 <p v-if="bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateErrors.length"
                   class="detail-source-partial">
-                  部分书源搜索失败（{{ bookSourceSwitch.bookSourceCandidateErrors.length }} 个），可在候选搜索页面查看错误。
+                  部分源搜索失败（{{ bookSourceSwitch.bookSourceCandidateErrors.length }} 个），可在候选搜索页面查看错误。
                 </p>
                 <button v-if="searchResultDetailsShelfBook" type="button"
                   class="detail-source-check" :disabled="catalogCheckBusy || recoveryRequired"
@@ -620,9 +621,9 @@ loading="lazy" decoding="async"/>
                   <small class="detail-type-label">
                     {{ openedBook.mediaType === 'video' ? '视频'
                       : openedBook.mediaType === 'audio' ? '音频'
-                      : bookContentType(openedBook) === 'image' ? '漫画'
+                      : bookContentType(openedBook) === 'image' ? '图片'
                       : bookContentType(openedBook) === 'pdf' ? 'PDF'
-                      : bookContentType(openedBook) === 'html' ? 'HTML' : '小说' }}
+                      : bookContentType(openedBook) === 'html' ? 'HTML' : '文本' }}
                     {{ openedBook.kind ? ' · ' + openedBook.kind : '' }}
                   </small>
                   <h2>{{ openedBook.title }}</h2>
@@ -718,7 +719,7 @@ loading="lazy" decoding="async"/>
         <div class="confirm-symbol">↺</div>
         <h2 id="book-reset-progress-title">重置阅读进度？</h2>
         <p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
-        <p>章节目录、已缓存正文、书源、书签和阅读历史都会保留。</p>
+        <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
         <p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p>
         <div class="modal-actions">
           <button class="button secondary" :disabled="bookProgressResetBusy" @click="pendingBookProgressReset = null">取消</button>
