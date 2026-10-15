@@ -463,7 +463,7 @@ onBeforeUnmount(() => {
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:29px 12px; } }
 @media(max-width:860px) {
-  .home-page-main { padding:0 14px calc(67px + var(--safe-bottom)); }
+  .home-page-main { padding:0 14px calc(var(--ui-nav-height) + var(--safe-bottom)); }
   .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
 @media(max-width:640px) {

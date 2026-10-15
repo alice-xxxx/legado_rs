@@ -23,6 +23,7 @@ interface ReaderPageInteractionOptions {
   reader: {
     viewport: ReadonlyRef<HTMLElement | null>;
     chapterIndex: ReadonlyRef<number>;
+    pageIndex: ReadonlyRef<number>;
     pageCount: ReadonlyRef<number>;
     visible: ReadonlyRef<boolean>;
     busy: ReadonlyRef<boolean>;
@@ -199,7 +200,11 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     }
     const width = window.innerWidth;
     if (x < width / 3) {
-      actions.turnPage(-1);
+      // In text mode, the first line can itself sit inside the left tap zone.
+      // Keep that tap on the chapter instead of treating it as a chapter jump.
+      // A deliberate swipe can still cross the chapter boundary.
+      if (reader.imagePage.value || reader.pdfPage.value) actions.turnPage(-1);
+      else if (reader.pageIndex.value > 0) actions.setPage(reader.pageIndex.value - 1);
       return;
     }
     if (x > width * 2 / 3) {

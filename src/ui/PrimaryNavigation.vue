@@ -131,7 +131,7 @@ function navigate(screen: MainScreen): void {
     inset: auto 0 0;
     display: block;
     width: 100%;
-    height: calc(67px + var(--safe-bottom));
+    height: calc(var(--ui-nav-height) + var(--safe-bottom));
     padding: 4px 24px var(--safe-bottom);
     border-top: 1px solid var(--app-line);
     background: var(--app-header);

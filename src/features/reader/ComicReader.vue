@@ -8,10 +8,9 @@ import ComicContent from "./ComicContent.vue";
 const content = computed(() => reader.readingContent.value?.kind === "images" ? reader.readingContent.value : null);
 </script>
 <template>
-  <ReaderPage v-bind="props" v-slot="{ comicReadMode, comicCounter, comicTouchStart, comicTouchEnd }">
-    <ComicContent v-if="content" :pages="content.pages" :scale="reader.comicScaleMode.value"
-      :style="{ scrollSnapType: comicReadMode === 'paged' ? 'y proximity' : 'none' }"
+  <ReaderPage v-bind="props" v-slot="{ comicReadMode, comicCounter, comicTouchStart, comicTouchEnd, comicTapAt }">
+    <ComicContent v-if="content" :pages="content.pages" :scale="reader.comicScaleMode.value" :mode="comicReadMode"
       @ready="reader.setReaderViewport($event); comicCounter()" @layout="reader.applyComicScrollPosition(); comicCounter()"
-      @scroll="comicCounter" @touchstart="comicTouchStart" @touchend="comicTouchEnd" />
+      @scroll="comicCounter" @touchstart="comicTouchStart" @touchend="comicTouchEnd" @tap="comicTapAt" />
   </ReaderPage>
 </template>

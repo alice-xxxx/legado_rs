@@ -337,6 +337,7 @@ readerPageInteraction = useReaderPageInteraction({
   reader: {
     viewport: readerViewport,
     chapterIndex: readingChapterIndex,
+    pageIndex: readerPageIndex,
     pageCount: readerPageCount,
     visible: readerVisible,
     busy: readerBusy,

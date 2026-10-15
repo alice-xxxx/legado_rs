@@ -13,6 +13,10 @@ private struct ReaderFullscreenArgs: Decodable {
     let hidden: Bool
 }
 
+private struct VideoOrientationArgs: Decodable {
+    let orientation: String
+}
+
 private struct NavigationGesturesArgs: Decodable {
     let enabled: Bool
 }
@@ -21,6 +25,7 @@ private struct NavigationGesturesArgs: Decodable {
 final class SourceEnginePlugin: Plugin {
     private weak var mainWebView: WKWebView?
     private var readerContentInsetBehavior: UIScrollView.ContentInsetAdjustmentBehavior?
+    private var previousVideoOrientation: UIInterfaceOrientationMask?
     private var webLoginSessions: [String: NativeWebLoginSession] = [:]
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
@@ -64,6 +69,51 @@ final class SourceEnginePlugin: Plugin {
         }
     }
 
+    @objc public func setVideoOrientation(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(VideoOrientationArgs.self)
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let webview = self.mainWebView,
+                  let scene = webview.window?.windowScene else {
+                invoke.resolve(["applied": false])
+                return
+            }
+            guard #available(iOS 16.0, *) else {
+                invoke.resolve(["applied": false])
+                return
+            }
+
+            let target: UIInterfaceOrientationMask
+            switch args.orientation {
+            case "landscape":
+                if self.previousVideoOrientation == nil {
+                    self.previousVideoOrientation = Self.orientationMask(for: scene.interfaceOrientation)
+                }
+                target = .landscape
+            case "portrait":
+                if self.previousVideoOrientation == nil {
+                    self.previousVideoOrientation = Self.orientationMask(for: scene.interfaceOrientation)
+                }
+                target = .portrait
+            case "restore":
+                guard let previous = self.previousVideoOrientation else {
+                    invoke.resolve(["applied": false])
+                    return
+                }
+                target = previous
+                self.previousVideoOrientation = nil
+            default:
+                invoke.reject("Unsupported video orientation")
+                return
+            }
+
+            webview.window?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+            scene.requestGeometryUpdate(.iOS(interfaceOrientations: target)) { error in
+                NSLog("Could not update video fullscreen orientation: %@", error.localizedDescription)
+            }
+            invoke.resolve(["applied": true])
+        }
+    }
+
     @objc public func execute(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(ExecuteArgs.self)
         let applicationSupport = FileManager.default.urls(
@@ -85,6 +135,14 @@ final class SourceEnginePlugin: Plugin {
                 return
             }
             invoke.resolve(["resultJson": result])
+        }
+    }
+
+    private static func orientationMask(for orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
+        switch orientation {
+        case .landscapeLeft: return .landscapeLeft
+        case .landscapeRight: return .landscapeRight
+        default: return .portrait
         }
     }
 

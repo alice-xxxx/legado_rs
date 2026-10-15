@@ -87,22 +87,15 @@ export function installNativeBackNavigation(): () => void {
   let disposed = false, handling = false;
   let listener: PluginListener | undefined;
   let removeGestureSync: (() => void) | undefined;
+  let prepareTabGesture: (() => Promise<void>) | undefined;
+  const isTabRoute = (name: unknown) => name === routeNames.home
+    || name === routeNames.shelf || name === routeNames.settings;
   if (isIos()) {
     let lastRequested: boolean | undefined;
     let pending = Promise.resolve();
-    const syncGestures = () => {
-      const route = router.currentRoute.value;
-      const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
-        .some(visible);
-      const sourceEditorEntry = route.name === routeNames.sources && Boolean(route.query.sourceEdit);
-      const isTab = route.name === routeNames.home || route.name === routeNames.shelf
-        || route.name === routeNames.settings;
-      // A WebKit swipe previews its real history item. Local dialogs and pages
-      // without a matching entry must not expose an unrelated screen beneath.
-      const enabled = typeof router.options.history.state.back === "string"
-        && (Boolean(route.query[readerQuery]) || !isTab && route.name != null)
-        && !hasVisibleBackLayer() && (!hasLocalPage || sourceEditorEntry);
-      if (enabled === lastRequested) return;
+    let tabPushPending = false;
+    const requestGestureState = (enabled: boolean): Promise<void> => {
+      if (enabled === lastRequested) return pending;
       lastRequested = enabled;
       pending = pending.then(async () => {
         if (disposed || lastRequested !== enabled) return;
@@ -113,6 +106,28 @@ export function installNativeBackNavigation(): () => void {
           console.error("iOS navigation gesture update failed:", error);
         }
       });
+      return pending;
+    };
+    const syncGestures = () => {
+      if (tabPushPending) return;
+      const route = router.currentRoute.value;
+      const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
+        .some(visible);
+      const sourceEditorEntry = route.name === routeNames.sources && Boolean(route.query.sourceEdit);
+      // A WebKit swipe previews its real history item. Local dialogs and pages
+      // without a matching entry must not expose an unrelated screen beneath.
+      const enabled = typeof router.options.history.state.back === "string"
+        && (Boolean(route.query[readerQuery]) || !isTabRoute(route.name) && route.name != null)
+        && !hasVisibleBackLayer() && (!hasLocalPage || sourceEditorEntry);
+      void requestGestureState(enabled);
+    };
+    prepareTabGesture = async () => {
+      // Tab roots keep the native swipe disabled because their history may
+      // point at another tab. Enable it before pushing a child route so
+      // WKWebView captures the tab page as that entry's swipe-back preview.
+      tabPushPending = true;
+      lastRequested = undefined;
+      await requestGestureState(true);
     };
     let queued = false;
     const queueGestureSync = () => {
@@ -132,9 +147,11 @@ export function installNativeBackNavigation(): () => void {
     });
     queueGestureSync();
     const removeAfterEach = router.afterEach((_to, _from, failure) => {
-      if (!failure) queueGestureSync();
+      tabPushPending = false;
+      if (failure) lastRequested = undefined;
+      queueGestureSync();
     });
-    removeGestureSync = () => { observer.disconnect(); removeAfterEach(); };
+    removeGestureSync = () => { observer.disconnect(); removeAfterEach(); prepareTabGesture = undefined; };
   }
   const removeGuard = router.beforeEach(async (to, from) => {
     // During a native history traversal the WebView state already names `to`.
@@ -145,6 +162,9 @@ export function installNativeBackNavigation(): () => void {
       return { path: to.path, query, hash: to.hash, replace: true };
     }
     const popping = to.fullPath !== from.fullPath && router.options.history.state.current === to.fullPath;
+    if (!popping && isTabRoute(from.name) && !isTabRoute(to.name)) {
+      await prepareTabGesture?.();
+    }
     if (!popping) return;
     // The mobile source editor has its own history entry. Let its route guard
     // handle the draft and reveal the source list captured by WKWebView.

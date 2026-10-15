@@ -545,10 +545,11 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 .shelf-view {
+  --library-card-min-width: clamp(104px, 15vw, 176px);
   width: 100%;
   max-width: 1120px;
   margin: 0 auto;
-  padding: 16px 0 calc(24px + var(--safe-bottom));
+  padding: 16px 0 24px;
 }
 
 .shelf-view-empty {
@@ -563,8 +564,8 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 22px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--library-card-min-width), 1fr));
+  gap: 22px clamp(10px, 1.4vw, 16px);
 }
 
 .shelf-card { min-width: 0; }
@@ -638,25 +639,6 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
 .library-cover-control {
   flex: 1 1 100%;
-}
-
-@media (max-width: 900px) {
-  .book-grid {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 720px) {
-  .book-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 18px 10px;
-  }
-}
-
-@media (max-width: 430px) {
-  .book-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 .library-topbar {
@@ -806,6 +788,10 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 @media (max-width:640px) {
+  .book-grid {
+    gap: 18px 10px;
+  }
+
   .library-topbar {
     gap: 8px;
     margin: 5px 0 18px;
@@ -1094,8 +1080,8 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
 .library-manage-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 17px 14px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--library-card-min-width), 1fr));
+  gap: 17px clamp(10px, 1.4vw, 14px);
   padding-top: 16px;
 }
 
@@ -1297,7 +1283,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
 @media (max-width:860px) {
   .shelf-page-main {
-    padding: 0 14px calc(67px + var(--safe-bottom));
+    padding: 0 14px calc(var(--ui-nav-height) + var(--safe-bottom));
   }
 
   .library-manage-page .shelf-page-main {
@@ -1357,14 +1343,10 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
     min-height: 47px;
   }
 
-  .library-manage-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width:480px) {
   .library-manage-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 16px 11px;
   }
 

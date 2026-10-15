@@ -70,17 +70,38 @@ export function restoreTextPosition(viewport: HTMLElement, position: ReaderPosit
     }
     remaining -= node.length;
   }
-  if (!position.offset) viewport.scrollTo({ top: 0, left: 0, behavior: "instant" });
+  if (!position.offset) {
+    viewport.scrollTo({ top: 0, left: 0, behavior: "instant" });
+    return;
+  }
+
+  // A saved offset can point past the end when a source or display rule has
+  // changed. Keep the reader at the chapter's final page instead of leaving
+  // it at the reset position at the start of the chapter.
+  const size = Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth);
+  const extent = vertical ? viewport.scrollHeight : viewport.scrollWidth;
+  const lastPage = Math.max(0, Math.ceil((extent - 1) / size) - 1);
+  viewport.scrollTo({
+    top: vertical ? lastPage * size : 0,
+    left: vertical ? 0 : lastPage * size,
+    behavior: "instant",
+  });
 }
 
 export function imagePosition(viewport: HTMLElement | null): ReaderPosition {
   if (!viewport) return { offset: 0 };
   const bounds = viewport.getBoundingClientRect();
+  const horizontal = viewport.classList.contains("paged");
   const images = Array.from(viewport.querySelectorAll<HTMLImageElement>("img[data-page-id]"));
-  const image = images.find(image => image.getBoundingClientRect().bottom > bounds.top) ?? images[images.length - 1];
+  const image = images.find(image => {
+    const rect = image.getBoundingClientRect();
+    return horizontal ? rect.right > bounds.left : rect.bottom > bounds.top;
+  }) ?? images[images.length - 1];
   if (!image) return { offset: 0 };
   const rect = image.getBoundingClientRect();
-  return { pageId: image.dataset.pageId, offset: Math.round(Math.min(1, Math.max(0, (bounds.top - rect.top) / Math.max(1, rect.height))) * 1_000_000) };
+  const fraction = horizontal ? (bounds.left - rect.left) / Math.max(1, rect.width)
+    : (bounds.top - rect.top) / Math.max(1, rect.height);
+  return { pageId: image.dataset.pageId, offset: Math.round(Math.min(1, Math.max(0, fraction)) * 1_000_000) };
 }
 
 export function restoreImagePosition(viewport: HTMLElement, position: ReaderPosition): void {
@@ -88,6 +109,11 @@ export function restoreImagePosition(viewport: HTMLElement, position: ReaderPosi
   const image = images.find(image => image.dataset.pageId === position.pageId) ?? images[0];
   if (!image) return;
   const rect = image.getBoundingClientRect();
-  viewport.scrollTop += rect.top - viewport.getBoundingClientRect().top
-    + rect.height * Math.min(1, Math.max(0, position.offset / 1_000_000));
+  const bounds = viewport.getBoundingClientRect();
+  const fraction = Math.min(1, Math.max(0, position.offset / 1_000_000));
+  if (viewport.classList.contains("paged")) {
+    viewport.scrollLeft += rect.left - bounds.left + rect.width * fraction;
+  } else {
+    viewport.scrollTop += rect.top - bounds.top + rect.height * fraction;
+  }
 }

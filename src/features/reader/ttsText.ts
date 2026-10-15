@@ -132,11 +132,29 @@ export function collectReaderTtsSegments(
     if (currentTarget && block !== currentTarget) flush();
     currentTarget = block;
     const nodeStart = currentNode === startNode ? startOffset : 0;
-    const content = text.data.slice(nodeStart);
-    if (content) {
+    const isPlainTextChapter = Boolean(parent?.closest(".chapter-text"));
+    const appendText = (start: number, end: number) => {
+      if (end <= start) return;
       const flatStart = currentText.length;
-      currentText += content;
-      currentPieces.push({ node: text, nodeStart, flatStart, flatEnd: currentText.length });
+      currentText += text.data.slice(start, end);
+      currentPieces.push({ node: text, nodeStart: start, flatStart, flatEnd: currentText.length });
+    };
+    // Plain text chapters are stored as one text node with newline-delimited
+    // paragraphs. Keep those source boundaries so each TTS request and its
+    // highlight cover one paragraph instead of a chapter-sized block.
+    if (isPlainTextChapter) {
+      const lineBreak = /\r\n?|\n/g;
+      lineBreak.lastIndex = nodeStart;
+      let lineStart = nodeStart;
+      let match: RegExpExecArray | null;
+      while ((match = lineBreak.exec(text.data)) !== null) {
+        appendText(lineStart, match.index);
+        flush();
+        lineStart = lineBreak.lastIndex;
+      }
+      appendText(lineStart, text.data.length);
+    } else {
+      appendText(nodeStart, text.data.length);
     }
     currentNode = walker.nextNode();
   }

@@ -80,7 +80,7 @@ export function useReaderDisplay(options: {
     }
     rememberPosition();
     if (reader.imagePage.value) {
-      const offset = Math.max(0, Math.round(viewport.scrollTop));
+      const offset = Math.max(0, Math.round(viewport.classList.contains("paged") ? viewport.scrollLeft : viewport.scrollTop));
       if (offset === reader.comicScrollTop.value) return;
       reader.comicScrollTop.value = offset;
     } else {
@@ -130,11 +130,10 @@ export function useReaderDisplay(options: {
     const touch = event.changedTouches[0]!;
     const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
     if (!start.moved && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
-      if (!reader.imagePage.value || touch.clientX >= window.innerWidth / 3 && touch.clientX <= window.innerWidth * 2 / 3) {
-        if (event.cancelable) event.preventDefault();
-        reader.setClickSuppressedUntil(Date.now() + 500);
-        options.getPageInteraction().onReaderFrameTouchTap(touch.clientX);
-      }
+      reader.setClickSuppressedUntil(Date.now() + 500);
+      if (reader.imagePage.value) return;
+      if (event.cancelable) event.preventDefault();
+      options.getPageInteraction().onReaderFrameTouchTap(touch.clientX);
       return;
     }
     reader.setClickSuppressedUntil(Date.now() + 500);
@@ -167,9 +166,10 @@ export function useReaderDisplay(options: {
       const target = Math.max(0, images.findIndex(image => image.dataset.pageId === imageResume!.pageId));
       if (!images.length || images.slice(0, target + 1).some(image => !image.complete)) return;
       restoreImagePosition(viewport, imageResume);
-      reader.comicScrollTop.value = viewport.scrollTop;
+      reader.comicScrollTop.value = viewport.classList.contains("paged") ? viewport.scrollLeft : viewport.scrollTop;
       imageResume = null;
-    } else viewport.scrollTop = reader.comicScrollTop.value;
+    } else if (viewport.classList.contains("paged")) viewport.scrollLeft = reader.comicScrollTop.value;
+    else viewport.scrollTop = reader.comicScrollTop.value;
   }
   function clearReaderScrollListeners(): void {
     const element = reader.viewport.value;

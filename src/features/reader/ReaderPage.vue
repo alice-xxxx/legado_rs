@@ -68,39 +68,81 @@ export default defineComponent({
         .filter(image => image.getBoundingClientRect().height > 0);
       comicPageCount.value = images.length;
       if (!images.length) { comicPageIndex.value = 0; return; }
-      const reference = viewport.getBoundingClientRect().top + viewport.clientHeight * 0.45;
-      const next = images.findIndex(image => image.getBoundingClientRect().bottom > reference);
+      const bounds = viewport.getBoundingClientRect();
+      const paged = comicReadMode.value === "paged";
+      const reference = paged ? bounds.left + viewport.clientWidth / 2 : bounds.top + viewport.clientHeight * 0.45;
+      const next = images.findIndex(image => {
+        const rect = image.getBoundingClientRect();
+        return paged ? rect.right > reference : rect.bottom > reference;
+      });
       comicPageIndex.value = next < 0 ? images.length : next + 1;
     }
     function requestComicCounter(): void {
       if (comicFrame !== null) return;
       comicFrame = window.requestAnimationFrame(updateComicCounter);
     }
+    watch(comicReadMode, mode => {
+      const pageIndex = Math.max(0, comicPageIndex.value - 1);
+      void nextTick(() => {
+        const viewport = context.readerViewport.value;
+        const image = viewport?.querySelectorAll<HTMLImageElement>("img")[pageIndex];
+        if (viewport && image) {
+          const bounds = viewport.getBoundingClientRect();
+          const rect = image.getBoundingClientRect();
+          const left = viewport.scrollLeft + rect.left - bounds.left;
+          const top = viewport.scrollTop + rect.top - bounds.top;
+          viewport.scrollTo({ left: mode === "paged" ? left : 0, top: mode === "vertical" ? top : 0, behavior: "instant" });
+        }
+        requestComicCounter();
+      });
+    });
     onUnmounted(() => { if (comicFrame !== null) window.cancelAnimationFrame(comicFrame); });
     function nextComicImage(direction: -1 | 1): void {
       const scroller = context.readerViewport.value;
       if (!scroller) return;
-      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
-      const offset = Math.max(0, scroller.scrollTop);
-      if (comicReadMode.value === "vertical") {
-        const step = Math.max(120, scroller.clientHeight * 0.86);
-        const goal = Math.max(0, Math.min(max, offset + direction * step));
-        if (Math.abs(goal - offset) > 1) scroller.scrollTo({ top: goal, behavior: "smooth" });
-        else void context.changeChapter(direction);
+      if (comicReadMode.value === "paged") {
+        const images = [...scroller.querySelectorAll<HTMLImageElement>("img")]
+          .filter(image => image.getBoundingClientRect().height > 0);
+        if (!images.length) return;
+        const bounds = scroller.getBoundingClientRect();
+        const center = bounds.left + scroller.clientWidth / 2;
+        let currentIndex = 0;
+        let nearestDistance = Number.POSITIVE_INFINITY;
+        images.forEach((image, index) => {
+          const rect = image.getBoundingClientRect();
+          const distance = Math.abs((rect.left + rect.right) / 2 - center);
+          if (distance < nearestDistance) {
+            nearestDistance = distance;
+            currentIndex = index;
+          }
+        });
+        const nextIndex = currentIndex + direction;
+        if (nextIndex < 0 || nextIndex >= images.length) {
+          void context.changeChapter(direction);
+          return;
+        }
+        const target = images[nextIndex]!.getBoundingClientRect();
+        const left = scroller.scrollLeft + target.left - bounds.left;
+        scroller.scrollTo({ left: Math.max(0, Math.min(scroller.scrollWidth - scroller.clientWidth, left)), top: 0, behavior: "smooth" });
         return;
       }
-      const imgs = [...scroller.querySelectorAll<HTMLImageElement>("img")].filter(img => img.getBoundingClientRect().height > 0);
-      const targets = imgs.map(img => img.getBoundingClientRect().top + offset);
-      const next = direction > 0
-        ? targets.find(target => target > offset + 10)
-        : targets.slice().reverse().find(target => target < offset - 10);
-      if (next !== undefined) {
-        scroller.scrollTo({ top: Math.min(max, Math.max(0, next)), behavior: "smooth" });
-      } else if (direction < 0 && offset > 1) {
-        scroller.scrollTo({ top: 0, behavior: "smooth" });
-      } else if (direction > 0 && max - offset > 2) {
-        scroller.scrollTo({ top: max, behavior: "smooth" });
-      } else void context.changeChapter(direction);
+      const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      const offset = Math.max(0, scroller.scrollTop);
+      const step = Math.max(120, scroller.clientHeight * 0.86);
+      const goal = Math.max(0, Math.min(max, offset + direction * step));
+      if (Math.abs(goal - offset) > 1) scroller.scrollTo({ top: goal, behavior: "smooth" });
+      else void context.changeChapter(direction);
+    }
+    function handleComicTapAt(x: number): void {
+      if (context.readerMenuOpen.value) {
+        context.readerMenuOpen.value = false;
+        context.readerControlsOpen.value = false;
+        context.readerDirectoryOpen.value = false;
+        return;
+      }
+      if (x < window.innerWidth / 3) nextComicImage(-1);
+      else if (x > window.innerWidth * 2 / 3) nextComicImage(1);
+      else context.readerMenuOpen.value = true;
     }
     function turnReaderEdge(direction: -1 | 1): void {
       if (context.readerMenuOpen.value) {
@@ -118,25 +160,26 @@ export default defineComponent({
     }
     function onComicTouchStart(event: TouchEvent): void {
       comicTouchStart = null;
-      if (!context.readingImagePage.value || comicReadMode.value !== "paged" || event.touches.length !== 1) return;
+      if (!context.readingImagePage.value || event.touches.length !== 1) return;
       const touch = event.touches.item(0);
       if (touch) comicTouchStart = { x: touch.clientX, y: touch.clientY };
     }
     function onComicTouchEnd(event: TouchEvent): void {
       const start = comicTouchStart;
       comicTouchStart = null;
-      if (!start || comicReadMode.value !== "paged" || !context.readingImagePage.value
+      if (!start || !context.readingImagePage.value
         || event.touches.length || event.changedTouches.length !== 1) return;
       const touch = event.changedTouches.item(0);
       if (!touch) return;
       const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
-      if (Math.abs(dx) < 65 || Math.abs(dx) < Math.abs(dy) * 1.4) return;
-      nextComicImage(dx < 0 ? 1 : -1);
+      if (Math.abs(dx) >= 12 || Math.abs(dy) >= 12) return;
+      event.stopPropagation();
+      handleComicTapAt(touch.clientX);
     }
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel };
   },
 });
 </script>
@@ -211,7 +254,8 @@ export default defineComponent({
           </div>
         </div>
         <slot v-else :comicReadMode="comicReadMode" :comicCounter="requestComicCounter"
-          :comicTouchStart="onComicTouchStart" :comicTouchEnd="onComicTouchEnd" />
+          :comicTouchStart="onComicTouchStart" :comicTouchEnd="onComicTouchEnd"
+          :comicTapAt="comicTapAt" />
       </div>
       <section v-if="ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && ctx.readingContent"
         class="reader-video-episodes" @click.stop>

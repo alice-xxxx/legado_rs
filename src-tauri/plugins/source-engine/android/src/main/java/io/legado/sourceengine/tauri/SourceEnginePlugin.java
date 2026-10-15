@@ -1,6 +1,7 @@
 package io.legado.sourceengine.tauri;
 
 import android.app.Activity;
+import android.content.pm.ActivityInfo;
 import app.tauri.annotation.Command;
 import app.tauri.annotation.TauriPlugin;
 import app.tauri.plugin.Invoke;
@@ -18,6 +19,7 @@ public final class SourceEnginePlugin extends Plugin {
     private final Activity activity;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService loginExecutor = Executors.newSingleThreadExecutor();
+    private Integer previousVideoOrientation;
 
     public SourceEnginePlugin(Activity activity) {
         super(activity);
@@ -99,6 +101,40 @@ public final class SourceEnginePlugin extends Plugin {
                     "cancelled",
                     AndroidSourceWebLogin.cancel(activity, args.sourceId, args.sessionId)
                 );
+                invoke.resolve(response);
+            } catch (Throwable error) {
+                reject(invoke, error);
+            }
+        });
+    }
+
+    @Command
+    public void setVideoOrientation(Invoke invoke) {
+        final SetVideoOrientationArgs args = invoke.parseArgs(SetVideoOrientationArgs.class);
+        activity.runOnUiThread(() -> {
+            try {
+                if ("restore".equals(args.orientation)) {
+                    if (previousVideoOrientation != null) {
+                        activity.setRequestedOrientation(previousVideoOrientation);
+                        previousVideoOrientation = null;
+                    }
+                } else {
+                    final int requestedOrientation;
+                    if ("landscape".equals(args.orientation)) {
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE;
+                    } else if ("portrait".equals(args.orientation)) {
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT;
+                    } else {
+                        invoke.reject("Unsupported video orientation");
+                        return;
+                    }
+                    if (previousVideoOrientation == null) {
+                        previousVideoOrientation = activity.getRequestedOrientation();
+                    }
+                    activity.setRequestedOrientation(requestedOrientation);
+                }
+                JSObject response = new JSObject();
+                response.put("applied", true);
                 invoke.resolve(response);
             } catch (Throwable error) {
                 reject(invoke, error);

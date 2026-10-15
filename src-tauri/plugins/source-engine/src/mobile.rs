@@ -61,6 +61,22 @@ impl<R: Runtime> SourceEngine<R> {
         Ok(response.hidden)
     }
 
+    pub async fn set_video_orientation(&self, orientation: &str) -> crate::Result<bool> {
+        #[derive(serde::Serialize)]
+        struct Request<'a> {
+            orientation: &'a str,
+        }
+        #[derive(serde::Deserialize)]
+        struct Response {
+            applied: bool,
+        }
+        let response: Response = self
+            .0
+            .run_mobile_plugin_async("setVideoOrientation", Request { orientation })
+            .await?;
+        Ok(response.applied)
+    }
+
     pub fn execute(&self, call: SourceEngineCall) -> crate::Result<SourceEngineResponse> {
         self.0
             .run_mobile_plugin("execute", call)

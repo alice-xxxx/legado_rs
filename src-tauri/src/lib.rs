@@ -68,6 +68,27 @@ async fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bo
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
+async fn set_video_orientation(app: tauri::AppHandle, orientation: String) -> Result<bool, String> {
+    if !matches!(orientation.as_str(), "portrait" | "landscape" | "restore") {
+        return Err("Unsupported video orientation".to_owned());
+    }
+    #[cfg(any(target_os = "ios", target_os = "android"))]
+    {
+        use tauri_plugin_source_engine::SourceEngineExt;
+        app.source_engine()
+            .set_video_orientation(&orientation)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(not(any(target_os = "ios", target_os = "android")))]
+    {
+        let _ = app;
+        Ok(false)
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
 async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     #[cfg(target_os = "ios")]
     {
@@ -234,6 +255,7 @@ pub fn run() {
     });
     let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         set_reader_fullscreen,
+        set_video_orientation,
         set_navigation_gestures,
         application::app_bootstrap,
         application::request_http_tts_audio,
