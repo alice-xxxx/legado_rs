@@ -7,6 +7,7 @@ import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
 import { settings } from "../settings/settingsStore";
+import { isReadingMode, readingModes } from "../settings/readerModes";
 import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "../settings/themeState";
 import { httpTtsConfigs } from "../settings/configurationStores";
 import { openedBook } from "../books/bookDetailState";
@@ -54,7 +55,7 @@ export default defineComponent({
     }
     function changeReaderMode(event: Event): void {
       const mode = (event.target as HTMLSelectElement).value;
-      settings.value.reader.readingMode = mode as "none" | "cover" | "simulation" | "vertical";
+      if (isReadingMode(mode)) settings.value.reader.readingMode = mode;
     }
     watch(() => context.readerControlsOpen.value, open => {
       if (!open) audioToolPanel.value = null;
@@ -183,7 +184,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
   },
 });
 </script>
@@ -481,13 +482,10 @@ export default defineComponent({
       <div
         v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="setting-control compact-setting">
-        <div><label for="reader-scroll-mode">阅读方式</label><small>左右翻页效果或上下滚动</small></div>
+        <div><label for="reader-scroll-mode">阅读方式</label><small>分页切换效果或上下连续滚动</small></div>
         <select id="reader-scroll-mode" :value="settings.reader.readingMode ?? 'cover'"
           :disabled="readerBusy" @change="changeReaderMode">
-          <option value="none">无动画</option>
-          <option value="cover">覆盖</option>
-          <option value="simulation">仿真翻页</option>
-          <option value="vertical">上下滚动</option>
+          <option v-for="mode in readingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
         </select>
       </div>
       <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && !ctx.readingVideoChapter && !audioToolPanel"

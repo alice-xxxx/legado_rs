@@ -87,7 +87,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.readingMode === 'vertical' }" :style="readerStyle" @load.capture="emit('layout')">
+  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.readingMode === 'vertical', 'vertical-turn': settings.reader.readingMode === 'slide-vertical' }" :style="readerStyle" @load.capture="emit('layout')">
     <article class="chapter-content">
       <h1 v-if="showTitle" class="chapter-title">{{ title }}</h1>
       <div v-if="text != null" class="chapter-text">{{ displayText }}</div>
@@ -130,6 +130,7 @@ onBeforeUnmount(() => {
   pointer-events: none;
 }
 .novel-reader.vertical { overflow-y: auto; column-count: auto; }
+.novel-reader.vertical-turn { touch-action: pan-x; }
 .chapter-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chapter-markup :deep(img) { max-width: 100%; height: auto; }
 .chapter-markup :deep(p) { margin: 0 0 1em; }

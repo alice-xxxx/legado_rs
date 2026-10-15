@@ -170,6 +170,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_source_engine::init())
         .setup(move |app| {
+            #[cfg(target_os = "android")]
+            http_client::init_android_tls().map_err(|error| {
+                std::io::Error::other(format!("Android TLS initialization failed: {error}"))
+            })?;
+
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

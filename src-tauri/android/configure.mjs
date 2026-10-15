@@ -23,7 +23,7 @@ await writeFile(gradlePropertiesFile, gradleProperties, "utf8");
 // in their own build scripts; finalizeDsl runs after those values are assigned.
 const rootBuildFile = new URL("../gen/android/build.gradle.kts", import.meta.url);
 const librarySdkMarker = "// Foliver Android library compile SDK compatibility.";
-const rootBuild = await readFile(rootBuildFile, "utf8");
+let rootBuild = await readFile(rootBuildFile, "utf8");
 if (!rootBuild.includes(librarySdkMarker)) {
   const librarySdkConfig = String.raw`
 // Foliver Android library compile SDK compatibility.
@@ -36,8 +36,25 @@ subprojects {
     }
 }
 `;
-  await writeFile(rootBuildFile, rootBuild + "\n" + librarySdkConfig, "utf8");
+  rootBuild += "\n" + librarySdkConfig;
 }
+// reqwest 0.13 uses Android's trust manager through this small Kotlin component.
+// Its AAR version must match the Rust shim in Cargo.lock (not the verifier crate version).
+const rustlsRepositoryMarker = "// Foliver Android system certificate verifier.";
+if (!rootBuild.includes(rustlsRepositoryMarker)) {
+  rootBuild += `
+${rustlsRepositoryMarker}
+allprojects {
+    repositories {
+        maven {
+            url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/maven-archive/android-release-support/maven/")
+            content { includeGroup("org.rustls") }
+        }
+    }
+}
+`;
+}
+await writeFile(rootBuildFile, rootBuild, "utf8");
 
 const buildFile = new URL("../gen/android/app/build.gradle.kts", import.meta.url);
 const manifestFile = new URL("../gen/android/app/src/main/AndroidManifest.xml", import.meta.url);
@@ -45,6 +62,19 @@ const networkConfigFile = new URL("../gen/android/app/src/main/res/xml/network_s
 const marker = "// Source-engine dependencies include a JVM-only JAR index.";
 let contents = await readFile(buildFile, "utf8");
 let buildFileChanged = false;
+const cargoLock = await readFile(new URL("../Cargo.lock", import.meta.url), "utf8");
+const rustlsAndroidVersions = [...cargoLock.matchAll(/\[\[package\]\]\r?\nname = "rustls-platform-verifier-android"\r?\nversion = "([^"]+)"/g)];
+if (rustlsAndroidVersions.length !== 1) throw new Error("Expected one rustls-platform-verifier-android version in Cargo.lock");
+const rustlsAndroidDependency = `implementation("org.rustls:rustls-platform-verifier:${rustlsAndroidVersions[0][1]}")`;
+const existingRustlsDependency = /implementation\("org\.rustls:rustls-platform-verifier:[^"]+"\)/;
+if (existingRustlsDependency.test(contents)) {
+  const updated = contents.replace(existingRustlsDependency, rustlsAndroidDependency);
+  buildFileChanged ||= updated !== contents;
+  contents = updated;
+} else {
+  contents = contents.replace("dependencies {", `dependencies {\n    ${rustlsAndroidDependency}`);
+  buildFileChanged = true;
+}
 // Native audio requires Android 8+. Keep regenerated projects aligned with the plugin.
 if (/minSdk\s*=\s*24/.test(contents)) {
     contents = contents.replace(/minSdk\s*=\s*24/, "minSdk = 26");

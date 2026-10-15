@@ -215,6 +215,11 @@ pub enum ReadingMode {
     None,
     #[default]
     Cover,
+    Slide,
+    #[serde(rename = "slide-vertical")]
+    SlideVertical,
+    Fade,
+    Flip,
     Simulation,
     Vertical,
 }

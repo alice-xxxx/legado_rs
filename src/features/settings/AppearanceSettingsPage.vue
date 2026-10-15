@@ -4,6 +4,7 @@ import { computed, ref } from "vue";
 import { pickReaderBackgroundImage } from "../../api/settings";
 import type { ReaderSettings } from "../../api/types";
 import { settings } from "./settingsStore";
+import { isReadingMode, readingModes } from "./readerModes";
 import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "./themeState";
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -30,7 +31,7 @@ function changeSetting<K extends AppearanceSettingKey>(key: K, value: ReaderSett
 
 function changeReaderMode(event: Event): void {
   const mode = (event.target as HTMLSelectElement).value;
-  settings.value.reader.readingMode = mode as ReaderSettings["readingMode"];
+  if (isReadingMode(mode)) settings.value.reader.readingMode = mode;
 }
 
 async function chooseBackground(): Promise<void> {
@@ -157,12 +158,11 @@ function clearBackground(): void {
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
         <label for="reader-turn-style">阅读方式</label>
-        <small>无动画、覆盖、仿真或上下滚动</small>
+        <small>分页切换效果或上下连续滚动</small>
       </div>
       <select id="reader-turn-style" :value="settings.reader.readingMode ?? 'cover'"
         :disabled="blocked" @change="changeReaderMode">
-        <option value="none">无动画</option><option value="cover">覆盖</option>
-        <option value="simulation">仿真翻页</option><option value="vertical">上下滚动</option>
+        <option v-for="mode in readingModes" :key="mode.value" :value="mode.value">{{ mode.label }}</option>
       </select>
     </div>
       </section>

@@ -1,7 +1,9 @@
 import { imagePosition, textPosition, restoreImagePosition, restoreTextPosition, type ReaderPosition } from "./readerPosition";
-import { onScopeDispose, type Ref } from "vue";
+import { onScopeDispose, watch, type Ref } from "vue";
 import { settings } from "../settings/settingsStore";
+import { hasPageTurnAnimation } from "../settings/readerModes";
 import type { ReaderTouchStartState } from "./useReaderPageInteraction";
+import { createReaderPageTurn, type ReaderPageTurn } from "./readerPageTurn";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 export function useReaderDisplay(options: {
@@ -9,6 +11,7 @@ export function useReaderDisplay(options: {
     viewport: Ref<HTMLElement | null>;
     visible: ReadonlyRef<boolean>; busy: ReadonlyRef<boolean>;
     imagePage: ReadonlyRef<boolean>; mediaChapter: ReadonlyRef<boolean>;
+    menuOpen: ReadonlyRef<boolean>;
     pageIndex: Ref<number>; pageCount: Ref<number>; comicScrollTop: Ref<number>;
     getLoadRevision: () => number;
     getTouchStart: () => ReaderTouchStartState | null;
@@ -19,7 +22,7 @@ export function useReaderDisplay(options: {
   getPageInteraction: () => {
     clearReaderFindMatches: () => void;
     rebuildReaderFind: () => void; onReaderFrameClick: (event: MouseEvent) => void;
-    onReaderFrameTouchTap: (x: number) => void; onReaderFrameTouchCancel: () => void;
+    onReaderFrameTouchTap: (x: number) => void;
   };
   actions: {
     setPage: (index: number) => void; turnPage: (direction: -1 | 1) => void;
@@ -32,15 +35,18 @@ export function useReaderDisplay(options: {
   let lastPosition: ReaderPosition | null = null;
   let viewportWidth = 0;
   let viewportHeight = 0;
-  let activePageTurnOverlay: HTMLElement | null = null;
-  let pageTurnTimer: ReturnType<typeof setTimeout> | undefined;
+  let activePageTurn: ReaderPageTurn | null = null;
+  let pageDrag: { origin: number; last: number; direction: -1 | 1; cancelled: boolean; target: number } | null = null;
   function clearPageTurnAnimation(): void {
-    if (pageTurnTimer !== undefined) clearTimeout(pageTurnTimer);
-    pageTurnTimer = undefined;
-    activePageTurnOverlay?.remove();
-    activePageTurnOverlay = null;
+    activePageTurn?.dispose();
+    activePageTurn = null;
+    pageDrag = null;
   }
   onScopeDispose(clearPageTurnAnimation);
+  watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.menuOpen.value], () => {
+    clearPageTurnAnimation();
+    reader.setTouchStart(null);
+  }, { flush: "sync" });
   function rememberPosition(): void {
     const viewport = reader.viewport.value;
     if (!viewport || reader.mediaChapter.value) return;
@@ -51,6 +57,7 @@ export function useReaderDisplay(options: {
   }
   function handleReaderResize(): void {
     clearPageTurnAnimation();
+    reader.setTouchStart(null);
     const viewport = reader.viewport.value;
     if (!viewport || reader.busy.value || reader.mediaChapter.value) return;
     const position = lastPosition;
@@ -77,59 +84,14 @@ export function useReaderDisplay(options: {
   function animatePageTurn(viewport: HTMLElement, direction: -1 | 1): boolean {
     const mode = settings.value.reader.readingMode ?? "cover";
     const frame = viewport.parentElement;
-    if (mode === "none" || mode === "vertical" || !frame || !frame.classList.contains("reader-content-frame")
+    if (!hasPageTurnAnimation(mode) || !frame || !frame.classList.contains("reader-content-frame")
       || viewport.clientWidth <= 0 || viewport.clientHeight <= 0
       || viewport.ownerDocument.defaultView?.matchMedia("(prefers-reduced-motion: reduce)").matches) return false;
-    const animation: "cover" | "simulation" = mode;
-
     clearPageTurnAnimation();
-    const overlay = viewport.cloneNode(true) as HTMLElement;
-    overlay.classList.add("reader-page-turn-overlay", `reader-page-turn-${animation}`);
-    overlay.setAttribute("aria-hidden", "true");
-    overlay.setAttribute("inert", "");
-    overlay.style.position = "absolute";
-    overlay.style.inset = "0";
-    overlay.style.zIndex = "5";
-    overlay.style.margin = "0";
-    overlay.style.pointerEvents = "none";
-    overlay.style.scrollBehavior = "auto";
-    overlay.scrollLeft = viewport.scrollLeft;
-    overlay.scrollTop = viewport.scrollTop;
-    overlay.querySelectorAll<HTMLElement>("*").forEach((node) => {
-      node.removeAttribute("id");
-      node.removeAttribute("contenteditable");
-      for (const attribute of Array.from(node.attributes)) {
-        if (attribute.name.toLowerCase().startsWith("on")) node.removeAttribute(attribute.name);
-      }
-      if (node.matches("a,button,input,select,textarea,[tabindex]")) node.setAttribute("tabindex", "-1");
-    });
-    overlay.querySelectorAll<HTMLMediaElement>("audio,video").forEach((media) => {
-      media.pause();
-      media.removeAttribute("autoplay");
-      media.removeAttribute("src");
-      media.querySelectorAll("source").forEach((source) => source.removeAttribute("src"));
-      media.load();
-    });
-
-    const duration = animation === "cover" ? 360 : 460;
-    const transform = (progress: number) => animation === "cover"
-      ? `translateX(${direction > 0 ? -100 * progress : 100 * progress}%)`
-      : `perspective(1200px) rotateY(${direction > 0 ? -78 : 78}deg)`;
-    overlay.style.transformOrigin = direction > 0 ? "left center" : "right center";
-    overlay.style.transform = animation === "cover" ? "translateX(0)" : "perspective(1200px) rotateY(0deg)";
-    overlay.style.transition = "none";
-    frame.append(overlay);
-    activePageTurnOverlay = overlay;
-    void overlay.offsetWidth;
-    requestAnimationFrame(() => {
-      if (activePageTurnOverlay !== overlay) return;
-      overlay.style.transition = `transform ${duration}ms cubic-bezier(.2,.7,.2,1)`;
-      overlay.classList.add("reader-page-turn-running");
-      overlay.style.transform = transform(1);
-    });
-    pageTurnTimer = setTimeout(() => {
-      if (activePageTurnOverlay === overlay) clearPageTurnAnimation();
-    }, duration + 120);
+    const turn = createReaderPageTurn(viewport, direction, mode, reader.pageIndex.value);
+    if (!turn) return false;
+    activePageTurn = turn;
+    turn.settle(true, () => { if (activePageTurn === turn) clearPageTurnAnimation(); });
     return true;
   }
   function scrollReaderFrameToPage(animate = false, direction: -1 | 1 = 1): void {
@@ -175,6 +137,7 @@ export function useReaderDisplay(options: {
     return !!element?.closest("a[href],button,input,textarea,select,audio,video,[contenteditable]:not([contenteditable='false'])");
   }
   function onReaderFrameTouchStart(event: TouchEvent): void {
+    clearPageTurnAnimation();
     reader.setTouchStart(null);
     const viewport = reader.viewport.value;
     if (!viewport || reader.busy.value || event.touches.length !== 1 || ignoredTouch(event.target)
@@ -185,18 +148,62 @@ export function useReaderDisplay(options: {
   }
   function onReaderFrameTouchMove(event: TouchEvent): void {
     const start = reader.getTouchStart();
-    if (event.touches.length !== 1) { reader.setTouchStart(null); return; }
-    if (!start || start.viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
+    if (event.touches.length !== 1 || !start || reader.busy.value || !reader.visible.value
+      || start.viewport !== reader.viewport.value || start.loadRevision !== reader.getLoadRevision()
+      || start.viewport.ownerDocument.getSelection()?.isCollapsed === false) {
+      onReaderFrameTouchCancel();
+      return;
+    }
     const touch = event.touches[0]!;
     const dx = Math.abs(touch.clientX - start.x), dy = Math.abs(touch.clientY - start.y);
     if (dx >= 12 || dy >= 12) start.moved = true;
-    if (!reader.imagePage.value && settings.value.reader.readingMode !== "vertical" && dx >= 12 && dx > dy && event.cancelable) event.preventDefault();
+    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical" || reader.menuOpen.value) return;
+    const mode = settings.value.reader.readingMode;
+    const verticalTurn = mode === "slide-vertical";
+    const distance = verticalTurn ? dy : dx, crossDistance = verticalTurn ? dx : dy;
+    if (pageDrag || (distance >= 12 && distance > crossDistance * 1.35)) {
+      if (event.cancelable) event.preventDefault();
+      if (!pageDrag && !reader.menuOpen.value) {
+        const origin = verticalTurn ? start.y : start.x;
+        const position = verticalTurn ? touch.clientY : touch.clientX;
+        const direction = position < origin ? 1 : -1;
+        const target = reader.pageIndex.value + direction;
+        if (target >= 0 && target < reader.pageCount.value && hasPageTurnAnimation(mode)) {
+          const bounds = start.viewport.getBoundingClientRect();
+          activePageTurn = createReaderPageTurn(start.viewport, direction, mode, target,
+            { x: start.x - bounds.left, y: start.y - bounds.top });
+          if (activePageTurn) pageDrag = { origin: origin - direction * 12, last: position, direction, cancelled: false, target };
+        }
+      }
+      updatePageDrag(touch.clientX, touch.clientY);
+    }
+  }
+  function updatePageDrag(x: number, y: number): void {
+    if (!pageDrag || !activePageTurn) return;
+    const position = activePageTurn.axis === "y" ? y : x;
+    const movement = (pageDrag.last - position) * pageDrag.direction;
+    // Match Legado: reversing the last drag cancels the turn; moving forward resumes it.
+    if (Math.abs(movement) > 1) pageDrag.cancelled = movement < 0;
+    pageDrag.last = position;
+    const bounds = reader.viewport.value?.getBoundingClientRect();
+    activePageTurn.update((pageDrag.origin - position) * pageDrag.direction / activePageTurn.size,
+      { x: x - (bounds?.left ?? 0), y: y - (bounds?.top ?? 0) });
+  }
+  function onReaderFrameTouchCancel(): void {
+    reader.setTouchStart(null);
+    reader.setClickSuppressedUntil(Date.now() + 500);
+    const turn = activePageTurn;
+    pageDrag = null;
+    if (turn) turn.settle(false, () => { if (activePageTurn === turn) clearPageTurnAnimation(); });
   }
   function onReaderFrameTouchEnd(event: TouchEvent): void {
     const start = reader.getTouchStart(); reader.setTouchStart(null);
     if (!start || event.changedTouches.length !== 1 || event.touches.length !== 0 || reader.busy.value
       || reader.viewport.value !== start.viewport || reader.getLoadRevision() !== start.loadRevision
-      || start.viewport.ownerDocument.getSelection()?.isCollapsed === false || ignoredTouch(event.target)) return;
+      || !reader.visible.value || start.viewport.ownerDocument.getSelection()?.isCollapsed === false || ignoredTouch(event.target)) {
+      onReaderFrameTouchCancel();
+      return;
+    }
     const touch = event.changedTouches[0]!;
     const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
     if (!start.moved && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
@@ -207,9 +214,26 @@ export function useReaderDisplay(options: {
       return;
     }
     reader.setClickSuppressedUntil(Date.now() + 500);
-    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical") return;
+    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical" || reader.menuOpen.value) return;
     if (event.cancelable) event.preventDefault();
-    if (Math.abs(dx) >= 48 && Math.abs(dy) <= 52 && Math.abs(dx) >= Math.abs(dy) * 1.35) actions.turnPage(dx < 0 ? 1 : -1);
+    if (pageDrag && activePageTurn) {
+      updatePageDrag(touch.clientX, touch.clientY);
+      const drag = pageDrag;
+      const turn = activePageTurn;
+      // The curl engine decides whether a released fold turns or springs back.
+      const commit = settings.value.reader.readingMode === "simulation" || (!drag.cancelled && turn.progress > 0);
+      pageDrag = null;
+      turn.settle(commit, committed => {
+        if (activePageTurn !== turn) return;
+        clearPageTurnAnimation();
+        if (committed && reader.viewport.value === start.viewport && reader.getLoadRevision() === start.loadRevision
+          && reader.visible.value && !reader.busy.value) actions.setPage(drag.target);
+      });
+      return;
+    }
+    const verticalTurn = settings.value.reader.readingMode === "slide-vertical";
+    const distance = verticalTurn ? dy : dx, crossDistance = verticalTurn ? dx : dy;
+    if (Math.abs(distance) >= 48 && Math.abs(crossDistance) <= 52 && Math.abs(distance) >= Math.abs(crossDistance) * 1.35) actions.turnPage(distance < 0 ? 1 : -1);
     else scrollReaderFrameToPage();
   }
   function restoreReadingPosition(position: ReaderPosition): void {
@@ -250,7 +274,7 @@ export function useReaderDisplay(options: {
     element?.removeEventListener("touchstart", onReaderFrameTouchStart);
     element?.removeEventListener("touchmove", onReaderFrameTouchMove);
     element?.removeEventListener("touchend", onReaderFrameTouchEnd);
-    element?.removeEventListener("touchcancel", interaction.onReaderFrameTouchCancel);
+    element?.removeEventListener("touchcancel", onReaderFrameTouchCancel);
     element?.removeEventListener("click", interaction.onReaderFrameClick);
     reader.setTouchStart(null);
   }
@@ -265,7 +289,7 @@ export function useReaderDisplay(options: {
     element.addEventListener("touchstart", onReaderFrameTouchStart, { passive: true });
     element.addEventListener("touchmove", onReaderFrameTouchMove, { passive: false });
     element.addEventListener("touchend", onReaderFrameTouchEnd, { passive: false });
-    element.addEventListener("touchcancel", options.getPageInteraction().onReaderFrameTouchCancel, { passive: true });
+    element.addEventListener("touchcancel", onReaderFrameTouchCancel, { passive: true });
     if (!reader.imagePage.value) element.addEventListener("click", options.getPageInteraction().onReaderFrameClick);
     element.ownerDocument.addEventListener("selectionchange", actions.updateTtsSelection);
   }

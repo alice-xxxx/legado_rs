@@ -441,7 +441,7 @@ export interface ReaderSettings {
   textAlign: string;
   themes: Record<Exclude<AppTheme, "system">, ReadingTheme>;
   preloadCount: number;
-  readingMode: "none" | "cover" | "simulation" | "vertical";
+  readingMode: "none" | "cover" | "slide" | "slide-vertical" | "fade" | "flip" | "simulation" | "vertical";
   audioPlaybackRate: number;
   /** Default forward/backward skip in seconds for audio media controls. */
   audioSkipSeconds: number;

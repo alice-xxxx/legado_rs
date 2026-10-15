@@ -153,10 +153,6 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     else actions.setPage(0);
   }
 
-  function onReaderFrameTouchCancel(): void {
-    reader.setTouchStart(null);
-  }
-
   function onReaderFrameClick(event: MouseEvent): void {
     const document = reader.viewport.value?.ownerDocument;
     if (!document || Date.now() < reader.getClickSuppressedUntil() || event.defaultPrevented || event.button !== 0
@@ -339,7 +335,6 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   return {
-    onReaderFrameTouchCancel,
     readerSegmentForElement,
     readerSegmentForRect,
     scrollReaderToFragment,

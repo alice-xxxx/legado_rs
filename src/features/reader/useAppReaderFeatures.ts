@@ -321,6 +321,7 @@ readerMediaBinding = useReaderMediaBinding({
 readerDisplay = useReaderDisplay({
   reader: { viewport: readerViewport, visible: readerVisible, busy: readerBusy,
     imagePage: readingImagePage, mediaChapter: readingMediaChapter,
+    menuOpen: readerMenuOpen,
     pageIndex: readerPageIndex, pageCount: readerPageCount, comicScrollTop: comicImageScrollTop,
     getLoadRevision: () => readerLoadRevision, getTouchStart: () => readerTouchStart,
     setTouchStart: value => { readerTouchStart = value; }, getClickSuppressedUntil: () => readerClickSuppressedUntil,
