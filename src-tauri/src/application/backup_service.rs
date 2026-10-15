@@ -454,6 +454,7 @@ impl ApplicationService {
             })?;
         let _restore_serial = self.restore_serial.clone().lock_owned().await;
         self.restore_barrier.send_replace(true);
+        self.server.clear_tts_streams().await;
         let mut admission = RestoreAdmissionGuard {
             barrier: self.restore_barrier.clone(),
             release_on_drop: true,

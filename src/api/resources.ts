@@ -25,14 +25,40 @@ function waitBeforeRetry(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-async function fetchResource(src: string, signal?: AbortSignal): Promise<Response> {
-  const retryDelays = isLocalResource(src) ? [250, 750, 1_500] : [];
+function waitForForeground(signal?: AbortSignal): Promise<void> {
+  if (typeof document === "undefined" || document.visibilityState !== "hidden") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => { cleanup(); reject(signal?.reason ?? new DOMException("Aborted", "AbortError")); };
+    const onVisible = () => { if (document.visibilityState !== "hidden") { cleanup(); resolve(); } };
+    if (signal?.aborted) { onAbort(); return; }
+    document.addEventListener("visibilitychange", onVisible);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+export class ResourceNetworkError extends Error {
+  constructor(message: string) { super(message); this.name = "ResourceNetworkError"; }
+}
+
+async function readResponse<T>(src: string, decode: (response: Response) => Promise<T>, signal?: AbortSignal): Promise<T> {
+  const delays = isLocalResource(src) ? [250, 750, 1_500] : [];
   for (let attempt = 0; ; attempt++) {
     try {
-      return await fetch(src, { cache: "no-store", signal });
+      const response = await fetch(src, { cache: "no-store", signal });
+      if (!response.ok) throw new ResourceHttpError(response.status, `读取资源失败（HTTP ${response.status}）。`);
+      // WebKit may lose the connection after receiving headers. Retry the body
+      // read too; JSON/schema/HTTP errors must keep their original meaning.
+      return await decode(response);
     } catch (error) {
-      if (signal?.aborted || attempt === retryDelays.length) throw error;
-      await waitBeforeRetry(retryDelays[attempt], signal);
+      if (signal?.aborted) throw error;
+      if (!(error instanceof TypeError) && !(error instanceof DOMException && error.name === "NetworkError")) throw error;
+      if (attempt === delays.length) throw new ResourceNetworkError(`无法读取内容：${error instanceof Error ? error.message : String(error)}`);
+      await waitForForeground(signal);
+      await waitBeforeRetry(delays[attempt], signal);
     }
   }
 }
@@ -40,30 +66,12 @@ async function fetchResource(src: string, signal?: AbortSignal): Promise<Respons
 export async function readResource<T>(resource: ResourceDescriptor | string, signal?: AbortSignal): Promise<T> {
   const src = typeof resource === "string" ? resource : resource.src;
   if (!src) throw new Error("资源暂时不可用。");
-  let response: Response;
-  try {
-    response = await fetchResource(src, signal);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    throw new Error(`无法读取内容：${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!response.ok) {
-    throw new Error(`读取资源失败（HTTP ${response.status}）：${src}`);
-  }
-  return (await response.json()) as T;
+  return readResponse(src, response => response.json() as Promise<T>, signal);
 }
 
 async function readTextFromSrc(src: string, signal?: AbortSignal): Promise<string> {
   if (!src) throw new Error("章节内容暂时不可用。");
-  let response: Response;
-  try {
-    response = await fetchResource(src, signal);
-  } catch (error) {
-    if (signal?.aborted) throw error;
-    throw new Error(`无法读取章节资源：${error instanceof Error ? error.message : String(error)}`);
-  }
-  if (!response.ok) throw new ResourceHttpError(response.status, `读取章节失败（HTTP ${response.status}）。`);
-  return response.text();
+  return readResponse(src, response => response.text(), signal);
 }
 
 export const readTextResource = (descriptor: ResourceDescriptor, signal?: AbortSignal): Promise<string> =>

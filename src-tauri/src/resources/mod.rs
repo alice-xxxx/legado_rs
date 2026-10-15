@@ -11,11 +11,12 @@ mod media_proxy;
 mod reader_html;
 mod server;
 mod store;
+mod tts_stream;
 mod validation;
 
 pub(crate) use json::validate_persistable_json_bytes;
 pub use server::ResourceServer;
-pub use server::{TtsStreamBoundary, TtsStreamProgress};
+pub use tts_stream::{TtsStreamBoundary, TtsStreamProgress};
 use server::byte_response;
 pub use store::ResourceStore;
 pub(crate) use store::ResourceStoreWriterGuard;

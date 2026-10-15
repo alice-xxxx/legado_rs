@@ -148,6 +148,8 @@ async function handleAppStateUpdated(): Promise<void> {
   pendingSourceRemoval.value = [];
   editingSource.value = null;
   sourceManagementActions.sourceEditCreating.value = false;
+  pendingDraft.value = false;
+  leaveEditorRoute();
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
   await ensureTasksLoaded();
@@ -197,6 +199,7 @@ const routeSourceImportMode = computed(() => currentRoute.name === routeNames.so
   ? currentRoute.query.sourceImport : "");
 const routeSourceEdit = computed(() => currentRoute.name === routeNames.sources
   && typeof currentRoute.query.sourceEdit === "string" ? currentRoute.query.sourceEdit : "");
+let editorNavigationPending = false;
 function sourceListLocation() {
   const query = { ...currentRoute.query };
   delete query.sourceEdit;
@@ -211,12 +214,17 @@ function leaveEditorRoute(): void {
   else void router.replace(list);
 }
 function closeSourceEditor(): void {
+  if (sourceManagementActions.sourceEditBusy.value) return;
   sourceManagementActions.closeSourceEdit();
+  pendingDraft.value = false;
   leaveEditorRoute();
 }
 async function saveSourceEditor(): Promise<void> {
   await sourceManagementActions.saveSourceDefinitionJson();
-  if (!sourceManagementActions.sourceEditorOpen.value) leaveEditorRoute();
+  if (!sourceManagementActions.sourceEditorOpen.value) {
+    pendingDraft.value = false;
+    leaveEditorRoute();
+  }
 }
 let suppressSourceImportQuerySync = false;
 function syncSourceImportRoute(mode: "new" | "url" | null): void {
@@ -255,8 +263,8 @@ watch(routeSourceImportMode, mode => {
     suppressSourceImportQuerySync = false;
   }
 }, { immediate: true });
-watch([routeSourceEdit, sources], ([key]) => {
-  if (!key || currentRoute.name !== routeNames.sources) return;
+watch(routeSourceEdit, key => {
+  if (!key || pageDisposed || currentRoute.name !== routeNames.sources) return;
   if (key === "new") {
     if (!sourceManagementActions.sourceEditCreating.value) sourceManagementActions.beginSourceCreate();
     return;
@@ -264,8 +272,13 @@ watch([routeSourceEdit, sources], ([key]) => {
   if (editingSource.value?.id === key || sourceManagementActions.sourceEditBusy.value) return;
   const source = sources.value.find(entry => entry.id === key);
   if (source) void sourceManagementActions.beginSourceEdit(source).then(() => {
-    if (routeSourceEdit.value !== key && editingSource.value?.id === key) sourceManagementActions.closeSourceEdit();
+    if (pageDisposed || routeSourceEdit.value !== key) sourceManagementActions.closeSourceEdit();
+    else if (!sourceManagementActions.sourceEditorOpen.value) leaveEditorRoute();
   });
+  else {
+    notify("该源不存在或已被移除。", "error");
+    leaveEditorRoute();
+  }
 }, { immediate: true });
 const importLocked = computed(() => recoveryRequired.value || sourceImportBusy.value
   || sourceExportBusy.value || sourceBatchBusy.value
@@ -296,13 +309,13 @@ function submitSourceImport(): void {
 watch(() => sources.value.length, count => {
   if (initialDesktopSourceOpened || !count || sourceManagementActions.sourceEditorOpen.value
       || sourceImportOpen.value || typeof window === "undefined"
-      || window.innerWidth <= 860) return;
+      || window.innerWidth <= 860 || routeSourceEdit.value || routeSourceImportMode.value) return;
   initialDesktopSourceOpened = true;
   const firstSource = sources.value[0];
   if (firstSource) void sourceManagementActions.beginSourceEdit(firstSource);
 }, { immediate: true });
 function requestEditorSwitch(source?: SourceMetadata): void {
-  if (sourceManagementActions.sourceEditBusy.value || recoveryRequired.value) return;
+  if (editorNavigationPending || sourceManagementActions.sourceEditBusy.value || recoveryRequired.value) return;
   initialDesktopSourceOpened = true;
   if (!sourceManagementActions.sourceEditorOpen.value) {
     if (typeof window !== "undefined" && window.innerWidth <= 860) {
@@ -310,7 +323,11 @@ function requestEditorSwitch(source?: SourceMetadata): void {
       query.sourceEdit = source?.id ?? "new";
       delete query.sourceImport;
       delete query.importUrl;
-      void router.push({ name: routeNames.sources, query });
+      editorNavigationPending = true;
+      const navigation = { name: routeNames.sources, query };
+      void (routeSourceEdit.value ? router.replace(navigation) : router.push(navigation))
+        .catch(error => notify(`打开源编辑失败：${errorText(error)}`, "error"))
+        .finally(() => { editorNavigationPending = false; });
       return;
     }
     if (source) void sourceManagementActions.beginSourceEdit(source);
@@ -324,6 +341,10 @@ function requestEditorSwitch(source?: SourceMetadata): void {
     return;
   }
   sourceManagementActions.closeSourceEdit();
+  if (routeSourceEdit.value) {
+    void router.replace({ name: routeNames.sources, query: { ...currentRoute.query, sourceEdit: source?.id ?? "new" } });
+    return;
+  }
   if (source) void sourceManagementActions.beginSourceEdit(source);
   else sourceManagementActions.beginSourceCreate();
 }
@@ -356,17 +377,17 @@ function chooseRouteLeave(allow:boolean): void {
   if (allow) {
     if (resolve) suppressSourceImportQuerySync = true;
     sourceManagementActions.closeSourceEdit();
+    pendingDraft.value = false;
     suppressSourceImportQuerySync = false;
-    if (target === "new") sourceManagementActions.beginSourceCreate();
-    else if (target) void sourceManagementActions.beginSourceEdit(target);
+    if (target) requestEditorSwitch(target === "new" ? undefined : target);
   } else if (target === "new" && !sourceManagementActions.sourceEditCreating.value) {
     syncSourceImportRoute(null);
   }
   resolve?.(allow);
 }
 function guardEditorNavigation(): boolean | Promise<boolean> {
-  if (!sourceManagementActions.sourceEditorOpen.value) return true;
   if (sourceManagementActions.sourceEditBusy.value) return false;
+  if (!sourceManagementActions.sourceEditorOpen.value) return true;
   if (!isEdited()) {
     suppressSourceImportQuerySync = true;
     sourceManagementActions.closeSourceEdit();

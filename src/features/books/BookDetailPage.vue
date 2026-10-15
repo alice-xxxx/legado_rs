@@ -51,7 +51,6 @@ const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(n
 let pageResourceRevision = 0;
 let disposed = false;
 let closing = false;
-let resumeRetryTimer: number | undefined;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
@@ -192,12 +191,9 @@ async function retryBookDetails(): Promise<void> {
 }
 
 function retryResourceAfterResume(): void {
-  window.clearTimeout(resumeRetryTimer);
-  if (document.visibilityState !== "visible") return;
-  resumeRetryTimer = window.setTimeout(() => {
-    if (disposed || closing || bookPanelBusy.value || pageResourceLoading.value) return;
-    if (currentSearchResultDetails.value.error.startsWith("无法读取内容：")) void retryBookDetails();
-  }, 500);
+  if (document.visibilityState !== "visible" || disposed || closing
+    || bookPanelBusy.value || pageResourceLoading.value || !detailSession.resourceReadFailed.value) return;
+  void retryBookDetails();
 }
 onMounted(async () => {
   document.addEventListener("visibilitychange", retryResourceAfterResume);
@@ -225,7 +221,6 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   disposed = true;
-  window.clearTimeout(resumeRetryTimer);
   document.removeEventListener("visibilitychange", retryResourceAfterResume);
   window.removeEventListener("pageshow", retryResourceAfterResume);
   bookCacheActionGeneration += 1;

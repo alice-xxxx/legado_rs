@@ -28,7 +28,7 @@ pub struct SourceEngine<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> SourceEngine<R> {
     #[cfg(target_os = "ios")]
-    pub fn set_navigation_gestures(&self, enabled: bool) -> crate::Result<bool> {
+    pub async fn set_navigation_gestures(&self, enabled: bool) -> crate::Result<bool> {
         #[derive(serde::Serialize)]
         struct Request {
             enabled: bool,
@@ -39,12 +39,13 @@ impl<R: Runtime> SourceEngine<R> {
         }
         let response: Response = self
             .0
-            .run_mobile_plugin("setNavigationGestures", Request { enabled })?;
+            .run_mobile_plugin_async("setNavigationGestures", Request { enabled })
+            .await?;
         Ok(response.enabled)
     }
 
     #[cfg(target_os = "ios")]
-    pub fn set_reader_fullscreen(&self, hidden: bool) -> crate::Result<bool> {
+    pub async fn set_reader_fullscreen(&self, hidden: bool) -> crate::Result<bool> {
         #[derive(serde::Serialize)]
         struct Request {
             hidden: bool,
@@ -55,7 +56,8 @@ impl<R: Runtime> SourceEngine<R> {
         }
         let response: Response = self
             .0
-            .run_mobile_plugin("setReaderFullscreen", Request { hidden })?;
+            .run_mobile_plugin_async("setReaderFullscreen", Request { hidden })
+            .await?;
         Ok(response.hidden)
     }
 

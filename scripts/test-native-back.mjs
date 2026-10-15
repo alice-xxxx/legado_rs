@@ -3,16 +3,23 @@ import { readFile } from "node:fs/promises";
 import ts from "typescript";
 import { ref, watch, nextTick } from "vue";
 
-const originals = Object.fromEntries(["navigator", "document", "getComputedStyle", "innerWidth", "innerHeight"]
+const originals = Object.fromEntries(["navigator", "document", "getComputedStyle", "innerWidth", "innerHeight", "MutationObserver", "Element"]
   .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
 let callback, guard, unregisters = 0, exits = 0, backs = 0, pushes = 0;
 let layers = [], localButtons = [], pageButtons = [], top = null;
-const route = (path, query = {}) => ({ path, query, hash: "", fullPath: path + (Object.keys(query).length ? "?" + new URLSearchParams(query) : "") });
+const routeNames = { home: "home", shelf: "shelf", settings: "settings", sources: "sources" };
+const route = (path, query = {}) => ({ name: path === "/" ? "home" : path.slice(1), path, query, hash: "", fullPath: path + (Object.keys(query).length ? "?" + new URLSearchParams(query) : "") });
+const afterHooks = new Set(), gestures = [];
+let mutations, observerDisposed = false;
+const flush = async () => { await nextTick(); for (let i = 0; i < 8; i++) await Promise.resolve(); };
 const currentRoute = ref(route("/"));
 const router = {
   currentRoute, options: { history: { state: { current: "/", back: null } } },
   beforeEach(fn) { guard = fn; return () => { guard = undefined; }; },
-  async push(to) { pushes++; this.options.history.state.back = currentRoute.value.fullPath; currentRoute.value = route(to.path, to.query); this.options.history.state.current = currentRoute.value.fullPath; },
+  afterEach(fn) { afterHooks.add(fn); return () => afterHooks.delete(fn); },
+  resolve(to) { return route(to.path ?? `/${to.name}`, to.query); },
+  async replace(to) { currentRoute.value = this.resolve(to); this.options.history.state.current = currentRoute.value.fullPath; },
+  async push(to) { pushes++; this.options.history.state.back = currentRoute.value.fullPath; currentRoute.value = this.resolve(to); this.options.history.state.current = currentRoute.value.fullPath; for (const hook of afterHooks) hook(); },
   back() { backs++; },
 };
 function button(click, disabled = false) {
@@ -31,15 +38,23 @@ function setPlatform(userAgent) {
 
 try {
   Object.defineProperty(globalThis, "document", { configurable: true, value: {
+    body: {},
     querySelectorAll: selector => selector.includes("data-back-layer") ? layers : selector.includes("data-back-local") ? localButtons : pageButtons,
     elementFromPoint: () => top,
+  } });
+  Object.defineProperty(globalThis, "Element", { configurable: true, value: class Element {
+    matches() { return true; } querySelector() { return null; }
+  } });
+  Object.defineProperty(globalThis, "MutationObserver", { configurable: true, value: class {
+    constructor(fn) { mutations = fn; } observe() {} disconnect() { observerDisposed = true; }
   } });
   Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ visibility: "visible" }) });
   Object.defineProperty(globalThis, "innerWidth", { configurable: true, value: 390 });
   Object.defineProperty(globalThis, "innerHeight", { configurable: true, value: 844 });
   setPlatform("Android");
   globalThis.__nativeBackBindings = {
-    router, watch, isTauri: () => true,
+    router, routeNames, watch, isTauri: () => true,
+    invoke: async (command, { enabled }) => { assert.equal(command, "set_navigation_gestures"); gestures.push(enabled); },
     onBackButtonPress: async fn => { callback = fn; return { unregister: async () => { unregisters++; } }; },
     exit: async code => { assert.equal(code, 0); exits++; },
   };
@@ -50,7 +65,7 @@ try {
       node => ts.isImportDeclaration(node) ? undefined : node, context)] },
   });
   const prelude = `const {${Object.keys(globalThis.__nativeBackBindings).join(",")}} = globalThis.__nativeBackBindings;\n`;
-  const runtime = await import(`data:text/javascript;base64,${Buffer.from(prelude + outputText).toString("base64")}`);
+  const runtime = await import(`data:text/javascript;base64,${Buffer.from(prelude + outputText + "\n//# sourceURL=nativeBack-test.js").toString("base64")}`);
   const dispose = runtime.installNativeBackNavigation();
   await nextTick();
 
@@ -96,7 +111,20 @@ try {
   const iosReader = ref(false);
   const disposeIosReader = runtime.installReaderNativeBack({ visible: iosReader, close: async () => { iosReader.value = false; } });
   const disposeIos = runtime.installNativeBackNavigation();
+  await flush();
+  assert.equal(gestures.at(-1), false, "Top-level tabs do not swipe to an unrelated tab");
   iosReader.value = true; await nextTick();
+  await flush();
+  assert.equal(gestures.at(-1), true, "The reader entry enables native interactive Back");
+  const requests = gestures.length;
+  mutations([{ type: "childList", addedNodes: [{}], removedNodes: [] }]);
+  await flush();
+  assert.equal(gestures.length, requests, "Text/progress updates do not drive native gesture commands");
+  layers = [layer([])];
+  mutations([{ type: "childList", addedNodes: [new Element()], removedNodes: [] }]);
+  await flush();
+  assert.equal(gestures.at(-1), false, "A local confirmation consumes Back before native history");
+  layers = [];
   assert.equal(pushes, 1); assert.equal(currentRoute.value.fullPath, "/shelf?_reader=1");
   assert.equal(router.options.history.state.back, "/shelf", "An iOS reader receives a real native history entry");
   const before = backs;
@@ -105,7 +133,26 @@ try {
   await nextTick(); assert.equal(backs, before, "Native pop closes the reader without requesting another pop");
   assert.deepEqual(await guard(route("/shelf", { _reader: "1" }), route("/shelf")),
     { path: "/shelf", query: {}, hash: "", replace: true }, "Forward cannot restore a stale reader marker");
-  disposeIosReader(); disposeIos();
+  disposeIosReader();
+  let editorClicks = 0;
+  localButtons = [button(() => editorClicks++)];
+  router.options.history.state.current = "/sources";
+  assert.equal(await guard(route("/sources"), route("/sources", { sourceEdit: "a" })), undefined);
+  assert.equal(editorClicks, 0, "The source editor's component guard owns its native pop; no second button navigation is fired");
+  let modalCloses = 0;
+  const modalClose = button(() => modalCloses++);
+  layers = [layer([modalClose])]; top = modalClose;
+  assert.equal(await guard(route("/sources"), route("/sources", { sourceEdit: "a" })), false);
+  assert.equal(modalCloses, 1, "An editor dialog still consumes a native swipe before the page");
+  layers = []; localButtons = []; top = null;
+  disposeIos();
+  await flush();
+  assert.equal(observerDisposed, true); assert.equal(afterHooks.size, 0);
+  currentRoute.value = route("/shelf", { _reader: "1" });
+  const disposeRestart = runtime.installNativeBackNavigation();
+  await flush();
+  assert.equal(currentRoute.value.fullPath, "/shelf", "A restarted frontend removes a stale overlaid-reader entry");
+  disposeRestart();
   console.log("PASS: native Back routing, overlay priority, disabled controls, progress failures, editor guards, iOS history and listener cleanup.");
 } finally {
   delete globalThis.__nativeBackBindings;

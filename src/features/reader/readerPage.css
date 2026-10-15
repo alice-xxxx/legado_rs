@@ -9,27 +9,24 @@
   background: var(--reader-background);
   color-scheme: var(--reader-color-scheme);
   --reader-accent: var(--app-accent);
+  --reader-text-top-inset: var(--safe-top);
+  --reader-text-bottom-inset: var(--safe-bottom);
 }
 
-#reader-host.reader-fullscreen .reader-shell {
-  --reader-text-top-inset: max(0px, calc(var(--safe-top) - 8px));
-  --reader-text-bottom-inset: max(0px, calc(var(--safe-bottom) - 10px));
-}
-
-#reader-host.reader-fullscreen .reader-topbar {
+#reader-host .reader-topbar {
   padding-top: var(--safe-top);
 }
 
-#reader-host.reader-fullscreen .reader-shell[data-reader-mode="audio"] .reader-settings-popover,
-#reader-host.reader-fullscreen .reader-shell[data-reader-mode="video"] .reader-settings-popover {
+#reader-host .reader-shell[data-reader-mode="audio"] .reader-settings-popover,
+#reader-host .reader-shell[data-reader-mode="video"] .reader-settings-popover {
   top: calc(68px + var(--safe-top));
 }
 
-#reader-host.reader-fullscreen .reader-shell:not([data-reader-mode="audio"]):not([data-reader-mode="video"]) .reader-directory-backdrop {
+#reader-host .reader-shell:not([data-reader-mode="audio"]):not([data-reader-mode="video"]) .reader-directory-backdrop {
   padding-bottom: calc(70px + var(--safe-bottom));
 }
 
-#reader-host.reader-fullscreen .reader-comic-page-counter {
+#reader-host .reader-comic-page-counter {
   bottom: calc(70px + var(--safe-bottom));
 }
 

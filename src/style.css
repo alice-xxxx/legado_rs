@@ -161,7 +161,7 @@ body:has(.search-page-prototype),
   padding-bottom: var(--safe-bottom);
 }
 
-/* The app mounting layer owns the viewport; reader pages fill its safe content box. */
+/* Reader content and controls apply their safe insets once, inside this viewport. */
 #reader-host {
   position: fixed;
   inset: 0;
@@ -169,28 +169,6 @@ body:has(.search-page-prototype),
   display: flex;
   flex-direction: column;
   pointer-events: none;
-}
-
-/* Native iOS fullscreen confirms status bar removal before the reader fills the viewport. */
-#reader-host.reader-fullscreen {
-  padding-top: 0;
-  padding-bottom: 0;
-}
-
-#reader-host:has(.reader-shell) {
-  background: var(--reader-background);
-}
-
-#reader-host:has(.reader-shell.reader-menu-open) {
-  background: var(--reader-chrome-bg);
-}
-
-#reader-host:has(.reader-shell:is([data-reader-mode="audio"], [data-reader-mode="video"], [data-reader-mode="comic"], [data-reader-mode="pdf"])) {
-  background: var(--app-background);
-}
-
-#reader-host:has(.reader-shell.reader-menu-open:is([data-reader-mode="audio"], [data-reader-mode="video"], [data-reader-mode="comic"], [data-reader-mode="pdf"])) {
-  background: var(--app-surface);
 }
 
 #reader-host .modal-backdrop,

@@ -1,9 +1,7 @@
 //! 管理 loopback HTTP 服务、私有媒体映射和 HTTP 响应。
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -19,9 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, oneshot, watch, Mutex};
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinHandle;
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
@@ -30,6 +27,7 @@ use http_range_header::parse_range_header;
 use super::json::{materialize_html_resource_refs, materialize_json};
 use super::media_proxy::MediaProxyRegistry;
 use super::store::atomic_replace;
+use super::tts_stream::{TtsStreamRegistry, TtsStreamWriter, TtsStreamProgress};
 use super::validation::{check_path_no_symlink, mime_type, percent_encode_path, valid_id};
 use super::{ResourceError, ResourceRef, ResourceStore};
 
@@ -63,90 +61,24 @@ pub struct ResourceServer {
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
 
-#[derive(Clone, Default)]
-struct TtsStreamRegistry(Arc<Mutex<HashMap<String, TtsStreamEntry>>>);
-
-struct TtsStreamEntry {
-    receiver: Option<mpsc::Receiver<Result<Vec<u8>, std::io::Error>>>,
-    cancellation: watch::Sender<bool>,
-    progress: TtsStreamProgress,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TtsStreamProgress {
-    pub boundaries: Vec<TtsStreamBoundary>,
-    pub state: &'static str,
-    pub next_index: usize,
-    pub skipped: usize,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TtsStreamBoundary {
-    pub index: usize,
-    pub highlight_index: usize,
-    pub end_seconds: f64,
-}
-
-pub struct TtsStreamWriter {
-    pub id: String,
-    pub url: String,
-    pub sender: mpsc::Sender<Result<Vec<u8>, std::io::Error>>,
-    pub cancellation: watch::Receiver<bool>,
-}
-
 impl ResourceServer {
-    pub async fn create_tts_stream(
-        &self,
-        progress: TtsStreamProgress,
-    ) -> Result<TtsStreamWriter, ResourceError> {
-        let id = Uuid::new_v4().simple().to_string();
-        let (sender, receiver) = mpsc::channel(2);
-        let (cancellation, cancellation_receiver) = watch::channel(false);
-        let mut entries = self.tts_streams.0.lock().await;
-        if entries.len() >= 4 {
-            return Err(ResourceError::new("Too many active HTTP TTS streams"));
-        }
-        entries.insert(
-            id.clone(),
-            TtsStreamEntry {
-                receiver: Some(receiver),
-                cancellation,
-                progress,
-            },
-        );
-        Ok(TtsStreamWriter {
-            url: format!("{}tts-stream/{id}.mp3", self.base_url),
-            id,
-            sender,
-            cancellation: cancellation_receiver,
-        })
+    pub async fn create_tts_stream(&self, progress: TtsStreamProgress) -> Result<TtsStreamWriter, ResourceError> {
+        self.tts_streams.create(&self.base_url, progress).await
     }
 
     pub async fn tts_stream_progress(&self, id: &str) -> Option<TtsStreamProgress> {
-        self.tts_streams
-            .0
-            .lock()
-            .await
-            .get(id)
-            .map(|entry| entry.progress.clone())
+        self.tts_streams.progress(id).await
     }
 
     pub async fn update_tts_stream(&self, id: &str, progress: TtsStreamProgress) {
-        if let Some(entry) = self.tts_streams.0.lock().await.get_mut(id) {
-            entry.progress = progress;
-        }
+        self.tts_streams.update(id, progress).await;
     }
 
     pub async fn release_tts_stream(&self, id: &str) -> bool {
-        let Some(entry) = self.tts_streams.0.lock().await.remove(id) else {
-            return false;
-        };
-        let _ = entry.cancellation.send(true);
-        true
+        self.tts_streams.release(id).await
     }
+
+    pub async fn clear_tts_streams(&self) { self.tts_streams.clear().await; }
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -330,6 +262,7 @@ impl ResourceServer {
     }
 
     pub async fn shutdown(mut self) -> Result<(), ResourceError> {
+        self.tts_streams.clear().await;
         if let Some(sender) = self.shutdown_sender.take() {
             let _ = sender.send(());
         }
@@ -394,43 +327,21 @@ async fn get_resource(
     if token != state.token {
         return empty_response(StatusCode::NOT_FOUND);
     }
-    let reference = match ResourceRef::new(format!("resource://{resource_path}")) {
-        Ok(reference) => reference,
-        Err(_) => return empty_response(StatusCode::NOT_FOUND),
-    };
-    if let Some(id) = reference
-        .path()
+    // Session audio is not a persistable filesystem resource. Resolve it after
+    // capability authentication, before the public file-path allowlist.
+    if let Some(id) = resource_path
         .strip_prefix("tts-stream/")
         .and_then(|name| name.strip_suffix(".mp3"))
     {
         if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return empty_response(StatusCode::NOT_FOUND);
         }
-        let mut entries = state.tts_streams.0.lock().await;
-        let Some(entry) = entries.get_mut(id) else {
-            return empty_response(StatusCode::NOT_FOUND);
-        };
-        let receiver = if method == axum::http::Method::HEAD {
-            None
-        } else {
-            entry.receiver.take()
-        };
-        drop(entries);
-        if method != axum::http::Method::HEAD && receiver.is_none() {
-            return empty_response(StatusCode::CONFLICT);
-        }
-        let body = receiver.map_or_else(Body::empty, |receiver| {
-            Body::from_stream(ReceiverStream::new(receiver))
-        });
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "audio/mpeg")
-            .header(CACHE_CONTROL, "no-store")
-            .body(body)
-            .expect("TTS stream response is valid");
-        set_cors_headers(response.headers_mut());
-        return response;
+        return state.tts_streams.serve(id, method, &headers).await;
     }
+    let reference = match ResourceRef::new(format!("resource://{resource_path}")) {
+        Ok(reference) => reference,
+        Err(_) => return empty_response(StatusCode::NOT_FOUND),
+    };
     if let Some(media_id) = reference.path().strip_prefix("media/") {
         return state
             .media_proxy
@@ -579,7 +490,7 @@ async fn get_resource(
     .await
 }
 
-fn set_cors_headers(headers: &mut HeaderMap) {
+pub(super) fn set_cors_headers(headers: &mut HeaderMap) {
     headers.insert(ACCESS_CONTROL_ALLOW_ORIGIN, HeaderValue::from_static("*"));
     headers.insert(
         ACCESS_CONTROL_EXPOSE_HEADERS,
@@ -610,7 +521,7 @@ fn set_resource_content_security_policy(
     }
 }
 
-fn empty_response(status: StatusCode) -> Response<Body> {
+pub(super) fn empty_response(status: StatusCode) -> Response<Body> {
     let mut response = Response::builder()
         .status(status)
         .body(Body::empty())
@@ -665,7 +576,7 @@ pub(super) fn byte_response(
     response
 }
 
-async fn stream_response(
+pub(super) async fn stream_response(
     mut file: tokio::fs::File,
     total: u64,
     headers: &HeaderMap,

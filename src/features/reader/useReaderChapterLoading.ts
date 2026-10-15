@@ -1,8 +1,8 @@
 import type { ReaderPosition } from "./readerPosition";
 import type { ReaderMediaElement } from "./nativeAudio";
 import { openedBook } from "../books/bookDetailState";
-import { nextTick, ref, watch, type Ref } from "vue";
-import { readTextResource } from "../../api/resources";
+import { nextTick, onBeforeUnmount, ref, watch, type Ref } from "vue";
+import { readTextResource, ResourceNetworkError } from "../../api/resources";
 import { bookContentType } from "../../api/bookContentType";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import type { BookResource, ChapterImagesResource, ChapterMediaResource, ChapterPdfPageResource, ChapterRichTextResource, ChapterTextResource } from "../../api/types";
@@ -68,6 +68,20 @@ export interface ReaderChapterLoadingOptions {
 export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadingOptions) {
   const request = ref(0);
   let finishLoad: ((loaded: boolean) => void) | null = null;
+  let resourceReadFailed = false;
+  function retryResourceOnResume(): void {
+    if (document.visibilityState !== "visible" || !resourceReadFailed || !reader.visible.value
+      || reader.busy.value || actions.isBackupRestoreInProgress()) return;
+    resourceReadFailed = false;
+    // Re-read the published chapter resource, retaining the requested position.
+    request.value += 1;
+  }
+  document.addEventListener("visibilitychange", retryResourceOnResume);
+  window.addEventListener("pageshow", retryResourceOnResume);
+  onBeforeUnmount(() => {
+    document.removeEventListener("visibilitychange", retryResourceOnResume);
+    window.removeEventListener("pageshow", retryResourceOnResume);
+  });
   function complete(loaded: boolean): void {
     reader.busy.value = false;
     const finish = finishLoad;
@@ -97,6 +111,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     onCleanup(() => controller.abort());
     if (!reader.pendingPosition.value) reader.pendingPosition.value = actions.captureReadingPosition();
     reader.busy.value = true;
+    resourceReadFailed = false;
     actions.clearReaderFindMatches();
     actions.clearReaderScrollListeners();
     actions.clearReaderMediaBinding(true);
@@ -126,7 +141,10 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       actions.applyPendingReaderFragment();
       complete(true);
     } catch (error) {
-      if (!controller.signal.aborted) failPending(actions.errorText(error));
+      if (!controller.signal.aborted) {
+        resourceReadFailed = error instanceof ResourceNetworkError;
+        failPending(actions.errorText(error));
+      }
     }
   });
 

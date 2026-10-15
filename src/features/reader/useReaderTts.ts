@@ -76,7 +76,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   let httpTtsStreamStatus: HttpTtsStreamStatus | null = null;
   let httpTtsStreamStartSkipped = 0;
   let httpTtsStreamPollAt = 0;
-  let httpTtsStreamPollPending = false;
+  let httpTtsStreamPollPending: string | null = null;
+  let endingHttpTtsResource: ResourceDescriptor | null = null;
   let httpTtsLoadRevision = 0;
   let httpTtsChunks: Array<{ text: string; target: ReaderTtsChunkTarget }> = [];
   let httpTtsChunkIndex = 0;
@@ -599,7 +600,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     httpTtsStreamId = null;
     httpTtsStreamStatus = null;
     httpTtsStreamStartSkipped = 0;
-    httpTtsStreamPollPending = false;
+    httpTtsStreamPollPending = null;
+    httpTtsStreamPollAt = 0;
     httpTtsAudioResource.value = null;
     const audio = httpTtsAudioElement.value;
     if (audio instanceof NativeReaderAudio) {
@@ -787,11 +789,12 @@ export function useReaderTts(options: UseReaderTtsOptions) {
         title: book?.chapters.find(chapter => chapter.index === options.reader.chapterIndex.value)?.title || book?.title || "朗读",
         artist: book?.author, artworkUrl: book?.coverSrc });
       nativeAudio.src = resource.src;
-      nativeAudio.addEventListener("play", onHttpTtsAudioPlay);
-      nativeAudio.addEventListener("pause", onHttpTtsAudioPause);
-      nativeAudio.addEventListener("timeupdate", () => { void onHttpTtsAudioTimeUpdate(); });
-      nativeAudio.addEventListener("ended", () => { void onHttpTtsAudioEnded(); });
-      nativeAudio.addEventListener("error", onHttpTtsAudioError);
+      const current = () => generation === httpTtsGeneration && httpTtsAudioElement.value === nativeAudio;
+      nativeAudio.addEventListener("play", () => { if (current()) onHttpTtsAudioPlay(); });
+      nativeAudio.addEventListener("pause", () => { if (current()) onHttpTtsAudioPause(); });
+      nativeAudio.addEventListener("timeupdate", () => { if (current()) void onHttpTtsAudioTimeUpdate(); });
+      nativeAudio.addEventListener("ended", () => { if (current()) void onHttpTtsAudioEnded(); });
+      nativeAudio.addEventListener("error", () => { if (current()) onHttpTtsAudioError(); });
       httpTtsAudioElement.value = nativeAudio;
     }
     await nextTick();
@@ -806,6 +809,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     try {
       await audio.play();
     } catch {
+      if (generation !== httpTtsGeneration || httpTtsAudioElement.value !== audio) return;
       httpTtsAudioPaused.value = true;
       httpTtsAudioNotice.value = "语音已准备，请点击继续朗读或使用播放器播放。";
     }
@@ -818,16 +822,16 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     const now = Date.now();
     if (!httpTtsStreamPollPending && now - httpTtsStreamPollAt >= 750) {
       httpTtsStreamPollAt = now;
-      httpTtsStreamPollPending = true;
+      httpTtsStreamPollPending = streamId;
       try {
         const status = await getHttpTtsStreamStatus(streamId);
         if (httpTtsStreamId === streamId) httpTtsStreamStatus = status;
       } catch { /* A stopped stream is handled by its playback event. */ }
-      finally { httpTtsStreamPollPending = false; }
+      finally { if (httpTtsStreamPollPending === streamId) httpTtsStreamPollPending = null; }
     }
     if (httpTtsStreamId !== streamId || !httpTtsStreamStatus) return;
     const position = Math.max(0, audio.currentTime);
-    const boundary = httpTtsStreamStatus.boundaries.find(item => position < item.endSeconds - 0.05)
+    const boundary = httpTtsStreamStatus.boundaries.find(item => position < item.endSeconds)
       ?? httpTtsStreamStatus.boundaries[httpTtsStreamStatus.boundaries.length - 1];
     if (!boundary || boundary.index === httpTtsChunkIndex) return;
     httpTtsChunkIndex = boundary.index;
@@ -911,7 +915,9 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   }
 
   async function onHttpTtsAudioEnded(): Promise<void> {
-    if (!httpTtsAudioActive.value) return;
+    const resource = httpTtsAudioResource.value;
+    if (!httpTtsAudioActive.value || !resource || endingHttpTtsResource === resource) return;
+    endingHttpTtsResource = resource;
     if (httpTtsStreamId) {
       const streamId = httpTtsStreamId;
       const generation = httpTtsGeneration;

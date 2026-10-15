@@ -20,6 +20,7 @@ private struct NavigationGesturesArgs: Decodable {
 /// Tauri's iOS edge enters Kotlin/Native; its HTTP and storage callbacks return through Rust C ABI.
 final class SourceEnginePlugin: Plugin {
     private weak var mainWebView: WKWebView?
+    private var readerContentInsetBehavior: UIScrollView.ContentInsetAdjustmentBehavior?
     private var webLoginSessions: [String: NativeWebLoginSession] = [:]
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
@@ -45,8 +46,19 @@ final class SourceEnginePlugin: Plugin {
     @objc public func setReaderFullscreen(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(ReaderFullscreenArgs.self)
         DispatchQueue.main.async { [weak self] in
-            // Reader layout owns its safe areas. Restore WebKit's default for every other screen.
-            self?.mainWebView?.scrollView.contentInsetAdjustmentBehavior = args.hidden ? .never : .automatic
+            guard let self, let webview = self.mainWebView else {
+                invoke.reject("Main WebView is unavailable")
+                return
+            }
+            if args.hidden {
+                if self.readerContentInsetBehavior == nil {
+                    self.readerContentInsetBehavior = webview.scrollView.contentInsetAdjustmentBehavior
+                }
+                webview.scrollView.contentInsetAdjustmentBehavior = .never
+            } else if let original = self.readerContentInsetBehavior {
+                webview.scrollView.contentInsetAdjustmentBehavior = original
+                self.readerContentInsetBehavior = nil
+            }
             UIApplication.shared.setStatusBarHidden(args.hidden, with: .none)
             invoke.resolve(["hidden": UIApplication.shared.isStatusBarHidden])
         }

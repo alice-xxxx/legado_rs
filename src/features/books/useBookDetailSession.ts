@@ -1,6 +1,7 @@
 import { addLibraryContent } from "./contentLibraryState";
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
 import { prepareSearchResultBook } from "../../api/books";
+import { ResourceNetworkError } from "../../api/resources";
 import type { BookResource, SearchBookResult } from "../../api/types";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { clearOpenedBook, closeBookDetail, switchOpenedBook, openedBookFromShelf, openedBook } from "./bookDetailState";
@@ -32,6 +33,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   const { bookPanelBusy } = dependencies;
   const searchResultDetailsReadingBusy = ref(false);
   let generation = 0;
+  const resourceReadFailed = ref(false);
   const searchResultDetailsShelfBook = computed(() => {
     const bookId = openedBook.value?.id;
     return bookId ? shelf.value.books.find((book) => book.id === bookId) ?? null : null;
@@ -56,6 +58,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     details: ActiveBookDetailSession;
   } {
     generation += 1;
+    resourceReadFailed.value = false;
     const currentGeneration = generation;
     const restoreRevision = dependencies.getRestoreRevision();
     openedBookFromShelf.value = false;
@@ -88,6 +91,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     } catch (error) {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) {
         request.details.error = dependencies.errorText(error);
+        resourceReadFailed.value = error instanceof ResourceNetworkError;
       }
     } finally {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) bookPanelBusy.value = false;
@@ -113,6 +117,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     } catch (error) {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) {
         request.details.error = dependencies.errorText(error);
+        resourceReadFailed.value = error instanceof ResourceNetworkError;
       }
     } finally {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) bookPanelBusy.value = false;
@@ -177,6 +182,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     searchResultDetails,
     searchResultDetailsShelfBook,
     searchResultDetailsReadingBusy,
+    resourceReadFailed,
     bookPanelBusy,
     openRequest,
     openSearchResultDetails,

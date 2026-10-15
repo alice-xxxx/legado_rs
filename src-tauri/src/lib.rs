@@ -47,31 +47,17 @@ pub mod resources;
 pub(crate) mod search_history;
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[derive(Default)]
-struct FrontendHealth {
-    last_heartbeat: std::sync::Mutex<Option<std::time::Instant>>,
-    check_generation: std::sync::atomic::AtomicU64,
-}
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-fn frontend_heartbeat(health: tauri::State<'_, std::sync::Arc<FrontendHealth>>) {
-    if let Ok(mut last) = health.last_heartbeat.lock() {
-        *last = Some(std::time::Instant::now());
-    }
-}
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bool, String> {
+async fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bool, String> {
     #[cfg(target_os = "ios")]
     {
         use tauri_plugin_source_engine::SourceEngineExt;
-        let actual_hidden = app
+        // UIKit callbacks must be able to run while the command awaits Swift.
+        app
             .source_engine()
             .set_reader_fullscreen(hidden)
-            .map_err(|error| error.to_string())?;
-        Ok(actual_hidden == hidden)
+            .await
+            .map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "ios"))]
     {
@@ -82,12 +68,13 @@ fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bool, St
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
     #[cfg(target_os = "ios")]
     {
         use tauri_plugin_source_engine::SourceEngineExt;
         app.source_engine()
             .set_navigation_gestures(enabled)
+            .await
             .map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "ios"))]
@@ -95,35 +82,6 @@ fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result<bool,
         let _ = (app, enabled);
         Ok(false)
     }
-}
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-fn check_frontend_after_resume(app: tauri::AppHandle, health: std::sync::Arc<FrontendHealth>) {
-    use std::sync::atomic::Ordering;
-    use tauri::Manager;
-
-    let resumed_at = std::time::Instant::now();
-    let generation = health.check_generation.fetch_add(1, Ordering::Relaxed) + 1;
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
-        if health.check_generation.load(Ordering::Relaxed) != generation {
-            return;
-        }
-        let missed_heartbeat = health
-            .last_heartbeat
-            .lock()
-            .ok()
-            .and_then(|last| *last)
-            .is_some_and(|last| last < resumed_at);
-        if missed_heartbeat {
-            eprintln!("[web-content] frontend heartbeat missing after resume; reloading main view");
-            if let Some(webview) = app.get_webview_window("main") {
-                if let Err(error) = webview.reload() {
-                    eprintln!("[web-content] failed to reload main view: {error}");
-                }
-            }
-        }
-    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -148,10 +106,7 @@ pub fn run() {
     let startup_cwd = std::env::current_dir().unwrap_or_default();
 
     let external_files = application::PendingExternalFileRegistry::new();
-    let frontend_health = std::sync::Arc::new(FrontendHealth::default());
-    let builder = tauri::Builder::default()
-        .manage(external_files.clone())
-        .manage(frontend_health.clone());
+    let builder = tauri::Builder::default().manage(external_files.clone());
     #[cfg(all(
         feature = "desktop",
         not(any(target_os = "android", target_os = "ios"))
@@ -262,19 +217,22 @@ pub fn run() {
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     let builder = builder.on_web_content_process_terminate(|webview| {
         // WebKit can discard the content process while the app is in the background.
-        // Reload after the termination callback unwinds, when its view is usable again.
+        // Recover only on WebKit's actual process-termination event.
         let webview = webview.clone();
         let label = webview.label().to_owned();
         eprintln!("[web-content] process terminated for {label}; reloading");
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            // A fresh frontend has no active reader yet. Restore native chrome
+            // before loading it, without waiting for a dead JavaScript context.
+            if let Err(error) = set_reader_fullscreen(webview.app_handle().clone(), false).await {
+                eprintln!("[web-content] failed to restore native chrome: {error}");
+            }
             if let Err(error) = webview.reload() {
                 eprintln!("[web-content] failed to reload {label}: {error}");
             }
         });
     });
     let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        frontend_heartbeat,
         set_reader_fullscreen,
         set_navigation_gestures,
         application::app_bootstrap,
@@ -360,15 +318,6 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |_app, event| {
-            if matches!(&event, tauri::RunEvent::Resumed)
-                || matches!(&event, tauri::RunEvent::WindowEvent {
-                    label,
-                    event: tauri::WindowEvent::Focused(true),
-                    ..
-                } if label == "main")
-            {
-                check_frontend_after_resume(_app.clone(), frontend_health.clone());
-            }
             #[cfg(all(
                 feature = "desktop",
                 not(any(target_os = "android", target_os = "ios"))

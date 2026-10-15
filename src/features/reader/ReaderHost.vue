@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useRoute } from "vue-router";
 import type {
   AppBootstrap,
@@ -225,6 +225,7 @@ function onVisibilityChange(): void {
     void readerFeatures.finishReadingSession();
   } else if (readerFeatures.readerVisible.value) {
     syncReaderFullscreen(true);
+    readerFeatures.handleReaderResize();
     void refreshNativeAudio().then(() => readerFeatures.saveCurrentProgress())
       .catch(error => notify(errorText(error), "error"));
     void readerFeatures.refreshNativeSpeech();
@@ -280,24 +281,24 @@ onBeforeUnmount(() => {
 const bookSourceCandidates = computed(() => bookSourceSwitch.bookSourceEligibleSources);
 const readerVisible = readerFeatures.readerVisible;
 let fullscreenUpdate = Promise.resolve();
+const nativeFullscreen = isTauri() && (/iPhone|iPad|iPod/.test(navigator.userAgent)
+  || /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+let fullscreenUsed = false;
 function syncReaderFullscreen(visible: boolean): void {
-  const host = document.getElementById("reader-host");
-  if (!visible) host?.classList.remove("reader-fullscreen");
+  if (!nativeFullscreen) return;
+  fullscreenUsed = true;
   fullscreenUpdate = fullscreenUpdate.catch(() => {}).then(async () => {
+    if (disposed || readerVisible.value !== visible) return;
     try {
-      const active = await invoke<boolean>("set_reader_fullscreen", { hidden: visible });
-      if (!disposed && readerVisible.value === visible) {
-        host?.classList.toggle("reader-fullscreen", visible && active);
-      }
+      await invoke<boolean>("set_reader_fullscreen", { hidden: visible });
     } catch (error) {
       console.warn("Reader fullscreen could not be changed:", error);
     }
   });
 }
-watch(readerVisible, syncReaderFullscreen, { immediate: true });
+watch(readerVisible, syncReaderFullscreen);
 onBeforeUnmount(() => {
-  document.getElementById("reader-host")?.classList.remove("reader-fullscreen");
-  void fullscreenUpdate.catch(() => {}).then(() => invoke("set_reader_fullscreen", { hidden: false })).catch(() => {});
+  if (fullscreenUsed) void fullscreenUpdate.catch(() => {}).then(() => invoke("set_reader_fullscreen", { hidden: false })).catch(() => {});
 });
 </script>
 

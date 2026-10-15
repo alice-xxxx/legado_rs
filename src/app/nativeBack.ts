@@ -78,6 +78,12 @@ export function installReaderNativeBack(options: {
 
 export function installNativeBackNavigation(): () => void {
   if (!isTauri()) return () => {};
+  const initial = router.currentRoute.value;
+  if (initial.query[readerQuery] && !readerAction?.isOpen()) {
+    const query = { ...initial.query };
+    delete query[readerQuery];
+    void router.replace({ path: initial.path, query, hash: initial.hash });
+  }
   let disposed = false, handling = false;
   let listener: PluginListener | undefined;
   let removeGestureSync: (() => void) | undefined;
@@ -93,12 +99,20 @@ export function installNativeBackNavigation(): () => void {
         || route.name === routeNames.settings;
       // A WebKit swipe previews its real history item. Local dialogs and pages
       // without a matching entry must not expose an unrelated screen beneath.
-      const enabled = (Boolean(route.query[readerQuery]) || !isTab && route.name != null)
+      const enabled = typeof router.options.history.state.back === "string"
+        && (Boolean(route.query[readerQuery]) || !isTab && route.name != null)
         && !hasVisibleBackLayer() && (!hasLocalPage || sourceEditorEntry);
       if (enabled === lastRequested) return;
       lastRequested = enabled;
-      pending = pending.catch(() => {}).then(() => invoke("set_navigation_gestures", { enabled }))
-        .then(() => {}).catch(error => console.error("iOS navigation gesture update failed:", error));
+      pending = pending.then(async () => {
+        if (disposed || lastRequested !== enabled) return;
+        try {
+          await invoke("set_navigation_gestures", { enabled });
+        } catch (error) {
+          if (lastRequested === enabled) lastRequested = undefined;
+          console.error("iOS navigation gesture update failed:", error);
+        }
+      });
     };
     let queued = false;
     const queueGestureSync = () => {
@@ -106,9 +120,15 @@ export function installNativeBackNavigation(): () => void {
       queued = true;
       queueMicrotask(() => { queued = false; if (!disposed) syncGestures(); });
     };
-    const observer = new MutationObserver(queueGestureSync);
+    const controls = "[data-back-layer],.modal-backdrop,.overlay-backdrop,[aria-modal='true'],button[data-back-local]";
+    const affectsControls = (node: Node) => node instanceof Element
+      && (node.matches(controls) || !!node.querySelector(controls));
+    const observer = new MutationObserver(records => {
+      if (records.some(record => record.type === "attributes" ? affectsControls(record.target)
+        : [...record.addedNodes, ...record.removedNodes].some(affectsControls))) queueGestureSync();
+    });
     observer.observe(document.body, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ["style", "hidden", "inert"],
+      childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "inert"],
     });
     queueGestureSync();
     const removeAfterEach = router.afterEach((_to, _from, failure) => {
