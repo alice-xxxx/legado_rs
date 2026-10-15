@@ -11,6 +11,28 @@
   --reader-accent: var(--app-accent);
 }
 
+#reader-host.reader-fullscreen .reader-shell {
+  --reader-text-top-inset: max(0px, calc(var(--safe-top) - 8px));
+  --reader-text-bottom-inset: max(0px, calc(var(--safe-bottom) - 10px));
+}
+
+#reader-host.reader-fullscreen .reader-topbar {
+  padding-top: var(--safe-top);
+}
+
+#reader-host.reader-fullscreen .reader-shell[data-reader-mode="audio"] .reader-settings-popover,
+#reader-host.reader-fullscreen .reader-shell[data-reader-mode="video"] .reader-settings-popover {
+  top: calc(68px + var(--safe-top));
+}
+
+#reader-host.reader-fullscreen .reader-shell:not([data-reader-mode="audio"]):not([data-reader-mode="video"]) .reader-directory-backdrop {
+  padding-bottom: calc(70px + var(--safe-bottom));
+}
+
+#reader-host.reader-fullscreen .reader-comic-page-counter {
+  bottom: calc(70px + var(--safe-bottom));
+}
+
 /* Text reading profiles only apply to the text reader. */
 .reader-shell[data-reader-mode="audio"],
 .reader-shell[data-reader-mode="video"],

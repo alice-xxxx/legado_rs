@@ -456,7 +456,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
     <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
       <article class="app-modal shelf-batch-remove-modal">
-        <button class="detail-close" :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
+        <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
         <div class="confirm-symbol">⌫</div>
         <p class="eyebrow">批量移除</p>
         <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
@@ -478,7 +478,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
     <section v-if="shelfBatch.groupsOpen" class="modal-backdrop" @click.self="shelfBatch.closeGroups">
       <article class="app-modal shelf-batch-group-modal">
-        <button class="detail-close" :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</button>
+        <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</button>
         <p class="eyebrow">批量整理</p>
         <h2 id="shelf-batch-group-title">移动 {{ shelfBatch.groupBookIds.length }} 本内容至分组</h2>
         <p class="modal-description">所选分组将完整替换这些内容当前的分组，可同时指定多个分组。其他内容和空分组不受影响。</p>

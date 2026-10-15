@@ -9,15 +9,47 @@ private struct ExecuteArgs: Decodable {
     let requestJson: String
 }
 
+private struct ReaderFullscreenArgs: Decodable {
+    let hidden: Bool
+}
+
+private struct NavigationGesturesArgs: Decodable {
+    let enabled: Bool
+}
+
 /// Tauri's iOS edge enters Kotlin/Native; its HTTP and storage callbacks return through Rust C ABI.
 final class SourceEnginePlugin: Plugin {
+    private weak var mainWebView: WKWebView?
     private var webLoginSessions: [String: NativeWebLoginSession] = [:]
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
 
     override public func load(webview: WKWebView) {
-        // WebKit owns recognition, cancellation and interactive navigation.
-        webview.allowsBackForwardNavigationGestures = true
+        mainWebView = webview
+        // Top-level tabs have no parent screen. Vue enables this for subpages.
+        webview.allowsBackForwardNavigationGestures = false
+    }
+
+    @objc public func setNavigationGestures(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(NavigationGesturesArgs.self)
+        DispatchQueue.main.async { [weak self] in
+            guard let webview = self?.mainWebView else {
+                invoke.reject("Main WebView is unavailable")
+                return
+            }
+            webview.allowsBackForwardNavigationGestures = args.enabled
+            invoke.resolve(["enabled": webview.allowsBackForwardNavigationGestures])
+        }
+    }
+
+    @objc public func setReaderFullscreen(_ invoke: Invoke) throws {
+        let args = try invoke.parseArgs(ReaderFullscreenArgs.self)
+        DispatchQueue.main.async { [weak self] in
+            // Reader layout owns its safe areas. Restore WebKit's default for every other screen.
+            self?.mainWebView?.scrollView.contentInsetAdjustmentBehavior = args.hidden ? .never : .automatic
+            UIApplication.shared.setStatusBarHidden(args.hidden, with: .none)
+            invoke.resolve(["hidden": UIApplication.shared.isStatusBarHidden])
+        }
     }
 
     @objc public func execute(_ invoke: Invoke) throws {

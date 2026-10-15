@@ -15,6 +15,7 @@ mod validation;
 
 pub(crate) use json::validate_persistable_json_bytes;
 pub use server::ResourceServer;
+pub use server::{TtsStreamBoundary, TtsStreamProgress};
 use server::byte_response;
 pub use store::ResourceStore;
 pub(crate) use store::ResourceStoreWriterGuard;

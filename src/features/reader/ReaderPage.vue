@@ -644,7 +644,7 @@ export default defineComponent({
     <!-- 播放器放在弹窗外，关闭朗读面板时不要卸载正在播放的音频。 -->
     <audio v-if="!ctx.nativePlayback && settings.reader.ttsEngine === 'http' && httpTtsAudioResource" :ref="setHttpTtsAudioElement"
       preload="none" :src="httpTtsAudioResource.src" class="reader-audio-element" @play="onHttpTtsAudioPlay"
-      @pause="onHttpTtsAudioPause" @ended="onHttpTtsAudioEnded" @error="onHttpTtsAudioError"></audio>
+      @pause="onHttpTtsAudioPause" @timeupdate="onHttpTtsAudioTimeUpdate" @ended="onHttpTtsAudioEnded" @error="onHttpTtsAudioError"></audio>
   </section>
 
   <section v-if="ctx.readerVisible && ctx.dictionaryOpen" class="modal-backdrop reader-dictionary-backdrop"

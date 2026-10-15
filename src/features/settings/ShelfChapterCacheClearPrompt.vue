@@ -17,7 +17,7 @@ defineProps<{
       <p v-else>将逐本清理当前书架中可更换源的在线书籍章节缓存。清理结果会显示成功、失败和未开始数量。</p>
       <p>本地 TXT、EPUB、CBZ、PDF 的章节资源、章节目录、阅读进度、封面和书签都会保留。若当前阅读器打开了本次要清理的在线书籍，会先保存阅读位置并关闭；位置未能保存时不会清理。</p>
       <div class="modal-actions">
-        <button class="button secondary" :disabled="busy" @click="cancel">取消</button>
+        <button class="button secondary" data-back-action :disabled="busy" @click="cancel">取消</button>
         <button class="button danger" :disabled="busy || locked" @click="clear">{{ busy ? '正在清理…' : '确认清理在线缓存' }}</button>
       </div>
     </article>

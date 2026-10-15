@@ -2,6 +2,7 @@
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames, settingsRouteNames, type SettingsSection } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 
 function openSection(section: SettingsSection): void {
   void router.push({ name: settingsRouteNames[section] });
@@ -22,7 +23,7 @@ function openHomeConfig(): void {
         <BackButton
           class="other-home-back"
           label="返回我的"
-          @click="openSection('home')"
+          @click="returnToRoute(routeNames.settings)"
         />
         <div><strong>高级设置</strong></div>
         <span></span>

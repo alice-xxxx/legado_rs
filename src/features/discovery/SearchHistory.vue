@@ -57,7 +57,7 @@ function clearAll(): void {
         <h3 id="search-history-confirm-title">清空搜索历史？</h3>
         <p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。</p>
         <div class="search-history__confirm-actions">
-          <button type="button" class="button secondary small" :disabled="busy" @click="clearConfirmOpen = false">保留记录</button>
+          <button type="button" class="button secondary small" data-back-action :disabled="busy" @click="clearConfirmOpen = false">保留记录</button>
           <button type="button" class="button secondary small" :disabled="busy" @click="clearAll">{{ busy ? '正在清空…' : '确认清空' }}</button>
         </div>
       </div>

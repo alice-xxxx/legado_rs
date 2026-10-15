@@ -28,7 +28,7 @@ defineProps<{ context: PdfImportPromptContext }>();
         </label>
         <p v-if="context.pdfPasswordError" class="pdf-password-error">{{ context.pdfPasswordError }}</p>
         <div class="modal-actions">
-          <button type="button" class="button secondary" :disabled="context.pdfPasswordBusy" @click="context.cancelPdfPasswordPrompt">取消</button>
+          <button type="button" class="button secondary" data-back-action :disabled="context.pdfPasswordBusy" @click="context.cancelPdfPasswordPrompt">取消</button>
           <button type="submit" class="button primary" :disabled="context.pdfPasswordBusy || !context.pdfPasswordInput">
             {{ context.pdfPasswordBusy ? '正在打开…' : '打开文件' }}
           </button>

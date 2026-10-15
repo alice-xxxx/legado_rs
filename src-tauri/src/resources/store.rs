@@ -376,6 +376,23 @@ impl ResourceStore {
         Ok(reference)
     }
 
+    pub(crate) async fn read_tts_audio(
+        &self,
+        audio_id: &str,
+        extension: &str,
+    ) -> Result<Vec<u8>, ResourceError> {
+        let reference = tts_audio_ref(audio_id, extension)?;
+        let path = self.path_for(&reference)?;
+        check_path_no_symlink(&self.inner.root, &path, false)?;
+        let bytes = tokio::fs::read(path).await?;
+        if bytes.is_empty() || bytes.len() > MAX_TTS_AUDIO_BYTES {
+            return Err(ResourceError::new(
+                "HTTP TTS audio is empty or exceeds 16 MiB",
+            ));
+        }
+        Ok(bytes)
+    }
+
     pub(crate) async fn remove_tts_audio(&self, audio_id: &str) -> Result<bool, ResourceError> {
         // Validate the opaque ID before deriving any local path.
         let _ = tts_audio_ref(audio_id, "mp3")?;

@@ -195,6 +195,29 @@ const currentRoute = useRoute();
 const routeSourceImportMode = computed(() => currentRoute.name === routeNames.sources
   && (currentRoute.query.sourceImport === "url" || currentRoute.query.sourceImport === "new")
   ? currentRoute.query.sourceImport : "");
+const routeSourceEdit = computed(() => currentRoute.name === routeNames.sources
+  && typeof currentRoute.query.sourceEdit === "string" ? currentRoute.query.sourceEdit : "");
+function sourceListLocation() {
+  const query = { ...currentRoute.query };
+  delete query.sourceEdit;
+  delete query.sourceImport;
+  delete query.importUrl;
+  return { name: routeNames.sources, query };
+}
+function leaveEditorRoute(): void {
+  if (!routeSourceEdit.value) return;
+  const list = sourceListLocation();
+  if (router.options.history.state.back === router.resolve(list).fullPath) router.back();
+  else void router.replace(list);
+}
+function closeSourceEditor(): void {
+  sourceManagementActions.closeSourceEdit();
+  leaveEditorRoute();
+}
+async function saveSourceEditor(): Promise<void> {
+  await sourceManagementActions.saveSourceDefinitionJson();
+  if (!sourceManagementActions.sourceEditorOpen.value) leaveEditorRoute();
+}
 let suppressSourceImportQuerySync = false;
 function syncSourceImportRoute(mode: "new" | "url" | null): void {
   if (suppressSourceImportQuerySync || currentRoute.name !== routeNames.sources) return;
@@ -214,13 +237,14 @@ watch(sourceImportOpen, opened => {
   else if (routeSourceImportMode.value === "url") syncSourceImportRoute(null);
 }, { flush: "sync" });
 watch(sourceManagementActions.sourceEditCreating, creating => {
+  if (routeSourceEdit.value) return;
   if (creating) syncSourceImportRoute("new");
   else if (routeSourceImportMode.value === "new") syncSourceImportRoute(null);
 }, { flush: "sync" });
 watch(routeSourceImportMode, mode => {
   if (mode === "new") {
     sourceImportOpen.value = false;
-    if (!sourceManagementActions.sourceEditCreating.value) requestEditorSwitch();
+    if (!sourceManagementActions.sourceEditCreating.value) sourceManagementActions.beginSourceCreate();
   } else if (mode === "url") {
     const url = currentRoute.query.importUrl;
     sourceImportUrl.value = typeof url === "string" ? url : "";
@@ -230,6 +254,18 @@ watch(routeSourceImportMode, mode => {
     sourceImportOpen.value = false;
     suppressSourceImportQuerySync = false;
   }
+}, { immediate: true });
+watch([routeSourceEdit, sources], ([key]) => {
+  if (!key || currentRoute.name !== routeNames.sources) return;
+  if (key === "new") {
+    if (!sourceManagementActions.sourceEditCreating.value) sourceManagementActions.beginSourceCreate();
+    return;
+  }
+  if (editingSource.value?.id === key || sourceManagementActions.sourceEditBusy.value) return;
+  const source = sources.value.find(entry => entry.id === key);
+  if (source) void sourceManagementActions.beginSourceEdit(source).then(() => {
+    if (routeSourceEdit.value !== key && editingSource.value?.id === key) sourceManagementActions.closeSourceEdit();
+  });
 }, { immediate: true });
 const importLocked = computed(() => recoveryRequired.value || sourceImportBusy.value
   || sourceExportBusy.value || sourceBatchBusy.value
@@ -269,6 +305,14 @@ function requestEditorSwitch(source?: SourceMetadata): void {
   if (sourceManagementActions.sourceEditBusy.value || recoveryRequired.value) return;
   initialDesktopSourceOpened = true;
   if (!sourceManagementActions.sourceEditorOpen.value) {
+    if (typeof window !== "undefined" && window.innerWidth <= 860) {
+      const query = { ...currentRoute.query };
+      query.sourceEdit = source?.id ?? "new";
+      delete query.sourceImport;
+      delete query.importUrl;
+      void router.push({ name: routeNames.sources, query });
+      return;
+    }
     if (source) void sourceManagementActions.beginSourceEdit(source);
     else sourceManagementActions.beginSourceCreate();
     return;
@@ -347,6 +391,7 @@ onBeforeRouteLeave(() => {
   return guardEditorNavigation();
 });
 onBeforeRouteUpdate(to => {
+  if (routeSourceEdit.value && to.query.sourceEdit !== routeSourceEdit.value) return guardEditorNavigation();
   if (sourceManagementActions.sourceEditCreating.value && to.query.sourceImport !== "new") return guardEditorNavigation();
   return true;
 });
@@ -391,8 +436,8 @@ onBeforeUnmount(() => {
         :original-json="management.sourceEditOriginalJson"
         :busy="management.sourceEditBusy"
         :locked="importLocked"
-        @save="management.saveSourceDefinitionJson"
-        @cancel="management.closeSourceEdit"
+        @save="saveSourceEditor"
+        @cancel="closeSourceEditor"
         @pending-draft="pendingDraft = $event"
         @test="runEditorAction('test')"
         @login="runEditorAction('login')"
@@ -516,7 +561,7 @@ onBeforeUnmount(() => {
 
 
 
-    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
+    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
 </template>
 <style scoped>
 .source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}

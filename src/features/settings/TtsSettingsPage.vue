@@ -11,7 +11,8 @@ import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
@@ -53,7 +54,7 @@ function handleRestore(): void {
 }
 
 function returnToAdvancedSettings(): void {
-  void router.push({ name: routeNames.settingsOther });
+  returnToRoute(routeNames.settingsOther);
 }
 
 const selectedConfig = computed(() => configs.value.find((item) => item.id === selectedConfigId.value));

@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import { cancelTask, clearFinishedTasks, pauseTask, resumeTask, retryTask } from "../../api/tasks";
 import type { AppTask } from "../../api/types";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
@@ -33,7 +34,7 @@ function errorText(error: unknown): string {
 
 
 function returnToSettings(): void {
-  void router.push({ name: routeNames.settings });
+  returnToRoute(routeNames.settings);
 }
 
 async function openTaskBook(bookId: string): Promise<void> {
@@ -429,13 +430,12 @@ function hasTaskDetails(task: AppTask): boolean {
         {{ tasks.length ? '当前筛选下没有任务。' : '目前没有下载、更新或搜索任务。' }}
       </div>
     </section>
-    <div v-if="pendingClearFinished" class="task-confirm-backdrop"
->
+    <div v-if="pendingClearFinished" class="task-confirm-backdrop" data-back-layer>
       <div class="task-confirm">
         <strong>清理已结束任务？</strong>
         <p>将清理 {{ clearableTaskCount() }} 项已完成、失败或取消的任务记录，不会删除已有的下载内容。正在进行的任务不会受影响。</p>
         <footer>
-          <button type="button" @click="pendingClearFinished = false">取消</button>
+          <button type="button" data-back-action @click="pendingClearFinished = false">取消</button>
           <button type="button" class="task-confirm-danger" :disabled="mutationLocked || taskManagementBusy"
             @click="clearFinished">确认清理</button>
         </footer>

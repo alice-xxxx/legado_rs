@@ -6,7 +6,8 @@ import { bookPreviews, loadBookPreviews } from "../books/bookDetailState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import type { AppBootstrap, Bookmark, HistoryResource } from "../../api/types";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { backupBusy } from "./backupState";
@@ -235,7 +236,7 @@ function closeBookmarkSearch(): void {
 }
 
 function returnToSettings(): void {
-  void router.push({ name: routeNames.settings });
+  returnToRoute(routeNames.settings);
 }
 
 async function setupEvents(): Promise<void> {
@@ -333,11 +334,11 @@ onBeforeUnmount(() => {
       <div v-else class="record-state">{{ bookmarks.length ? '没有匹配的书签。' : '阅读时添加书签，就能从这里回到保存的位置。' }}</div>
       <button v-if="filteredBookmarks.length > visibleBookmarks.length" type="button" class="record-load-more"
         @click="bookmarkVisibleLimit += 120">显示更多书签 · {{ visibleBookmarks.length }} / {{ filteredBookmarks.length }}</button>
-      <div v-if="pendingBookmarkDeleteIds?.length" class="bookmark-confirm-backdrop">
+      <div v-if="pendingBookmarkDeleteIds?.length" class="bookmark-confirm-backdrop" data-back-layer>
         <div class="bookmark-confirm">
           <strong>{{ pendingBookmarkDeleteIds.length === 1 ? '删除这个书签？' : '删除所选书签？' }}</strong>
           <p>将删除 {{ pendingBookmarkDeleteIds.length }} 个书签，删除后无法撤销。</p>
-          <footer><button type="button" class="record-action" :disabled="bookmarkDeleteBusy" @click="pendingBookmarkDeleteIds = null">取消</button>
+          <footer><button type="button" class="record-action" data-back-action :disabled="bookmarkDeleteBusy" @click="pendingBookmarkDeleteIds = null">取消</button>
             <button type="button" class="record-action record-delete" :disabled="mutationBlocked || bookmarkDeleteBusy"
               @click="deleteSelectedBookmarks">{{ bookmarkDeleteBusy ? '删除中…' : '确认删除' }}</button></footer>
         </div>

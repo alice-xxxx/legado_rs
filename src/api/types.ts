@@ -507,6 +507,19 @@ export type HttpTtsAudioResult =
   | { status: "empty" }
   | { status: "ready"; audioId: string; resource: ResourceDescriptor; contentType: string };
 
+export type HttpTtsStreamStart =
+  | { status: "empty"; skipped: number }
+  | { status: "fallback"; firstIndex: number; first: HttpTtsAudioResult }
+  | { status: "stream"; streamId: string; src: string; firstIndex: number; skipped: number };
+
+export interface HttpTtsStreamStatus {
+  boundaries: Array<{ index: number; highlightIndex: number; endSeconds: number }>;
+  state: "running" | "complete" | "fallback" | "error";
+  nextIndex: number;
+  skipped: number;
+  error: string | null;
+}
+
 export interface ReadingProgress {
   chapterId: string | null;
   chapterIndex: number;

@@ -1,7 +1,7 @@
 import { openedBook } from "../books/bookDetailState";
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, type ComponentPublicInstance, type Ref } from "vue";
-import { releaseHttpTtsAudio, requestHttpTtsAudio } from "../../api/settings";
-import { type ResourceDescriptor } from "../../api/types";
+import { getHttpTtsStreamStatus, releaseHttpTtsAudio, releaseHttpTtsStream, requestHttpTtsAudio, startHttpTtsStream } from "../../api/settings";
+import { type HttpTtsStreamStatus, type ResourceDescriptor } from "../../api/types";
 import { settings } from "../settings/settingsStore";
 import { httpTtsConfigs } from "../settings/configurationStores";
 import { clamp, type PdfPageResource } from "./readerContent";
@@ -72,6 +72,11 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   let httpTtsGeneration = 0;
   let httpTtsPrefetchGeneration = 0;
   let httpTtsAudioId: string | null = null;
+  let httpTtsStreamId: string | null = null;
+  let httpTtsStreamStatus: HttpTtsStreamStatus | null = null;
+  let httpTtsStreamStartSkipped = 0;
+  let httpTtsStreamPollAt = 0;
+  let httpTtsStreamPollPending = false;
   let httpTtsLoadRevision = 0;
   let httpTtsChunks: Array<{ text: string; target: ReaderTtsChunkTarget }> = [];
   let httpTtsChunkIndex = 0;
@@ -589,7 +594,12 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   function releaseCurrentHttpTtsAudio(): void {
     const audioId = httpTtsAudioId;
+    const streamId = httpTtsStreamId;
     httpTtsAudioId = null;
+    httpTtsStreamId = null;
+    httpTtsStreamStatus = null;
+    httpTtsStreamStartSkipped = 0;
+    httpTtsStreamPollPending = false;
     httpTtsAudioResource.value = null;
     const audio = httpTtsAudioElement.value;
     if (audio instanceof NativeReaderAudio) {
@@ -600,6 +610,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       audio.load();
     }
     if (audioId) void releaseHttpTtsAudio(audioId).catch(() => undefined);
+    if (streamId) void releaseHttpTtsStream(streamId).catch(() => undefined);
   }
 
   function clearHttpTtsPrefetch(): void {
@@ -715,13 +726,115 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       if (!httpTtsChunks.length) throw new Error("当前章节没有可朗读的正文。");
       httpTtsChunkIndex = 0;
       httpTtsAudioNotice.value = "正在生成语音…";
-      await requestNextHttpTtsChunk(generation);
+      await startHttpTtsChapterPlayback(generation);
     } catch (error) {
       if (generation !== httpTtsGeneration) return;
       stopHttpTtsAudio(false);
       httpTtsAudioError.value = `远程朗读失败：${options.errorText(error)}`;
     } finally {
       if (generation === httpTtsGeneration) httpTtsAudioBusy.value = false;
+    }
+  }
+
+  async function startHttpTtsChapterPlayback(generation: number): Promise<void> {
+    if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) return;
+    const configId = settings.value.reader.httpTtsConfigId;
+    if (!configId) return;
+    if (httpTtsChunks.length > 2048
+      || httpTtsChunks.reduce((size, chunk) => size + chunk.text.length * 3, 0) > 8 * 1024 * 1024) {
+      await requestNextHttpTtsChunk(generation);
+      return;
+    }
+    const legacyRate = Math.round(clamp(settings.value.reader.ttsRate * 10 - 5, 0, 45));
+    // DOM nodes stay in Vue; Rust carries their stable chapter-local indices with the audio.
+    const result = await startHttpTtsStream(configId,
+      httpTtsChunks.map((chunk, highlightIndex) => ({ text: chunk.text, highlightIndex })), legacyRate);
+    if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) {
+      if (result.status === "stream") void releaseHttpTtsStream(result.streamId).catch(() => undefined);
+      if (result.status === "fallback" && result.first.status === "ready") void releaseHttpTtsAudio(result.first.audioId).catch(() => undefined);
+      return;
+    }
+    if (result.status === "empty") {
+      httpTtsSkippedChunks += result.skipped;
+      await advanceHttpTtsChapter(generation);
+      return;
+    }
+    httpTtsChunkIndex = result.firstIndex;
+    httpTtsSkippedChunks += result.firstIndex;
+    if (result.status === "fallback") {
+      if (result.first.status === "ready") {
+        httpTtsPreparedAudio.set(result.firstIndex, { kind: "audio", audioId: result.first.audioId, resource: result.first.resource });
+      }
+      await requestNextHttpTtsChunk(generation);
+      return;
+    }
+    httpTtsStreamId = result.streamId;
+    httpTtsStreamStartSkipped = result.skipped;
+    httpTtsChunkProgress.value = { current: result.firstIndex + 1, total: httpTtsChunks.length };
+    httpTtsAudioResource.value = { resourceId: `resource://tts-stream/${result.streamId}.mp3`,
+      src: result.src, contentType: "audio/mpeg", format: "audio" };
+    httpTtsAudioBusy.value = false;
+    httpTtsAudioNotice.value = "正在连续播放本章语音。";
+    await playHttpTtsResource(generation);
+  }
+
+  async function playHttpTtsResource(generation: number): Promise<void> {
+    const resource = httpTtsAudioResource.value;
+    if (!resource) return;
+    if (nativePlayback) {
+      const book = openedBook.value;
+      const nativeAudio = new NativeReaderAudio({ key: `tts:${book?.id}:${options.reader.chapterIndex.value}:${httpTtsStreamId ?? httpTtsChunkIndex}`,
+        title: book?.chapters.find(chapter => chapter.index === options.reader.chapterIndex.value)?.title || book?.title || "朗读",
+        artist: book?.author, artworkUrl: book?.coverSrc });
+      nativeAudio.src = resource.src;
+      nativeAudio.addEventListener("play", onHttpTtsAudioPlay);
+      nativeAudio.addEventListener("pause", onHttpTtsAudioPause);
+      nativeAudio.addEventListener("timeupdate", () => { void onHttpTtsAudioTimeUpdate(); });
+      nativeAudio.addEventListener("ended", () => { void onHttpTtsAudioEnded(); });
+      nativeAudio.addEventListener("error", onHttpTtsAudioError);
+      httpTtsAudioElement.value = nativeAudio;
+    }
+    await nextTick();
+    if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) return;
+    const audio = httpTtsAudioElement.value;
+    if (!audio) {
+      httpTtsAudioPaused.value = true;
+      httpTtsAudioNotice.value = "语音已准备，请点击继续朗读。";
+      return;
+    }
+    audio.load();
+    try {
+      await audio.play();
+    } catch {
+      httpTtsAudioPaused.value = true;
+      httpTtsAudioNotice.value = "语音已准备，请点击继续朗读或使用播放器播放。";
+    }
+  }
+
+  async function onHttpTtsAudioTimeUpdate(): Promise<void> {
+    const streamId = httpTtsStreamId;
+    const audio = httpTtsAudioElement.value;
+    if (!streamId || !audio || !httpTtsAudioActive.value) return;
+    const now = Date.now();
+    if (!httpTtsStreamPollPending && now - httpTtsStreamPollAt >= 750) {
+      httpTtsStreamPollAt = now;
+      httpTtsStreamPollPending = true;
+      try {
+        const status = await getHttpTtsStreamStatus(streamId);
+        if (httpTtsStreamId === streamId) httpTtsStreamStatus = status;
+      } catch { /* A stopped stream is handled by its playback event. */ }
+      finally { httpTtsStreamPollPending = false; }
+    }
+    if (httpTtsStreamId !== streamId || !httpTtsStreamStatus) return;
+    const position = Math.max(0, audio.currentTime);
+    const boundary = httpTtsStreamStatus.boundaries.find(item => position < item.endSeconds - 0.05)
+      ?? httpTtsStreamStatus.boundaries[httpTtsStreamStatus.boundaries.length - 1];
+    if (!boundary || boundary.index === httpTtsChunkIndex) return;
+    httpTtsChunkIndex = boundary.index;
+    httpTtsChunkProgress.value = { current: boundary.index + 1, total: httpTtsChunks.length };
+    httpTtsAudioNotice.value = `正在朗读第 ${boundary.index + 1} / ${httpTtsChunks.length} 段。`;
+    if (httpTtsLoadRevision === options.reader.getLoadRevision()) {
+      options.highlightChunk(httpTtsChunks[boundary.highlightIndex]?.target, httpTtsLoadRevision);
     }
   }
 
@@ -771,33 +884,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
         httpTtsAudioNotice.value = "语音已准备，正在播放。";
         // 当前段开始播放时，并行生成后面两段，切段时直接使用已缓存音频。
         prefetchFollowingHttpTtsChunks(generation);
-        if (nativePlayback) {
-          const book = openedBook.value;
-          const nativeAudio = new NativeReaderAudio({ key: `tts:${book?.id}:${options.reader.chapterIndex.value}:${index}`,
-            title: book?.chapters.find(chapter => chapter.index === options.reader.chapterIndex.value)?.title || book?.title || "朗读",
-            artist: book?.author, artworkUrl: book?.coverSrc });
-          nativeAudio.src = prepared.resource.src;
-          nativeAudio.addEventListener("play", onHttpTtsAudioPlay);
-          nativeAudio.addEventListener("pause", onHttpTtsAudioPause);
-          nativeAudio.addEventListener("ended", () => { void onHttpTtsAudioEnded(); });
-          nativeAudio.addEventListener("error", onHttpTtsAudioError);
-          httpTtsAudioElement.value = nativeAudio;
-        }
-        await nextTick();
-        if (generation !== httpTtsGeneration || !httpTtsAudioActive.value) return;
-        const audio = httpTtsAudioElement.value;
-        if (!audio) {
-          httpTtsAudioPaused.value = true;
-          httpTtsAudioNotice.value = "语音已准备，请点击继续朗读。";
-          return;
-        }
-        audio.load();
-        try {
-          await audio.play();
-        } catch {
-          httpTtsAudioPaused.value = true;
-          httpTtsAudioNotice.value = "语音已准备，请点击继续朗读或使用播放器播放。";
-        }
+        await playHttpTtsResource(generation);
         return;
       }
       await advanceHttpTtsChapter(generation);
@@ -825,6 +912,39 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   async function onHttpTtsAudioEnded(): Promise<void> {
     if (!httpTtsAudioActive.value) return;
+    if (httpTtsStreamId) {
+      const streamId = httpTtsStreamId;
+      const generation = httpTtsGeneration;
+      let status: HttpTtsStreamStatus;
+      try { status = await getHttpTtsStreamStatus(streamId); }
+      catch (error) {
+        if (generation === httpTtsGeneration) {
+          stopHttpTtsAudio(false);
+          httpTtsAudioError.value = `连续朗读状态读取失败：${options.errorText(error)}`;
+        }
+        return;
+      }
+      if (generation !== httpTtsGeneration || httpTtsStreamId !== streamId) return;
+      httpTtsSkippedChunks += Math.max(0, status.skipped - httpTtsStreamStartSkipped);
+      options.clearHighlight();
+      releaseCurrentHttpTtsAudio();
+      if (status.state === "error") {
+        stopHttpTtsAudio(false);
+        httpTtsAudioError.value = `远程朗读失败：${status.error ?? "音频生成中断"}`;
+      } else if (status.state === "fallback" || status.state === "running") {
+        httpTtsChunkIndex = status.state === "fallback" ? status.nextIndex : Math.max(0, httpTtsChunkIndex);
+        try { await requestNextHttpTtsChunk(generation); }
+        catch (error) {
+          if (generation === httpTtsGeneration) {
+            stopHttpTtsAudio(false);
+            httpTtsAudioError.value = `远程朗读失败：${options.errorText(error)}`;
+          }
+        }
+      } else {
+        await advanceHttpTtsChapter(generation);
+      }
+      return;
+    }
     options.clearHighlight();
     releaseCurrentHttpTtsAudio();
     httpTtsChunkIndex += 1;
@@ -883,7 +1003,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       if (generation !== httpTtsGeneration) return;
       httpTtsChunkIndex = 0;
       if (!httpTtsChunks.length) throw new Error("下一章没有可朗读的正文。");
-      await requestNextHttpTtsChunk(generation);
+      await startHttpTtsChapterPlayback(generation);
     } catch (error) {
       if (generation !== httpTtsGeneration) return;
       stopHttpTtsAudio(false);
@@ -895,6 +1015,17 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   function onHttpTtsAudioError(): void {
     if (!httpTtsAudioResource.value || !httpTtsAudioActive.value) return;
+    if (httpTtsStreamId) {
+      const generation = httpTtsGeneration;
+      releaseCurrentHttpTtsAudio();
+      void requestNextHttpTtsChunk(generation).catch(error => {
+        if (generation === httpTtsGeneration) {
+          stopHttpTtsAudio(false);
+          httpTtsAudioError.value = `连续播放不可用：${options.errorText(error)}`;
+        }
+      });
+      return;
+    }
     stopHttpTtsAudio(false);
     httpTtsAudioError.value = "远程语音资源无法播放，请重新生成。";
   }
@@ -962,6 +1093,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     onHttpTtsAudioPlay,
     onHttpTtsAudioPause,
     onHttpTtsAudioEnded,
+    onHttpTtsAudioTimeUpdate,
     onHttpTtsAudioError,
   };
 }

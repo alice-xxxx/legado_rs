@@ -67,7 +67,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
   box-sizing: border-box;
-  padding: 0 var(--gutter);
+  padding: var(--reader-text-top-inset, 0px) var(--gutter) var(--reader-text-bottom-inset, 0px);
   overflow: hidden;
   column-count: 1;
   column-gap: calc(2 * var(--gutter));

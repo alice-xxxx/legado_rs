@@ -10,6 +10,7 @@ import { readingStatistics } from "./readingStatistics";
 import type { AppBootstrap, ReadingHistoryResource, ReadingStatisticsResource } from "../../api/types";
 import { history as appHistory } from "./historyStore";
 import router, { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
@@ -162,7 +163,7 @@ function confirmHistoryClear(): void {
 }
 
 function returnToSettings(): void {
-  void router.push({ name: routeNames.settings });
+  returnToRoute(routeNames.settings);
 }
 
 const canOpenHistoryBook = (bookId: string) => Boolean(bookId);
@@ -363,21 +364,21 @@ onBeforeUnmount(() => {
           <p>颜色越深，表示当天累计阅读时间越长。统计按真实记录生成。</p>
         </details>
       </template>
-      <div v-if="historyDeletePendingBookId" class="record-confirm-backdrop">
+      <div v-if="historyDeletePendingBookId" class="record-confirm-backdrop" data-back-layer>
         <div class="record-confirm">
           <strong>删除《{{ title(historyDeletePendingBookId) }}》的阅读记录？</strong>
           <p>这本书的阅读会话与时长统计将被删除，操作不可撤销。</p>
           <footer>
-            <button type="button" class="record-action" @click="historyDeletePendingBookId = null">取消</button>
+            <button type="button" class="record-action" data-back-action @click="historyDeletePendingBookId = null">取消</button>
             <button type="button" class="record-action record-delete"
               :disabled="blocked" @click="confirmHistoryBookDeletion">确认删除</button>
           </footer>
         </div>
       </div>
-      <div v-if="historyClearPending" class="record-confirm-backdrop">
+      <div v-if="historyClearPending" class="record-confirm-backdrop" data-back-layer>
         <div class="record-confirm"><strong>清空全部阅读历史？</strong>
           <p>将删除已记录的阅读历史和统计，无法撤销。</p>
-          <footer><button type="button" class="record-action" @click="historyClearPending = false">取消</button>
+          <footer><button type="button" class="record-action" data-back-action @click="historyClearPending = false">取消</button>
             <button type="button" class="record-action record-delete" :disabled="blocked" @click="confirmHistoryClear">确认清空</button></footer>
         </div>
       </div>

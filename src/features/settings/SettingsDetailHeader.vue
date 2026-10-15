@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import BackButton from "../../ui/BackButton.vue";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 
 defineProps<{ title: string }>();
 
 function returnToAdvancedSettings(): void {
-  void router.push({ name: routeNames.settingsOther });
+  returnToRoute(routeNames.settingsOther);
 }
 </script>
 

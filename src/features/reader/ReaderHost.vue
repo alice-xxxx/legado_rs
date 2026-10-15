@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useRoute } from "vue-router";
 import type {
   AppBootstrap,
@@ -223,6 +224,7 @@ function onVisibilityChange(): void {
     else void readerFeatures.saveCurrentProgress();
     void readerFeatures.finishReadingSession();
   } else if (readerFeatures.readerVisible.value) {
+    syncReaderFullscreen(true);
     void refreshNativeAudio().then(() => readerFeatures.saveCurrentProgress())
       .catch(error => notify(errorText(error), "error"));
     void readerFeatures.refreshNativeSpeech();
@@ -277,6 +279,26 @@ onBeforeUnmount(() => {
 
 const bookSourceCandidates = computed(() => bookSourceSwitch.bookSourceEligibleSources);
 const readerVisible = readerFeatures.readerVisible;
+let fullscreenUpdate = Promise.resolve();
+function syncReaderFullscreen(visible: boolean): void {
+  const host = document.getElementById("reader-host");
+  if (!visible) host?.classList.remove("reader-fullscreen");
+  fullscreenUpdate = fullscreenUpdate.catch(() => {}).then(async () => {
+    try {
+      const active = await invoke<boolean>("set_reader_fullscreen", { hidden: visible });
+      if (!disposed && readerVisible.value === visible) {
+        host?.classList.toggle("reader-fullscreen", visible && active);
+      }
+    } catch (error) {
+      console.warn("Reader fullscreen could not be changed:", error);
+    }
+  });
+}
+watch(readerVisible, syncReaderFullscreen, { immediate: true });
+onBeforeUnmount(() => {
+  document.getElementById("reader-host")?.classList.remove("reader-fullscreen");
+  void fullscreenUpdate.catch(() => {}).then(() => invoke("set_reader_fullscreen", { hidden: false })).catch(() => {});
+});
 </script>
 
 <template>

@@ -3,7 +3,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import router, { settingsRouteNames } from "../../router";
+import { settingsRouteNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -26,7 +27,7 @@ interface RuleDraft {
 }
 
 function returnToAdvancedSettings(): void {
-  void router.push({ name: settingsRouteNames.other });
+  returnToRoute(settingsRouteNames.other);
 }
 
 

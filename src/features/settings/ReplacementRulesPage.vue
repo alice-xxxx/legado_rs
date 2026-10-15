@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
 import router, { settingsRouteNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import type { AppBootstrap, DisplayReplacementRule } from "../../api/types";
 import BackButton from "../../ui/BackButton.vue";
@@ -94,7 +95,7 @@ onBeforeUnmount(() => {
 });
 
 function returnToAdvancedSettings(): void {
-  void router.push({ name: settingsRouteNames.other });
+  returnToRoute(settingsRouteNames.other);
 }
 
 const query = ref("");

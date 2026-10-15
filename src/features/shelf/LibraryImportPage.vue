@@ -11,7 +11,8 @@ import type { LocalImportFormat } from "../../api/books";
 import type { AppBootstrap, ShelfResource } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import { getReaderSession } from "../reader/readerSession";
 
 const localBookImport = getLocalBookImportSession();
@@ -123,7 +124,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 <template>
   <section class="library-import-page">
     <header class="import-subpage-header safe-area-top">
-      <BackButton label="返回内容库" @click="router.push({ name: routeNames.shelf })" />
+      <BackButton label="返回内容库" @click="returnToRoute(routeNames.shelf)" />
       <div class="import-subpage-title"><strong>导入</strong></div>
       <span></span>
     </header>

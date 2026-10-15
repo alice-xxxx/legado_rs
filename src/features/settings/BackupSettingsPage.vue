@@ -5,7 +5,8 @@ import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { useBackupActions } from "./useBackupActions";
 import { settings as sharedSettings } from "./settingsStore";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 
@@ -24,7 +25,7 @@ const settings = sharedSettings;
 const locked = computed(() => shelfBatchRecoveryRequired.value);
 
 function returnToSettings(): void {
-  void router.push({ name: routeNames.settings });
+  returnToRoute(routeNames.settings);
 }
 
 const webDavUrl = ref("");

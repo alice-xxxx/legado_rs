@@ -1,5 +1,5 @@
 import { command } from "./ipc";
-import type { ResourceDescriptor, ReaderBackgroundPickerResponse, HttpTtsAudioResult, AppSettingsResource } from "./types";
+import type { ResourceDescriptor, ReaderBackgroundPickerResponse, HttpTtsAudioResult, HttpTtsStreamStart, HttpTtsStreamStatus, AppSettingsResource } from "./types";
 
 export type { TxtTocRule, TxtTocRulesDocument } from "./types";
 export type ConfigurationImportSource = { kind: "local" } | { kind: "url"; url: string } | { kind: "text"; text: string };
@@ -36,3 +36,12 @@ export const requestHttpTtsAudio = (configId: string, text: string, speechRate: 
 
 export const releaseHttpTtsAudio = (audioId: string) =>
   command<{ released: boolean }>("release_http_tts_audio", { audioId });
+
+export const startHttpTtsStream = (configId: string, chunks: Array<{ text: string; highlightIndex: number }>, speechRate: number) =>
+  command<HttpTtsStreamStart>("start_http_tts_stream", { configId, chunks, speechRate });
+
+export const getHttpTtsStreamStatus = (streamId: string) =>
+  command<HttpTtsStreamStatus>("get_http_tts_stream_status", { streamId });
+
+export const releaseHttpTtsStream = (streamId: string) =>
+  command<boolean>("release_http_tts_stream", { streamId });

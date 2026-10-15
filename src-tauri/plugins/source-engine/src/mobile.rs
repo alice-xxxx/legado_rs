@@ -1,7 +1,7 @@
 use serde::de::DeserializeOwned;
 use tauri::{
-    AppHandle, Runtime,
     plugin::{PluginApi, PluginHandle},
+    AppHandle, Runtime,
 };
 
 use crate::{
@@ -27,6 +27,38 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct SourceEngine<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> SourceEngine<R> {
+    #[cfg(target_os = "ios")]
+    pub fn set_navigation_gestures(&self, enabled: bool) -> crate::Result<bool> {
+        #[derive(serde::Serialize)]
+        struct Request {
+            enabled: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Response {
+            enabled: bool,
+        }
+        let response: Response = self
+            .0
+            .run_mobile_plugin("setNavigationGestures", Request { enabled })?;
+        Ok(response.enabled)
+    }
+
+    #[cfg(target_os = "ios")]
+    pub fn set_reader_fullscreen(&self, hidden: bool) -> crate::Result<bool> {
+        #[derive(serde::Serialize)]
+        struct Request {
+            hidden: bool,
+        }
+        #[derive(serde::Deserialize)]
+        struct Response {
+            hidden: bool,
+        }
+        let response: Response = self
+            .0
+            .run_mobile_plugin("setReaderFullscreen", Request { hidden })?;
+        Ok(response.hidden)
+    }
+
     pub fn execute(&self, call: SourceEngineCall) -> crate::Result<SourceEngineResponse> {
         self.0
             .run_mobile_plugin("execute", call)

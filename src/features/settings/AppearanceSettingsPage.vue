@@ -8,7 +8,8 @@ import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
-import router, { routeNames } from "../../router";
+import { routeNames } from "../../router";
+import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 
@@ -20,7 +21,7 @@ const operationBlocked = computed(() => backupBusy.value !== null || shelfBatchR
 const blocked = operationBlocked;
 const playbackRates = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75, 3] as const;
 function returnToSettings(): void {
-  void router.push({ name: routeNames.settings });
+  returnToRoute(routeNames.settings);
 }
 
 function changeSetting<K extends AppearanceSettingKey>(key: K, value: ReaderSettings[K]): void {

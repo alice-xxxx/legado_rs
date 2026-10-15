@@ -51,6 +51,7 @@ const pendingBookChapterCacheClear = ref<{ id: string; title: string } | null>(n
 let pageResourceRevision = 0;
 let disposed = false;
 let closing = false;
+let resumeRetryTimer: number | undefined;
 const unlisteners: UnlistenFn[] = [];
 const getRestoreRevision = getFrontendRestoreRevision;
 let bookCacheActionGeneration = 0;
@@ -189,7 +190,18 @@ async function retryBookDetails(): Promise<void> {
     }
   }
 }
+
+function retryResourceAfterResume(): void {
+  window.clearTimeout(resumeRetryTimer);
+  if (document.visibilityState !== "visible") return;
+  resumeRetryTimer = window.setTimeout(() => {
+    if (disposed || closing || bookPanelBusy.value || pageResourceLoading.value) return;
+    if (currentSearchResultDetails.value.error.startsWith("无法读取内容：")) void retryBookDetails();
+  }, 500);
+}
 onMounted(async () => {
+  document.addEventListener("visibilitychange", retryResourceAfterResume);
+  window.addEventListener("pageshow", retryResourceAfterResume);
   pageResourceLoading.value = true;
   clearOpenedBook();
   try {
@@ -213,6 +225,9 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   disposed = true;
+  window.clearTimeout(resumeRetryTimer);
+  document.removeEventListener("visibilitychange", retryResourceAfterResume);
+  window.removeEventListener("pageshow", retryResourceAfterResume);
   bookCacheActionGeneration += 1;
   pageResourceRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
@@ -737,7 +752,7 @@ loading="lazy" decoding="async"/>
         <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
         <p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p>
         <div class="modal-actions">
-          <button class="button secondary" :disabled="bookProgressResetBusy" @click="pendingBookProgressReset = null">取消</button>
+          <button class="button secondary" data-back-action :disabled="bookProgressResetBusy" @click="pendingBookProgressReset = null">取消</button>
           <button class="button danger" :disabled="bookProgressResetBusy || recoveryRequired" @click="bookDetailActions.resetOpenedBookProgress">
             {{ bookProgressResetBusy ? '正在重置…' : '确认重置进度' }}
           </button>
@@ -757,7 +772,7 @@ loading="lazy" decoding="async"/>
         <p>阅读进度、章节目录、封面和书签都会保留。<span v-if="readingBook?.id === pendingBookChapterCacheClear.id">当前阅读器会先保存阅读位置并关闭，避免继续显示已清除的正文。</span></p>
         <p v-if="bookChapterCacheClearError" class="source-identity-confirmation">{{ bookChapterCacheClearError }}</p>
         <div class="modal-actions">
-          <button class="button secondary" :disabled="bookChapterCacheClearBusy" @click="pendingBookChapterCacheClear = null">取消</button>
+          <button class="button secondary" data-back-action :disabled="bookChapterCacheClearBusy" @click="pendingBookChapterCacheClear = null">取消</button>
           <button class="button danger" :disabled="bookChapterCacheClearBusy || recoveryRequired" @click="clearOpenedBookChapterCache">
             {{ bookChapterCacheClearBusy ? '正在清除…' : '确认清除缓存' }}
           </button>
@@ -775,7 +790,7 @@ loading="lazy" decoding="async"/>
         <h2>从书架移除这本书？</h2>
         <p>《{{ pendingRemoval.title }}》及其本地书籍数据、阅读进度和书签都会被移除。</p>
         <div class="modal-actions">
-          <button class="button secondary" @click="pendingRemoval = null">保留</button>
+          <button class="button secondary" data-back-action @click="pendingRemoval = null">保留</button>
           <button class="button danger" :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
             确认移除
           </button>

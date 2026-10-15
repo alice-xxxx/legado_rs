@@ -16,7 +16,7 @@ const items: { screen: MainScreen; label: string }[] = [
 ];
 
 function navigate(screen: MainScreen): void {
-  void router.push({ name: routeNames[screen] });
+  void router.replace({ name: routeNames[screen] });
 }
 </script>
 
