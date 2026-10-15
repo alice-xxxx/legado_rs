@@ -59,6 +59,7 @@ mod tests {
         );
         assert_eq!(settings["reader"]["ttsRate"], 1.0);
         assert_eq!(settings["reader"]["audioSkipSeconds"], 15);
+        assert_eq!(settings["reader"]["readingMode"], "cover");
         for old in ["theme", "textColor", "backgroundColor"] {
             assert!(settings["reader"].get(old).is_none());
         }
@@ -83,6 +84,7 @@ mod tests {
             assert_eq!(settings["reader"]["ttsRate"], 1.75);
             assert_eq!(settings["reader"]["audioPlaybackRate"], 1.0);
             assert_eq!(settings["reader"]["audioSkipSeconds"], 15);
+            assert_eq!(settings["reader"]["readingMode"], "cover");
             assert_eq!(settings["home"]["tabs"][0]["id"], "custom");
             assert_eq!(settings["lastBackupAtMs"], 123);
             assert_eq!(settings["futureSetting"], 42);
@@ -108,6 +110,13 @@ mod tests {
         assert!(serde_json::from_value::<SettingsDocument>(settings.clone()).is_err());
         settings["reader"]["themes"]["dark"] = json!("dark");
         settings["theme"] = json!("paper");
+        assert!(serde_json::from_value::<SettingsDocument>(settings).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_unified_reading_modes() {
+        let mut settings = serde_json::to_value(SettingsDocument::default()).unwrap();
+        settings["reader"]["readingMode"] = json!("diagonal");
         assert!(serde_json::from_value::<SettingsDocument>(settings).is_err());
     }
 }

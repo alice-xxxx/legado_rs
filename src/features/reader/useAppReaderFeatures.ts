@@ -105,7 +105,7 @@ function currentReaderPosition(): ReaderPosition {
     quality: readingVideoChapter.value ? readerVideoQualityChoices.value[readerVideoQualityIndex.value]?.label : undefined };
   if (readingPdfPage.value) return { offset: 0 };
   if (readingImagePage.value) return imagePosition(readerViewport.value);
-  return textPosition(readerViewport.value, settings.value.reader.verticalScroll);
+  return textPosition(readerViewport.value, settings.value.reader.readingMode === "vertical");
 }
 const readerCurrentOffset = computed(() => {
   void readerPageIndex.value; void comicImageScrollTop.value; void readerMediaTimeMs.value;
@@ -426,7 +426,7 @@ readerNavigationActions = useReaderNavigationActions({
   getProgressRevision: () => progressRevision,
   advanceProgressRevision: () => { progressRevision += 1; },
   isBackupRestoreInProgress,
-  scrollReaderFrameToPage: () => scrollReaderFrameToPage(),
+  scrollReaderFrameToPage: (animate, direction) => scrollReaderFrameToPage(animate, direction),
   loadReaderChapter,
   notify,
   errorText,

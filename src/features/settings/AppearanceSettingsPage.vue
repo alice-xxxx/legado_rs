@@ -13,7 +13,7 @@ import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 
-type AppearanceSettingKey = "backgroundImageOpacity" | "fontSizePx" | "lineHeight" | "fontFamily" | "preloadCount" | "verticalScroll" | "audioPlaybackRate" | "videoPlaybackRate" | "audioSkipSeconds";
+type AppearanceSettingKey = "backgroundImageOpacity" | "fontSizePx" | "lineHeight" | "fontFamily" | "preloadCount" | "audioPlaybackRate" | "videoPlaybackRate" | "audioSkipSeconds";
 
 const backgroundBusy = ref(false);
 const backgroundError = ref("");
@@ -26,6 +26,11 @@ function returnToSettings(): void {
 
 function changeSetting<K extends AppearanceSettingKey>(key: K, value: ReaderSettings[K]): void {
   settings.value.reader[key] = value;
+}
+
+function changeReaderMode(event: Event): void {
+  const mode = (event.target as HTMLSelectElement).value;
+  settings.value.reader.readingMode = mode as ReaderSettings["readingMode"];
 }
 
 async function chooseBackground(): Promise<void> {
@@ -151,12 +156,13 @@ function clearBackground(): void {
 
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
-        <label for="reader-turn-style">翻页方式</label>
-        <small>正文左右翻页或上下滚动</small>
+        <label for="reader-turn-style">阅读方式</label>
+        <small>无动画、覆盖、仿真或上下滚动</small>
       </div>
-      <select id="reader-turn-style" :value="settings.reader.verticalScroll ? 'scroll' : 'page'"
-        :disabled="blocked" @change="changeSetting('verticalScroll', ($event.target as HTMLSelectElement).value === 'scroll')">
-        <option value="page">左右翻页</option><option value="scroll">连续滚动</option>
+      <select id="reader-turn-style" :value="settings.reader.readingMode ?? 'cover'"
+        :disabled="blocked" @change="changeReaderMode">
+        <option value="none">无动画</option><option value="cover">覆盖</option>
+        <option value="simulation">仿真翻页</option><option value="vertical">上下滚动</option>
       </select>
     </div>
       </section>

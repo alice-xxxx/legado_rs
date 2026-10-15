@@ -24,7 +24,7 @@ type ReaderNavigationOptions = {
   getProgressRevision: () => number;
   advanceProgressRevision: () => void;
   isBackupRestoreInProgress: () => boolean;
-  scrollReaderFrameToPage: () => void;
+  scrollReaderFrameToPage: (animate?: boolean, direction?: -1 | 1) => void;
   loadReaderChapter: (index: number) => Promise<boolean>;
   notifyCurrentReading: () => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void;
@@ -53,7 +53,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     options.readingPdfInitialPassword.value = "";
   }
 
-  function setReaderPage(index: number): void {
+  function setReaderPage(index: number, animate = false, direction: -1 | 1 = 1): void {
     if (!options.readerVisible.value || options.readerBusy.value || options.readingImagePage.value
       || options.readingMediaChapter.value || options.readingPdfPage.value) return;
     const next = Math.round(clamp(index, 0, options.readerPageCount.value - 1));
@@ -62,7 +62,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     options.readerProgressDirty.value = true;
     options.advanceProgressRevision();
     options.progressSaveState.value = "idle";
-    options.scrollReaderFrameToPage();
+    options.scrollReaderFrameToPage(animate, direction);
     void saveCurrentProgress();
   }
 
@@ -74,7 +74,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     }
     const next = options.readerPageIndex.value + direction;
     if (next >= 0 && next < options.readerPageCount.value) {
-      setReaderPage(next);
+      setReaderPage(next, true, direction);
       return;
     }
     if (direction > 0 && options.readerPageIndex.value === options.readerPageCount.value - 1) void changeChapter(1);

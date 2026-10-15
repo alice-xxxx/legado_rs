@@ -122,7 +122,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     const viewport = reader.viewport.value;
     if (viewport) {
       const bounds = viewport.getBoundingClientRect();
-      return settings.value.reader.verticalScroll
+      return settings.value.reader.readingMode === "vertical"
         ? Math.floor(Math.max(0, rect.top - bounds.top + viewport.scrollTop) / Math.max(1, viewport.clientHeight))
         : Math.floor(Math.max(0, rect.left - bounds.left + viewport.scrollLeft) / Math.max(1, viewport.clientWidth));
     }
@@ -204,7 +204,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
       // Keep that tap on the chapter instead of treating it as a chapter jump.
       // A deliberate swipe can still cross the chapter boundary.
       if (reader.imagePage.value || reader.pdfPage.value) actions.turnPage(-1);
-      else if (reader.pageIndex.value > 0) actions.setPage(reader.pageIndex.value - 1);
+      else if (reader.pageIndex.value > 0) actions.turnPage(-1);
       return;
     }
     if (x > width * 2 / 3) {

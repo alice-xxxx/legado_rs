@@ -87,7 +87,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.verticalScroll }" :style="readerStyle" @load.capture="emit('layout')">
+  <div ref="viewport" class="novel-reader" :class="{ vertical: settings.reader.readingMode === 'vertical' }" :style="readerStyle" @load.capture="emit('layout')">
     <article class="chapter-content">
       <h1 v-if="showTitle" class="chapter-title">{{ title }}</h1>
       <div v-if="text != null" class="chapter-text">{{ displayText }}</div>

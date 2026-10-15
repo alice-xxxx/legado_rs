@@ -14,7 +14,7 @@ export const defaultSettings: AppSettingsResource = {
     textAlign: "justify",
     themes: { light: "paper", dark: "dark" },
     preloadCount: 5,
-    verticalScroll: false,
+    readingMode: "cover",
     audioPlaybackRate: 1,
     audioSkipSeconds: 15,
     videoPlaybackRate: 1,

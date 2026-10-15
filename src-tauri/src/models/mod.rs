@@ -194,7 +194,7 @@ pub struct ReaderDefaults {
     pub themes: ReaderThemes,
     #[serde(default = "default_preload_count")]
     pub preload_count: usize,
-    pub vertical_scroll: bool,
+    pub reading_mode: ReadingMode,
     pub audio_playback_rate: f32,
     pub audio_skip_seconds: u64,
     pub video_playback_rate: f32,
@@ -206,6 +206,17 @@ pub struct ReaderDefaults {
     pub http_tts_config_id: Option<String>,
     pub tts_continue_across_chapters: bool,
     pub tts_start_position: String,
+}
+
+/// Reading layout and page-turn effect used by the Vue reader.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReadingMode {
+    None,
+    #[default]
+    Cover,
+    Simulation,
+    Vertical,
 }
 
 /// Themes supported by the Vue reader.
@@ -246,7 +257,7 @@ impl Default for ReaderDefaults {
             theme: ReaderTheme::Paper,
             themes: ReaderThemes::default(),
             preload_count: default_preload_count(),
-            vertical_scroll: false,
+            reading_mode: ReadingMode::default(),
             audio_playback_rate: 1.0,
             audio_skip_seconds: 15,
             video_playback_rate: 1.0,

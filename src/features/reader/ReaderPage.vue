@@ -52,6 +52,10 @@ export default defineComponent({
       audioToolPanel.value = null;
       context.openReaderControls("tts");
     }
+    function changeReaderMode(event: Event): void {
+      const mode = (event.target as HTMLSelectElement).value;
+      settings.value.reader.readingMode = mode as "none" | "cover" | "simulation" | "vertical";
+    }
     watch(() => context.readerControlsOpen.value, open => {
       if (!open) audioToolPanel.value = null;
     });
@@ -179,7 +183,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
   },
 });
 </script>
@@ -478,10 +482,11 @@ export default defineComponent({
         v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="setting-control compact-setting">
         <div><label for="reader-scroll-mode">阅读方式</label><small>本章按屏幕滚动或分页</small></div>
-        <select id="reader-scroll-mode" :value="settings.reader.verticalScroll ? 'vertical' : 'paged'"
-          :disabled="readerBusy"
-          @change="settings.reader.verticalScroll = ($event.target as HTMLSelectElement).value === 'vertical'">
-          <option value="paged">左右翻页</option>
+        <select id="reader-scroll-mode" :value="settings.reader.readingMode ?? 'cover'"
+          :disabled="readerBusy" @change="changeReaderMode">
+          <option value="none">无动画</option>
+          <option value="cover">覆盖</option>
+          <option value="simulation">仿真翻页</option>
           <option value="vertical">上下滚动</option>
         </select>
       </div>
