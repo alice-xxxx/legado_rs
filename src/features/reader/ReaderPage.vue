@@ -481,7 +481,7 @@ export default defineComponent({
       <div
         v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="setting-control compact-setting">
-        <div><label for="reader-scroll-mode">阅读方式</label><small>本章按屏幕滚动或分页</small></div>
+        <div><label for="reader-scroll-mode">阅读方式</label><small>左右翻页效果或上下滚动</small></div>
         <select id="reader-scroll-mode" :value="settings.reader.readingMode ?? 'cover'"
           :disabled="readerBusy" @change="changeReaderMode">
           <option value="none">无动画</option>
