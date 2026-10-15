@@ -293,6 +293,8 @@ class AnalyzeByJSoup(doc: Any) {
                 }
 
             val len = elements.size
+            // Inclusive ranges such as [0:-1] have no valid indices in an empty result.
+            if (len == 0) return elements
             val lastIndexes = (indexDefault.size - 1).takeIf { it != -1 } ?: (indexes.size - 1)
             val indexSet = mutableSetOf<Int>()
 

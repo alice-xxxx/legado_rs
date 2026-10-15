@@ -19,6 +19,26 @@ if (configCacheProperty.test(gradleProperties)) {
 }
 await writeFile(gradlePropertiesFile, gradleProperties, "utf8");
 
+// Tauri 2.12's Android AAR requires compileSdk >= 36. Some plugins still set 34
+// in their own build scripts; finalizeDsl runs after those values are assigned.
+const rootBuildFile = new URL("../gen/android/build.gradle.kts", import.meta.url);
+const librarySdkMarker = "// Foliver Android library compile SDK compatibility.";
+const rootBuild = await readFile(rootBuildFile, "utf8");
+if (!rootBuild.includes(librarySdkMarker)) {
+  const librarySdkConfig = String.raw`
+// Foliver Android library compile SDK compatibility.
+subprojects {
+    pluginManager.withPlugin("com.android.library") {
+        extensions.getByType<com.android.build.api.variant.LibraryAndroidComponentsExtension>()
+            .finalizeDsl { library ->
+                if ((library.compileSdk ?: 0) < 36) library.compileSdk = 36
+            }
+    }
+}
+`;
+  await writeFile(rootBuildFile, rootBuild + "\n" + librarySdkConfig, "utf8");
+}
+
 const buildFile = new URL("../gen/android/app/build.gradle.kts", import.meta.url);
 const manifestFile = new URL("../gen/android/app/src/main/AndroidManifest.xml", import.meta.url);
 const networkConfigFile = new URL("../gen/android/app/src/main/res/xml/network_security_config.xml", import.meta.url);

@@ -254,6 +254,13 @@ object NativeJsPropertyBridge {
         methodId == 2308 -> (obj as? BaseBook)?.let {
             stringToJsValue(ctx, it.getRealAuthor())
         } // getRealAuthor()
+        methodId == 2309 -> (obj as? Book)?.let {
+            qjs_NewBool(ctx, if (it.getReverseToc()) 1 else 0)
+        }
+        methodId == 2310 -> (obj as? Book)?.let {
+            it.setReverseToc(args.getOrNull(0) as? Boolean ?: false)
+            jsUndefined()
+        }
 
         // ============ BookChapter 变量/方法面 (2400-2499, chapter binding) ============
         methodId == 2401 -> (obj as? BookChapterLike)?.let {
@@ -679,6 +686,8 @@ function __createBookObj(handle) {
     obj.getCustomVariable = function() { return __nativeDispatch(handle, 2306, []); };
     obj.getKindList = function() { return __nativeDispatch(handle, 2307, []); };
     obj.getRealAuthor = function() { return __nativeDispatch(handle, 2308, []); };
+    obj.getReverseToc = function() { return __nativeDispatch(handle, 2309, []); };
+    obj.setReverseToc = function(reverse) { __nativeDispatch(handle, 2310, [!!reverse]); };
     // 属性 getter/setter (getter 1701+, setter = getter + 1000)
     Object.defineProperty(obj, "bookUrl", { get: function() { return __nativeDispatch(handle, 1701, []); }, set: function(v) { __nativeDispatch(handle, 2701, [v]); } });
     Object.defineProperty(obj, "name", { get: function() { return __nativeDispatch(handle, 1702, []); }, set: function(v) { __nativeDispatch(handle, 2702, [v]); } });

@@ -1130,6 +1130,9 @@ function __createJavaObj(handle) {
         var cryptoHandle = __nativeDispatch(handle, 201, [transformation, key, iv]);
         return __createCryptoObj(cryptoHandle);
     };
+    obj.desEncodeToBase64String = function(data, key, transformation, iv) {
+        return obj.createSymmetricCrypto(transformation, key, iv || null).encryptBase64(data);
+    };
     obj.createAsymmetricCrypto = function(transformation) {
         var cryptoHandle = __nativeDispatch(handle, 202, [transformation]);
         return __createAsymCryptoObj(cryptoHandle);

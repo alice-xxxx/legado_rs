@@ -443,7 +443,8 @@ open class AnalyzeRuleCore(
             }
         }
         result?.let {
-            return it as List<Any>
+            // QuickJS can return a Java Object[] as well as a JS array converted to List.
+            return if (it is Array<*>) it.filterNotNull() else it as List<Any>
         }
         return ArrayList()
     }

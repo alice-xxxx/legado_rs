@@ -478,8 +478,10 @@ namespace {
             env->ExceptionClear();
             return JS_ThrowInternalError(ctx, "Array.getLength threw");
         }
-        jobjectArray values = env->NewObjectArray(length, g_objectCls, nullptr);
-        if (!values) return JS_ThrowOutOfMemory(ctx);
+        // map may change element types (Response[] -> string[], byte[] -> objects).
+        // Keep callback results as JS values, including undefined and functions.
+        JSValue result = JS_NewArray(ctx);
+        if (JS_IsException(result)) return result;
         JSValueConst callbackThis = argc > 1 ? argv[1] : JS_UNDEFINED;
         for (jint i = 0; i < length; ++i) {
             jobject element = env->CallStaticObjectMethod(g_reflectArrayCls, g_reflectArrayGet,
@@ -487,7 +489,7 @@ namespace {
             if (env->ExceptionCheck()) {
                 env->ExceptionClear();
                 if (element) env->DeleteLocalRef(element);
-                env->DeleteLocalRef(values);
+                JS_FreeValue(ctx, result);
                 return JS_ThrowInternalError(ctx, "Array.get threw");
             }
             JSValue args[3] = {
@@ -499,22 +501,15 @@ namespace {
             JSValue mapped = JS_Call(ctx, argv[0], callbackThis, 3, args);
             for (auto &arg: args) JS_FreeValue(ctx, arg);
             if (JS_IsException(mapped)) {
-                env->DeleteLocalRef(values);
+                JS_FreeValue(ctx, result);
                 return mapped;
             }
-            jobject mappedValue = JniValueConvert::toJavaObject(ctx, env, mapped);
-            JS_FreeValue(ctx, mapped);
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-                if (mappedValue) env->DeleteLocalRef(mappedValue);
-                env->DeleteLocalRef(values);
-                return JS_ThrowTypeError(ctx, "Array.map result cannot be converted to Java");
+            // JS_SetPropertyUint32 consumes mapped on both success and failure.
+            if (JS_SetPropertyUint32(ctx, result, (uint32_t) i, mapped) < 0) {
+                JS_FreeValue(ctx, result);
+                return JS_EXCEPTION;
             }
-            env->SetObjectArrayElement(values, i, mappedValue);
-            if (mappedValue) env->DeleteLocalRef(mappedValue);
         }
-        JSValue result = wrapArrayLikeValues(ctx, env, source, values);
-        env->DeleteLocalRef(values);
         return result;
     }
 

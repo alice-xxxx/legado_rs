@@ -1,6 +1,8 @@
 package io.legado.sourceengine.bridge
 
 import io.legado.app.help.coroutine.registerJvmDebugState
+import io.legado.app.help.file.AppFilesDir
+import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.utils.KS_JSON
 import io.legado.sourceengine.bridge.http.RustHostHttpProvider
 import io.legado.sourceengine.bridge.HostHttpRequest
@@ -23,6 +25,8 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.nio.file.Files
+import java.nio.file.Path
 
 /**
  * 桌面 Rust 进程内嵌 JVM 后调用的稳定入口。
@@ -35,10 +39,21 @@ object SourceEngineEmbedded {
     private var initialized = false
 
     @JvmStatic
+    @JvmOverloads
     @Synchronized
-    fun executeJson(requestJson: String): String {
+    fun executeJson(requestJson: String, dataDir: String? = null): String {
         return runCatching {
             initializeOnce()
+            if (dataDir != null) {
+                // Use the Rust host's active data directory, never a separate legacy profile.
+                val root = Path.of(dataDir).resolve("source-engine")
+                AppFilesDirs.register(object : AppFilesDir {
+                    override val filesDir = Files.createDirectories(root.resolve("files")).toString()
+                    override val cacheDir = Files.createDirectories(root.resolve("cache")).toString()
+                    override val externalFilesDir: String? = null
+                    override val externalCacheDir: String? = null
+                })
+            }
             val request = KS_JSON.parseToJsonElement(requestJson) as JsonObject
             runBlocking { WebBookSourceRuleExecutor.execute(request.toCall(), EmbeddedRustSourceEngineHost) }
         }.getOrElse { error ->

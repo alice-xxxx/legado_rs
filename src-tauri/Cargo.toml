@@ -99,10 +99,10 @@ tauri-plugin-tts = { version = "=0.2.1", optional = true }
 [patch.crates-io]
 swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }
 
-# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+# Prefer runtime performance with moderate release build/link times.
 [profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
+codegen-units = 16
+lto = "thin"
+opt-level = 3
 panic = "abort"
 strip = true

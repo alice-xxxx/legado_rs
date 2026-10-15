@@ -81,10 +81,13 @@ mod desktop {
         let _execution = EXECUTION_LOCK
             .lock()
             .map_err(|_| "Embedded source-engine execution lock is poisoned".to_owned())?;
+        let kotlin_data_dir = jvm_compatible_path(&data_dir)
+            .to_string_lossy()
+            .into_owned();
         let _data_dir = DataDirScope::enter(data_dir);
         let _cancellation = crate::source_host_ffi::ExecutionCancellationScope::enter(cancellation)?;
         let vm = get_or_start_vm(classpath, quickjs_library, bundled_java_home)?;
-        vm.attach_current_thread(|env| call_kotlin(env, request_json))
+        vm.attach_current_thread(|env| call_kotlin(env, request_json, &kotlin_data_dir))
             .map_err(|error| format!("JNI call to Kotlin source engine failed: {error}"))
     }
 
@@ -178,17 +181,25 @@ mod desktop {
         Ok(JVM.get().expect("JVM was stored above"))
     }
 
-    fn call_kotlin(env: &mut Env<'_>, request_json: &str) -> Result<String, jni::errors::Error> {
+    fn call_kotlin(
+        env: &mut Env<'_>,
+        request_json: &str,
+        data_dir: &str,
+    ) -> Result<String, jni::errors::Error> {
         let class = env.find_class(jni_str!(
             "io/legado/sourceengine/bridge/SourceEngineEmbedded"
         ))?;
         let request = env.new_string(request_json)?;
+        let data_dir = env.new_string(data_dir)?;
         let value = env
             .call_static_method(
                 class,
                 jni_str!("executeJson"),
-                jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
-                &[JValue::Object(request.as_ref())],
+                jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"),
+                &[
+                    JValue::Object(request.as_ref()),
+                    JValue::Object(data_dir.as_ref()),
+                ],
             )?
             .l()?;
         // call_static_method 已按 String 返回签名检查了类型；把 JObject 包回 JString 时

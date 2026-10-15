@@ -183,6 +183,13 @@ data class Book(
     val config: ReadConfig
         get() = readConfig ?: ReadConfig().also { readConfig = it }
 
+    // Keep the source-script API while the value lives in ReadConfig.
+    fun getReverseToc(): Boolean = config.reverseToc
+
+    fun setReverseToc(reverse: Boolean) {
+        config.reverseToc = reverse
+    }
+
     fun getStartDate(): LocalDate? {
         if (!config.readSimulating || config.startDate == null) {
             return localDateNow()

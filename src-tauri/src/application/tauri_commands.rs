@@ -1,7 +1,7 @@
 //! Tauri IPC 命令适配层：维持前端命令名，并把业务委托给 Rust 服务。
 
 use super::*;
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 
 #[cfg(target_os = "ios")]

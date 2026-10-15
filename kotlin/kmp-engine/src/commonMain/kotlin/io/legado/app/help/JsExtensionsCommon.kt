@@ -306,6 +306,10 @@ interface JsExtensionsCommon {
         )
     }
 
+    /** Legacy source API; an empty IV means no IV, as required by ECB mode. */
+    fun desEncodeToBase64String(data: String, key: String, transformation: String, iv: String): String =
+        createSymmetricCrypto(transformation, key, iv.takeIf { it.isNotEmpty() }).encryptBase64(data)
+
     /* keys都为null时使用随机密钥 */
     fun createAsymmetricCrypto(
         transformation: String
@@ -654,7 +658,8 @@ interface JsExtensionsCommon {
      */
     fun toast(msg: Any?) {
         jsContext.ensureActive()
-        Toasters.get().toast("${getSource()?.getTag()}: $msg")
+        val toaster = Toasters.current()
+        if (toaster != null) toaster.toast("${getSource()?.getTag()}: $msg") else log(msg)
     }
 
     /**
@@ -662,7 +667,8 @@ interface JsExtensionsCommon {
      */
     fun longToast(msg: Any?) {
         jsContext.ensureActive()
-        Toasters.get().toastLong("${getSource()?.getTag()}: $msg")
+        val toaster = Toasters.current()
+        if (toaster != null) toaster.toastLong("${getSource()?.getTag()}: $msg") else log(msg)
     }
 
     /**

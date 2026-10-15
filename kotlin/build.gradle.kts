@@ -214,7 +214,7 @@ tasks.register("prepareDesktopJvmRuntime") {
                 jlink.absolutePath,
                 "--add-modules", desktopJvmRuntimeModules.joinToString(","),
                 "--strip-debug", "--strip-java-debug-attributes",
-                "--no-man-pages", "--no-header-files", "--compress=zip-9",
+                "--no-man-pages", "--no-header-files", "--compress=zip-6",
                 "--output", runtimeRoot.resolve("jre").absolutePath,
             ),
         )
