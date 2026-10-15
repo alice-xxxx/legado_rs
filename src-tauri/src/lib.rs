@@ -43,6 +43,19 @@ pub mod reading_tools;
 #[path = "resources/transactions.rs"]
 pub(crate) mod resource_transactions;
 pub mod resources;
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+pub(crate) fn app_data_root<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> tauri::Result<std::path::PathBuf> {
+    use tauri::Manager;
+    let root = app.path().app_data_dir()?;
+    // Android returns the sandbox root. Keep our data and its sibling lock/restore
+    // files inside it, rather than trying to write into /data/user/0.
+    #[cfg(target_os = "android")]
+    let root = root.join("files").join("legado");
+    Ok(root)
+}
 #[path = "search/history.rs"]
 pub(crate) mod search_history;
 
@@ -182,7 +195,7 @@ pub fn run() {
             });
 
             let app_handle = app.handle().clone();
-            let data_dir = app.path().app_data_dir()?;
+            let data_dir = app_data_root(app.handle())?;
             let source_engine_dir = data_dir.join("source-engine");
             let resource_dir = app.path().resource_dir().ok();
             let executor = std::sync::Arc::new(application::TauriSourceExecutor::new(

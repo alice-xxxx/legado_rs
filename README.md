@@ -1,4 +1,4 @@
-# legado_rs
+# Foliver
 
 Vue、Tauri 和 Rust 阅读应用，使用 Kotlin Multiplatform 书源引擎。构建目标为 Windows、macOS、Linux、Android 和 iOS。
 

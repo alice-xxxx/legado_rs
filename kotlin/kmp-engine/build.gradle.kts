@@ -57,12 +57,14 @@ val stageNativeInteropForIos = tasks.register<Sync>("stageNativeInteropForIos") 
 
 val buildIosNativeQuickJs = tasks.register<Exec>("buildIosNativeQuickJs") {
     val script = projectDir.resolve("scripts/build-ios-native.sh")
+    val nativeTargets = providers.gradleProperty("legado.iosNativeTargets")
+        .orElse("ios_arm64 ios_simulator_arm64")
     workingDir(projectDir)
-    commandLine("bash", script.absolutePath)
+    commandLine("bash", script.absolutePath, nativeTargets.get())
     inputs.file(script)
     inputs.dir("../src/native/quickjs-ng")
     inputs.dir("src/nativeInterop/cinterop/mbedtls")
-    inputs.property("iosNativeTargets", listOf("ios_arm64", "ios_simulator_arm64"))
+    inputs.property("iosNativeTargets", nativeTargets)
     inputs.property("iosToolchain", providers.provider {
         val developerDir = System.getenv("DEVELOPER_DIR") ?: commandOutput("xcode-select", "-p")
         val deviceClang = commandOutput("xcrun", "--sdk", "iphoneos", "--find", "clang")

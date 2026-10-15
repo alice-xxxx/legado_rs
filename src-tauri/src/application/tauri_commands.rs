@@ -61,7 +61,7 @@ async fn stage_desktop_external_path<R: tauri::Runtime>(
         .ok_or_else(|| "Selected file has no supported extension".to_owned())?;
     let display_name = identity_path.file_name().and_then(|name| name.to_str());
     let directory = super::file_import::picker_import_directory(
-        &app.path().app_data_dir().map_err(|error| error.to_string())?,
+        &crate::app_data_root(app).map_err(|error| error.to_string())?,
     );
     tokio::fs::create_dir_all(&directory)
         .await
@@ -194,7 +194,7 @@ async fn selected_to_local_with_limit<R: tauri::Runtime>(
         ));
     }
     let directory = super::file_import::picker_import_directory(
-        &app.path().app_data_dir().map_err(|error| error.to_string())?,
+        &crate::app_data_root(app).map_err(|error| error.to_string())?,
     );
     tokio::fs::create_dir_all(&directory)
         .await

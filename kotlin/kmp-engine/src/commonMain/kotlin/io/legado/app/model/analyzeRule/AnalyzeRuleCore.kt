@@ -87,7 +87,8 @@ open class AnalyzeRuleCore(
     fun setContent(content: Any?): AnalyzeRuleCore = setContent(content, null)
 
     fun setContent(content: Any?, baseUrl: String? = null): AnalyzeRuleCore {
-        if (content == null) throw AssertionError("内容不可空（Content cannot be null）")
+        // A rule can return null; keep it within source error handling and iOS @Throws(Exception).
+        requireNotNull(content) { "内容不可空（Content cannot be null）" }
         this.content = content
         isJSON = when (content) {
             is Node -> false
