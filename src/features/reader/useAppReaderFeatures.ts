@@ -10,6 +10,7 @@ import { isImageOnlyChapter, type PdfPageResource } from "./readerContent";
 import type { ReaderPendingFragmentState, ReaderTouchStartState } from "./useReaderPageInteraction";
 import { settings } from "../settings/settingsStore";
 import { useReaderDisplay } from "./useReaderDisplay";
+import { useReaderChapterWindow } from "./useReaderChapterWindow";
 import { useReaderTts } from "./useReaderTts";
 import { useReaderTtsActions } from "./useReaderTtsActions";
 import { type CachedChapterContent, useReaderChapterLoading } from "./useReaderChapterLoading";
@@ -76,6 +77,7 @@ let readerPendingFragment: ReaderPendingFragmentState | null = null;
 let readerPageInteraction!: ReturnType<typeof useReaderPageInteraction>;
 let readerDisplay!: ReturnType<typeof useReaderDisplay>;
 let readerChapterLoading!: ReturnType<typeof useReaderChapterLoading>;
+let readerChapterWindow!: ReturnType<typeof useReaderChapterWindow>;
 const readerControlsMode = ref<ReaderControlsMode>("settings");
 const readerDirectoryOpen = ref(false);
 const readerDirectoryQuery = ref("");
@@ -260,7 +262,10 @@ async function startReading(book: BookResource, index?: number, offset?: number,
 }
 
 function setReaderPage(index: number): void { readerNavigationActions.setReaderPage(index); }
-function turnPage(direction: -1 | 1): void { readerNavigationActions.turnPage(direction); }
+function turnPage(direction: -1 | 1): void {
+  if (!readerBusy.value && readerChapterWindow?.turn(direction)) return;
+  readerNavigationActions.turnPage(direction);
+}
 function changeChapter(direction: -1 | 1): Promise<void> { return readerNavigationActions.changeChapter(direction); }
 function saveCurrentProgress(): Promise<void> { return readerNavigationActions.saveCurrentProgress(); }
 
@@ -330,7 +335,9 @@ readerDisplay = useReaderDisplay({
   actions: { setPage: setReaderPage, turnPage, saveProgress: saveCurrentProgress,
     markProgress: () => { readerProgressDirty.value = true; progressRevision += 1; },
     stopTts: () => readerTts.stopTtsForDisplayChange(), clearTtsHighlight: () => readerTtsActions.clearTtsHighlight(),
-    updateTtsSelection: () => updateTtsSelection() },
+    updateTtsSelection: () => updateTtsSelection(), onTextScroll: () => readerChapterWindow?.onScroll(),
+    chapterPreview: direction => readerChapterWindow?.chapterPreview(direction) ?? null,
+    commitChapterTurn: direction => readerChapterWindow.commitChapterTurn(direction) },
 });
 const { scrollReaderFrameToPage } = readerDisplay;
 
@@ -431,6 +438,14 @@ readerNavigationActions = useReaderNavigationActions({
   loadReaderChapter,
   notify,
   errorText,
+});
+
+readerChapterWindow = useReaderChapterWindow({
+  book: readingBook, index: readingChapterIndex, content: readingContent, visible: readerVisible,
+  busy: readerBusy, viewport: readerViewport,
+  adopt: chapter => readerChapterLoading.adoptPreparedChapter(chapter),
+  animate: (viewport, direction, done) => readerDisplay.animateChapterTurn(viewport, direction, done),
+  measure: () => readerDisplay.measureReaderPages(), setPage: setReaderPage, save: saveCurrentProgress, notify,
 });
 
 readerBookmarksAndHistory = useReaderBookmarksAndHistory({
@@ -560,6 +575,9 @@ async function openHttpTtsSettings(): Promise<void> {
 }
 
 return {
+  continuousChapters: readerChapterWindow.continuousChapters,
+  previewChapters: readerChapterWindow.previewChapters,
+  setReaderChapterPreview: readerChapterWindow.setPreview,
   ...readerTts, ...readerTtsActions, ...readerDictionary,
   ...readerBookmarksAndHistory, ...readerMediaBinding, ...readerNavigationActions, ...readerDisplay,
   readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom, readingPdfInitialPassword,

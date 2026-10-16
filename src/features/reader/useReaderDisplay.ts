@@ -1,4 +1,4 @@
-import { imagePosition, textPosition, restoreImagePosition, restoreTextPosition, type ReaderPosition } from "./readerPosition";
+import { imagePosition, textPosition, textChapterBounds, readerPageWidth, restoreImagePosition, restoreTextPosition, type ReaderPosition } from "./readerPosition";
 import { onScopeDispose, watch, type Ref } from "vue";
 import { settings } from "../settings/settingsStore";
 import { hasPageTurnAnimation } from "../settings/readerModes";
@@ -22,12 +22,15 @@ export function useReaderDisplay(options: {
   getPageInteraction: () => {
     clearReaderFindMatches: () => void;
     rebuildReaderFind: () => void; onReaderFrameClick: (event: MouseEvent) => void;
-    onReaderFrameTouchTap: (x: number) => void;
+    onReaderFrameTouchTap: (x: number, y: number) => void;
   };
   actions: {
     setPage: (index: number) => void; turnPage: (direction: -1 | 1) => void;
     saveProgress: () => Promise<void>; markProgress: () => void;
     stopTts: () => void; clearTtsHighlight: () => void; updateTtsSelection: () => void;
+    onTextScroll: () => void;
+    chapterPreview: (direction: -1 | 1) => HTMLElement | null;
+    commitChapterTurn: (direction: -1 | 1) => void;
   };
 }) {
   const { reader, actions } = options;
@@ -36,11 +39,15 @@ export function useReaderDisplay(options: {
   let viewportWidth = 0;
   let viewportHeight = 0;
   let activePageTurn: ReaderPageTurn | null = null;
-  let pageDrag: { origin: number; last: number; direction: -1 | 1; cancelled: boolean; target: number } | null = null;
+  let wheelTurnUntil = 0;
+  let chapterTurnDone: ((committed: boolean) => void) | null = null;
+  let measuredMode = settings.value.reader.readingMode;
+  let pageDrag: { origin: number; last: number; direction: -1 | 1; cancelled: boolean; target: number; chapter: boolean } | null = null;
   function clearPageTurnAnimation(): void {
     activePageTurn?.dispose();
     activePageTurn = null;
     pageDrag = null;
+    const done = chapterTurnDone; chapterTurnDone = null; done?.(false);
   }
   onScopeDispose(clearPageTurnAnimation);
   watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.menuOpen.value], () => {
@@ -61,8 +68,17 @@ export function useReaderDisplay(options: {
     const viewport = reader.viewport.value;
     if (!viewport || reader.busy.value || reader.mediaChapter.value) return;
     const position = lastPosition;
+    const mode = settings.value.reader.readingMode;
+    const resized = viewportWidth !== viewport.clientWidth || viewportHeight !== viewport.clientHeight || measuredMode !== mode;
     viewportWidth = viewport.clientWidth;
     viewportHeight = viewport.clientHeight;
+    measuredMode = mode;
+    if (!reader.imagePage.value && mode === "vertical") {
+      reader.pageCount.value = Math.max(1, Math.ceil((textChapterBounds(viewport).height - 1) / Math.max(1, viewport.clientHeight)));
+      if (resized && position) restoreReadingPosition(position);
+      else rememberPosition();
+      return;
+    }
     measureReaderPages(false);
     if (position) restoreReadingPosition(position);
     else rememberPosition();
@@ -73,8 +89,8 @@ export function useReaderDisplay(options: {
     const previousCount = reader.pageCount.value;
     const previousIndex = reader.pageIndex.value;
     const vertical = settings.value.reader.readingMode === "vertical";
-    const size = Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth);
-    reader.pageCount.value = Math.max(1, Math.ceil(((vertical ? viewport.scrollHeight : viewport.scrollWidth) - 1) / size));
+    const size = Math.max(1, vertical ? viewport.clientHeight : readerPageWidth(viewport));
+    reader.pageCount.value = Math.max(1, Math.ceil(((vertical ? textChapterBounds(viewport).height : viewport.scrollWidth) - 1) / size));
     reader.pageIndex.value = preserveRatio && previousCount > 1
       ? Math.round(reader.pageIndex.value / (previousCount - 1) * (reader.pageCount.value - 1))
       : Math.min(reader.pageIndex.value, reader.pageCount.value - 1);
@@ -99,8 +115,9 @@ export function useReaderDisplay(options: {
     if (!viewport || reader.imagePage.value || reader.mediaChapter.value) return;
     const vertical = settings.value.reader.readingMode === "vertical";
     const shouldAnimate = animate && !vertical && animatePageTurn(viewport, direction);
-    viewport.scrollTo({ left: vertical ? 0 : reader.pageIndex.value * viewport.clientWidth,
-      top: vertical ? reader.pageIndex.value * viewport.clientHeight : 0, behavior: "instant" as ScrollBehavior });
+    const chapter = textChapterBounds(viewport);
+    viewport.scrollTo({ left: vertical ? 0 : reader.pageIndex.value * readerPageWidth(viewport),
+      top: vertical ? chapter.top + Math.min(reader.pageIndex.value * viewport.clientHeight, Math.max(0, chapter.height - viewport.clientHeight)) : 0, behavior: "instant" as ScrollBehavior });
     if (!shouldAnimate) clearPageTurnAnimation();
   }
   function onReaderFrameScroll(): void {
@@ -110,6 +127,7 @@ export function useReaderDisplay(options: {
       handleReaderResize();
       return;
     }
+    if (!reader.imagePage.value && settings.value.reader.readingMode === "vertical") actions.onTextScroll();
     rememberPosition();
     if (reader.imagePage.value) {
       const offset = Math.max(0, Math.round(viewport.classList.contains("paged") ? viewport.scrollLeft : viewport.scrollTop));
@@ -117,8 +135,11 @@ export function useReaderDisplay(options: {
       reader.comicScrollTop.value = offset;
     } else {
       const vertical = settings.value.reader.readingMode === "vertical";
-      const index = Math.min(reader.pageCount.value - 1, Math.max(0, Math.round(
-        vertical ? viewport.scrollTop / Math.max(1, viewport.clientHeight) : viewport.scrollLeft / Math.max(1, viewport.clientWidth))));
+      const chapter = textChapterBounds(viewport);
+      if (vertical) reader.pageCount.value = Math.max(1, Math.ceil((chapter.height - 1) / Math.max(1, viewport.clientHeight)));
+      const atBottom = vertical && viewport.scrollTop + viewport.clientHeight >= chapter.top + chapter.height - 1;
+      const index = atBottom ? reader.pageCount.value - 1 : Math.min(reader.pageCount.value - 1, Math.max(0, Math.round(
+        vertical ? (viewport.scrollTop - chapter.top) / Math.max(1, viewport.clientHeight) : viewport.scrollLeft / readerPageWidth(viewport))));
       if (index === reader.pageIndex.value) return;
       reader.pageIndex.value = index;
     }
@@ -135,6 +156,24 @@ export function useReaderDisplay(options: {
     const node = target as Node | null;
     const element = node?.nodeType === 1 ? node as Element : node?.parentElement;
     return !!element?.closest("a[href],button,input,textarea,select,audio,video,[contenteditable]:not([contenteditable='false'])");
+  }
+  function onReaderFrameWheel(event: WheelEvent): void {
+    const viewport = reader.viewport.value;
+    if (!viewport || !reader.visible.value || reader.busy.value || reader.menuOpen.value || reader.imagePage.value
+      || reader.mediaChapter.value || ignoredTouch(event.target)
+      || viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
+    const mode = settings.value.reader.readingMode;
+    if (mode !== "vertical") {
+      const vertical = mode === "slide-vertical";
+      const distance = vertical ? event.deltaY : event.deltaX;
+      const crossDistance = vertical ? event.deltaX : event.deltaY;
+      if (!distance || Math.abs(distance) <= Math.abs(crossDistance) * 1.35) return;
+      if (event.cancelable) event.preventDefault();
+      const now = Date.now(), previous = wheelTurnUntil;
+      wheelTurnUntil = now + 200;
+      if (now >= previous && !activePageTurn) actions.turnPage(distance > 0 ? 1 : -1);
+      return;
+    }
   }
   function onReaderFrameTouchStart(event: TouchEvent): void {
     clearPageTurnAnimation();
@@ -168,11 +207,14 @@ export function useReaderDisplay(options: {
         const position = verticalTurn ? touch.clientY : touch.clientX;
         const direction = position < origin ? 1 : -1;
         const target = reader.pageIndex.value + direction;
-        if (target >= 0 && target < reader.pageCount.value && hasPageTurnAnimation(mode)) {
+        const crossing = target < 0 || target >= reader.pageCount.value;
+        const preview = crossing ? actions.chapterPreview(direction) : null;
+        if ((!crossing || preview) && hasPageTurnAnimation(mode)) {
           const bounds = start.viewport.getBoundingClientRect();
-          activePageTurn = createReaderPageTurn(start.viewport, direction, mode, target,
-            { x: start.x - bounds.left, y: start.y - bounds.top });
-          if (activePageTurn) pageDrag = { origin: origin - direction * 12, last: position, direction, cancelled: false, target };
+          const destination = preview ? direction > 0 ? 0 : Math.max(0, Math.ceil((preview.scrollWidth - 1) / readerPageWidth(preview)) - 1) : target;
+          activePageTurn = createReaderPageTurn(start.viewport, direction, mode, destination,
+            { x: start.x - bounds.left, y: start.y - bounds.top }, preview ?? start.viewport);
+          if (activePageTurn) pageDrag = { origin: origin - direction * 12, last: position, direction, cancelled: false, target, chapter: crossing };
         }
       }
       updatePageDrag(touch.clientX, touch.clientY);
@@ -210,11 +252,14 @@ export function useReaderDisplay(options: {
       reader.setClickSuppressedUntil(Date.now() + 500);
       if (reader.imagePage.value) return;
       if (event.cancelable) event.preventDefault();
-      options.getPageInteraction().onReaderFrameTouchTap(touch.clientX);
+      options.getPageInteraction().onReaderFrameTouchTap(touch.clientX, touch.clientY);
       return;
     }
     reader.setClickSuppressedUntil(Date.now() + 500);
-    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical" || reader.menuOpen.value) return;
+    if (reader.imagePage.value || reader.menuOpen.value) return;
+    if (settings.value.reader.readingMode === "vertical") {
+      return;
+    }
     if (event.cancelable) event.preventDefault();
     if (pageDrag && activePageTurn) {
       updatePageDrag(touch.clientX, touch.clientY);
@@ -227,7 +272,10 @@ export function useReaderDisplay(options: {
         if (activePageTurn !== turn) return;
         clearPageTurnAnimation();
         if (committed && reader.viewport.value === start.viewport && reader.getLoadRevision() === start.loadRevision
-          && reader.visible.value && !reader.busy.value) actions.setPage(drag.target);
+          && reader.visible.value && !reader.busy.value) {
+          if (drag.chapter) actions.commitChapterTurn(drag.direction);
+          else actions.setPage(drag.target);
+        }
       });
       return;
     }
@@ -248,8 +296,11 @@ export function useReaderDisplay(options: {
     } else {
       const vertical = settings.value.reader.readingMode === "vertical";
       restoreTextPosition(viewport, position, vertical);
-      reader.pageIndex.value = Math.max(0, Math.floor((vertical ? viewport.scrollTop : viewport.scrollLeft)
-        / Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth)));
+      const chapter = textChapterBounds(viewport);
+      const atBottom = vertical && viewport.scrollTop + viewport.clientHeight >= chapter.top + chapter.height - 1;
+      reader.pageIndex.value = atBottom ? reader.pageCount.value - 1 : Math.max(0, vertical
+        ? Math.round((viewport.scrollTop - chapter.top) / Math.max(1, viewport.clientHeight))
+        : Math.floor((viewport.scrollLeft + 1) / readerPageWidth(viewport)));
     }
   }
   function applyComicScrollPosition(): void {
@@ -271,6 +322,7 @@ export function useReaderDisplay(options: {
     const interaction = options.getPageInteraction();
     element?.ownerDocument.removeEventListener("selectionchange", actions.updateTtsSelection);
     element?.removeEventListener("scroll", onReaderFrameScroll);
+    element?.removeEventListener("wheel", onReaderFrameWheel);
     element?.removeEventListener("touchstart", onReaderFrameTouchStart);
     element?.removeEventListener("touchmove", onReaderFrameTouchMove);
     element?.removeEventListener("touchend", onReaderFrameTouchEnd);
@@ -286,6 +338,7 @@ export function useReaderDisplay(options: {
     viewportHeight = element?.clientHeight ?? 0;
     if (!element) return;
     element.addEventListener("scroll", onReaderFrameScroll, { passive: true });
+    element.addEventListener("wheel", onReaderFrameWheel, { passive: false });
     element.addEventListener("touchstart", onReaderFrameTouchStart, { passive: true });
     element.addEventListener("touchmove", onReaderFrameTouchMove, { passive: false });
     element.addEventListener("touchend", onReaderFrameTouchEnd, { passive: false });
@@ -298,7 +351,22 @@ export function useReaderDisplay(options: {
     actions.stopTts(); actions.clearTtsHighlight(); options.getPageInteraction().clearReaderFindMatches();
   }
   function onReaderLayout(): void { handleReaderResize(); options.getPageInteraction().rebuildReaderFind(); }
+  function animateChapterTurn(preview: HTMLElement, direction: -1 | 1, done: (committed: boolean) => void): void {
+    clearPageTurnAnimation();
+    const viewport = reader.viewport.value, mode = settings.value.reader.readingMode;
+    if (!viewport || !hasPageTurnAnimation(mode)) { done(true); return; }
+    const target = direction > 0 ? 0 : Math.max(0, Math.ceil((preview.scrollWidth - 1) / readerPageWidth(viewport)) - 1);
+    const turn = createReaderPageTurn(viewport, direction, mode, target, undefined, preview);
+    if (!turn) { done(true); return; }
+    activePageTurn = turn; chapterTurnDone = done;
+    turn.settle(true, committed => {
+      if (activePageTurn !== turn) return;
+      chapterTurnDone = null;
+      done(committed);
+      clearPageTurnAnimation();
+    });
+  }
   return { restoreReadingPosition, handleReaderResize, clearReaderScrollListeners, setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
-    scrollReaderFrameToPage, onReaderFrameScroll, shouldIgnoreReaderKeydown,
+    scrollReaderFrameToPage, animateChapterTurn, onReaderFrameScroll, shouldIgnoreReaderKeydown,
     onReaderFrameTouchStart, onReaderFrameTouchMove, onReaderFrameTouchEnd, applyComicScrollPosition };
 }

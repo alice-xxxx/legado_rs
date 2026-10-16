@@ -20,10 +20,10 @@ export interface ReaderPageTurn {
 
 /** Library-owned rendering on two inert pages; the live viewport never moves during a drag. */
 export function createReaderPageTurn(viewport: HTMLElement, direction: PageTurnDirection,
-  mode: AnimatedReadingMode, targetPage: number, touchStart?: Point): ReaderPageTurn | null {
+  mode: AnimatedReadingMode, targetPage: number, touchStart?: Point, targetViewport = viewport): ReaderPageTurn | null {
   const frame = viewport.parentElement;
   const view = viewport.ownerDocument.defaultView;
-  const width = viewport.clientWidth, height = viewport.clientHeight;
+  const { width, height } = viewport.getBoundingClientRect();
   if (!frame?.classList.contains("reader-content-frame") || !view || width <= 0 || height <= 0) return null;
   const layer = viewport.ownerDocument.createElement("div");
   layer.className = `reader-page-turn-layer reader-page-turn-${mode}`;
@@ -34,14 +34,15 @@ export function createReaderPageTurn(viewport: HTMLElement, direction: PageTurnD
   layer.style.backgroundColor = style.backgroundColor;
   const axis = mode === "slide-vertical" ? "y" : "x";
   const size = axis === "y" ? height : width;
-  function snapshot(left: number): HTMLElement {
+  function snapshot(source: HTMLElement, left: number): HTMLElement {
     const leaf = viewport.ownerDocument.createElement("div");
     const window = viewport.ownerDocument.createElement("div");
     window.className = "reader-page-turn-snapshot";
     window.style.backgroundColor = style.backgroundColor;
     window.style.setProperty("--novel-background-image", style.getPropertyValue("--novel-background-image"));
     window.style.setProperty("--novel-background-opacity", style.getPropertyValue("--novel-background-opacity"));
-    const page = viewport.cloneNode(true) as HTMLElement;
+    const page = source.cloneNode(true) as HTMLElement;
+    page.classList.remove("reader-chapter-preview");
     for (const node of [page, ...page.querySelectorAll<HTMLElement>("*")]) {
       node.removeAttribute("id");
       node.removeAttribute("contenteditable");
@@ -60,8 +61,9 @@ export function createReaderPageTurn(viewport: HTMLElement, direction: PageTurnD
     leaf.append(window);
     return leaf;
   }
-  const offsets = direction > 0 ? [viewport.scrollLeft, targetPage * width] : [targetPage * width, viewport.scrollLeft];
-  const leaves = offsets.map(snapshot);
+  const current = snapshot(viewport, viewport.scrollLeft);
+  const destination = snapshot(targetViewport, targetPage * width);
+  const leaves = direction > 0 ? [current, destination] : [destination, current];
   const initial = direction > 0 ? 0 : 1;
   const target = 1 - initial;
   let progress = 0;

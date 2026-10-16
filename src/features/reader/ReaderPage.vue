@@ -1,5 +1,5 @@
 <script lang="ts">
-import { defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
+import { computed, defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
 import type { ReaderContextFeatures } from "./readerContext";
 import type { SourceMetadata } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
@@ -7,7 +7,7 @@ import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
 import { settings } from "../settings/settingsStore";
-import { isReadingMode, readingModes } from "../settings/readerModes";
+import { isReadingMode, isVerticalReadingMode, readingModes } from "../settings/readerModes";
 import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "../settings/themeState";
 import { httpTtsConfigs } from "../settings/configurationStores";
 import { openedBook } from "../books/bookDetailState";
@@ -30,6 +30,8 @@ export default defineComponent({
       closeReader: props.closeReader,
     };
     const comicBrightness = ref(100);
+    const horizontalReaderEdges = computed(() => context.readingImagePage.value || context.readingPdfPage.value
+      || (!context.readingMediaChapter.value && !isVerticalReadingMode(settings.value.reader.readingMode)));
     const bookmarkNoteInput = ref<HTMLTextAreaElement | null>(null);
     let bookmarkReturnFocus: HTMLElement | null = null;
     watch(context.bookmarkEditorOpen, async open => {
@@ -184,7 +186,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
   },
 });
 </script>
@@ -358,8 +360,8 @@ export default defineComponent({
           :disabled="readerBusy || ctx.readerMediaRetrying || shelfBatchRecoveryRequired"
           @click.stop="reloadCurrentChapter">{{ ctx.readerMediaRetrying ? '正在重新加载…' : '重新加载' }}</button>
       </div>
-      <div v-if="!ctx.readingMediaChapter" class="reader-edge reader-edge-left" @click.stop="turnReaderEdge(-1)"></div>
-      <div v-if="!ctx.readingMediaChapter" class="reader-edge reader-edge-right" @click.stop="turnReaderEdge(1)"></div>
+      <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-left" @click.stop="turnReaderEdge(-1)"></div>
+      <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-right" @click.stop="turnReaderEdge(1)"></div>
     </div>
     <footer v-if="ctx.readingImagePage" class="reader-footer reader-comic-dock">
       <nav class="reader-bottom-nav">

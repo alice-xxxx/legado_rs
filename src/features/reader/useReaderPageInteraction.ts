@@ -2,6 +2,7 @@ import { openedBook } from "../books/bookDetailState";
 import type { Ref } from "vue";
 import { settings } from "../settings/settingsStore";
 import type { PdfPageResource } from "./readerContent";
+import { textChapterElement, textChapterBounds, readerPageWidth } from "./readerPosition";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 
@@ -123,8 +124,8 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     if (viewport) {
       const bounds = viewport.getBoundingClientRect();
       return settings.value.reader.readingMode === "vertical"
-        ? Math.floor(Math.max(0, rect.top - bounds.top + viewport.scrollTop) / Math.max(1, viewport.clientHeight))
-        : Math.floor(Math.max(0, rect.left - bounds.left + viewport.scrollLeft) / Math.max(1, viewport.clientWidth));
+        ? Math.floor(Math.max(0, rect.top - bounds.top + viewport.scrollTop - textChapterBounds(viewport).top) / Math.max(1, viewport.clientHeight))
+        : Math.floor(Math.max(0, rect.left - bounds.left + viewport.scrollLeft) / readerPageWidth(viewport));
     }
     return 0;
   }
@@ -134,7 +135,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     const document = frame?.ownerDocument;
     if (!document || frame !== reader.viewport.value || loadRevision !== reader.getLoadRevision() || chapterIndex !== reader.chapterIndex.value
       || reader.imagePage.value || reader.mediaChapter.value || reader.pdfPage.value) return false;
-    const target = frame?.querySelector(`[id="${CSS.escape(fragment)}"],[name="${CSS.escape(fragment)}"]`);
+    const target = frame ? textChapterElement(frame).querySelector(`[id="${CSS.escape(fragment)}"],[name="${CSS.escape(fragment)}"]`) : null;
     if (!target) return false;
     actions.setPage(readerSegmentForElement(target));
     return true;
@@ -183,10 +184,10 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     const frameBounds = reader.viewport.value?.getBoundingClientRect();
     if (!frameBounds) return;
     if (reader.viewport.value) event.stopPropagation();
-    handleReaderTapAt(event.clientX);
+    handleReaderTapAt(event.clientX, event.clientY);
   }
 
-  function handleReaderTapAt(x: number): void {
+  function handleReaderTapAt(x: number, y: number): void {
     if (reader.busy.value || reader.sourceRefreshBusy.value) return;
     if (reader.menuOpen.value) {
       reader.menuOpen.value = false;
@@ -194,18 +195,21 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
       reader.directoryOpen.value = false;
       return;
     }
-    const width = window.innerWidth;
-    if (x < width / 3) {
-      // In text mode, the first line can itself sit inside the left tap zone.
-      // Keep that tap on the chapter instead of treating it as a chapter jump.
-      // A deliberate swipe can still cross the chapter boundary.
-      if (reader.imagePage.value || reader.pdfPage.value) actions.turnPage(-1);
-      else if (reader.pageIndex.value > 0) actions.turnPage(-1);
-      return;
-    }
-    if (x > width * 2 / 3) {
-      actions.turnPage(1);
-      return;
+    const mode = settings.value.reader.readingMode;
+    const textReader = !reader.imagePage.value && !reader.pdfPage.value;
+    if (!textReader || mode !== "vertical") {
+      const vertical = textReader && mode === "slide-vertical";
+      const bounds = reader.viewport.value?.getBoundingClientRect();
+      const position = vertical ? y - (bounds?.top ?? 0) : x;
+      const size = vertical ? bounds?.height ?? window.innerHeight : window.innerWidth;
+      if (position < size / 3) {
+        actions.turnPage(-1);
+        return;
+      }
+      if (position > size * 2 / 3) {
+        actions.turnPage(1);
+        return;
+      }
     }
     reader.menuOpen.value = !reader.menuOpen.value;
     if (!reader.menuOpen.value) {
@@ -214,9 +218,9 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     }
   }
 
-  function onReaderFrameTouchTap(x: number): void {
+  function onReaderFrameTouchTap(x: number, y: number): void {
     if (!reader.visible.value || reader.busy.value || reader.mediaChapter.value || reader.pdfPage.value) return;
-    handleReaderTapAt(x);
+    handleReaderTapAt(x, y);
   }
 
   function onReaderSurfaceClick(event: MouseEvent): void {
@@ -226,7 +230,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
     const target = node?.nodeType === Node.ELEMENT_NODE ? node as Element : node?.parentElement;
     if (!target?.closest(".reader-main")
       || target.closest("button,input,select,textarea,[role='button'],.reader-edge,.reader-settings-popover,.reader-topbar,.reader-footer")) return;
-    handleReaderTapAt(event.clientX);
+    handleReaderTapAt(event.clientX, event.clientY);
   }
 
   function clearReaderFindMatches(): void {
@@ -241,7 +245,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function rebuildReaderFind(visitFirstMatch = false): void {
-    const root = reader.viewport.value?.querySelector<HTMLElement>(".chapter-content");
+    const root = reader.viewport.value ? textChapterElement(reader.viewport.value) : null;
     const document = root?.ownerDocument;
     if (!root || !document) {
       clearReaderFindMatches();

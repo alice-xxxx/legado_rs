@@ -1,5 +1,6 @@
 import { nextTick, type Ref } from "vue";
 import type { PdfPageResource } from "./readerContent";
+import { textChapterElement } from "./readerPosition";
 import { collectReaderTtsSegments, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
@@ -138,7 +139,7 @@ export function useReaderTtsActions(options: UseReaderTtsActionsOptions) {
     const viewport = options.reader.viewport.value;
     if (!viewport) throw new Error("阅读画面尚未准备好。");
     return collectReaderTtsSegments(viewport.ownerDocument, fromCurrentPosition,
-      { width: viewport.clientWidth, height: viewport.clientHeight }, viewport.querySelector<HTMLElement>(".chapter-content") ?? viewport);
+      { width: viewport.clientWidth, height: viewport.clientHeight }, textChapterElement(viewport));
   }
 
   function startSelectedTextTts(): void {

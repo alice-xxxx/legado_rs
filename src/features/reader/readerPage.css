@@ -136,11 +136,12 @@
 }
 .reader-content-frame, .chapter-frame { width: 100%; height: 100%; }
 .reader-content-frame { position: relative; flex: 1; min-height: 0; overflow: hidden; }
-.reader-page-turn-layer { position: absolute; inset: 0; z-index: 5; overflow: hidden; pointer-events: none; }
-.reader-page-turn-layer.swiper { margin: 0; }
-.reader-page-turn-layer > .stf__wrapper { height: 100%; }
-.reader-page-turn-snapshot { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; }
-.reader-page-turn-snapshot::before {
+/* These nodes are created by the animation libraries, outside Vue's scoped DOM. */
+.reader-content-frame :deep(.reader-page-turn-layer) { position: absolute; inset: 0; z-index: 5; overflow: hidden; pointer-events: none; }
+.reader-content-frame :deep(.reader-page-turn-layer.swiper) { margin: 0; }
+.reader-content-frame :deep(.reader-page-turn-layer > .stf__wrapper) { height: 100%; }
+.reader-content-frame :deep(.reader-page-turn-snapshot) { position: relative; width: 100%; height: 100%; overflow: hidden; isolation: isolate; }
+.reader-content-frame :deep(.reader-page-turn-snapshot::before) {
   content: "";
   position: absolute;
   inset: 0;
@@ -151,8 +152,8 @@
   opacity: var(--novel-background-opacity);
   pointer-events: none;
 }
-.reader-page-turn-content { position: absolute !important; top: 0 !important; left: var(--snapshot-left) !important; width: var(--snapshot-width) !important; height: var(--snapshot-height) !important; margin: 0 !important; overflow: visible !important; background: transparent !important; pointer-events: none; }
-.reader-page-turn-content::before { display: none !important; }
+.reader-content-frame :deep(.reader-page-turn-content) { position: absolute !important; top: 0 !important; left: var(--snapshot-left) !important; width: var(--snapshot-width) !important; height: var(--snapshot-height) !important; margin: 0 !important; overflow: visible !important; background: transparent !important; pointer-events: none; }
+.reader-content-frame :deep(.reader-page-turn-content::before) { display: none !important; }
 .chapter-frame { display: block; border: 0; }
 .reader-loading { position: absolute; inset: 0; display: grid; place-content: center; gap: 10px; text-align: center; }
 .reader-loading p { margin: 0; }

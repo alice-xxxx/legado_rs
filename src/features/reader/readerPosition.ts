@@ -1,11 +1,25 @@
 export interface ReaderPosition { offset: number; pageId?: string; anchor?: string; quality?: string }
+export function readerPageWidth(viewport: HTMLElement): number {
+  return Math.max(1, viewport.getBoundingClientRect().width);
+}
+
+export function textChapterElement(viewport: HTMLElement): HTMLElement {
+  const index = viewport.dataset.readerChapterIndex;
+  return index != null ? viewport.querySelector<HTMLElement>(`.chapter-content[data-reader-chapter="${index}"]`) ?? viewport : viewport;
+}
+export function textChapterBounds(viewport: HTMLElement): { top: number; height: number } {
+  const chapter = textChapterElement(viewport);
+  return chapter === viewport ? { top: 0, height: viewport.scrollHeight }
+    : { top: chapter.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop, height: chapter.offsetHeight };
+}
 
 function ensureAnchors(viewport: HTMLElement): void {
-  viewport.querySelectorAll<HTMLElement>(".chapter-markup p, .chapter-markup li, .chapter-markup h1, .chapter-markup h2, .chapter-markup pre, .chapter-markup blockquote")
+  textChapterElement(viewport).querySelectorAll<HTMLElement>(".chapter-markup p, .chapter-markup li, .chapter-markup h1, .chapter-markup h2, .chapter-markup pre, .chapter-markup blockquote")
     .forEach((element, index) => { if (!element.dataset.readerAnchor) element.dataset.readerAnchor = element.id || `block-${index}`; });
 }
 function textNodes(viewport: HTMLElement): Text[] {
-  const body = viewport.querySelector(".chapter-text, .chapter-markup") ?? viewport;
+  const chapter = textChapterElement(viewport);
+  const body = chapter.querySelector(".chapter-text, .chapter-markup") ?? chapter;
   const walker = viewport.ownerDocument.createTreeWalker(body, NodeFilter.SHOW_TEXT);
   const nodes: Text[] = [];
   while (walker.nextNode()) {
@@ -56,16 +70,21 @@ export function textPosition(viewport: HTMLElement | null, vertical: boolean): R
 export function restoreTextPosition(viewport: HTMLElement, position: ReaderPosition, vertical: boolean): void {
   let remaining = Math.max(0, position.offset);
   ensureAnchors(viewport);
-  const block = Array.from(viewport.querySelectorAll<HTMLElement>("[data-reader-anchor]")).find(element => element.dataset.readerAnchor === position.anchor);
+  const chapter = textChapterBounds(viewport);
+  if (!remaining && !position.anchor) {
+    viewport.scrollTo({ top: vertical ? chapter.top : 0, left: 0, behavior: "instant" });
+    return;
+  }
+  const block = Array.from(textChapterElement(viewport).querySelectorAll<HTMLElement>("[data-reader-anchor]")).find(element => element.dataset.readerAnchor === position.anchor);
   const nodes = textNodes(viewport).filter(node => !block || block.contains(node));
   for (const node of nodes) {
     if (remaining < node.length) {
       const rect = characterRect(node, remaining);
       const bounds = viewport.getBoundingClientRect();
       const distance = vertical ? rect.top - bounds.top + viewport.scrollTop : rect.left - bounds.left + viewport.scrollLeft;
-      const size = Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth);
+      const size = Math.max(1, vertical ? viewport.clientHeight : readerPageWidth(viewport));
       const page = Math.max(0, Math.floor((distance + 1) / size));
-      viewport.scrollTo({ top: vertical ? page * size : 0, left: vertical ? 0 : page * size, behavior: "instant" });
+      viewport.scrollTo({ top: vertical ? Math.max(0, distance) : 0, left: vertical ? 0 : page * size, behavior: "instant" });
       return;
     }
     remaining -= node.length;
@@ -78,11 +97,11 @@ export function restoreTextPosition(viewport: HTMLElement, position: ReaderPosit
   // A saved offset can point past the end when a source or display rule has
   // changed. Keep the reader at the chapter's final page instead of leaving
   // it at the reset position at the start of the chapter.
-  const size = Math.max(1, vertical ? viewport.clientHeight : viewport.clientWidth);
+  const size = Math.max(1, vertical ? viewport.clientHeight : readerPageWidth(viewport));
   const extent = vertical ? viewport.scrollHeight : viewport.scrollWidth;
   const lastPage = Math.max(0, Math.ceil((extent - 1) / size) - 1);
   viewport.scrollTo({
-    top: vertical ? lastPage * size : 0,
+    top: vertical ? chapter.top + Math.max(0, chapter.height - viewport.clientHeight) : 0,
     left: vertical ? 0 : lastPage * size,
     behavior: "instant",
   });

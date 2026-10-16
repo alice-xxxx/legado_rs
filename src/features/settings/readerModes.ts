@@ -21,3 +21,7 @@ export function isReadingMode(value: string): value is ReadingMode {
 export function hasPageTurnAnimation(mode: ReadingMode): mode is AnimatedReadingMode {
   return mode !== "none" && mode !== "vertical";
 }
+
+export function isVerticalReadingMode(mode: ReadingMode): boolean {
+  return mode === "vertical" || mode === "slide-vertical";
+}

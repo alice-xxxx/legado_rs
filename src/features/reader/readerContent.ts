@@ -1,5 +1,10 @@
-import type { ChapterPdfPageResource } from "../../api/types";
+import type { ChapterPdfPageResource, ChapterTextResource, ChapterRichTextResource } from "../../api/types";
 export type PdfPageResource = Pick<ChapterPdfPageResource, "src" | "pageIndex" | "defaultZoom">;
+export interface ReaderTextChapter {
+  index: number;
+  title: string;
+  content: ChapterTextResource | ChapterRichTextResource;
+}
 
 export function clamp(value: number, minimum: number, maximum: number): number {
   const number = Number(value);

@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::task::Poll;
 
 use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
@@ -16,8 +17,8 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
-use tokio::net::TcpListener;
-use tokio::sync::{oneshot, Mutex};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::sync::{oneshot, watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::io::ReaderStream;
 use uuid::Uuid;
@@ -57,6 +58,8 @@ pub struct ResourceServer {
     root: PathBuf,
     store: ResourceStore,
     media_update_lock: Mutex<()>,
+    listener: watch::Sender<Option<TcpListener>>,
+    runtime: tokio::runtime::Handle,
     shutdown_sender: Option<oneshot::Sender<()>>,
     task: Option<JoinHandle<Result<(), std::io::Error>>>,
 }
@@ -85,6 +88,35 @@ impl ResourceServer {
 
     pub fn base_url(&self) -> &str {
         &self.base_url
+    }
+
+    /// A listening socket can outlive its OS resources across suspension (iOS
+    /// need not report an accept error). Rebind before the foreground event
+    /// returns; keep every published URL, media mapping and TTS stream intact.
+    pub fn resume_http(&self) -> Result<(), ResourceError> {
+        let _runtime = self.runtime.enter();
+        let mut result = Ok(());
+        self.listener.send_modify(|listener| {
+            // Drop the old socket before binding the same port. The watch write
+            // lock also excludes an accept poll during the replacement.
+            *listener = None;
+            result = (|| {
+                let socket = if self.local_addr.is_ipv4() {
+                    TcpSocket::new_v4()?
+                } else {
+                    TcpSocket::new_v6()?
+                };
+                // Match TcpListener::bind's Unix behavior, including sockets
+                // whose accepted connections are still playing background audio.
+                #[cfg(unix)]
+                socket.set_reuseaddr(true)?;
+                socket.bind(self.local_addr)?;
+                *listener = Some(socket.listen(1024)?);
+                Ok::<_, std::io::Error>(())
+            })()
+            .map_err(|error| ResourceError::new(format!("Cannot resume resource listener: {error}")));
+        });
+        result
     }
 
     pub fn url_for(&self, reference: &ResourceRef) -> String {
@@ -295,6 +327,53 @@ struct HttpState {
     base_url: String,
     media_proxy: MediaProxyRegistry,
     tts_streams: TtsStreamRegistry,
+}
+
+/// Only the listening socket changes on resume. Axum keeps its router and the
+/// existing connection tasks, so a background audio response is not cancelled.
+struct ResourceListener {
+    socket: watch::Receiver<Option<TcpListener>>,
+    local_addr: SocketAddr,
+}
+
+impl axum::serve::Listener for ResourceListener {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (TcpStream, SocketAddr) {
+        let socket = self.socket.clone();
+        loop {
+            let result = tokio::select! {
+                biased;
+                changed = self.socket.changed() => {
+                    if changed.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                    continue;
+                }
+                result = std::future::poll_fn(|cx| match socket.borrow().as_ref() {
+                    Some(listener) => listener.poll_accept(cx),
+                    None => Poll::Pending,
+                }) => result,
+            };
+            match result {
+                Ok(connection) => return connection,
+                Err(error) if matches!(error.kind(),
+                    std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::ConnectionReset
+                ) => continue,
+                Err(error) => {
+                    eprintln!("[resource-listener] accept failed: {error}");
+                    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<SocketAddr> {
+        Ok(self.local_addr)
+    }
 }
 
 async fn health() -> Json<Value> {
@@ -698,6 +777,8 @@ impl ResourceStore {
         let local_addr = listener.local_addr().map_err(|error| {
             ResourceError::new(format!("Cannot read resource server address: {error}"))
         })?;
+        let (listener_sender, socket) = watch::channel(Some(listener));
+        let listener = ResourceListener { socket, local_addr };
         let token = Uuid::new_v4().simple().to_string();
         let base_url = format!("http://{local_addr}/r/{token}/");
         let state = HttpState {
@@ -732,6 +813,8 @@ impl ResourceStore {
             root: self.root().to_path_buf(),
             store: self.clone(),
             media_update_lock: Mutex::new(()),
+            listener: listener_sender,
+            runtime: tokio::runtime::Handle::current(),
             shutdown_sender: Some(shutdown_sender),
             task: Some(task),
         })
@@ -830,4 +913,81 @@ fn read_book_media_mappings(
         }
     }
     Ok(mappings)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    fn client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .no_proxy()
+            .pool_max_idle_per_host(0)
+            .timeout(Duration::from_secs(3))
+            .build()
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resume_http_restores_lost_listener_without_changing_published_resources() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(directory.path()).unwrap();
+        let chapter = store.write_chapter_text("resume", "chapter", "chapter text").await.unwrap();
+        let settings = store.settings_ref();
+        store.write_json_ref(&settings, &serde_json::json!({"chapter": {"src": chapter}})).await.unwrap();
+        let server = store.start_http("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let url = server.url_for(&settings);
+        let chapter_url = server.url_for(&chapter);
+        let client = client();
+        let original = client.get(&url).send().await.unwrap().text().await.unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&original).unwrap()["chapter"]["src"], chapter_url);
+
+        for _ in 0..3 {
+            // Simulate loss of the listening socket, with the app/service and
+            // frontend descriptors still alive. Repeating fetch cannot fix it.
+            server.listener.send_modify(|listener| *listener = None);
+            assert!(client.get(&url).send().await.is_err());
+            server.resume_http().unwrap();
+            assert_eq!(server.url_for(&settings), url);
+            let response = client.get(&url).send().await.unwrap();
+            assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
+            assert_eq!(response.text().await.unwrap(), original);
+            let response = client.get(&chapter_url).header(RANGE, "bytes=0-6").send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+            assert_eq!(response.text().await.unwrap(), "chapter");
+            let response = client.head(&chapter_url).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[CONTENT_LENGTH], "12");
+            assert_eq!(client.get(format!("http://{}/r/wrong/settings.json", server.local_addr())).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+        }
+        server.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn resume_http_preserves_live_tts_response_and_reconnect_range() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = ResourceStore::open(directory.path()).unwrap();
+        let server = store.start_http("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let mut writer = server.create_tts_stream(TtsStreamProgress {
+            boundaries: vec![], state: "running", next_index: 0, skipped: 0, error: None,
+        }).await.unwrap();
+        let url = writer.url.clone();
+        let id = writer.id.clone();
+        writer.append(b"before").await.unwrap();
+        let client = client();
+        let mut response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"before");
+        server.resume_http().unwrap();
+        writer.append(b"after").await.unwrap();
+        assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"after");
+        assert!(!*writer.cancellation.borrow());
+        assert!(server.tts_stream_progress(&id).await.is_some());
+        drop(writer);
+        assert!(response.chunk().await.unwrap().is_none());
+        let response = client.get(&url).header(RANGE, "bytes=6-").send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.text().await.unwrap(), "after");
+        server.shutdown().await.unwrap();
+    }
 }

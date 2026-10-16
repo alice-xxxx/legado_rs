@@ -358,6 +358,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |_app, event| {
+            if let tauri::RunEvent::WindowEvent {
+                label,
+                event,
+                ..
+            } = &event
+            {
+                #[cfg(any(target_os = "android", target_os = "ios"))]
+                let resume_resources = matches!(event, tauri::WindowEvent::Resumed);
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                let resume_resources = matches!(event, tauri::WindowEvent::Focused(true));
+                if label == "main" && resume_resources {
+                    if let Some(service) = _app.try_state::<application::ApplicationService>() {
+                        if let Err(error) = service.resource_server().resume_http() {
+                            eprintln!("[resource-listener] foreground resume failed: {error}");
+                        }
+                    }
+                }
+            }
+
             #[cfg(all(
                 feature = "desktop",
                 not(any(target_os = "android", target_os = "ios"))

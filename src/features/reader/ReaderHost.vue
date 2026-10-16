@@ -26,6 +26,8 @@ import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSessi
 import router, { routeNames } from "../../router";
 import { installReaderNativeBack } from "../../app/nativeBack";
 import { refreshNativeAudio, disposeNativeAudio } from "./nativeAudio";
+import { settings } from "../settings/settingsStore";
+import { isVerticalReadingMode } from "../settings/readerModes";
 
 const HtmlReader = defineAsyncComponent(() => import("./HtmlReader.vue"));
 const NovelReader = defineAsyncComponent(() => import("./NovelReader.vue"));
@@ -204,6 +206,22 @@ function onGlobalKeydown(event: KeyboardEvent): void {
       if (event.key === " ") readerFeatures.toggleReaderMediaPlayback();
       else readerFeatures.skipReaderMedia(event.key === "ArrowLeft" ? -10 : 10);
     }
+    return;
+  }
+  const verticalText = !readerFeatures.readingImagePage.value && !readerFeatures.readingMediaChapter.value
+    && !readerFeatures.readingPdfPage.value && isVerticalReadingMode(settings.value.reader.readingMode);
+  if (verticalText && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    event.preventDefault();
+    return;
+  }
+  if (verticalText && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const viewport = readerFeatures.readerViewport.value;
+    if (settings.value.reader.readingMode === "vertical" && viewport
+      && (direction > 0 ? viewport.scrollTop + viewport.clientHeight < viewport.scrollHeight - 1 : viewport.scrollTop > 1)) {
+      viewport.scrollBy({ top: direction * 40, behavior: "instant" as ScrollBehavior });
+    } else readerFeatures.turnPage(direction);
     return;
   }
   if (event.key === "ArrowRight" || event.key === "PageDown" || event.key === " ") {

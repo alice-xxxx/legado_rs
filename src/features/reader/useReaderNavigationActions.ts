@@ -77,8 +77,8 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
       setReaderPage(next, true, direction);
       return;
     }
-    if (direction > 0 && options.readerPageIndex.value === options.readerPageCount.value - 1) void changeChapter(1);
-    else if (direction < 0 && options.readerPageIndex.value === 0) void changeChapter(-1);
+    if (direction > 0 && options.readerPageIndex.value === options.readerPageCount.value - 1) void changeChapter(1, "start");
+    else if (direction < 0 && options.readerPageIndex.value === 0) void changeChapter(-1, "end");
   }
 
   async function selectReaderChapter(index: number): Promise<boolean> {
@@ -100,7 +100,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     input.value = String(options.readingChapterIndex.value + (chapterNumber ? 1 : 0));
   }
 
-  async function changeChapter(direction: -1 | 1): Promise<void> {
+  async function changeChapter(direction: -1 | 1, pageEdge?: "start" | "end"): Promise<void> {
     if (options.readerBusy.value || options.readerMediaRetrying.value) return;
     const nextIndex = options.readingChapterIndex.value + direction;
     const count = openedBook.value?.chapterCount ?? openedBook.value?.chapters.length ?? 0;
@@ -112,7 +112,9 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
       options.notify("已经到达源提供的最后一章。", "error");
       return;
     }
-    await selectReaderChapter(nextIndex);
+    if (await selectReaderChapter(nextIndex)) {
+      if (pageEdge) setReaderPage(pageEdge === "end" ? options.readerPageCount.value - 1 : 0);
+    }
   }
 
   async function saveCurrentProgress(): Promise<void> {

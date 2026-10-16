@@ -190,14 +190,7 @@ async function retryBookDetails(): Promise<void> {
   }
 }
 
-function retryResourceAfterResume(): void {
-  if (document.visibilityState !== "visible" || disposed || closing
-    || bookPanelBusy.value || pageResourceLoading.value || !detailSession.resourceReadFailed.value) return;
-  void retryBookDetails();
-}
 onMounted(async () => {
-  document.addEventListener("visibilitychange", retryResourceAfterResume);
-  window.addEventListener("pageshow", retryResourceAfterResume);
   pageResourceLoading.value = true;
   clearOpenedBook();
   try {
@@ -221,8 +214,6 @@ onMounted(async () => {
 });
 onBeforeUnmount(() => {
   disposed = true;
-  document.removeEventListener("visibilitychange", retryResourceAfterResume);
-  window.removeEventListener("pageshow", retryResourceAfterResume);
   bookCacheActionGeneration += 1;
   pageResourceRevision += 1;
   for (const unlisten of unlisteners.splice(0)) unlisten();
