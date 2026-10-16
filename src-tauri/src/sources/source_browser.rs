@@ -47,6 +47,7 @@ struct LoginWindow {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct BrowserRequest {
+    execution_id: Option<String>,
     capability_id: String,
     #[serde(default)]
     mode: BrowserMode,
@@ -359,14 +360,14 @@ fn seed_login_cookies(
 
 pub(crate) fn browser_json(request_json: &str) -> String {
     let result = std::panic::catch_unwind(|| {
-        if crate::source_host_ffi::execution_cancelled() {
-            return Err("Source browser request cancelled".to_owned());
-        }
         if request_json.len() > MAX_BROWSER_REQUEST_BYTES {
             return Err("Private browser request exceeds its input-size limit".to_owned());
         }
         let request: BrowserRequest = serde_json::from_str(request_json)
             .map_err(|error| format!("Invalid private browser request: {error}"))?;
+        if crate::source_host_ffi::execution_cancelled(request.execution_id.as_deref()) {
+            return Err("Source browser request cancelled".into());
+        }
         validate(&request)?;
         match request.mode {
             BrowserMode::OfflineSnapshot => render_snapshot(&request),
@@ -504,7 +505,7 @@ fn render_interactive_page(request: &BrowserRequest) -> Result<Value, String> {
             let _ = sender_for_close.send(Err("Source browser was closed without a result".into()));
         }
     });
-    let result = recv_until(&receiver, Instant::now() + Duration::from_secs(30 * 60), "source interaction")
+    let result = recv_until(&receiver, Instant::now() + Duration::from_secs(30 * 60), "source interaction", request.execution_id.as_deref())
         .and_then(|v| v)
         .and_then(|mut value| {
             if let Some(url) = value["finalUrl"]
@@ -731,6 +732,7 @@ fn render_snapshot(request: &BrowserRequest) -> Result<Value, String> {
             &ready_receiver,
             deadline,
             "private source browser page load",
+            request.execution_id.as_deref(),
         )??;
         decode_prepare_result(&ready_result, request)?;
         if navigation_attempted.load(Ordering::SeqCst) {
@@ -746,7 +748,7 @@ fn render_snapshot(request: &BrowserRequest) -> Result<Value, String> {
                 let _ = result_sender.send(result);
             })
             .map_err(|error| format!("Cannot evaluate source webJs rule: {error}"))?;
-        let raw = recv_until(&result_receiver, deadline, "source webJs evaluation")?;
+        let raw = recv_until(&result_receiver, deadline, "source webJs evaluation", request.execution_id.as_deref())?;
         if navigation_attempted.load(Ordering::SeqCst) {
             return Err("Unsupported browser capability used: page navigation".to_owned());
         }
@@ -845,7 +847,7 @@ fn render_dynamic_page(request: &BrowserRequest) -> Result<Value, String> {
         window
             .navigate(page_url.clone())
             .map_err(|error| format!("Cannot load source page in private browser: {error}"))?;
-        recv_until(&page_receiver, deadline, "dynamic source page load")??;
+        recv_until(&page_receiver, deadline, "dynamic source page load", request.execution_id.as_deref())??;
         if blocked_navigation.load(Ordering::SeqCst) {
             return Err("Dynamic source browser blocked a page navigation".to_owned());
         }
@@ -861,7 +863,7 @@ fn render_dynamic_page(request: &BrowserRequest) -> Result<Value, String> {
                 let _ = start_sender.send(result);
             })
             .map_err(|error| format!("Cannot start dynamic source webJs rule: {error}"))?;
-        let start = recv_until(&start_receiver, deadline, "dynamic source webJs start")?;
+        let start = recv_until(&start_receiver, deadline, "dynamic source webJs start", request.execution_id.as_deref())?;
         decode_dynamic_started(&start)?;
 
         let result_key =
@@ -882,7 +884,7 @@ fn render_dynamic_page(request: &BrowserRequest) -> Result<Value, String> {
                     let _ = poll_sender.send(result);
                 })
                 .map_err(|error| format!("Cannot read dynamic source browser result: {error}"))?;
-            let raw = recv_until(&poll_receiver, deadline, "dynamic source webJs result")?;
+            let raw = recv_until(&poll_receiver, deadline, "dynamic source webJs result", request.execution_id.as_deref())?;
             if let Some(result) = decode_dynamic_poll(&raw, request)? {
                 return Ok(result);
             }
@@ -928,9 +930,10 @@ fn recv_until<T>(
     receiver: &mpsc::Receiver<T>,
     deadline: Instant,
     operation: &str,
+    execution_id: Option<&str>,
 ) -> Result<T, String> {
     loop {
-        if crate::source_host_ffi::execution_cancelled() {
+        if crate::source_host_ffi::execution_cancelled(execution_id) {
             return Err("Source browser request cancelled".into());
         }
         let remaining = deadline.saturating_duration_since(Instant::now());

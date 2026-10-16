@@ -52,6 +52,10 @@ import io.legado.app.napi.quickjs.JS_NewRuntime
 import io.legado.app.napi.quickjs.JS_NewUint8Array
 import io.legado.app.napi.quickjs.JS_SetPropertyStr
 import io.legado.app.napi.quickjs.JS_SetPropertyUint32
+import kotlinx.cinterop.staticCFunction
+import io.legado.app.napi.quickjs.JS_SetInterruptHandler
+import io.legado.app.napi.quickjs.JS_CheckExecutionTimeLimit
+import io.legado.sourceengine.bridge.SourceEngineHostRegistry
 import io.legado.app.napi.quickjs.JS_SetExecutionTimeLimit
 import io.legado.app.napi.quickjs.JS_ClearExecutionTimeLimit
 import io.legado.app.napi.quickjs.JS_HasExecutionTimedOut
@@ -605,6 +609,9 @@ object NativeJsEngine : JsEngine {
         memScoped {
             val runtime = JS_GetRuntime(ctx)
             JS_SetExecutionTimeLimit(runtime, SCRIPT_EXECUTION_TIMEOUT_MS.toUInt())
+            JS_SetInterruptHandler(runtime, staticCFunction { rt: CPointer<JSRuntime>?, _: COpaquePointer? ->
+                if (JS_CheckExecutionTimeLimit(rt) != 0 || SourceEngineHostRegistry.executionCancelled()) 1 else 0
+            }, null)
             val result = try {
                 qjsEvalUtf8(ctx, js, filename, qjs_EvalTypeGlobal())
             } catch (error: Throwable) {
@@ -696,6 +703,9 @@ object NativeJsEngine : JsEngine {
             }
             val runtime = JS_GetRuntime(ctx)
             JS_SetExecutionTimeLimit(runtime, SCRIPT_EXECUTION_TIMEOUT_MS.toUInt())
+            JS_SetInterruptHandler(runtime, staticCFunction { rt: CPointer<JSRuntime>?, _: COpaquePointer? ->
+                if (JS_CheckExecutionTimeLimit(rt) != 0 || SourceEngineHostRegistry.executionCancelled()) 1 else 0
+            }, null)
             val result = try {
                 JS_EvalFunction(ctx, funVal)  // 消费 funVal 引用
             } catch (error: Throwable) {
@@ -1220,6 +1230,9 @@ object NativeJsEngine : JsEngine {
     ): CValue<JSValue> {
         val runtime = JS_GetRuntime(ctx)
         JS_SetExecutionTimeLimit(runtime, SCRIPT_EXECUTION_TIMEOUT_MS.toUInt())
+        JS_SetInterruptHandler(runtime, staticCFunction { rt: CPointer<JSRuntime>?, _: COpaquePointer? ->
+            if (JS_CheckExecutionTimeLimit(rt) != 0 || SourceEngineHostRegistry.executionCancelled()) 1 else 0
+        }, null)
         val result = try {
             call()
         } catch (error: Throwable) {

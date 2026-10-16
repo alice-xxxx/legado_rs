@@ -5,6 +5,12 @@ fn main() {
     println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/commonMain/kotlin/io/legado/sourceengine/bridge/WebBookSourceRuleExecutor.kt");
     println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/SourceEngineEmbedded.kt");
     println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/http/SourceEngineNativeHost.kt");
+    println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/SourceHostThread.kt");
+    println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/http/RustHostHttpProvider.kt");
+    println!("cargo:rerun-if-changed=../kotlin/kmp-engine/src/commonMain/kotlin/io/legado/sourceengine/bridge/SourceEngineHostWire.kt");
+    println!("cargo:rerun-if-changed=../kotlin/src/native/cpp/jni/jni_bridge.cpp");
+    println!("cargo:rerun-if-changed=../kotlin/src/native/quickjs-ng/quickjs.c");
+    println!("cargo:rerun-if-changed=../kotlin/src/native/quickjs-ng/quickjs.h");
     // Packaging/config generation belongs to real app builds. Pure library
     // tests and the iOS source-engine archive omit this build dependency.
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]

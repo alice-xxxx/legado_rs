@@ -282,7 +282,7 @@ async function clearFinished(): Promise<void> {
   actionError.value = "";
   try {
     const response = await clearFinishedTasks();
-    void refreshTasks(response.resource).catch((error) => { dataError.value = errorText(error); });
+    void refreshTasks().catch((error) => { dataError.value = errorText(error); });
     clearResult.value = response.removedCount
       ? `已清理 ${response.removedCount} 个结束任务。`
       : response.inUseCount

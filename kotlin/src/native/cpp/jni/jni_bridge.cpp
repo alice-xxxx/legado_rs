@@ -34,6 +34,18 @@ __cxa_demangle(const char *, char *, size_t *,
 
 // 缓存的 JavaVM (JNI_OnLoad 时设置)
 static JavaVM *g_jvm = nullptr;
+static jclass g_sourceHostRegistry = nullptr;
+static jmethodID g_executionCancelled = nullptr;
+
+static int interruptSourceExecution(JSRuntime *rt, void *) {
+    if (JS_CheckExecutionTimeLimit(rt)) return 1;
+    JNIEnv *env = nullptr;
+    if (!g_sourceHostRegistry || !g_executionCancelled ||
+        g_jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) != JNI_OK || !env) return 0;
+    const bool cancelled = env->CallStaticBooleanMethod(g_sourceHostRegistry, g_executionCancelled);
+    if (env->ExceptionCheck()) { env->ExceptionClear(); return 1; }
+    return cancelled ? 1 : 0;
+}
 
 static constexpr uint32_t kScriptExecutionTimeoutMs = 10000;
 
@@ -80,6 +92,13 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         initJniValueConvertCache(env);
         JavaObjectClass::initBridgeCache(env);
         initJniCallbacksCache(env);
+        jclass registry = env->FindClass("io/legado/sourceengine/bridge/SourceEngineHostRegistry");
+        if (registry) {
+            g_sourceHostRegistry = static_cast<jclass>(env->NewGlobalRef(registry));
+            g_executionCancelled = env->GetStaticMethodID(registry, "executionCancelled", "()Z");
+            env->DeleteLocalRef(registry);
+        }
+        if (env->ExceptionCheck()) env->ExceptionClear();
     }
     return JNI_VERSION_1_6;
 }
@@ -161,6 +180,7 @@ Java_com_script_quickjs_QuickJsNative_nativeEval(JNIEnv *env, jobject clazz,
     // 允许书源 JS 使用 with 语句 (JavaImporter 的常见用法)
     JSRuntime *rt = JS_GetRuntime(ctx);
     JS_SetExecutionTimeLimit(rt, kScriptExecutionTimeoutMs);
+    JS_SetInterruptHandler(rt, interruptSourceExecution, nullptr);
     JSValue result = JS_Eval(ctx, src, strlen(src), "<eval>",
                              JS_EVAL_TYPE_GLOBAL);
     env->ReleaseStringUTFChars(code, src);
@@ -517,6 +537,7 @@ Java_com_script_quickjs_QuickJsNative_nativeCallFunction(JNIEnv *env, jobject cl
 
     JSRuntime *rt = JS_GetRuntime(ctx);
     JS_SetExecutionTimeLimit(rt, kScriptExecutionTimeoutMs);
+    JS_SetInterruptHandler(rt, interruptSourceExecution, nullptr);
     JSValue result = JS_Call(ctx, func, thisVal, argCount, args);
     if (finishScriptExecution(env, rt, ctx, result)) {
         std::free(heapArgs);
@@ -579,6 +600,7 @@ Java_com_script_quickjs_QuickJsNative_nativeCallJsHandle(JNIEnv *env, jobject cl
     JSValue global = JS_GetGlobalObject(ctx);
     JSRuntime *rt = JS_GetRuntime(ctx);
     JS_SetExecutionTimeLimit(rt, kScriptExecutionTimeoutMs);
+    JS_SetInterruptHandler(rt, interruptSourceExecution, nullptr);
     JSValue result = JS_Call(ctx, func, global, argCount, args);
     JS_FreeValue(ctx, global);
 
@@ -670,6 +692,7 @@ Java_com_script_quickjs_QuickJsNative_nativeEvalBytecode(JNIEnv *env, jobject cl
     // 执行
     JSRuntime *rt = JS_GetRuntime(ctx);
     JS_SetExecutionTimeLimit(rt, kScriptExecutionTimeoutMs);
+    JS_SetInterruptHandler(rt, interruptSourceExecution, nullptr);
     JSValue result = JS_EvalFunction(ctx, funVal);
     if (finishScriptExecution(env, rt, ctx, result)) return nullptr;
     jobject ret = JniValueConvert::toJavaObject(ctx, env, result);

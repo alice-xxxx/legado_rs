@@ -30,6 +30,8 @@ pub(crate) fn set_network_timeout_seconds(seconds: u64) {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceHttpRequest {
+    pub execution_id: Option<String>,
+    pub allow_retries: Option<bool>,
     pub url: String,
     #[serde(default = "default_method")]
     pub method: String,
@@ -107,7 +109,8 @@ pub(super) async fn execute_source_http_request(
 
     let method = Method::from_bytes(request.method.trim().as_bytes())
         .map_err(|error| format!("Invalid HTTP method: {error}"))?;
-    let retryable_request = matches!(method, Method::GET | Method::HEAD)
+    let retryable_request = request.allow_retries != Some(false)
+        && matches!(method, Method::GET | Method::HEAD)
         && request.body_base64.is_none()
         && request.multipart.is_empty();
 
@@ -373,6 +376,7 @@ async fn send_with_safe_retries(
                 tokio::time::sleep(retry_delay(None, attempt)).await;
                 continue;
             }
+            Err(error) if error.is_timeout() => return Err(format!("HTTP request timed out: {error}")),
             Err(error) => return Err(format!("HTTP request failed: {error}")),
         };
         if retryable && attempt + 1 < attempts && is_retryable_status(response.status().as_u16()) {
@@ -427,6 +431,7 @@ async fn send_with_safe_retries(
                     continue 'attempts;
                 }
                 Err(error) => {
+                    if error.is_timeout() { return Err(format!("HTTP response body timed out: {error}")); }
                     return Err(format!("Failed to read HTTP response body: {error}"));
                 }
             }

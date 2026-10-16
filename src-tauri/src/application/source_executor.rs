@@ -50,11 +50,11 @@ impl SourceExecutor for TauriSourceExecutor {
                 // Keep it off Tokio's worker lane so search cancellation can run.
                 let app = self._app.clone();
                 let cancellation = request.cancellation.clone();
+                let data_dir = crate::app_data_root(&app).map_err(|error| error.to_string())?.join("source-engine");
                 let response = tokio::task::spawn_blocking(move || {
-                    static EXECUTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-                    let _execution = EXECUTION_LOCK.lock()
-                        .map_err(|_| "Native source execution lock is poisoned".to_owned())?;
-                    let _cancellation = crate::source_host_ffi::ExecutionCancellationScope::enter(cancellation)?;
+                    let mut wire: Value = serde_json::from_str(&request_json).map_err(|error| error.to_string())?;
+                    let _execution = crate::source_host_ffi::ExecutionScope::enter(&mut wire, data_dir, cancellation)?;
+                    let request_json = wire.to_string();
                     app.source_engine().execute(SourceEngineCall { request_json })
                         .map_err(|error| error.to_string())
                 }).await.map_err(|error| format!("Native source worker failed: {error}"))??;

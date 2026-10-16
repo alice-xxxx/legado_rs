@@ -14,6 +14,8 @@ extern "C" {
 char *legado_source_host_http(const char *request_json);
 char *legado_source_host_storage(const char *request_json, const char *app_data_dir);
 char *legado_source_host_image(const char *request_json);
+/* Missing/expired execution IDs are cancelled. This callback never performs I/O. */
+int legado_source_host_execution_cancelled(const char *execution_id);
 void legado_source_host_string_free(char *value);
 
 #ifdef __cplusplus

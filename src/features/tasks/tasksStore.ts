@@ -1,7 +1,6 @@
 import { computed, ref, shallowRef } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { command } from "../../api/ipc";
-import { readResource } from "../../api/resources";
 import type { AppBootstrap, AppTask, ResourceDescriptor, TasksResource } from "../../api/types";
 import { getFrontendRestoreRevision } from "../../app/recoveryState";
 import { errorText, notify } from "../../app/notifications";
@@ -22,8 +21,8 @@ let lifetime = 0;
 let pendingRead: Promise<void> | null = null;
 let initialization: Promise<void> | null = null;
 
-/** One reader for tasks.json; Rust remains its only writer. */
-export function refreshTasks(resource?: ResourceDescriptor): Promise<void> {
+/** Rust publishes current progress from memory; tasks.json is the durable lifecycle checkpoint. */
+export function refreshTasks(): Promise<void> {
   const revision = ++requestRevision;
   const restoreRevision = getFrontendRestoreRevision();
   const session = lifetime;
@@ -35,9 +34,7 @@ export function refreshTasks(resource?: ResourceDescriptor): Promise<void> {
       // Resource and task notifications in the same turn share one read.
       await Promise.resolve();
       if (!isCurrent()) return;
-      const nextDescriptor = resource ?? (await command<{ resource: ResourceDescriptor }>("tasks_resource")).resource;
-      if (!isCurrent()) return;
-      const document = await readResource<TasksResource>(nextDescriptor);
+      const { snapshot: document } = await command<{ snapshot: TasksResource }>("tasks_resource");
       if (!isCurrent()) return;
       const byId = new Map(document.tasks.map(task => [task.id, task]));
       for (const task of recoveryTasks.values()) byId.set(task.id, task);
@@ -115,11 +112,11 @@ export function initializeTaskStore(): Promise<void> {
   }
   initialization = (async () => {
     await retain<{ kind: string; resource: ResourceDescriptor }>("resource-updated", payload => {
-      if (payload.kind === "tasks") void refreshTasks(payload.resource).catch(reportError);
+      if (payload.kind === "tasks") void refreshTasks().catch(reportError);
     });
     await retain<{ taskId: string; resource: ResourceDescriptor }>("task-updated", payload => {
       const restoreRevision = getFrontendRestoreRevision();
-      void refreshTasks(payload.resource).then(() => {
+      void refreshTasks().then(() => {
         if (session !== lifetime || restoreRevision !== getFrontendRestoreRevision()) return;
         const task = tasks.value.find(entry => entry.id === payload.taskId);
         if (task) latestTaskUpdate.value = { ...task };

@@ -32,7 +32,7 @@ import java.nio.file.Path
  * 桌面 Rust 进程内嵌 JVM 后调用的稳定入口。
  *
  * 同步 JNI 回调把网络与存储操作交给 Rust Host。初始化只做一次，因为 JVM 不能安全销毁后重建；
- * Rust 串行化请求，以管理进程级 Provider/QuickJS 状态。
+ * Kotlin 的规则调度通道保护 QuickJS 状态，HTTP 等待不串行化整个书源调用。
  */
 object SourceEngineEmbedded {
     @Volatile
@@ -40,7 +40,6 @@ object SourceEngineEmbedded {
 
     @JvmStatic
     @JvmOverloads
-    @Synchronized
     fun executeJson(requestJson: String, dataDir: String? = null): String {
         return runCatching {
             initializeOnce()
@@ -76,6 +75,7 @@ object SourceEngineEmbedded {
 
 private fun JsonObject.toCall() = SourceEngineCall(
     operation = requiredString("operation"),
+    executionId = this["executionId"]?.jsonPrimitive?.contentOrNull,
     sourceJson = required("source").toString(),
     keyword = this["keyword"]?.jsonPrimitive?.contentOrNull,
     credentials = this["credentials"]?.takeUnless { it == JsonNull }?.let { value ->

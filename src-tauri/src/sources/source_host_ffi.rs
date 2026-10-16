@@ -10,51 +10,90 @@ use std::ffi::{CStr, CString};
 use std::future::Future;
 use std::os::raw::c_char;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 
 static RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
 
-// Native rule executors serialize their provider/QuickJS scope. HTTP callbacks
-// run on other threads, so the same cancellation lease must be visible there.
-static EXECUTION_CANCELLATION: std::sync::RwLock<Option<tokio_util::sync::CancellationToken>> =
-    std::sync::RwLock::new(None);
+struct Execution {
+    cancellation: tokio_util::sync::CancellationToken,
+    data_dir: PathBuf,
+    deadline: Option<Instant>,
+}
 
-pub(crate) struct ExecutionCancellationScope(Option<tokio_util::sync::CancellationToken>);
+static EXECUTIONS: LazyLock<Mutex<HashMap<String, Arc<Execution>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-impl ExecutionCancellationScope {
-    pub(crate) fn enter(token: Option<tokio_util::sync::CancellationToken>) -> Result<Self, String> {
-        if token.as_ref().is_some_and(|token| token.is_cancelled()) {
-            return Err("Source execution cancelled".into());
-        }
-        let mut current = EXECUTION_CANCELLATION.write()
-            .map_err(|_| "Source cancellation scope lock is poisoned".to_owned())?;
-        Ok(Self(std::mem::replace(&mut *current, token)))
+/// The lease stays on the native worker until it returns, even if its Rust caller is dropped.
+/// Late callbacks therefore still see cancellation instead of borrowing a newer call's host.
+pub(crate) struct ExecutionScope { id: String }
+
+impl ExecutionScope {
+    pub(crate) fn enter(request: &mut serde_json::Value, data_dir: PathBuf,
+        cancellation: Option<tokio_util::sync::CancellationToken>) -> Result<Self, String> {
+        let cancellation = cancellation.unwrap_or_default();
+        if cancellation.is_cancelled() { return Err("Source execution cancelled".into()); }
+        let search = request["operation"] == "search";
+        let scope = Self { id: uuid::Uuid::new_v4().simple().to_string() };
+        let execution = Execution { cancellation, data_dir,
+            deadline: search.then(|| Instant::now() + Duration::from_secs(10)) };
+        EXECUTIONS.lock().map_err(|_| "Source execution registry is poisoned")?
+            .insert(scope.id.clone(), Arc::new(execution));
+        request["executionId"] = json!(scope.id);
+        Ok(scope)
     }
 }
 
-impl Drop for ExecutionCancellationScope {
+impl Drop for ExecutionScope {
     fn drop(&mut self) {
-        if let Ok(mut current) = EXECUTION_CANCELLATION.write() { *current = self.0.take(); }
+        if let Ok(mut executions) = EXECUTIONS.lock() {
+            if let Some(execution) = executions.remove(&self.id) { execution.cancellation.cancel(); }
+        }
     }
 }
 
-pub(crate) fn execution_cancelled() -> bool {
-    EXECUTION_CANCELLATION.read().ok()
-        .is_some_and(|token| token.as_ref().is_some_and(|token| token.is_cancelled()))
+fn execution(id: &str) -> Result<Arc<Execution>, String> {
+    EXECUTIONS.lock().map_err(|_| "Source execution registry is poisoned".to_owned())?
+        .get(id).cloned().ok_or_else(|| "Source execution has ended".to_owned())
 }
 
-pub(crate) async fn execute_cancellable_http(request: SourceHttpRequest) -> Result<SourceHttpResponse, String> {
-    let token = EXECUTION_CANCELLATION.read()
-        .map_err(|_| "Source cancellation scope lock is poisoned".to_owned())?.clone();
-    if let Some(token) = token {
-        tokio::select! {
-            biased;
-            _ = token.cancelled() => Err("Source HTTP request cancelled".into()),
-            response = execute_source_http_request(request) => response,
-        }
-    } else {
-        execute_source_http_request(request).await
+pub(crate) fn execution_data_dir(id: &str) -> Result<PathBuf, String> {
+    let execution = execution(id)?;
+    if execution.cancellation.is_cancelled() { return Err("Source execution cancelled".into()); }
+    Ok(execution.data_dir.clone())
+}
+
+pub(crate) fn execution_cancelled(id: Option<&str>) -> bool {
+    id.is_some_and(|id| execution(id).map_or(true, |scope| scope.cancellation.is_cancelled()
+        || scope.deadline.is_some_and(|deadline| Instant::now() >= deadline)))
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn legado_source_host_execution_cancelled(id: *const c_char) -> std::os::raw::c_int {
+    string_from_c(id, "execution_id").map_or(1, |id| i32::from(execution_cancelled(Some(&id))))
+}
+
+pub(crate) async fn execute_cancellable_http(mut request: SourceHttpRequest) -> Result<SourceHttpResponse, String> {
+    let Some(id) = request.execution_id.as_deref() else {
+        return execute_source_http_request(request).await;
+    };
+    let scope = execution(id)?;
+    let remaining = scope.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+    if remaining.is_some_and(|remaining| remaining.is_zero()) { return Err("Source search timed out".into()); }
+    if let Some(remaining) = remaining {
+        let budget_ms = remaining.as_millis().min(3000).max(1) as u64;
+        request.connect_timeout_ms = Some(request.connect_timeout_ms.filter(|value| *value > 0).unwrap_or(1000).min(1000));
+        request.read_timeout_ms = Some(request.read_timeout_ms.filter(|value| *value > 0).unwrap_or(budget_ms).min(budget_ms));
+        request.call_timeout_ms = Some(request.call_timeout_ms.filter(|value| *value > 0).unwrap_or(budget_ms).min(budget_ms));
+        request.allow_retries = Some(false);
+    }
+    tokio::select! {
+        biased;
+        _ = scope.cancellation.cancelled() => Err("Source HTTP request cancelled".into()),
+        response = execute_source_http_request(request) => response,
     }
 }
 
@@ -69,6 +108,9 @@ pub(crate) fn http_json(input: &str) -> String {
 
 pub(crate) fn storage_json(input: &str, app_data_dir: &Path) -> String {
     let result = (|| {
+        let wire: serde_json::Value = serde_json::from_str(input)
+            .map_err(|error| format!("Invalid source storage request: {error}"))?;
+        if execution_cancelled(wire["executionId"].as_str()) { return Err("Source execution cancelled".into()); }
         let request: SourceStorageRequest = serde_json::from_str(input)
             .map_err(|error| format!("Invalid source storage request: {error}"))?;
         let data_dir = app_data_dir.to_path_buf();
@@ -180,21 +222,91 @@ pub unsafe extern "C" fn legado_source_host_string_free(value: *mut c_char) {
 mod search_http_tests {
     use super::*;
 
+    #[test]
+    fn execution_cancellation_and_data_directories_are_isolated() {
+        let a = tokio_util::sync::CancellationToken::new();
+        let b = tokio_util::sync::CancellationToken::new();
+        let mut first = json!({"operation": "search"});
+        let mut second = json!({"operation": "search"});
+        let _first = ExecutionScope::enter(&mut first, PathBuf::from("first"), Some(a.clone())).unwrap();
+        let second_scope = ExecutionScope::enter(&mut second, PathBuf::from("second"), Some(b.clone())).unwrap();
+        assert_eq!(execution_data_dir(second["executionId"].as_str().unwrap()).unwrap(), PathBuf::from("second"));
+        a.cancel();
+        assert!(execution_cancelled(first["executionId"].as_str()));
+        assert!(!execution_cancelled(second["executionId"].as_str()));
+        assert!(execution_data_dir(first["executionId"].as_str().unwrap()).is_err());
+        drop(second_scope);
+        assert!(b.is_cancelled());
+        assert!(execution_cancelled(second["executionId"].as_str()));
+    }
+
+    #[tokio::test]
+    async fn search_http_does_not_retry_service_unavailable() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0; 2048];
+            socket.read(&mut buffer).await.unwrap();
+            socket.write_all(b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            assert!(tokio::time::timeout(Duration::from_millis(400), listener.accept()).await.is_err(), "Search must not retry");
+        });
+        let mut wire = json!({"operation": "search"});
+        let _scope = ExecutionScope::enter(&mut wire, PathBuf::new(), None).unwrap();
+        let request = serde_json::from_value(json!({"url": format!("http://{address}"), "executionId": wire["executionId"]})).unwrap();
+        assert_eq!(execute_cancellable_http(request).await.unwrap().status, 503);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_http_respects_remaining_source_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut wire = json!({"operation": "search"});
+        let _scope = ExecutionScope::enter(&mut wire, PathBuf::new(), None).unwrap();
+        let id = wire["executionId"].as_str().unwrap();
+        {
+            let mut registry = EXECUTIONS.lock().unwrap();
+            Arc::get_mut(registry.get_mut(id).unwrap()).unwrap().deadline = Some(Instant::now() + Duration::from_millis(200));
+        }
+        let request = serde_json::from_value(json!({"url": format!("http://{}", listener.local_addr().unwrap()), "executionId": id})).unwrap();
+        let before = Instant::now();
+        let error = execute_cancellable_http(request).await.unwrap_err();
+        assert!(before.elapsed() < Duration::from_secs(1));
+        assert!(error.contains("timed out"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn search_http_terminates_a_connected_request_after_three_seconds() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mut wire = json!({"operation": "search"});
+        let _scope = ExecutionScope::enter(&mut wire, PathBuf::new(), None).unwrap();
+        let request = serde_json::from_value(json!({"url": format!("http://{}", listener.local_addr().unwrap()), "executionId": wire["executionId"]})).unwrap();
+        let started = Instant::now();
+        let error = execute_cancellable_http(request).await.unwrap_err();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(started.elapsed() >= Duration::from_millis(2500));
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
     #[tokio::test]
     async fn search_http_cancellation_drops_a_request_waiting_for_response() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let token = tokio_util::sync::CancellationToken::new();
-        let scope = ExecutionCancellationScope::enter(Some(token.clone())).unwrap();
+        let mut wire = json!({"operation": "search"});
+        let scope = ExecutionScope::enter(&mut wire, PathBuf::new(), Some(token.clone())).unwrap();
         let request: SourceHttpRequest = serde_json::from_value(json!({
             "url": format!("http://{}/pending", listener.local_addr().unwrap()),
+            "executionId": wire["executionId"],
         })).unwrap();
         let execution = tokio::spawn(execute_cancellable_http(request));
         let (_socket, _) = tokio::time::timeout(std::time::Duration::from_secs(2), listener.accept()).await.unwrap().unwrap();
         token.cancel();
         let result = tokio::time::timeout(std::time::Duration::from_secs(1), execution).await.unwrap().unwrap();
         assert!(result.unwrap_err().contains("cancelled"));
-        assert!(execution_cancelled());
+        assert!(execution_cancelled(wire["executionId"].as_str()));
         drop(scope);
-        assert!(!execution_cancelled());
+        assert!(execution_cancelled(wire["executionId"].as_str()));
+        assert!(!execution_cancelled(None));
     }
 }

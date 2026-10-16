@@ -175,6 +175,7 @@ impl ApplicationService {
             let old_round_ids = registry.search_documents.keys().cloned().collect::<HashSet<_>>();
             registry.search_documents.clear();
             registry.published_search_results.clear();
+            registry.published_search_error_count = 0;
             if previous_page.is_none() {
                 registry.search_result_documents.retain(|_, cache| {
                     !cache.get("searchId").and_then(Value::as_str)
@@ -444,12 +445,7 @@ impl ApplicationService {
             .store
             .document_ref("tasks")
             .map_err(|error| error.to_string())?;
-        let persistent = records.iter().map(|task| {
-            let mut task = task.clone();
-            if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") { task.result = None; }
-            task
-        }).collect::<Vec<_>>();
-        let value = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": persistent });
+        let value = task_records_document(records);
         self.store
             .write_json_ref(&reference, &value)
             .await
@@ -634,6 +630,15 @@ impl ApplicationService {
         self.notify_task(&task).await;
         Ok(task)
     }
+}
+
+pub(super) fn task_records_document(records: &[AppTask]) -> Value {
+    let public = records.iter().map(|task| {
+        let mut task = task.clone();
+        if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") { task.result = None; }
+        task
+    }).collect::<Vec<_>>();
+    json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": public })
 }
 
 pub(super) fn task_summary(task: &AppTask) -> Value {

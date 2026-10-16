@@ -25,6 +25,7 @@ object SourceEngineHostWire {
     const val MAX_BROWSER_DELAY_MS: Long = 15_000
 
     fun encodeHttpRequest(request: HostHttpRequest): String = buildJsonObject {
+        request.executionId?.let { put("executionId", it) }
         put("url", request.url)
         put("method", request.method)
         put("headers", buildJsonArray {
@@ -94,6 +95,7 @@ object SourceEngineHostWire {
     fun encodeBrowserRequest(request: HostBrowserRequest): String {
         validateBrowserRequest(request)
         return buildJsonObject {
+            request.executionId?.let { put("executionId", it) }
             put("capabilityId", request.capabilityId)
             put("mode", request.mode.name.lowercase())
             put("baseUrl", request.baseUrl)
@@ -201,6 +203,7 @@ object SourceEngineHostWire {
         keyPrefixes: List<String>? = null,
         contains: String? = null,
     ): String = buildJsonObject {
+        SourceEngineHostRegistry.current()?.executionId?.let { put("executionId", it) }
         put("namespace", namespace)
         put("operation", operation)
         key?.let { put("key", it) }

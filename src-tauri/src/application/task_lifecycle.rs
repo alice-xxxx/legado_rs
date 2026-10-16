@@ -10,5 +10,5 @@ mod registry;
 #[path = "task_lifecycle/start.rs"]
 mod start;
 
-use registry::task_summary;
+use registry::{task_summary, task_records_document};
 // 应用服务的兄弟模块和 Tauri 命令需要复用任务摘要。

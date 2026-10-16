@@ -112,7 +112,9 @@ function applyBatch(batch: SearchBatch, run: SearchRun): void {
     searchResults.value = batch.resultOrder.map(id => merged.get(id))
       .filter((result): result is SearchBookResult => result !== undefined);
   } else searchResults.value = results;
-  searchResourceErrors.value = batch.errors ?? [];
+  searchResourceErrors.value = batch.incrementalErrors
+    ? [...searchResourceErrors.value, ...(batch.errors ?? [])]
+    : batch.errors ?? [];
   searchHasMore.value = status === "completed" && batch.hasMore === true && !run.stopRequested;
   searchComplete.value = status === "completed" && !run.stopRequested;
   searchBusy.value = status === "queued" || status === "running";

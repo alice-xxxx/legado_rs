@@ -2733,6 +2733,7 @@ dependencies = [
  "base64 0.23.1",
  "encoding_rs",
  "feed-rs",
+ "futures-util",
  "http-range-header",
  "image",
  "imageproc",

@@ -25,6 +25,12 @@ internal fun rustSourceImageRequest(requestJson: String): String {
 
 private external fun nativeHttpRequest(requestJson: String): String
 
+internal fun rustSourceExecutionCancelled(executionId: String): Boolean {
+    rustSourceEngineLibraryLoaded
+    return nativeExecutionStatus(executionId) == "true"
+}
+private external fun nativeExecutionStatus(executionId: String): String
+
 private external fun nativeStorageRequest(requestJson: String, appDataDir: String): String
 
 private external fun nativeImageRequest(requestJson: String): String

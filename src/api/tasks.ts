@@ -7,7 +7,7 @@ export async function taskCommand(name: string, args: Record<string, unknown>): 
   const revision = getFrontendRestoreRevision();
   const response = await command<Omit<TaskResponse, "task"> & { taskId: string }>(name, args);
   if (revision !== getFrontendRestoreRevision()) throw new Error("恢复后任务请求已失效。");
-  await refreshTasks(response.resource);
+  await refreshTasks();
   await ensureTasksLoaded();
   if (revision !== getFrontendRestoreRevision()) throw new Error("恢复后任务请求已失效。");
   const task = tasks.value.find((entry) => entry.id === response.taskId);

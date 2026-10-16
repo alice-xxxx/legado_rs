@@ -3,7 +3,9 @@ use super::*;
 
 impl ApplicationService {
     pub async fn list_tasks(&self) -> Result<Value, String> {
-        Ok(json!({ "resource": self.task_resource_descriptor()? }))
+        let registry = self.tasks.lock().await;
+        Ok(json!({ "resource": self.task_resource_descriptor()?,
+            "snapshot": task_records_document(&registry.records) }))
     }
 
     pub async fn tasks_resource(&self) -> Result<Value, String> {

@@ -404,7 +404,7 @@ export interface SearchResource {
 
 export type SearchBatch = Pick<SearchResource,
   "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"
-> & { incremental: true; resultOrder: string[] };
+> & { incremental: true; incrementalErrors?: boolean; resultOrder: string[] };
 
 export interface SearchHistoryEntry {
   query: string;

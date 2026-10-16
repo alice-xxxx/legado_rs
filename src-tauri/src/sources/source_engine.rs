@@ -278,9 +278,13 @@ fn source_engine_inputs_changed(project_dir: &Path, classpath_file: &Path) -> Re
         "kmp-engine/src/commonMain/kotlin/io/legado/app/help/http/CookieStoreBase.kt",
         "kmp-engine/src/commonMain/kotlin/io/legado/app/help/http/CookieStoreProviderShared.kt",
         "kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/SourceEngineEmbedded.kt",
+        "kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/SourceHostThread.kt",
         "kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/http/RustHostHttpProvider.kt",
         // Rust 在此类上注册 JNI host 回调，声明变化时必须刷新 staged JAR。
         "kmp-engine/src/jvmMain/kotlin/io/legado/sourceengine/bridge/http/SourceEngineNativeHost.kt",
+        "src/native/cpp/jni/jni_bridge.cpp",
+        "src/native/quickjs-ng/quickjs.c",
+        "src/native/quickjs-ng/quickjs.h",
     ] {
         let input = project_dir.join(relative);
         let modified = match std::fs::metadata(&input) {

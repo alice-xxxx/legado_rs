@@ -2,9 +2,17 @@ package io.legado.sourceengine.bridge
 
 import kotlin.coroutines.AbstractCoroutineContextElement
 import kotlin.coroutines.CoroutineContext
-import kotlin.concurrent.Volatile
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import io.legado.app.help.coroutine.IoDispatcher
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.job
+import kotlinx.coroutines.CancellationException
 
 /**
  * 书源执行器传给 Rust 宿主的跨平台 HTTP 请求。
@@ -26,6 +34,7 @@ data class HostHttpRequest(
     val cookieScope: String? = null,
     val proxy: String? = null,
     val acceptInvalidCerts: Boolean = false,
+    val executionId: String? = null,
 )
 
 data class HostHttpMultipartPart(
@@ -71,6 +80,7 @@ data class HostBrowserRequest(
     val cookieScope: String? = null,
     val title: String = "",
     val waitForResult: Boolean = true,
+    val executionId: String? = null,
 )
 
 data class HostBrowserResponse(
@@ -110,6 +120,7 @@ interface HostStorage {
  * 规则执行和网络调度可在协程中取消。
  */
 interface SourceEngineHost {
+    val executionId: String? get() = null
     suspend fun executeHttp(request: HostHttpRequest): HostHttpResponse
     suspend fun executeBrowser(request: HostBrowserRequest): HostBrowserResponse
     /** False by default so mobile hosts never silently substitute an offline snapshot. */
@@ -130,6 +141,7 @@ data class SourceEngineCall(
     val bookJson: String? = null,
     val chapterJson: String? = null,
     val nextChapterUrl: String? = null,
+    val executionId: String? = null,
 )
 
 /**
@@ -144,8 +156,8 @@ interface SourceRuleExecutor {
  * 单次书源调用的宿主上下文。
  *
  * 普通 HTTP 请求把宿主放进协程上下文，再由 AnalyzeUrlCore 写入请求 tag，确保 OkHttp worker
- * 线程仍能找到发起调用的 Rust Host。同步 JS 绑定拿不到协程上下文，因此另有串行作用域：
- * 仅在执行锁保护期间暂存当前 Host，并在 finally 中清除，避免并发书源操作串用宿主。
+ * 线程仍能找到发起调用的 Rust Host。同步 JS 绑定通过调度器维护的线程局部宿主取上下文，
+ * 每次协程恢复时安装、挂起时还原，避免网络等待期间占用其他书源的执行位置。
  */
 internal class SourceEngineHostContext(
     val host: SourceEngineHost,
@@ -154,25 +166,58 @@ internal class SourceEngineHostContext(
 }
 
 /**
- * 同步 JS 绑定无法读取 suspend 调用的 CoroutineContext；在串行执行区间内，
- * 用这个只读当前宿主让 JS 库下载等辅助请求也复用同一个 Rust HTTP/存储边界。
+ * 规则执行共享安全的调度通道，宿主上下文随每次调用独立传递；HTTP 等待可相互重叠。
  */
 object SourceEngineHostRegistry {
-    private val executionLock = Mutex()
+    // Native QuickJS has synchronous process-wide binding state. Only rule work uses this
+    // lane; HTTP suspends on the platform I/O dispatcher, releasing it for another source.
+    private val ruleDispatcher = IoDispatcher.limitedParallelism(1)
+    fun current(): SourceEngineHost? = sourceHostOnThread()
+    @kotlin.jvm.JvmStatic
+    fun executionCancelled(): Boolean = current()?.executionId?.let(::sourceExecutionCancelled) ?: false
 
-    @Volatile
-    private var activeHost: SourceEngineHost? = null
-
-    fun current(): SourceEngineHost? = activeHost
+    internal fun <T> onThread(host: SourceEngineHost, block: () -> T): T {
+        val previous = sourceHostOnThread()
+        setSourceHostOnThread(host)
+        return try { block() } finally { setSourceHostOnThread(previous) }
+    }
 
     internal suspend fun <T> withHost(host: SourceEngineHost, block: suspend () -> T): T =
-        executionLock.withLock {
-            check(activeHost == null) { "Source-engine host scope cannot be nested" }
-            activeHost = host
-            try {
-                block()
-            } finally {
-                activeHost = null
+        withContext(object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) {
+                ruleDispatcher.dispatch(context, Runnable { onThread(host) { block.run() } })
             }
-        }
+        }) { block() }
+}
+
+internal expect fun sourceHostOnThread(): SourceEngineHost?
+internal expect fun setSourceHostOnThread(host: SourceEngineHost?)
+internal expect fun sourceExecutionCancelled(id: String): Boolean
+
+internal fun SourceEngineHost.forExecution(id: String?): SourceEngineHost {
+    val delegate = this
+    return object : SourceEngineHost by delegate {
+        override val executionId = id
+        override suspend fun executeHttp(request: HostHttpRequest): HostHttpResponse =
+            delegate.executeHttp(request.copy(executionId = id))
+        override suspend fun executeBrowser(request: HostBrowserRequest): HostBrowserResponse =
+            coroutineScope {
+                // Mobile browser renderers suspend outside Rust's HTTP runtime. Forward
+                // this lease's cancellation to their Job so WebKit/WebView cleanup runs.
+                val execution = coroutineContext.job
+                val cancellation = id?.let { executionId ->
+                    launch(Dispatchers.Default) {
+                        while (isActive) {
+                            if (sourceExecutionCancelled(executionId)) {
+                                execution.cancel(CancellationException("Source execution cancelled"))
+                                break
+                            }
+                            delay(50)
+                        }
+                    }
+                }
+                try { delegate.executeBrowser(request.copy(executionId = id)) }
+                finally { cancellation?.cancel() }
+            }
+    }
 }

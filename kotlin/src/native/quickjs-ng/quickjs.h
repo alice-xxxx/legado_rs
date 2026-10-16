@@ -1180,6 +1180,8 @@ typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
 JS_EXTERN void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
 /* Push/pop nested synchronous script deadlines. Timeout is monotonic wall time in ms. */
 JS_EXTERN void JS_SetExecutionTimeLimit(JSRuntime *rt, uint32_t timeout_ms);
+/* Host interrupt handlers can compose cancellation with the existing deadline. */
+JS_EXTERN int JS_CheckExecutionTimeLimit(JSRuntime *rt);
 JS_EXTERN void JS_ClearExecutionTimeLimit(JSRuntime *rt);
 JS_EXTERN bool JS_HasExecutionTimedOut(JSRuntime *rt);
 /* if can_block is true, Atomics.wait() can be used */

@@ -27,6 +27,7 @@ impl ApplicationService {
         if registry.active_search_task_id.as_deref() == Some(task_id) {
             registry.active_search_task_id = None;
             registry.published_search_results.clear();
+            registry.published_search_error_count = 0;
         }
         drop(registry);
         if changed { self.notify_task(&stopped).await; }
@@ -708,7 +709,7 @@ impl ApplicationService {
             return Ok(());
         }
         let mut batch = Value::Object(document.as_object().into_iter().flatten()
-            .filter(|(key, _)| matches!(key.as_str(), "taskId" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"))
+            .filter(|(key, _)| matches!(key.as_str(), "taskId" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"))
             .map(|(key, value)| (key.clone(), value.clone())).collect());
         let mut changed = Vec::new();
         for result in document["results"].as_array().into_iter().flatten() {
@@ -719,6 +720,11 @@ impl ApplicationService {
             }
         }
         batch["results"] = json!(changed);
+        let errors = document["errors"].as_array();
+        batch["errors"] = json!(errors.into_iter().flatten()
+            .skip(registry.published_search_error_count).collect::<Vec<_>>());
+        registry.published_search_error_count = errors.map_or(0, Vec::len);
+        batch["incrementalErrors"] = json!(true);
         // Group content can stay unchanged while its rank moves. Publish order
         // separately so the frontend never has to recreate relevance rules.
         batch["resultOrder"] = json!(document["results"].as_array().into_iter().flatten()
@@ -1252,6 +1258,40 @@ mod search_stream_tests {
         assert_eq!(results.len(), 3);
         assert_eq!(results[0]["resultId"], "exact");
         assert_eq!(registry.search_documents["search-fixture"]["completedSources"], 3);
+    }
+
+    #[tokio::test]
+    async fn search_stream_sends_each_error_once_and_keeps_the_full_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let mut task: AppTask = serde_json::from_value(json!({
+            "id": "task-errors", "kind": "search", "status": "running",
+            "keyword": "fixture", "searchId": "search-errors", "total": 2,
+            "createdAtMs": 1, "updatedAtMs": 1,
+        })).unwrap();
+        {
+            let mut registry = service.tasks.lock().await;
+            registry.active_search_task_id = Some(task.id.clone());
+            registry.search_documents.insert("search-errors".into(), empty_search_task_document(&task));
+        }
+        let batches = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let captured = batches.clone();
+        service.search_notifiers.write().unwrap().insert(task.id.clone(), Arc::new(move |batch| captured.lock().unwrap().push(batch)));
+        for index in 0..2 {
+            task.completed = index;
+            service.append_and_publish_search_snapshot(&task, Vec::new(),
+                vec![json!({"sourceId": format!("source-{index}"), "message": "timeout"})], true, None).await.unwrap();
+        }
+        task.completed = 2;
+        service.publish_search_task_state(&task, "completed", None).await.unwrap();
+        let batches = batches.lock().unwrap();
+        assert_eq!(batches[0]["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(batches[1]["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(batches[1]["errors"][0]["sourceId"], "source-1");
+        assert!(batches[2]["errors"].as_array().unwrap().is_empty());
+        assert_eq!(batches[2]["incrementalErrors"], true);
+        drop(batches);
+        assert_eq!(service.tasks.lock().await.search_documents["search-errors"]["errors"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]

@@ -103,12 +103,14 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
         // 转成请求元数据发给 Rust，避免内部控制 header 泄漏到书源站点。
         builder.interceptors().add(0, Interceptor { chain ->
             val request = chain.request()
+            val host = request.tag(SourceEngineHost::class.java) ?: SourceEngineHostRegistry.current()
+                ?: throw IOException("No active Rust source-engine host")
             val hasCookieJar = request.header(cookieJarHeader) != null
-            chain.proceed(
+            SourceEngineHostRegistry.onThread(host) { chain.proceed(
                 request.newBuilder()
                     .tag(BridgeRequestMetadata::class.java, BridgeRequestMetadata(hasCookieJar))
                     .build()
-            )
+            ) }
         })
         builder.addInterceptor(Interceptor { chain -> executeThroughRust(chain, proxy) })
         return builder.build()
@@ -191,6 +193,7 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
             put("type", "httpRequest")
             put("id", id)
             put("request", buildJsonObject {
+                request.executionId?.let { put("executionId", it) }
                 put("url", request.url)
                 put("method", request.method)
                 put("headers", buildJsonArray {
@@ -281,6 +284,7 @@ object RustHostHttpProvider : OkHttpClientProvider, OkHttpProxyClientProvider {
         val id = requestSequence.incrementAndGet().toString()
         val request = buildJsonObject {
             put("type", "storageRequest")
+            SourceEngineHostRegistry.current()?.executionId?.let { put("executionId", it) }
             put("id", id)
             put("namespace", namespace)
             put("operation", operation)

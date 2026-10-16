@@ -232,6 +232,7 @@ struct TaskRegistry {
     search_book_group_roots: HashMap<String, String>,
     /// Last published groups, used to send IPC deltas rather than file snapshots.
     published_search_results: HashMap<String, Value>,
+    published_search_error_count: usize,
 }
 
 fn empty_search_task_document(task: &AppTask) -> Value {

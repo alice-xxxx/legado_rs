@@ -2,7 +2,7 @@
 //! 桌面 Rust 进程内的 JVM/JNI 边界。
 //!
 //! Rust 宿主通过此模块在进程内调用 KMP/JVM；Kotlin 的网络与存储请求回调到 Rust Host。
-//! JNI VM 生命周期和请求锁保护进程级 provider 与 QuickJS 状态。
+//! JVM 初始化由锁保护；每次执行使用独立的宿主、取消信号和截止时间。
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod desktop {
@@ -20,11 +20,7 @@ mod desktop {
 
     static JVM: OnceLock<JavaVM> = OnceLock::new();
     static JVM_INIT_LOCK: Mutex<()> = Mutex::new(());
-    static EXECUTION_LOCK: Mutex<()> = Mutex::new(());
     static HOST_RUNTIME: OnceLock<Result<Runtime, String>> = OnceLock::new();
-    // 书源执行被 EXECUTION_LOCK 串行化，但 Kotlin 的 OkHttp 会把网络调用派发到自己的
-    // worker 线程。因此上下文必须跨 JNI 回调线程可见；作用域锁保证路径不会和另一请求串线。
-    static CURRENT_DATA_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
 
     // jni-macros 0.22.4 展开的 native_method! 内部仍调用已弃用的 fetch_update。
     // 仅在这张 JNI 方法表局部屏蔽第三方宏展开的 warning。
@@ -35,6 +31,9 @@ mod desktop {
     const NATIVE_METHODS: &[NativeMethod] = &[
         native_method! {
             static fn native_http_request(event_json: JString) -> JString,
+        },
+        native_method! {
+            static fn native_execution_status(execution_id: JString) -> JString,
         },
         native_method! {
             static fn native_storage_request(event_json: JString) -> JString,
@@ -48,28 +47,8 @@ mod desktop {
         },
     ];
 
-    struct DataDirScope(Option<PathBuf>);
-
-    impl DataDirScope {
-        fn enter(path: PathBuf) -> Self {
-            let previous = CURRENT_DATA_DIR
-                .write()
-                .expect("active app data directory lock")
-                .replace(path);
-            Self(previous)
-        }
-    }
-
-    impl Drop for DataDirScope {
-        fn drop(&mut self) {
-            *CURRENT_DATA_DIR
-                .write()
-                .expect("active app data directory lock") = self.0.take();
-        }
-    }
-
-    /// 调用 JVM 中的 Kotlin 入口。Rust 侧锁定整个解析操作，保证进程级 Provider/QuickJS
-    /// 状态不会被两个书源请求交错修改。
+    /// Native workers have independent host leases; Kotlin serializes rule execution,
+    /// while suspending HTTP calls release its rule lane for other sources.
     pub fn execute(
         classpath: &str,
         quickjs_library: &Path,
@@ -78,16 +57,14 @@ mod desktop {
         bundled_java_home: Option<PathBuf>,
         cancellation: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<String, String> {
-        let _execution = EXECUTION_LOCK
-            .lock()
-            .map_err(|_| "Embedded source-engine execution lock is poisoned".to_owned())?;
+        let mut request: Value = serde_json::from_str(request_json).map_err(|error| error.to_string())?;
+        let _execution = crate::source_host_ffi::ExecutionScope::enter(&mut request, data_dir.clone(), cancellation)?;
+        let request_json = request.to_string();
         let kotlin_data_dir = jvm_compatible_path(&data_dir)
             .to_string_lossy()
             .into_owned();
-        let _data_dir = DataDirScope::enter(data_dir);
-        let _cancellation = crate::source_host_ffi::ExecutionCancellationScope::enter(cancellation)?;
         let vm = get_or_start_vm(classpath, quickjs_library, bundled_java_home)?;
-        vm.attach_current_thread(|env| call_kotlin(env, request_json, &kotlin_data_dir))
+        vm.attach_current_thread(|env| call_kotlin(env, &request_json, &kotlin_data_dir))
             .map_err(|error| format!("JNI call to Kotlin source engine failed: {error}"))
     }
 
@@ -217,6 +194,12 @@ mod desktop {
         env.new_string(response)
     }
 
+    fn native_execution_status<'local>(env: &mut Env<'local>, _class: JClass<'local>, id: JString<'local>)
+        -> Result<JString<'local>, jni::errors::Error> {
+        let id = id.try_to_string(env)?;
+        env.new_string(if crate::source_host_ffi::execution_cancelled(Some(&id)) { "true" } else { "false" })
+    }
+
     fn native_storage_request<'local>(
         env: &mut Env<'local>,
         _class: JClass<'local>,
@@ -285,15 +268,10 @@ mod desktop {
         };
         let id = event.get("id").cloned().unwrap_or(Value::Null);
         let result = (|| {
+            let execution_id = event["executionId"].as_str().ok_or("JNI storage callback has no execution ID")?;
+            let data_dir = crate::source_host_ffi::execution_data_dir(execution_id)?;
             let request: SourceStorageRequest = serde_json::from_value(event)
                 .map_err(|error| format!("Invalid JNI storage request: {error}"))?;
-            let data_dir = CURRENT_DATA_DIR
-                .read()
-                .map_err(|_| "JNI app data directory lock is poisoned".to_owned())?
-                .clone()
-                .ok_or_else(|| {
-                    "JNI storage callback has no active app data directory".to_owned()
-                })?;
             run_on_host_runtime(
                 async move { execute_source_storage_request(request, &data_dir).await },
             )
@@ -433,6 +411,14 @@ mod android {
     use jni::objects::{JObject, JString};
     use jni::{EnvUnowned, jni_mangle};
     use std::path::Path;
+
+    #[jni_mangle("io.legado.sourceengine.android.RustSourceEngineNative")]
+    pub fn native_execution_status<'local>(mut unowned_env: EnvUnowned<'local>, _class: JObject<'local>, id: JString<'local>) -> JString<'local> {
+        unowned_env.with_env(|env| {
+            let id = id.try_to_string(env)?;
+            env.new_string(if crate::source_host_ffi::execution_cancelled(Some(&id)) { "true" } else { "false" })
+        }).resolve::<ThrowRuntimeExAndDefault>()
+    }
 
     /// Android KMP calls these native methods directly. They deliberately return the same JSON
     /// envelope as the iOS C ABI, so parser code sees one host protocol on every mobile target.

@@ -20,6 +20,7 @@ internal fun decodeSourceEngineCall(requestJson: String): SourceEngineCall {
 
     return SourceEngineCall(
         operation = requiredString("operation"),
+        executionId = request["executionId"]?.jsonPrimitive?.contentOrNull,
         sourceJson = required("source").toString(),
         keyword = request["keyword"]?.jsonPrimitive?.contentOrNull,
         credentials = request["credentials"]?.takeUnless { it == JsonNull }?.let { value ->

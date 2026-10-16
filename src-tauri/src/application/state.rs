@@ -117,6 +117,7 @@ impl ApplicationService {
             search_replacement_contexts: HashMap::new(),
             search_book_group_roots: HashMap::new(),
             published_search_results: HashMap::new(),
+            published_search_error_count: 0,
         };
         for task in &mut task_registry.records {
             if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") {

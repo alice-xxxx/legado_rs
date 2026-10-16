@@ -2483,10 +2483,9 @@ void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
     rt->interrupt_opaque = opaque;
 }
 
-static int js_execution_timeout_interrupt(JSRuntime *rt, void *opaque)
+int JS_CheckExecutionTimeLimit(JSRuntime *rt)
 {
     uint64_t now;
-    (void)opaque;
     if (rt->execution_timed_out)
         return 1;
     if (rt->execution_deadline_depth == 0)
@@ -2497,6 +2496,12 @@ static int js_execution_timeout_interrupt(JSRuntime *rt, void *opaque)
         return 1;
     }
     return 0;
+}
+
+static int js_execution_timeout_interrupt(JSRuntime *rt, void *opaque)
+{
+    (void)opaque;
+    return JS_CheckExecutionTimeLimit(rt);
 }
 
 void JS_SetExecutionTimeLimit(JSRuntime *rt, uint32_t timeout_ms)

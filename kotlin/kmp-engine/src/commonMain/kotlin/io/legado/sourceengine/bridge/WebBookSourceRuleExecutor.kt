@@ -10,7 +10,6 @@ import io.legado.app.data.entities.SearchBook
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.data.entities.rule.ExploreKind
 import io.legado.app.data.entities.toBookSource
-import io.legado.app.constant.AppConst
 import io.legado.app.help.http.header
 import io.legado.app.help.http.CookieStoreProviders
 import io.legado.app.help.tts.HttpTtsRequest
@@ -25,22 +24,13 @@ import io.legado.app.help.ui.OpenUrlProviders
 import io.legado.app.help.ui.JsUiProvider
 import io.legado.app.help.ui.JsUiProviders
 import io.legado.app.help.source.exploreKinds
-import io.legado.app.help.config.AppConfigProviders
-import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.model.webBook.WebBook
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.NetworkUtils
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
@@ -55,7 +45,6 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
-import kotlin.math.min
 
 /**
  * 把 Rust 请求映射到共享的 WebBook 编排入口。
@@ -66,6 +55,9 @@ import kotlin.math.min
 @OptIn(ExperimentalEncodingApi::class)
 object WebBookSourceRuleExecutor : SourceRuleExecutor {
     override suspend fun execute(call: SourceEngineCall, host: SourceEngineHost): String =
+        executeWithHost(call, host.forExecution(call.executionId))
+
+    private suspend fun executeWithHost(call: SourceEngineCall, host: SourceEngineHost): String =
         SourceEngineHostRegistry.withHost(host) {
             withContext(SourceEngineHostContext(host)) {
                 when (call.operation) {
@@ -120,11 +112,11 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
                     }
 
                     "search" -> {
-                        encodeSearchPage(decodeBookSource(call), call.keyword.orEmpty(), call.page ?: 1)
-                            .toString()
+                        kotlinx.coroutines.withTimeout(10_000L) {
+                            encodeSearchPage(decodeBookSource(call), call.keyword.orEmpty(), call.page ?: 1)
+                                .toString()
+                        }
                     }
-
-                    "searchBatch" -> searchSourcesBatch(call)
 
                     "exploreKinds" -> encodeExploreKinds(decodeBookSource(call))
 
@@ -281,41 +273,6 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         KS_JSON.decodeFromJsonElement(BookSource.serializer(), sourceJson).apply {
             sourceUserAgentOverride = sourceUserAgentOverride(sourceJson)
         }
-
-    private suspend fun searchSourcesBatch(call: SourceEngineCall): String {
-        val sourceJson = KS_JSON.parseToJsonElement(call.sourceJson) as? JsonArray
-            ?: error("Search batch sources must be an array")
-        check(sourceJson.isNotEmpty()) { "Search batch cannot be empty" }
-        val sources = sourceJson
-        val concurrency = min(AppConfigProviders.get().threadCount, AppConst.MAX_THREAD).coerceAtLeast(1)
-        // Keep KMP rule/JS execution on one lane; each source suspends into the host for HTTP, so
-        // these requests still overlap while native QuickJS's process-wide scope slot stays safe.
-        val dispatcher = IoDispatcher.limitedParallelism(1)
-        val permits = Semaphore(concurrency)
-        val results = coroutineScope {
-            sources.map { sourceJson ->
-                async(dispatcher) {
-                    permits.withPermit {
-                        try {
-                            withTimeoutOrNull(AppConst.timeLimit) {
-                                encodeSearchPage(
-                                    decodeBookSource(sourceJson),
-                                    call.keyword.orEmpty(),
-                                    call.page ?: 1,
-                                )
-                            } ?: buildJsonObject { put("error", "Source search timed out") }
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: Exception) {
-                            currentCoroutineContext().ensureActive()
-                            buildJsonObject { put("error", error.message ?: error.toString()) }
-                        }
-                    }
-                }
-            }.awaitAll()
-        }
-        return buildJsonObject { put("results", JsonArray(results)) }.toString()
-    }
 
     private suspend fun encodeSearchPage(source: BookSource, keyword: String, pageNumber: Int) =
         WebBook.getBookListAwait(
