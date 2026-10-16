@@ -86,7 +86,7 @@ jobs:
           retention-days: 14
 
   android:
-    name: Android signed release APKs
+    name: Android arm64 signed release APK
     if: inputs.platform == 'all' || inputs.platform == 'android'
     runs-on: ubuntu-latest
     steps:
@@ -97,7 +97,7 @@ jobs:
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+          targets: aarch64-linux-android
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
@@ -128,16 +128,38 @@ jobs:
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/foliver-android.p12"
           chmod 600 "$RUNNER_TEMP/foliver-android.p12"
-      - name: Package signed APKs by ABI
+      - name: Package signed arm64 APK
         env:
           FOLIVER_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/foliver-android.p12
           FOLIVER_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_PASSWORD }}
           FOLIVER_ANDROID_KEY_ALIAS: ${{ secrets.FOLIVER_ANDROID_KEY_ALIAS }}
           FOLIVER_ANDROID_KEY_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEY_PASSWORD }}
-        run: npm run tauri -- android build --apk --ci --split-per-abi
+        run: npm run tauri -- android build --apk --ci --target aarch64
+      - name: Verify signed arm64 APK
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import subprocess
+          from zipfile import ZipFile
+
+          apks = list(Path("src-tauri/gen/android/app/build/outputs/apk").rglob("*-release.apk"))
+          if len(apks) != 1:
+              raise SystemExit(f"Expected one arm64 release APK, found {len(apks)}")
+          with ZipFile(apks[0]) as apk:
+              libraries = {name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")}
+          abis = {name.split("/")[1] for name in libraries}
+          if abis != {"arm64-v8a"}:
+              raise SystemExit(f"Unexpected APK architectures: {sorted(abis)}")
+          for library in ("liblegado_lib.so", "liblegado_quickjs.so"):
+              if f"lib/arm64-v8a/{library}" not in libraries:
+                  raise SystemExit(f"Missing arm64 library: {library}")
+          subprocess.run([str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/apksigner"), "verify", str(apks[0])], check=True)
+          print(f"Verified signed arm64 APK: {apks[0]}")
+          PY
       - uses: actions/upload-artifact@v7
         with:
-          name: Foliver-Android-signed-release
+          name: Foliver-Android-arm64-signed-release
           path: src-tauri/gen/android/app/build/outputs/apk/**/*-release.apk
           if-no-files-found: error
           retention-days: 14

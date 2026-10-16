@@ -10,7 +10,7 @@ rootProject.allprojects {
     }
 }
 
-android {
+extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "io.legado.sourceengine.tauri"
     compileSdk = 37
 
