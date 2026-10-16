@@ -87,7 +87,7 @@ val buildIosNativeQuickJs = tasks.register<Exec>("buildIosNativeQuickJs") {
     outputs.dir(layout.buildDirectory.dir("iosNativeLibs"))
 }
 
-val androidAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+val androidAbis = listOf("arm64-v8a")
 val quickJsAndroidRoot = projectDir.resolve("../src/native/cpp").canonicalFile
 val quickJsAndroidSources = projectDir.resolve("../src/native/quickjs-ng").canonicalFile
 val androidNdkRoot = providers.provider { locateAndroidNdk().canonicalFile }
@@ -100,8 +100,8 @@ val androidNdkClang = providers.provider {
 }
 val androidNinja = providers.provider { findNinjaExecutable(locateAndroidNdk()).canonicalFile }
 
-// These are stale outputs from the former AAR Rust tasks. Tauri builds its own Rust app library;
-// deleting only these four generated files keeps the KMP AAR's JNI merge free of duplicate Rust .so.
+// Tauri supplies the Rust app library. Remove its old generated AAR copy to
+// avoid loading two Rust Host instances into the same Android process.
 val cleanLegacyRustAndroidAarLibraries = tasks.register<Delete>("cleanLegacyRustAndroidAarLibraries") {
     androidAbis.forEach { abi ->
         delete(androidJniLibsOutput.map { it.file("$abi/liblegado_lib.so") })
@@ -249,77 +249,80 @@ kotlin {
     }
 
     // iOS 应用消费 Kotlin/Native framework，不使用 JVM 运行库 JAR。
-    iosArm64 {
-        compilations.getByName("main") {
-            cinterops {
-                create("sourceEngineHost") {
-                    defFile(project.file("src/nativeInterop/cinterop/source_engine_host.def"))
-                    includeDirs(project.file("../../src-tauri/include"))
-                }
-                create("quickjs") {
-                    defFile(project.file("src/nativeInterop/cinterop/quickjs.def"))
-                    // cinterop 与桌面/Android 共用仓库内 QuickJS-NG 源码，不查找原平台目录。
-                    includeDirs(quickJsAndroidSources)
-                }
-                create("mbedtls") {
-                    defFile(project.file("src/nativeInterop/cinterop/mbedtls.def"))
-                    includeDirs(
-                        project.file("src/nativeInterop/cinterop/mbedtls/include"),
-                        project.file("src/nativeInterop/cinterop/mbedtls"),
-                    )
-                }
-                create("nskeyvalueobserving") {
-                    defFile(project.file("src/nativeInterop/cinterop/nskeyvalueobserving.def"))
-                }
-            }
-        }
-        binaries.framework {
-            baseName = "LegadoSourceEngine"
-            binaryOption("bundleId", "com.alice.legado.sourceengine")
-            isStatic = true
-            val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_arm64").get().asFile
-            linkerOpts(
-                "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
-                "-framework", "Security", "-framework", "CoreFoundation",
-                "-framework", "SystemConfiguration", "-lz",
-            )
-        }
-    }
-    iosSimulatorArm64 {
-        compilations.getByName("main") {
-            cinterops {
-                create("sourceEngineHost") {
-                    defFile(project.file("src/nativeInterop/cinterop/source_engine_host.def"))
-                    includeDirs(project.file("../../src-tauri/include"))
-                }
-                create("quickjs") {
-                    defFile(project.file("src/nativeInterop/cinterop/quickjs.def"))
-                    // cinterop 与桌面/Android 共用仓库内 QuickJS-NG 源码，不查找原平台目录。
-                    includeDirs(quickJsAndroidSources)
-                }
-                create("mbedtls") {
-                    defFile(project.file("src/nativeInterop/cinterop/mbedtls.def"))
-                    includeDirs(
-                        project.file("src/nativeInterop/cinterop/mbedtls/include"),
-                        project.file("src/nativeInterop/cinterop/mbedtls"),
-                    )
-                }
-                create("nskeyvalueobserving") {
-                    defFile(project.file("src/nativeInterop/cinterop/nskeyvalueobserving.def"))
+    if (isAppleHost) {
+        iosArm64 {
+            compilations.getByName("main") {
+                cinterops {
+                    create("sourceEngineHost") {
+                        defFile(project.file("src/nativeInterop/cinterop/source_engine_host.def"))
+                        includeDirs(project.file("../../src-tauri/include"))
+                    }
+                    create("quickjs") {
+                        defFile(project.file("src/nativeInterop/cinterop/quickjs.def"))
+                        // cinterop 与桌面/Android 共用仓库内 QuickJS-NG 源码，不查找原平台目录。
+                        includeDirs(quickJsAndroidSources)
+                    }
+                    create("mbedtls") {
+                        defFile(project.file("src/nativeInterop/cinterop/mbedtls.def"))
+                        includeDirs(
+                            project.file("src/nativeInterop/cinterop/mbedtls/include"),
+                            project.file("src/nativeInterop/cinterop/mbedtls"),
+                        )
+                    }
+                    create("nskeyvalueobserving") {
+                        defFile(project.file("src/nativeInterop/cinterop/nskeyvalueobserving.def"))
+                    }
                 }
             }
+            binaries.framework {
+                baseName = "LegadoSourceEngine"
+                binaryOption("bundleId", "com.alice.legado.sourceengine")
+                isStatic = true
+                val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_arm64").get().asFile
+                linkerOpts(
+                    "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
+                    "-framework", "Security", "-framework", "CoreFoundation",
+                    "-framework", "SystemConfiguration", "-lz",
+                )
+            }
         }
-        binaries.framework {
-            baseName = "LegadoSourceEngine"
-            binaryOption("bundleId", "com.alice.legado.sourceengine")
-            isStatic = true
-            val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_simulator_arm64").get().asFile
-            linkerOpts(
-                "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
-                "-framework", "Security", "-framework", "CoreFoundation",
-                "-framework", "SystemConfiguration", "-lz",
-            )
+        iosSimulatorArm64 {
+            compilations.getByName("main") {
+                cinterops {
+                    create("sourceEngineHost") {
+                        defFile(project.file("src/nativeInterop/cinterop/source_engine_host.def"))
+                        includeDirs(project.file("../../src-tauri/include"))
+                    }
+                    create("quickjs") {
+                        defFile(project.file("src/nativeInterop/cinterop/quickjs.def"))
+                        // cinterop 与桌面/Android 共用仓库内 QuickJS-NG 源码，不查找原平台目录。
+                        includeDirs(quickJsAndroidSources)
+                    }
+                    create("mbedtls") {
+                        defFile(project.file("src/nativeInterop/cinterop/mbedtls.def"))
+                        includeDirs(
+                            project.file("src/nativeInterop/cinterop/mbedtls/include"),
+                            project.file("src/nativeInterop/cinterop/mbedtls"),
+                        )
+                    }
+                    create("nskeyvalueobserving") {
+                        defFile(project.file("src/nativeInterop/cinterop/nskeyvalueobserving.def"))
+                    }
+                }
+            }
+            binaries.framework {
+                baseName = "LegadoSourceEngine"
+                binaryOption("bundleId", "com.alice.legado.sourceengine")
+                isStatic = true
+                val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_simulator_arm64").get().asFile
+                linkerOpts(
+                    "-L${quickJsLibs.absolutePath}", "-lquickjs", "-lmbedtls", "-lsqlite3",
+                    "-framework", "Security", "-framework", "CoreFoundation",
+                    "-framework", "SystemConfiguration", "-lz",
+                )
+            }
         }
+
     }
 
     sourceSets {
@@ -340,29 +343,32 @@ kotlin {
             implementation("com.caverock:androidsvg-aar:1.4")
         }
 
-        nativeMain {
-            kotlin.exclude(*nativeInteropPatterns.toTypedArray())
-            dependencies {
-                implementation("io.ktor:ktor-server-core:3.5.2")
-                implementation("io.ktor:ktor-server-cio:3.5.2")
-                implementation("io.ktor:ktor-server-websockets:3.5.2")
+        if (isAppleHost) {
+            nativeMain {
+                kotlin.exclude(*nativeInteropPatterns.toTypedArray())
+                dependencies {
+                    implementation("io.ktor:ktor-server-core:3.5.2")
+                    implementation("io.ktor:ktor-server-cio:3.5.2")
+                    implementation("io.ktor:ktor-server-websockets:3.5.2")
+                }
             }
-        }
 
-        iosMain {
-            dependencies {
-                implementation("androidx.sqlite:sqlite-framework:2.7.0")
-                implementation("io.ktor:ktor-client-core:3.5.2")
-                implementation("io.ktor:ktor-client-darwin:3.5.2")
+            iosMain {
+                dependencies {
+                    implementation("androidx.sqlite:sqlite-framework:2.7.0")
+                    implementation("io.ktor:ktor-client-core:3.5.2")
+                    implementation("io.ktor:ktor-client-darwin:3.5.2")
+                }
             }
-        }
 
-        iosArm64Main {
-            kotlin.srcDir(nativeInteropOutput)
-        }
+            iosArm64Main {
+                kotlin.srcDir(nativeInteropOutput)
+            }
 
-        iosSimulatorArm64Main {
-            kotlin.srcDir(nativeInteropOutput)
+            iosSimulatorArm64Main {
+                kotlin.srcDir(nativeInteropOutput)
+            }
+
         }
 
         jvmMain.dependencies {
@@ -418,10 +424,12 @@ room3 {
 dependencies {
     add("kspJvm", "androidx.room3:room3-compiler:3.0.1")
     add("kspAndroid", "androidx.room3:room3-compiler:3.0.1")
-    add("kspIosArm64", "androidx.room3:room3-compiler:3.0.1")
-    add("kspIosSimulatorArm64", "androidx.room3:room3-compiler:3.0.1")
-    add("kspIosArm64", project(":quickjs-processor"))
-    add("kspIosSimulatorArm64", project(":quickjs-processor"))
+    if (isAppleHost) {
+        add("kspIosArm64", "androidx.room3:room3-compiler:3.0.1")
+        add("kspIosSimulatorArm64", "androidx.room3:room3-compiler:3.0.1")
+        add("kspIosArm64", project(":quickjs-processor"))
+        add("kspIosSimulatorArm64", project(":quickjs-processor"))
+    }
 }
 
 // iOS 用手写的 QuickJS native bridge，不具备 JVM 反射分发器运行环境；让 KSP 生成

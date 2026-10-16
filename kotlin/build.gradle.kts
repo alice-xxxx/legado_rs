@@ -240,13 +240,15 @@ tasks.register("stageTauriAndroidAar") {
         check(sourceAar.isFile) { "KMP Android AAR was not produced: ${sourceAar.absolutePath}" }
         stagedTauriAndroidAar.parentFile.mkdirs()
 
-        // The standalone AAR contains the same Rust crate that Tauri already loads as its Android
-        // app library. Keep QuickJS JNI in the AAR, but omit the duplicate Rust .so to avoid APK
-        // merge collisions and ensure Kotlin callbacks enter the app's single Rust Host instance.
+        // Keep only arm64 JNI, including when the input AAR contains stale multi-ABI outputs.
+        // Tauri owns the Rust app library; the AAR supplies QuickJS, not another Rust Host instance.
         ZipFile(sourceAar).use { input ->
             ZipOutputStream(stagedTauriAndroidAar.outputStream().buffered()).use { output ->
                 input.entries().asSequence()
-                    .filterNot { it.name.startsWith("jni/") && it.name.endsWith("/liblegado_lib.so") }
+                    .filterNot {
+                        it.name.startsWith("jni/") &&
+                            (!it.name.startsWith("jni/arm64-v8a/") || it.name.endsWith("/liblegado_lib.so"))
+                    }
                     .forEach { entry ->
                         output.putNextEntry(ZipEntry(entry.name))
                         input.getInputStream(entry).use { it.copyTo(output) }

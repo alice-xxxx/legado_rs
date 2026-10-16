@@ -17,6 +17,9 @@ if (configCacheProperty.test(gradleProperties)) {
 } else {
   gradleProperties += `${gradleProperties.endsWith("\n") || !gradleProperties ? "" : "\n"}org.gradle.configuration-cache=false\n`;
 }
+if (!/^org\.gradle\.logging\.stacktrace\s*=/m.test(gradleProperties)) {
+  gradleProperties += `${gradleProperties.endsWith("\n") ? "" : "\n"}org.gradle.logging.stacktrace=all\n`;
+}
 await writeFile(gradlePropertiesFile, gradleProperties, "utf8");
 
 // Tauri 2.12's Android AAR requires compileSdk >= 36. Some plugins still set 34
@@ -37,6 +40,20 @@ subprojects {
 }
 `;
   rootBuild += "\n" + librarySdkConfig;
+}
+const libraryBytecodeMarker = "// Foliver Android library Java/Kotlin bytecode.";
+if (!rootBuild.includes(libraryBytecodeMarker)) {
+  const sdkCheck = "if ((library.compileSdk ?: 0) < 36) library.compileSdk = 36";
+  if (!rootBuild.includes(sdkCheck)) throw new Error("Cannot find Android library compatibility configuration");
+  rootBuild = rootBuild.replace(sdkCheck, `${sdkCheck}
+                ${libraryBytecodeMarker}
+                library.compileOptions {
+                    sourceCompatibility = JavaVersion.VERSION_11
+                    targetCompatibility = JavaVersion.VERSION_11
+                }
+                tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+                    compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
+                }`);
 }
 // reqwest 0.13 uses Android's trust manager through this small Kotlin component.
 // Its AAR version must match the Rust shim in Cargo.lock (not the verifier crate version).
@@ -79,6 +96,18 @@ if (existingRustlsDependency.test(contents)) {
 if (/minSdk\s*=\s*24/.test(contents)) {
     contents = contents.replace(/minSdk\s*=\s*24/, "minSdk = 26");
     buildFileChanged = true;
+}
+const arm64Marker = "// Foliver supports Android arm64 only.";
+if (!contents.includes(arm64Marker)) {
+  contents += `
+android {
+    ${arm64Marker}
+    defaultConfig {
+        ndk { abiFilters.clear(); abiFilters.add("arm64-v8a") }
+    }
+}
+`;
+  buildFileChanged = true;
 }
 const nativeHlsDependency = '    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")';
 if (!contents.includes(nativeHlsDependency)) {
@@ -185,6 +214,11 @@ if (!contents.includes(releaseMarker)) {
   contents += "\nandroid {\n" + releaseConfig + "}\n";
   buildFileChanged = true;
 }
+// Use AGP's public DSL types instead of its deprecated generated android() accessors.
+const publicAndroidDsl = contents.replace(/^android \{/gm,
+  "extensions.configure<com.android.build.api.dsl.ApplicationExtension> {");
+buildFileChanged ||= publicAndroidDsl !== contents;
+contents = publicAndroidDsl;
 if (buildFileChanged) await writeFile(buildFile, contents, "utf8");
 
 const appConfig = JSON.parse(await readFile(new URL("../tauri.conf.json", import.meta.url), "utf8"));

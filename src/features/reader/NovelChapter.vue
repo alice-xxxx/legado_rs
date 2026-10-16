@@ -57,6 +57,9 @@ const showTitle = computed(() => {
   </article>
 </template>
 <style scoped>
+/* Keep horizontal insets inside each column: WebKit excludes the column
+   container's trailing padding from its scrollable width on the final page. */
+.chapter-content { padding-inline: var(--gutter); }
 .chapter-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chapter-markup :deep(img) { max-width: 100%; height: auto; }
 .chapter-markup :deep(p) { margin: 0 0 1em; }
