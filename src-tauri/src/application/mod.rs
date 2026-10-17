@@ -6,7 +6,7 @@
 //! reads the complete JSON from an AppBootstrap resource; display pages consume
 //! processed resource JSON/HTML, and only KMP executes source rules.
 
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::{
     collections::{HashMap, HashSet},
     future::Future,
@@ -74,6 +74,8 @@ mod state;
 
 // 后台任务、TTS 和前端命令适配。
 mod task_execution;
+#[cfg(test)]
+mod performance_tests;
 mod task_lifecycle;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 mod tauri_commands;
@@ -135,6 +137,7 @@ pub struct ApplicationService {
     book_locks: Arc<tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
     chapter_locks: Arc<tokio::sync::Mutex<HashMap<String, Weak<tokio::sync::Mutex<()>>>>>,
     sources_lock: Arc<tokio::sync::Mutex<()>>,
+    source_catalog: Arc<tokio::sync::Mutex<Option<Arc<source_management::SourceCatalog>>>>,
     source_revisions: Arc<tokio::sync::Mutex<HashMap<String, u64>>>,
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
@@ -256,7 +259,7 @@ fn empty_search_task_document(task: &AppTask) -> Value {
     })
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SourceRecord {
     pub(crate) id: String,

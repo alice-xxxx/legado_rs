@@ -19,10 +19,12 @@ const unlisteners: UnlistenFn[] = [];
 let requestRevision = 0;
 let lifetime = 0;
 let pendingRead: Promise<void> | null = null;
+let refreshQueued = false;
 let initialization: Promise<void> | null = null;
 
 /** Rust publishes current progress from memory; tasks.json is the durable lifecycle checkpoint. */
 export function refreshTasks(): Promise<void> {
+  if (pendingRead) { refreshQueued = true; return pendingRead; }
   const revision = ++requestRevision;
   const restoreRevision = getFrontendRestoreRevision();
   const session = lifetime;
@@ -33,14 +35,17 @@ export function refreshTasks(): Promise<void> {
     try {
       // Resource and task notifications in the same turn share one read.
       await Promise.resolve();
-      if (!isCurrent()) return;
-      const { snapshot: document } = await command<{ snapshot: TasksResource }>("tasks_resource");
-      if (!isCurrent()) return;
-      const byId = new Map(document.tasks.map(task => [task.id, task]));
-      for (const task of recoveryTasks.values()) byId.set(task.id, task);
-      tasks.value = [...byId.values()];
-      tasksLoaded.value = true;
-      tasksError.value = "";
+      do {
+        refreshQueued = false;
+        if (!isCurrent()) return;
+        const { snapshot: document } = await command<{ snapshot: TasksResource }>("tasks_resource");
+        if (!isCurrent()) return;
+        const byId = new Map(document.tasks.map(task => [task.id, task]));
+        for (const task of recoveryTasks.values()) byId.set(task.id, task);
+        tasks.value = [...byId.values()];
+        tasksLoaded.value = true;
+        tasksError.value = "";
+      } while (refreshQueued);
     } catch (error) {
       if (!isCurrent()) return;
       tasksError.value = errorText(error);
@@ -89,6 +94,7 @@ function applyRecoveryTask(summary: Partial<AppTask>): void {
 function resetForRestore(): void {
   requestRevision++;
   pendingRead = null;
+  refreshQueued = false;
   recoveryTasks.clear();
   recoveryTaskSignaled.value = false;
   tasks.value = [];
@@ -114,7 +120,21 @@ export function initializeTaskStore(): Promise<void> {
     await retain<{ kind: string; resource: ResourceDescriptor }>("resource-updated", payload => {
       if (payload.kind === "tasks") void refreshTasks().catch(reportError);
     });
-    await retain<{ taskId: string; resource: ResourceDescriptor }>("task-updated", payload => {
+    await retain<{ taskId: string; resource: ResourceDescriptor; task?: Partial<AppTask> }>("task-updated", payload => {
+      const summary = payload.task;
+      const index = tasks.value.findIndex(task => task.id === payload.taskId);
+      const current = tasks.value[index];
+      // Progress changes no request fields. Lifecycle transitions reload the list.
+      if (!pendingRead && tasksLoaded.value && current?.status === "running"
+        && summary?.status === "running" && summary.completed !== undefined
+        && summary.total !== undefined && summary.updatedAtMs !== undefined) {
+        if (summary.updatedAtMs < current.updatedAtMs || summary.completed < current.completed) return;
+        const next = [...tasks.value];
+        next[index] = { ...current, completed: summary.completed, total: summary.total, updatedAtMs: summary.updatedAtMs };
+        tasks.value = next;
+        latestTaskUpdate.value = next[index]!;
+        return;
+      }
       const restoreRevision = getFrontendRestoreRevision();
       void refreshTasks().then(() => {
         if (session !== lifetime || restoreRevision !== getFrontendRestoreRevision()) return;
@@ -143,4 +163,5 @@ export function disposeTaskStore(): void {
   for (const unlisten of unlisteners.splice(0)) unlisten();
   initialization = null;
   pendingRead = null;
+  refreshQueued = false;
 }

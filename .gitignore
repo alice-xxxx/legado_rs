@@ -28,3 +28,10 @@ dist-ssr
 **/target/
 /kotlin/native/
 source-snapshot/
+
+# Local Android signing identity; publish only through Actions Secrets.
+.signing/
+*.keystore
+*.jks
+*.p12
+/tmp/

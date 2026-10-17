@@ -172,7 +172,7 @@ pub(crate) async fn import_local_book_with_outcome(
     let book_ref = store
         .book_ref(&book_id)
         .map_err(|error| error.to_string())?;
-    if store.root().join(book_ref.path()).is_file() {
+    if store.regular_file_exists(&book_ref).await.map_err(|error|error.to_string())? {
         store
             .persist_local_original(&book_id, &original_extension, &selected_path)
             .await

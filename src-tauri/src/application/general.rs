@@ -79,7 +79,7 @@ impl ApplicationService {
             return Err("Selected source is not an RSS subscription".to_owned());
         }
         let resource = crate::rss::remove_subscription_data(self, source_id).await?;
-        let mut records = self.read_sources().await?;
+        let mut records = self.read_sources().await?.as_ref().clone();
         records.retain(|source| source.id != source_id);
         let list_changed = self.write_sources(&records).await?;
         Ok(json!({
@@ -219,17 +219,19 @@ impl ApplicationService {
             "httpTtsConfigs" => (self.store.http_tts_configs_ref(), "configs"),
             _ => return Err("Unknown configuration kind".into()),
         };
-        self.store.update_json_ref(&reference, |mut document| {
+        let kind = kind.to_owned();
+        let rule_id = rule_id.to_owned();
+        self.store.update_json_ref(&reference, move |mut document| {
             let rules = document.get_mut(field).and_then(Value::as_array_mut)
                 .ok_or_else(|| "Configuration must contain a rule array".to_owned())?;
-            let index = rules.iter().position(|entry| entry.get("id").and_then(Value::as_str) == Some(rule_id));
+            let index = rules.iter().position(|entry| entry.get("id").and_then(Value::as_str) == Some(rule_id.as_str()));
             match (index, rule.is_null()) {
                 (Some(index), true) => { rules.remove(index); }
                 (Some(index), false) => rules[index] = rule,
                 (None, false) => rules.push(rule),
                 (None, true) => {}
             }
-            match kind {
+            match kind.as_str() {
                 "replacementRules" => crate::reading_tools::validate_replacement_document(&document)?,
                 "txtTocRules" => {
                     let rules = serde_json::from_value(document.clone()).map_err(|error| error.to_string())?;
@@ -269,7 +271,7 @@ impl ApplicationService {
                 return Err("Shelf contains duplicate book IDs".into());
             }
             let reference = self.store.book_ref(&book.id).map_err(|error| error.to_string())?;
-            self.store.read_json_ref(&reference).await.map_err(|error| error.to_string())?;
+            if !self.store.regular_file_exists(&reference).await.map_err(|e|e.to_string())? { return Err("Library content is not cached".into()); }
         }
         let reference = self.store.shelf_ref();
         let document = library.unwrap_or(serde_json::to_value(shelf).map_err(|error| error.to_string())?);

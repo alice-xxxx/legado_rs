@@ -314,9 +314,12 @@ impl ApplicationService {
         mut before_cancel: impl FnMut(),
     ) -> Result<bool, String> {
         loop {
-            if !self.task_worker_is_current(task_id, signal).await {
-                return Ok(false);
-            }
+            let status = {
+                let registry = self.tasks.lock().await;
+                if !registry.owns_worker(task_id, signal) { return Ok(false); }
+                registry.records.iter().find(|task| task.id == task_id)
+                    .ok_or_else(|| format!("Unknown task '{task_id}'"))?.status.clone()
+            };
             let current = *signal.borrow_and_update();
             if current.cancelled {
                 before_cancel();
@@ -328,7 +331,7 @@ impl ApplicationService {
                 return Ok(false);
             }
             if current.paused {
-                if self.task_summary_record(task_id).await?.status != "paused" {
+                if status != "paused" {
                     let _operation = self.operation_gate.clone().read_owned().await;
                     if !self.task_worker_is_current(task_id, signal).await {
                         return Ok(false);
@@ -356,7 +359,7 @@ impl ApplicationService {
                 }
                 continue;
             }
-            if self.task_summary_record(task_id).await?.status != "running" {
+            if status != "running" {
                 let _operation = self.operation_gate.clone().read_owned().await;
                 if !self.task_worker_is_current(task_id, signal).await {
                     return Ok(false);
@@ -527,12 +530,12 @@ impl ApplicationService {
         self.reconcile_search_document_progress(task_id, signal).await?;
         let already_running = self.task_summary_record(task_id).await?.status == "running";
         if !self.task_checkpoint(task_id, signal).await? { return Ok(None); }
-        let task = self.task_summary_record(task_id).await?;
+        let mut task = self.task_summary_record(task_id).await?;
         if already_running && task.kind == "search" {
             self.publish_search_task_state(&task, "running", None).await?;
         }
-        // One immutable definition/revision snapshot per round. Revisions are rechecked
-        // on admission and commit, including edit/revert, deletion and backup restore.
+        // Capture definitions/revisions once. Only commit checks a source revision;
+        // admitting each request does not need another lock or lookup.
         let exhausted = if task.kind == "search" {
             self.read_search_task_state(&task).await?["exhaustedSourceIds"].as_array()
                 .into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>()
@@ -541,14 +544,15 @@ impl ApplicationService {
             let _operation = self.operation_read().await;
             let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
-            let by_id = records.into_iter().map(|source| (source.id.clone(), source)).collect::<HashMap<_, _>>();
+            let by_id = records.iter().map(|source| (source.id.as_str(), source)).collect::<HashMap<_, _>>();
+            let mut revisions = self.source_revisions.lock().await;
             let mut slots = Vec::new();
             for id in task.source_ids.as_ref().ok_or("Search task source list is incomplete")?.iter().skip(task.completed) {
-                let source = by_id.get(id).filter(|source| source.enabled
+                let source = by_id.get(id.as_str()).copied().filter(|source| source.enabled
                     && !crate::source_metadata::is_rss_source_metadata(&source.source)
                     && task.source_type.as_deref().is_none_or(|kind| crate::source_metadata::matches_search_type(&source.source, kind)));
                 let snapshot = match source {
-                    Some(source) if !exhausted.contains(id) => Some((source.clone(), self.source_revision(id).await?)),
+                    Some(source) if !exhausted.contains(id) => Some((source.clone(), *revisions.entry(id.clone()).or_default())),
                     _ => None,
                 };
                 slots.push((id.clone(), snapshot));
@@ -560,6 +564,8 @@ impl ApplicationService {
         let mut pending = slots.into_iter();
         let mut running = FuturesUnordered::new();
         let mut last_progress_notification = Instant::now();
+        let mut last_result_publication = None::<Instant>;
+        let mut unpublished_results = false;
         // Search uses one background-task slot, with its own bounded network concurrency.
         let _permit = loop {
             tokio::select! {
@@ -580,14 +586,10 @@ impl ApplicationService {
                 let page = task.page;
                 let token = cancellation.child_token();
                 let operation_gate = self.operation_gate.clone();
-                let current = match &source {
-                    Some((_, revision)) => self.source_revision(&id).await? == *revision,
-                    None => false,
-                };
                 running.push(async move {
                     let _cancel_on_drop = token.clone().drop_guard();
                     let _operation = operation_gate.read_owned().await;
-                    let response = if let Some((source, _)) = source.as_ref().filter(|_| current) {
+                    let response = if let Some((source, _)) = source.as_ref() {
                         let mut request = engine_request("search", &source.source, Some(keyword), Some(page as i32), None, None, None);
                         request.cancellation = Some(token.clone());
                         tokio::select! {
@@ -610,6 +612,14 @@ impl ApplicationService {
                     if changed.is_err() { return Ok(None); }
                     continue;
                 }
+                _ = tokio::time::sleep_until((last_result_publication.unwrap_or_else(Instant::now)
+                    + Duration::from_millis(100)).into()), if unpublished_results && task.kind == "search" => {
+                    // Flush fast sources even if the remaining network requests stall.
+                    self.publish_search_task_state(&task, "running", None).await?;
+                    last_result_publication = Some(Instant::now());
+                    unpublished_results = false;
+                    continue;
+                }
                 completed = running.next() => completed,
             };
             let Some(completed) = completed else { continue; };
@@ -617,19 +627,22 @@ impl ApplicationService {
             if !self.task_checkpoint_with_cancel(task_id, signal, || { cancellation.cancel(); running.clear(); }).await? { return Ok(None); }
             let _operation = self.operation_gate.clone().read_owned().await;
             if !self.task_worker_is_current(task_id, signal).await { return Ok(None); }
-            let committed = self.task_summary_record(task_id).await?;
+            let publish = last_result_publication.is_none_or(|last| last.elapsed() >= Duration::from_millis(100));
             if let Some((source, revision)) = source {
-                self.append_search_source(&committed, &source, revision, response, true).await?;
+                self.append_search_source(&task, &source, revision, response, publish).await?;
             } else {
                 let errors = if exhausted.contains(&id) { Vec::new() } else {
                     vec![json!({"sourceId": id, "message": response.err().unwrap_or_default()})]
                 };
                 if task.kind == "search" {
-                    self.append_and_publish_search_snapshot(&committed, Vec::new(), errors, true, None).await?;
+                    self.append_and_publish_search_snapshot(&task, Vec::new(), errors, publish, None).await?;
                 } else {
-                    self.append_candidate_search_results(&committed, Vec::new(), errors).await?;
+                    self.append_candidate_search_results(&task, Vec::new(), errors).await?;
                 }
             }
+            if publish { last_result_publication = Some(Instant::now()); }
+            unpublished_results = !publish;
+            task.completed = task.completed.saturating_add(1);
             // Search documents and progress are session state. Lifecycle transitions
             // persist the latest progress; a result must not rewrite the task file.
             let mut registry = self.tasks.lock().await;
@@ -637,7 +650,7 @@ impl ApplicationService {
             let progress = if let Some(task) = registry.records.iter_mut().find(|task| task.id == task_id) {
                 task.completed = task.completed.saturating_add(1);
                 task.updated_at_ms = now_ms();
-                Some(task.clone())
+                (last_progress_notification.elapsed() >= Duration::from_millis(250)).then(|| task.clone())
             } else { None };
             drop(registry);
             if last_progress_notification.elapsed() >= Duration::from_millis(250) {
@@ -683,8 +696,9 @@ impl ApplicationService {
                 let books = value
                     .get("books")
                     .and_then(Value::as_array)
-                    .cloned()
+                    .map(Vec::as_slice)
                     .unwrap_or_default();
+                let source_fingerprint = source_definition_fingerprint(&source.source)?;
                 let invalid_book_count = books.iter().filter(|book| !book.is_object()).count();
                 if invalid_book_count > 0 {
                     errors.push(json!({
@@ -693,7 +707,7 @@ impl ApplicationService {
                         "message": format!("Source returned {invalid_book_count} invalid book entries"),
                     }));
                 }
-                for book in books.into_iter().filter(|book| book.is_object()) {
+                for book in books.iter().filter(|book| book.is_object()) {
                     let replacement = if let Some(context) = &replacement_context {
                         let Some(requires_identity_confirmation) =
                             candidate_identity_match(context, &book)
@@ -705,7 +719,6 @@ impl ApplicationService {
                         None
                     };
                     let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
-                    let source_fingerprint = source_definition_fingerprint(&source.source)?;
                     let mut private_result = json!({
                         "searchId": search_id,
                         "sourceId": source.id,
@@ -840,10 +853,7 @@ impl ApplicationService {
                     .to_owned()
             };
             let source = self
-                .read_sources()
-                .await?
-                .into_iter()
-                .find(|source| source.id == source_id)
+                .lookup_source(&source_id).await?
                 .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
             let _book_lock = self.book_lock(book_id).await;
             let private = self.read_internal_json(&private_path).await?;
@@ -911,10 +921,7 @@ impl ApplicationService {
         let result = {
             let _sources_lock = self.sources_lock.lock().await;
             let current_source = self
-                .read_sources()
-                .await?
-                .into_iter()
-                .find(|candidate| candidate.id == source.id)
+                .lookup_source(&source.id).await?
                 .ok_or_else(|| "Book source was removed while refreshing its catalog".to_owned())?;
             if current_source.source != source.source {
                 return Err("Book source changed while refreshing its catalog".to_owned());
@@ -1245,6 +1252,34 @@ mod search_task_tests {
     }
 
     #[tokio::test]
+    async fn search_keeps_results_when_native_execution_scope_finishes() {
+        struct ScopedExecutor;
+        impl SourceExecutor for ScopedExecutor {
+            fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+                Box::pin(async move {
+                    // Desktop JNI and mobile plugin calls both hold this scope until return.
+                    tokio::task::spawn_blocking(move || {
+                        let mut wire = json!({"operation": request.operation});
+                        let _execution = crate::source_host_ffi::ExecutionScope::enter(
+                            &mut wire, PathBuf::new(), request.cancellation,
+                        )?;
+                        Ok(json!({"books": [{"name": "fixture", "bookUrl": "https://fixture/book"}], "hasNextPage": false}))
+                    }).await.map_err(|error| error.to_string())?
+                })
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(ScopedExecutor)).await.unwrap();
+        service.write_sources(&[source("text-1", 0)]).await.unwrap();
+        let response = service.start_search("text", &[], "fixture", 1, true, None).await.unwrap();
+        let id = response["taskId"].as_str().unwrap();
+        assert_eq!(wait_for_terminal(&service, id).await.status, "completed");
+        let document = service.get_search_task_results(id).await.unwrap();
+        assert_eq!(document["errors"], json!([]));
+        assert_eq!(document["results"].as_array().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn search_streams_and_refills_while_first_source_is_pending_without_progress_disk_writes() {
         let directory = tempfile::tempdir().unwrap();
         let executor = Arc::new(StreamingExecutor { release: tokio::sync::Notify::new(), started: 0.into() });
@@ -1266,7 +1301,13 @@ mod search_task_tests {
         assert_eq!(executor.started.load(Ordering::SeqCst), 20);
         assert_eq!(service.get_search_task_results(id).await.unwrap()["results"].as_array().unwrap().len(), 19);
         assert!(batches.lock().unwrap().iter().any(|batch| batch["completedSources"] == 1 && !batch["results"].as_array().unwrap().is_empty()));
-        let disk: Value = serde_json::from_slice(&std::fs::read(directory.path().join("tasks.json")).unwrap()).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if batches.lock().unwrap().iter().any(|batch| batch["completedSources"] == 19) { break; }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }).await.expect("Buffered fast-source results must publish while the slow source is pending");
+        let disk = service.store.read_raw_document(&service.store.document_ref("tasks").unwrap()).unwrap();
         let persisted = disk["tasks"].as_array().unwrap().iter().find(|task| task["id"] == id).unwrap();
         assert_eq!(persisted["completed"], 0, "Progress stays in memory until a lifecycle transition");
         let live = service.list_tasks().await.unwrap();

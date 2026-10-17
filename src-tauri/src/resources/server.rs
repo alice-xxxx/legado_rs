@@ -27,8 +27,7 @@ use http_range_header::parse_range_header;
 
 use super::json::{materialize_html_resource_refs, materialize_json};
 use super::media_proxy::MediaProxyRegistry;
-use super::store::atomic_replace;
-use super::tts_stream::{TtsStreamRegistry, TtsStreamWriter, TtsStreamProgress};
+use super::tts_stream::{TtsStreamProgress, TtsStreamRegistry, TtsStreamWriter};
 use super::validation::{check_path_no_symlink, mime_type, percent_encode_path, valid_id};
 use super::{ResourceError, ResourceRef, ResourceStore};
 
@@ -65,7 +64,10 @@ pub struct ResourceServer {
 }
 
 impl ResourceServer {
-    pub async fn create_tts_stream(&self, progress: TtsStreamProgress) -> Result<TtsStreamWriter, ResourceError> {
+    pub async fn create_tts_stream(
+        &self,
+        progress: TtsStreamProgress,
+    ) -> Result<TtsStreamWriter, ResourceError> {
         self.tts_streams.create(&self.base_url, progress).await
     }
 
@@ -81,7 +83,9 @@ impl ResourceServer {
         self.tts_streams.release(id).await
     }
 
-    pub async fn clear_tts_streams(&self) { self.tts_streams.clear().await; }
+    pub async fn clear_tts_streams(&self) {
+        self.tts_streams.clear().await;
+    }
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
@@ -114,7 +118,9 @@ impl ResourceServer {
                 *listener = Some(socket.listen(1024)?);
                 Ok::<_, std::io::Error>(())
             })()
-            .map_err(|error| ResourceError::new(format!("Cannot resume resource listener: {error}")));
+            .map_err(|error| {
+                ResourceError::new(format!("Cannot resume resource listener: {error}"))
+            });
         });
         result
     }
@@ -238,32 +244,15 @@ impl ResourceServer {
         mapping: PrivateMediaMapping,
     ) -> Result<(), ResourceError> {
         let reference = self.store.book_ref(book_id)?;
-        let _writer = self.store.transaction_writer_guard().await?;
-        let mut document = self.store.read_raw_document(&reference)?;
-        if document["id"].is_null() {
-            document["id"] = serde_json::json!(book_id);
-        }
-        if !document["media"].is_object() {
-            document["media"] = serde_json::json!({});
-        }
-        let id = mapping.id.clone();
-        let mut entry = serde_json::json!({"url": mapping.upstream_url});
-        if !mapping.headers.is_empty() {
-            entry["headers"] = serde_json::json!(mapping
-                .headers
-                .into_iter()
-                .map(|header| (header.name, Value::String(header.value)))
-                .collect::<serde_json::Map<String, Value>>());
-        }
-        document["media"][&id] = entry;
-        let bytes =
-            serde_json::to_vec(&document).map_err(|error| ResourceError::new(error.to_string()))?;
-        let path = self
-            .root
-            .join(self.store.canonical_reference(&reference)?.path());
-        check_path_no_symlink(&self.root, &path, true)?;
-        atomic_replace(&path, &bytes).map_err(ResourceError::new)?;
-        Ok(())
+        let db = self.store.database().clone();
+        let path = reference.path().to_owned();
+        let book_id = book_id.to_owned();
+        let id = mapping.id;
+        let entry = serde_json::json!({"url":mapping.upstream_url,"headers":mapping.headers.into_iter()
+            .map(|header|(header.name,Value::String(header.value))).collect::<serde_json::Map<String,Value>>()});
+        tokio::task::spawn_blocking(move || db.set_media(&path, &book_id, &id, Some(&entry)))
+            .await
+            .map_err(|e| ResourceError::new(e.to_string()))?
     }
 
     async fn delete_private_media_mapping(
@@ -272,19 +261,13 @@ impl ResourceServer {
         opaque_id: &str,
     ) -> Result<(), ResourceError> {
         let reference = self.store.book_ref(book_id)?;
-        let _writer = self.store.transaction_writer_guard().await?;
-        let mut document = self.store.read_raw_document(&reference)?;
-        if let Some(mappings) = document["media"].as_object_mut() {
-            mappings.remove(opaque_id);
-        }
-        let bytes =
-            serde_json::to_vec(&document).map_err(|error| ResourceError::new(error.to_string()))?;
-        let path = self
-            .root
-            .join(self.store.canonical_reference(&reference)?.path());
-        check_path_no_symlink(&self.root, &path, true)?;
-        atomic_replace(&path, &bytes).map_err(ResourceError::new)?;
-        Ok(())
+        let db = self.store.database().clone();
+        let path = reference.path().to_owned();
+        let book_id = book_id.to_owned();
+        let id = opaque_id.to_owned();
+        tokio::task::spawn_blocking(move || db.set_media(&path, &book_id, &id, None))
+            .await
+            .map_err(|e| ResourceError::new(e.to_string()))?
     }
 
     /// Rewrite stable resource refs inside a JSON value to this server's
@@ -358,11 +341,16 @@ impl axum::serve::Listener for ResourceListener {
             };
             match result {
                 Ok(connection) => return connection,
-                Err(error) if matches!(error.kind(),
-                    std::io::ErrorKind::ConnectionRefused
-                    | std::io::ErrorKind::ConnectionAborted
-                    | std::io::ErrorKind::ConnectionReset
-                ) => continue,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::ConnectionRefused
+                            | std::io::ErrorKind::ConnectionAborted
+                            | std::io::ErrorKind::ConnectionReset
+                    ) =>
+                {
+                    continue
+                }
                 Err(error) => {
                     eprintln!("[resource-listener] accept failed: {error}");
                     tokio::time::sleep(std::time::Duration::from_secs(1)).await;
@@ -463,20 +451,16 @@ async fn get_resource(
         .strip_prefix("sources/")
         .and_then(|name| name.strip_suffix(".json"))
     {
-        let canonical = match ResourceRef::new("resource://sources.json") {
-            Ok(reference) => reference,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        let records = match state.store.read_json_ref(&canonical).await {
-            Ok(records) => records,
-            Err(_) => return empty_response(StatusCode::NOT_FOUND),
-        };
-        let Some(source) = records.as_array().and_then(|records| {
-            records
-                .iter()
-                .find(|record| record["id"].as_str() == Some(source_id))
-        }) else {
-            return empty_response(StatusCode::NOT_FOUND);
+        let db = state.store.database().clone();
+        let source_id_owned = source_id.to_owned();
+        let source = match tokio::task::spawn_blocking(move || -> Result<Option<Value>,ResourceError> {
+            let connection = db.connect()?;
+            use rusqlite::OptionalExtension;
+            let text: Option<String> = connection.query_row("SELECT value FROM records WHERE path='sources.json' AND field='' AND item_id=?1",[source_id_owned],|row|row.get(0)).optional()?;
+            text.map(|text|serde_json::from_str(&text).map_err(|e|ResourceError::new(e.to_string()))).transpose()
+        }).await {
+            Ok(Ok(Some(source))) => source,
+            _ => return empty_response(StatusCode::NOT_FOUND)
         };
         let definition_json = match serde_json::to_string_pretty(&source["source"]) {
             Ok(json) => json,
@@ -497,29 +481,26 @@ async fn get_resource(
     }
 
     if reference.path().ends_with(".json") {
-        let mut json = match state.store.read_raw_document(&reference) {
-            Ok(json) => json,
-            Err(_) => return empty_response(StatusCode::NOT_FOUND),
-        };
-        if super::content::is_content_document(reference.path()) {
-            let Some((_, id, _)) = super::content::content_path(reference.path()) else {
-                return empty_response(StatusCode::NOT_FOUND);
-            };
-            let kind = match state.store.book_type(id) {
-                Ok(kind) => kind,
-                Err(_) => return empty_response(StatusCode::NOT_FOUND),
-            };
-            json = match super::content::public_book_view(&json, &kind) {
-                Ok(json) => json,
-                Err(_) => return empty_response(StatusCode::NOT_FOUND),
-            };
-        }
-        if materialize_json(&mut json, &state.base_url).is_err() {
-            return empty_response(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-        let bytes = match serde_json::to_vec(&json) {
-            Ok(bytes) => bytes,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
+        let store = state.store.clone();
+        let base_url = state.base_url.clone();
+        let bytes = match tokio::task::spawn_blocking(move || -> Result<Vec<u8>, ResourceError> {
+            let canonical = store.canonical_reference(&reference)?;
+            let mut json = store
+                .database()
+                .read(canonical.path())?
+                .ok_or_else(|| ResourceError::new("Resource does not exist"))?;
+            if super::content::is_content_document(canonical.path()) {
+                let (kind, _, _) =
+                    super::content::content_path(canonical.path()).expect("content path");
+                json = super::content::public_book_view(&json, kind)?;
+            }
+            materialize_json(&mut json, &base_url)?;
+            serde_json::to_vec(&json).map_err(|e| ResourceError::new(e.to_string()))
+        })
+        .await
+        {
+            Ok(Ok(bytes)) => bytes,
+            _ => return empty_response(StatusCode::NOT_FOUND),
         };
         return byte_response(bytes, "application/json; charset=utf-8", &headers);
     }
@@ -826,91 +807,55 @@ fn read_book_media_mappings(
 ) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
     let mut mappings = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for kind in super::content::CONTENT_TYPES {
-        let directory = root.join("cache").join(kind);
-        check_path_no_symlink(root, &directory, true)?;
-        if !directory.exists() {
+    for (key, value) in crate::database::Database::at(root).media()? {
+        let Some(url) = value["url"].as_str() else {
+            if strict {
+                return Err(ResourceError::new("Private media entry has no URL"));
+            }
+            continue;
+        };
+        let mut private_headers = Vec::new();
+        if let Some(headers) = value.get("headers") {
+            let headers = headers
+                .as_object()
+                .ok_or_else(|| ResourceError::new("Private media headers must be an object"))?;
+            for (name, value) in headers {
+                let value = value
+                    .as_str()
+                    .ok_or_else(|| ResourceError::new("Private media header must be a string"))?;
+                private_headers.push(PrivateMediaHeader {
+                    name: name.clone(),
+                    value: value.to_owned(),
+                });
+            }
+        }
+        let mapping = PrivateMediaMapping {
+            schema_version: 1,
+            id: key.clone(),
+            upstream_url: url.to_owned(),
+            headers: private_headers,
+        };
+        let headers = mapping
+            .headers
+            .iter()
+            .map(|header| (header.name.clone(), header.value.clone()))
+            .collect::<Vec<_>>();
+        if mapping.id != key
+            || mapping.schema_version != 1
+            || MediaProxyRegistry::validate_mapping(&mapping.id, &mapping.upstream_url, &headers)
+                .is_err()
+        {
+            if strict {
+                return Err(ResourceError::new(
+                    "Invalid private media mapping in content document",
+                ));
+            }
             continue;
         }
-        for entry in
-            std::fs::read_dir(directory).map_err(|error| ResourceError::new(error.to_string()))?
-        {
-            let entry = entry.map_err(|error| ResourceError::new(error.to_string()))?;
-            if !entry.file_type().is_ok_and(|ty| ty.is_dir()) {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().into_owned();
-            if !valid_id(&id) {
-                continue;
-            }
-            let path = entry.path().join(format!("{id}.json"));
-            check_path_no_symlink(root, &path, true)?;
-            let bytes = match std::fs::read(path) {
-                Ok(bytes) => bytes,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(_) if !strict => continue,
-                Err(error) => return Err(ResourceError::new(error.to_string())),
-            };
-            let document: Value = match serde_json::from_slice(&bytes) {
-                Ok(value) => value,
-                Err(_) if !strict => continue,
-                Err(error) => return Err(ResourceError::new(error.to_string())),
-            };
-            for (key, value) in document["media"].as_object().into_iter().flatten() {
-                let Some(url) = value["url"].as_str() else {
-                    if strict {
-                        return Err(ResourceError::new("Private media entry has no URL"));
-                    }
-                    continue;
-                };
-                let mut private_headers = Vec::new();
-                if let Some(headers) = value.get("headers") {
-                    let headers = headers.as_object().ok_or_else(|| {
-                        ResourceError::new("Private media headers must be an object")
-                    })?;
-                    for (name, value) in headers {
-                        let value = value.as_str().ok_or_else(|| {
-                            ResourceError::new("Private media header must be a string")
-                        })?;
-                        private_headers.push(PrivateMediaHeader {
-                            name: name.clone(),
-                            value: value.to_owned(),
-                        });
-                    }
-                }
-                let mapping = PrivateMediaMapping {
-                    schema_version: 1,
-                    id: key.clone(),
-                    upstream_url: url.to_owned(),
-                    headers: private_headers,
-                };
-                let headers = mapping
-                    .headers
-                    .iter()
-                    .map(|header| (header.name.clone(), header.value.clone()))
-                    .collect::<Vec<_>>();
-                if mapping.id != *key
-                    || mapping.schema_version != 1
-                    || MediaProxyRegistry::validate_mapping(
-                        &mapping.id,
-                        &mapping.upstream_url,
-                        &headers,
-                    )
-                    .is_err()
-                {
-                    if strict {
-                        return Err(ResourceError::new(
-                            "Invalid private media mapping in content document",
-                        ));
-                    }
-                    continue;
-                }
-                if !seen.insert(mapping.id.clone()) {
-                    return Err(ResourceError::new("Duplicate media mapping identity"));
-                }
-                mappings.push(mapping);
-            }
+        if !seen.insert(mapping.id.clone()) {
+            return Err(ResourceError::new("Duplicate media mapping identity"));
         }
+        mappings.push(mapping);
     }
     Ok(mappings)
 }
@@ -933,15 +878,27 @@ mod tests {
     async fn resume_http_restores_lost_listener_without_changing_published_resources() {
         let directory = tempfile::tempdir().unwrap();
         let store = ResourceStore::open(directory.path()).unwrap();
-        let chapter = store.write_chapter_text("resume", "chapter", "chapter text").await.unwrap();
+        let chapter = store
+            .write_chapter_text("resume", "chapter", "chapter text")
+            .await
+            .unwrap();
         let settings = store.settings_ref();
-        store.write_json_ref(&settings, &serde_json::json!({"chapter": {"src": chapter}})).await.unwrap();
-        let server = store.start_http("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        store
+            .write_json_ref(&settings, &serde_json::json!({"chapter": {"src": chapter}}))
+            .await
+            .unwrap();
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
         let url = server.url_for(&settings);
         let chapter_url = server.url_for(&chapter);
         let client = client();
         let original = client.get(&url).send().await.unwrap().text().await.unwrap();
-        assert_eq!(serde_json::from_str::<Value>(&original).unwrap()["chapter"]["src"], chapter_url);
+        assert_eq!(
+            serde_json::from_str::<Value>(&original).unwrap()["chapter"]["src"],
+            chapter_url
+        );
 
         for _ in 0..3 {
             // Simulate loss of the listening socket, with the app/service and
@@ -953,13 +910,29 @@ mod tests {
             let response = client.get(&url).send().await.unwrap();
             assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
             assert_eq!(response.text().await.unwrap(), original);
-            let response = client.get(&chapter_url).header(RANGE, "bytes=0-6").send().await.unwrap();
+            let response = client
+                .get(&chapter_url)
+                .header(RANGE, "bytes=0-6")
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
             assert_eq!(response.text().await.unwrap(), "chapter");
             let response = client.head(&chapter_url).send().await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             assert_eq!(response.headers()[CONTENT_LENGTH], "12");
-            assert_eq!(client.get(format!("http://{}/r/wrong/settings.json", server.local_addr())).send().await.unwrap().status(), StatusCode::NOT_FOUND);
+            assert_eq!(
+                client
+                    .get(format!(
+                        "http://{}/r/wrong/settings.json",
+                        server.local_addr()
+                    ))
+                    .send()
+                    .await
+                    .unwrap()
+                    .status(),
+                StatusCode::NOT_FOUND
+            );
         }
         server.shutdown().await.unwrap();
     }
@@ -968,10 +941,20 @@ mod tests {
     async fn resume_http_preserves_live_tts_response_and_reconnect_range() {
         let directory = tempfile::tempdir().unwrap();
         let store = ResourceStore::open(directory.path()).unwrap();
-        let server = store.start_http("127.0.0.1:0".parse().unwrap()).await.unwrap();
-        let mut writer = server.create_tts_stream(TtsStreamProgress {
-            boundaries: vec![], state: "running", next_index: 0, skipped: 0, error: None,
-        }).await.unwrap();
+        let server = store
+            .start_http("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let mut writer = server
+            .create_tts_stream(TtsStreamProgress {
+                boundaries: vec![],
+                state: "running",
+                next_index: 0,
+                skipped: 0,
+                error: None,
+            })
+            .await
+            .unwrap();
         let url = writer.url.clone();
         let id = writer.id.clone();
         writer.append(b"before").await.unwrap();
@@ -985,7 +968,12 @@ mod tests {
         assert!(server.tts_stream_progress(&id).await.is_some());
         drop(writer);
         assert!(response.chunk().await.unwrap().is_none());
-        let response = client.get(&url).header(RANGE, "bytes=6-").send().await.unwrap();
+        let response = client
+            .get(&url)
+            .header(RANGE, "bytes=6-")
+            .send()
+            .await
+            .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.text().await.unwrap(), "after");
         server.shutdown().await.unwrap();

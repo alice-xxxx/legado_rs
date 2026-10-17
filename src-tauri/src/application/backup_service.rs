@@ -485,6 +485,7 @@ impl ApplicationService {
             }
             return Err(error);
         }
+        *self.source_catalog.lock().await = None;
         // Restoring sources invalidates every revision captured in this process.
         // Keep counters monotonic so a delayed result cannot match restored data.
         for revision in self.source_revisions.lock().await.values_mut() {

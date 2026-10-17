@@ -1,6 +1,7 @@
 //! Rust 后端入口：公开业务模块并启动跨平台 Tauri 宿主。
 
 pub mod application;
+pub(crate) mod database;
 mod http_client;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
@@ -312,6 +313,7 @@ pub fn run() {
         application::import_protected_pdf,
         application::cancel_pending_pdf_import,
         application::get_book,
+        application::get_book_preview,
         application::save_book,
         application::refresh_book_info,
         application::pick_book_cover,

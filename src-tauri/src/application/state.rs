@@ -194,6 +194,7 @@ impl ApplicationService {
             book_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             chapter_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sources_lock: Arc::new(tokio::sync::Mutex::new(())),
+            source_catalog: Arc::new(tokio::sync::Mutex::new(None)),
             source_revisions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
@@ -281,18 +282,20 @@ impl ApplicationService {
         let relative = relative.as_ref();
         if crate::resources::content::is_content_document(&relative.to_string_lossy().replace('\\', "/")) {
             let reference = ResourceRef::new(format!("resource://{}", relative.to_string_lossy().replace('\\', "/"))).map_err(|error| error.to_string())?;
-            let document = self.store.read_raw_document(&reference).map_err(|error| error.to_string())?;
-            if !document["engine"].is_object() { return Err("Content has no source execution data".into()); }
-            return Ok(crate::resources::content::source_state(&document));
+            let database=self.store.database().clone();
+            let path=self.store.canonical_reference(&reference).map_err(|e|e.to_string())?.path().to_owned();
+            return tokio::task::spawn_blocking(move || -> Result<Value,String> {
+                let document=database.read(&path).map_err(|e|e.to_string())?.ok_or("Content does not exist")?;
+                if !document["engine"].is_object() {return Err("Content has no source execution data".into());}
+                Ok(crate::resources::content::source_state(&document))
+            }).await.map_err(|e|e.to_string())?;
         }
+        let key = relative.to_string_lossy().replace('\\',"/");
         let path = self.root.join(relative);
-        crate::resources::check_path_no_symlink(&self.root, &path, false)
-            .map_err(|error| error.to_string())?;
-        let bytes = tokio::fs::read(&path)
-            .await
-            .map_err(|error| format!("Cannot read private app data: {error}"))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Cannot parse private app data: {error}"))
+        crate::resources::check_path_no_symlink(&self.root,&path,true).map_err(|e|e.to_string())?;
+        let db = self.store.database().clone();
+        tokio::task::spawn_blocking(move || db.read(&key)?.ok_or_else(||crate::resources::ResourceError::new("Private state does not exist")))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
     }
 
     pub(crate) async fn write_internal_json(
@@ -309,28 +312,11 @@ impl ApplicationService {
             return self.store.write_book_state(id, &current, value).await.map_err(|error| error.to_string());
         }
         let path = self.root.join(relative);
-        let parent = path
-            .parent()
-            .ok_or_else(|| "Private app data path has no parent".to_owned())?;
-        crate::resources::check_path_no_symlink(&self.root, &path, true)
-            .map_err(|error| error.to_string())?;
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|error| format!("Cannot create private app data directory: {error}"))?;
-        let bytes = serde_json::to_vec_pretty(value).map_err(|error| error.to_string())?;
-        let root = self.root.clone();
-        let output = path.clone();
-        tokio::task::spawn_blocking(move || -> Result<(), String> {
-            crate::resources::check_path_no_symlink(&root, &output, true)
-                .map_err(|error| error.to_string())?;
-            atomicwrites::AtomicFile::new(&output, atomicwrites::AllowOverwrite)
-                .write(|file| file.write_all(&bytes))
-                .map_err(|error| format!("Cannot commit private app data: {error}"))?;
-            Ok(())
-        })
-        .await
-        .map_err(|error| format!("Private app data worker failed: {error}"))??;
-        Ok(())
+        crate::resources::check_path_no_symlink(&self.root,&path,true).map_err(|e|e.to_string())?;
+        let db = self.store.database().clone();
+        let value = value.clone();
+        tokio::task::spawn_blocking(move || db.write(&relative_string,&value))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
     }
 
     pub(super) async fn book_lock(&self, book_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
@@ -417,11 +403,12 @@ mod settings_startup_tests {
         settings["reader"] = json!({"theme":"sepia","fontSizePx":25,"ttsRate":1.75});
         std::fs::write(legacy.path().join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
         let service = ApplicationService::open_with_executor(legacy.path(), Arc::new(UnusedExecutor)).await.unwrap();
-        let mut persisted: Value = serde_json::from_slice(&std::fs::read(legacy.path().join("settings.json")).unwrap()).unwrap();
-        assert_eq!(persisted["theme"], "light");
-        assert_eq!(persisted["reader"]["themes"]["light"], "sepia");
-        assert_eq!(persisted["reader"]["fontSizePx"], 25);
-        assert_eq!(persisted["reader"]["ttsRate"], 1.75);
+        let mut persisted = service.store.read_json_ref(&service.store.settings_ref()).await.unwrap();
+        assert_eq!(persisted["theme"], "system", "Legacy JSON is deliberately not imported");
+        assert_eq!(persisted["reader"]["themes"]["light"], "paper");
+        assert_ne!(persisted["reader"]["fontSizePx"], 25);
+        persisted["reader"]["themes"]["light"] = json!("sepia");
+        persisted["reader"]["fontSizePx"] = json!(25);
         assert_eq!(persisted["reader"]["audioSkipSeconds"], 15);
         persisted["theme"] = json!("dark");
         persisted["reader"]["themes"]["dark"] = json!("paper");

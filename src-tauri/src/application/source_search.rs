@@ -62,13 +62,13 @@ impl ApplicationService {
             let _sources = self.sources_lock.lock().await;
             let all_sources = self.read_sources().await?;
             let mut selected = Vec::new();
-            for source in all_sources.into_iter().filter(|source| {
+            for source in all_sources.iter().filter(|source| {
                 source.enabled
                     && !crate::source_metadata::is_rss_source_metadata(&source.source)
                     && (source_ids.is_empty() || source_ids.contains(&source.id))
             }) {
                 let revision = self.source_revision(&source.id).await?;
-                selected.push((source, revision));
+                selected.push((source.clone(), revision));
             }
             selected
         };
@@ -602,7 +602,7 @@ impl ApplicationService {
         if task.kind != "search" {
             return Ok(());
         }
-        let document = {
+        {
             let mut registry = self.tasks.lock().await;
             if registry.active_search_task_id.as_deref() != Some(&task.id) {
                 return Ok(());
@@ -621,9 +621,8 @@ impl ApplicationService {
                 if let Some(error) = terminal_error { object.insert("error".into(), json!(error)); }
                 else { object.remove("error"); }
             }
-            document.clone()
-        };
-        self.publish_search_snapshot_document(&task.id, &document).await
+        }
+        self.publish_search_snapshot_document(&task.id, task.search_id.as_deref().unwrap_or_default()).await
     }
 
     pub(super) async fn append_and_publish_search_snapshot(
@@ -634,7 +633,7 @@ impl ApplicationService {
         publish: bool,
         pagination: Option<(&str, bool)>,
     ) -> Result<(), String> {
-        let document = {
+        {
             let mut registry = self.tasks.lock().await;
             if registry.active_search_task_id.as_deref() != Some(&task.id) {
                 return Ok(());
@@ -654,7 +653,8 @@ impl ApplicationService {
             }
             let grouped_results = document.get_mut("results").and_then(Value::as_array_mut)
                 .ok_or_else(|| "Search state has no results array".to_owned())?;
-            let mut result_indexes = search_result_group_indexes(grouped_results);
+            let mut result_indexes = if results.is_empty() { HashMap::new() } else { search_result_group_indexes(grouped_results) };
+            let mut results_changed = false;
             let keyword = task.keyword.as_deref().unwrap_or_default().trim().to_lowercase();
             for (result, cache) in results {
                 if task.precision_search.unwrap_or(true)
@@ -663,10 +663,11 @@ impl ApplicationService {
                 }
                 let result_id = result.result_id.clone();
                 if merge_search_result(grouped_results, &mut result_indexes, result)? {
+                    results_changed = true;
                     search_result_documents.insert(result_id, cache);
                 }
             }
-            sort_search_results(grouped_results, &keyword);
+            if results_changed { sort_search_results(grouped_results, &keyword); }
             if let Some((source_id, has_next_page)) = pagination {
                 let exhausted = document["exhaustedSourceIds"].as_array_mut()
                     .ok_or_else(|| "Search state has no exhausted source list".to_owned())?;
@@ -687,10 +688,9 @@ impl ApplicationService {
             document["completedSources"] = json!(task.completed.saturating_add(1));
             document["totalSources"] = json!(task.total);
             document["complete"] = json!(false);
-            publish.then(|| document.clone())
-        };
-        if let Some(document) = document {
-            self.publish_search_snapshot_document(&task.id, &document).await
+        }
+        if publish {
+            self.publish_search_snapshot_document(&task.id, task.search_id.as_deref().unwrap_or_default()).await
         } else {
             Ok(())
         }
@@ -699,31 +699,31 @@ impl ApplicationService {
     async fn publish_search_snapshot_document(
         &self,
         task_id: &str,
-        document: &Value,
+        search_id: &str,
     ) -> Result<(), String> {
-        if !self.search_task_is_publisher(task_id).await {
-            return Ok(());
-        }
         let mut registry = self.tasks.lock().await;
         if registry.active_search_task_id.as_deref() != Some(task_id) {
             return Ok(());
         }
+        let TaskRegistry { search_documents, published_search_results, published_search_error_count, .. } = &mut *registry;
+        let document = search_documents.get(search_id)
+            .ok_or("In-memory search state is unavailable; start the search again")?;
         let mut batch = Value::Object(document.as_object().into_iter().flatten()
             .filter(|(key, _)| matches!(key.as_str(), "taskId" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"))
             .map(|(key, value)| (key.clone(), value.clone())).collect());
         let mut changed = Vec::new();
         for result in document["results"].as_array().into_iter().flatten() {
             let Some(id) = result["resultId"].as_str() else { continue; };
-            if registry.published_search_results.get(id) != Some(result) {
-                registry.published_search_results.insert(id.to_owned(), result.clone());
+            if published_search_results.get(id) != Some(result) {
+                published_search_results.insert(id.to_owned(), result.clone());
                 changed.push(result.clone());
             }
         }
         batch["results"] = json!(changed);
         let errors = document["errors"].as_array();
         batch["errors"] = json!(errors.into_iter().flatten()
-            .skip(registry.published_search_error_count).collect::<Vec<_>>());
-        registry.published_search_error_count = errors.map_or(0, Vec::len);
+            .skip(*published_search_error_count).collect::<Vec<_>>());
+        *published_search_error_count = errors.map_or(0, Vec::len);
         batch["incrementalErrors"] = json!(true);
         // Group content can stay unchanged while its rank moves. Publish order
         // separately so the frontend never has to recreate relevance rules.
@@ -788,10 +788,7 @@ impl ApplicationService {
     ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
         let guard = self.sources_lock.clone().lock_owned().await;
         let current = self
-            .read_sources()
-            .await?
-            .into_iter()
-            .find(|source| source.id == expected.id)
+            .lookup_source(&expected.id).await?
             .ok_or_else(|| "RSS source was removed while the request was running".to_owned())?;
         if !current.enabled
             || current.source != expected.source
@@ -893,7 +890,7 @@ impl ApplicationService {
         let (source, source_revision) = {
             let _sources = self.sources_lock.lock().await;
             let source = match self.read_sources().await {
-                Ok(sources) => sources.into_iter().find(|source| source.id == source_id),
+                Ok(sources) => sources.iter().find(|source| source.id == source_id).cloned(),
                 Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
             };
             let Some(source) = source else {
@@ -992,9 +989,7 @@ impl ApplicationService {
         {
             let _sources = self.sources_lock.lock().await;
             let current_source = match self.read_sources().await {
-                Ok(sources) => sources
-                    .into_iter()
-                    .find(|candidate| candidate.id == source_id),
+                Ok(sources) => sources.iter().find(|candidate| candidate.id == source_id).cloned(),
                 Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
             };
             let source_is_current = match current_source.as_ref() {
@@ -1081,9 +1076,7 @@ impl ApplicationService {
 
             let _sources = self.sources_lock.lock().await;
             let current_source = match self.read_sources().await {
-                Ok(sources) => sources
-                    .into_iter()
-                    .find(|candidate| candidate.id == source_id),
+                Ok(sources) => sources.iter().find(|candidate| candidate.id == source_id).cloned(),
                 Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
             };
             let source_is_current = match current_source.as_ref() {

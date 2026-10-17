@@ -36,6 +36,9 @@ impl ExecutionScope {
         cancellation: Option<tokio_util::sync::CancellationToken>) -> Result<Self, String> {
         let cancellation = cancellation.unwrap_or_default();
         if cancellation.is_cancelled() { return Err("Source execution cancelled".into()); }
+        // Closing a native call cancels only its callbacks. Cancelling the caller's
+        // token here races its biased select and discards a successful search result.
+        let cancellation = cancellation.child_token();
         let search = request["operation"] == "search";
         let scope = Self { id: uuid::Uuid::new_v4().simple().to_string() };
         let execution = Execution { cancellation, data_dir,
@@ -236,7 +239,7 @@ mod search_http_tests {
         assert!(!execution_cancelled(second["executionId"].as_str()));
         assert!(execution_data_dir(first["executionId"].as_str().unwrap()).is_err());
         drop(second_scope);
-        assert!(b.is_cancelled());
+        assert!(!b.is_cancelled(), "Finishing a native call must not cancel its caller");
         assert!(execution_cancelled(second["executionId"].as_str()));
     }
 

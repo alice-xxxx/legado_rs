@@ -2,6 +2,18 @@
 
 use super::*;
 
+pub(super) struct SourceCatalog {
+    records: Arc<Vec<SourceRecord>>,
+    by_id: HashMap<String, usize>,
+}
+
+impl SourceCatalog {
+    fn new(records: Vec<SourceRecord>) -> Self {
+        let by_id = records.iter().enumerate().map(|(index, source)| (source.id.clone(), index)).collect();
+        Self { records: Arc::new(records), by_id }
+    }
+}
+
 /// Validate only the structural identity of a Legado JSON definition.
 /// Everything else, including unknown and nested keys, is retained verbatim.
 fn validate_source_definition(
@@ -343,7 +355,15 @@ impl ApplicationService {
             .map_err(|error| format!("Invalid source JSON: {error}"))?;
         let sources = extract_sources(imported)?;
         let _lock = self.sources_lock.lock().await;
-        let mut records = self.read_sources().await?;
+        let mut records = self.read_sources().await?.as_ref().clone();
+        let mut by_id = HashMap::new();
+        let mut by_url = HashMap::new();
+        for (index, record) in records.iter().enumerate() {
+            by_id.insert(record.id.clone(), index);
+            if let Some(url) = text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"]) {
+                by_url.entry(url).or_insert(index);
+            }
+        }
         for (position, source) in sources.into_iter().enumerate() {
             let name = text_at(&source, &["bookSourceName", "name", "sourceName"])
                 .unwrap_or_else(|| format!("Source {}", position + 1));
@@ -365,16 +385,25 @@ impl ApplicationService {
             // An editor may change bookSourceUrl while deliberately keeping
             // the internal ID stable to preserve existing book references.
             // Reimporting the new URL must update that record, not duplicate it.
-            if let Some(existing) = records.iter_mut().find(|existing| {
-                existing.id == id
-                    || text_at(&existing.source, &["bookSourceUrl", "url", "sourceUrl"])
-                        .is_some_and(|existing_url| existing_url == source_url)
-            }) {
-                *existing = SourceRecord {
-                    id: existing.id.clone(),
+            let index = [by_id.get(&id), by_url.get(&source_url)].into_iter().flatten().copied().min();
+            if let Some(index) = index {
+                let old_url = text_at(&records[index].source, &["bookSourceUrl", "url", "sourceUrl"]);
+                records[index] = SourceRecord {
+                    id: records[index].id.clone(),
                     ..record
                 };
+                if let Some(old_url) = old_url.filter(|url| *url != source_url) {
+                    if by_url.get(&old_url) == Some(&index) {
+                        by_url.remove(&old_url);
+                        if let Some(next) = records.iter().position(|record| {
+                            text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"]).as_ref() == Some(&old_url)
+                        }) { by_url.insert(old_url, next); }
+                    }
+                }
+                by_url.entry(source_url).and_modify(|previous| *previous = (*previous).min(index)).or_insert(index);
             } else {
+                by_id.insert(id, records.len());
+                by_url.insert(source_url, records.len());
                 records.push(record);
             }
         }
@@ -400,7 +429,7 @@ impl ApplicationService {
             .iter()
             .map(String::as_str)
             .collect::<std::collections::HashSet<_>>();
-        let mut records = self.read_sources().await?;
+        let mut records = self.read_sources().await?.as_ref().clone();
         let rss_source_ids = records
             .iter()
             .filter(|source| {
@@ -449,7 +478,7 @@ impl ApplicationService {
         let (name, group, enabled, url) = validate_source_definition(&definition)?;
         let _operation = self.operation_read().await;
         let _lock = self.sources_lock.lock().await;
-        let mut records = self.read_sources().await?;
+        let mut records = self.read_sources().await?.as_ref().clone();
         if records.iter().any(|record| {
             record.id != source_id
                 && text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"])
@@ -470,33 +499,40 @@ impl ApplicationService {
     }
 
     pub(super) async fn find_source(&self, id: &str) -> Result<SourceRecord, String> {
-        self.read_sources()
-            .await?
-            .into_iter()
-            .find(|source| source.id == id)
+        self.lookup_source(id).await?
             .ok_or_else(|| format!("Book source '{id}' is no longer imported"))
     }
 
-    pub(super) async fn read_sources(&self) -> Result<Vec<SourceRecord>, String> {
+    pub(super) async fn lookup_source(&self, id: &str) -> Result<Option<SourceRecord>, String> {
+        let catalog = self.read_source_catalog().await?;
+        Ok(catalog.by_id.get(id).map(|index| catalog.records[*index].clone()))
+    }
+
+    pub(super) async fn read_sources(&self) -> Result<Arc<Vec<SourceRecord>>, String> {
+        Ok(self.read_source_catalog().await?.records.clone())
+    }
+
+    async fn read_source_catalog(&self) -> Result<Arc<SourceCatalog>, String> {
+        let mut cached = self.source_catalog.lock().await;
+        if let Some(catalog) = cached.as_ref() { return Ok(catalog.clone()); }
         let reference = ResourceRef::new("resource://sources.json")
             .map_err(|error| error.to_string())?;
-        if !self
+        let records = if self
             .store
             .regular_file_exists(&reference)
             .await
             .map_err(|error| error.to_string())?
         {
-            return Ok(Vec::new());
-        }
-        let document = self
-            .store
-            .read_json_ref(&reference)
-            .await
-            .map_err(|error| error.to_string())?;
-        let records: Vec<SourceRecord> = serde_json::from_value(document)
-            .map_err(|error| format!("Cannot decode saved source definitions: {error}"))?;
-        validate_source_records(&records)?;
-        Ok(records)
+            let document = self.store.read_json_ref(&reference).await
+                .map_err(|error| error.to_string())?;
+            let records: Vec<SourceRecord> = serde_json::from_value(document)
+                .map_err(|error| format!("Cannot decode saved source definitions: {error}"))?;
+            validate_source_records(&records)?;
+            records
+        } else { Vec::new() };
+        let catalog = Arc::new(SourceCatalog::new(records));
+        *cached = Some(catalog.clone());
+        Ok(catalog)
     }
 
     /// Session revisions reject delayed results, including an edit followed by
@@ -512,34 +548,31 @@ impl ApplicationService {
 
     pub(super) async fn write_sources(&self, sources: &[SourceRecord]) -> Result<bool, String> {
         let previous = self.read_sources().await?;
+        if previous.as_slice() == sources { return Ok(false); }
         let list_changed = json!(metadata(&previous)) != json!(metadata(sources));
         let previous_by_id = previous
             .iter()
-            .map(|record| {
-                serde_json::to_value(record)
-                    .map(|value| (record.id.as_str(), value))
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
+            .map(|record| (record.id.as_str(), record))
+            .collect::<HashMap<_, _>>();
         let next_by_id = sources
             .iter()
-            .map(|record| {
-                serde_json::to_value(record)
-                    .map(|value| (record.id.as_str(), value))
-                    .map_err(|error| error.to_string())
-            })
-            .collect::<Result<HashMap<_, _>, _>>()?;
+            .map(|record| (record.id.as_str(), record))
+            .collect::<HashMap<_, _>>();
         let changed = previous_by_id
             .keys()
             .chain(next_by_id.keys())
             .copied()
             .collect::<HashSet<_>>();
-        let reference = ResourceRef::new("resource://sources.json")
-            .map_err(|error| error.to_string())?;
-        self.store
-            .write_json_ref(&reference, &json!(sources))
-            .await
-            .map_err(|error| error.to_string())?;
+        let previous_positions=previous.iter().enumerate().map(|(index,source)|(source.id.as_str(),index)).collect::<HashMap<_,_>>();
+        let changes=sources.iter().enumerate().filter_map(|(index,source)| {
+            let edited=previous_by_id.get(source.id.as_str()).copied()!=Some(source);
+            if edited || previous_positions.get(source.id.as_str()).copied()!=Some(index) {
+                Some((index,source.id.clone(),edited.then(||serde_json::to_value(source).expect("serializable source"))))
+            } else { None }
+        }).collect::<Vec<_>>();
+        let ids=sources.iter().map(|source|source.id.clone()).collect::<Vec<_>>();
+        let db=self.store.database().clone();
+        tokio::task::spawn_blocking(move ||db.sync_sources(&changes,&ids)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         {
             let mut revisions = self.source_revisions.lock().await;
             for source_id in changed {
@@ -549,6 +582,7 @@ impl ApplicationService {
                 }
             }
         }
+        *self.source_catalog.lock().await = Some(Arc::new(SourceCatalog::new(sources.to_vec())));
         Ok(list_changed)
     }
 }
@@ -556,6 +590,27 @@ impl ApplicationService {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn source_catalog_reuses_reads_and_refreshes_after_writes_and_restore() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let mut source = SourceRecord {
+            id: "source-cache-test".into(), name: "Test".into(), group: None, enabled: true,
+            source: json!({"bookSourceName": "Test", "bookSourceUrl": "https://fixture"}),
+        };
+        service.write_sources(&[source.clone()]).await.unwrap();
+        let first = service.read_sources().await.unwrap();
+        assert!(Arc::ptr_eq(&first, &service.read_sources().await.unwrap()));
+        source.name = "Edited".into();
+        service.write_sources(&[source.clone()]).await.unwrap();
+        assert_eq!(first[0].name, "Test", "An in-flight snapshot stays immutable");
+        assert_eq!(service.find_source(&source.id).await.unwrap().name, "Edited");
+        let reference = ResourceRef::new("resource://sources.json").unwrap();
+        service.store.write_json_ref(&reference, &json!([])).await.unwrap();
+        *service.source_catalog.lock().await = None;
+        assert!(service.lookup_source(&source.id).await.unwrap().is_none(), "Restore invalidation reloads the file");
+    }
 
     struct UnusedExecutor;
 

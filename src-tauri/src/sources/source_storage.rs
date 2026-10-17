@@ -1,13 +1,8 @@
-//! 管理书源 Cookie、变量和其他私有持久化数据。
+//! Indexed SQLite key/value storage for source execution, cookies and variables.
+use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::io::ErrorKind;
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::Mutex;
-
-static STORAGE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,139 +22,99 @@ pub struct SourceStorageResponse {
     pub value: Option<String>,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize)]
-struct StorageFile {
-    entries: HashMap<String, StorageEntry>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-struct StorageEntry {
-    value: String,
-    expires_at_ms: Option<u64>,
-}
-
-/// 在 Rust 执行解析器缓存操作，避免 Kotlin 规则直接打开或写入宿主文件。
 pub async fn execute_source_storage_request(
     request: SourceStorageRequest,
     data_dir: &Path,
 ) -> Result<SourceStorageResponse, String> {
     validate_namespace(&request.namespace)?;
     if request.key.as_ref().is_some_and(|key| key.len() > 16_384) {
-        return Err("Source storage key exceeds 16 KiB".to_owned());
+        return Err("Source storage key exceeds 16 KiB".into());
     }
-    if request.operation == "jarHasCookies"
-        && request.value.as_ref().is_some_and(|url| url.len() > 16_384)
-    {
-        return Err("Cookie jar status URL exceeds 16 KiB".to_owned());
-    }
-
-    // 同一 Tauri 进程可能并发执行多个书源操作；读改写整份 namespace 文件必须串行，
-    // 否则两个解析请求同时更新会互相覆盖对方刚写入的 key。
-    let _guard = STORAGE_LOCK.lock().await;
-    let path = storage_path(data_dir, &request.namespace);
-    let mut store = read_storage(&path).await?;
-    let now = current_time_ms();
-    let old_len = store.entries.len();
-    store
-        .entries
-        .retain(|_, entry| entry.expires_at_ms.is_none_or(|deadline| deadline > now));
-    let mut changed = store.entries.len() != old_len;
-
-    let value = match request.operation.as_str() {
-        "get" => request
-            .key
+    if request.operation == "jarHasCookies" && request.namespace == "cookies" {
+        let scope = required_key(&request)?;
+        let url = request
+            .value
             .as_deref()
-            .and_then(|key| store.entries.get(key))
-            .map(|entry| entry.value.clone()),
-        "jarHasCookies" if request.namespace == "cookies" => {
-            let scope = required_key(&request)?;
-            let source_url = request
-                .value
-                .as_deref()
-                .ok_or_else(|| "Cookie jar status request has no source URL".to_owned())?;
-            Some(crate::source_http::has_cookie_jar_cookies(&scope, source_url)?.to_string())
+            .ok_or("Cookie jar status request has no source URL")?;
+        if url.len() > 16_384 {
+            return Err("Cookie jar status URL exceeds 16 KiB".into());
         }
-        "put" => {
-            let key = required_key(&request)?;
-            let value = request
-                .value
-                .clone()
-                .ok_or_else(|| "Source storage put request has no value".to_owned())?;
-            let expires_at_ms = request
-                .ttl_seconds
-                .filter(|seconds| *seconds > 0)
-                .map(|seconds| now.saturating_add(seconds.saturating_mul(1000)));
-            store.entries.insert(
-                key,
-                StorageEntry {
-                    value,
-                    expires_at_ms,
-                },
-            );
-            changed = true;
-            None
-        }
-        "delete" => {
-            let key = required_key(&request)?;
-            if request.namespace == "cookies" {
-                crate::source_http::clear_cookie_jar(&key)?;
-            }
-            changed |= store.entries.remove(&key).is_some();
-            None
-        }
-        "deletePrefixes" => {
-            let prefixes = request.key_prefixes.as_deref().ok_or_else(|| {
-                "Source storage deletePrefixes request has no prefixes".to_owned()
-            })?;
-            if prefixes.len() > 64 {
-                return Err("Source storage prefix list is too large".to_owned());
-            }
-            if request.namespace == "cookies" {
-                for key in store
-                    .entries
-                    .keys()
-                    .filter(|key| prefixes.iter().any(|prefix| key.starts_with(prefix)))
-                {
-                    crate::source_http::clear_cookie_jar(key)?;
-                }
-            }
-            let before = store.entries.len();
-            store
-                .entries
-                .retain(|key, _| !prefixes.iter().any(|prefix| key.starts_with(prefix)));
-            changed |= before != store.entries.len();
-            None
-        }
-        "deleteContains" => {
-            let needle = request.contains.as_deref().ok_or_else(|| {
-                "Source storage deleteContains request has no substring".to_owned()
-            })?;
-            if request.namespace == "cookies" {
-                for key in store.entries.keys().filter(|key| key.contains(needle)) {
-                    crate::source_http::clear_cookie_jar(key)?;
-                }
-            }
-            let before = store.entries.len();
-            store.entries.retain(|key, _| !key.contains(needle));
-            changed |= before != store.entries.len();
-            None
-        }
-        "clear" => {
-            if request.namespace == "cookies" {
-                crate::source_http::clear_all_cookie_jars()?;
-            }
-            changed |= !store.entries.is_empty();
-            store.entries.clear();
-            None
-        }
-        operation => return Err(format!("Unsupported source storage operation: {operation}")),
-    };
-
-    if changed {
-        write_storage(&path, &store).await?;
+        return Ok(SourceStorageResponse {
+            value: Some(crate::source_http::has_cookie_jar_cookies(&scope, url)?.to_string()),
+        });
     }
-    Ok(SourceStorageResponse { value })
+    if request
+        .key_prefixes
+        .as_ref()
+        .is_some_and(|prefixes| prefixes.len() > 64)
+    {
+        return Err("Source storage prefix list is too large".into());
+    }
+    let data_dir = data_dir.to_owned();
+    tokio::task::spawn_blocking(move || execute_sql(request, &data_dir))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn execute_sql(
+    request: SourceStorageRequest,
+    data_dir: &Path,
+) -> Result<SourceStorageResponse, String> {
+    let db = crate::database::source_database(data_dir).map_err(|e| e.to_string())?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64;
+    if request.operation == "get" {
+        let connection = db.connect().map_err(|e| e.to_string())?;
+        let value = match request.key.as_deref() {
+            None => None,
+            Some(key) => connection.query_row("SELECT value FROM source_kv WHERE namespace=?1 AND key=?2 AND (expires_at_ms IS NULL OR expires_at_ms>?3)",params![request.namespace,key,now],|row|row.get(0)).optional().map_err(|e|e.to_string())?
+        };
+        return Ok(SourceStorageResponse { value });
+    }
+    let mut clear_scopes = Vec::new();
+    db.transaction(|tx| {
+        let error = crate::resources::ResourceError::new;
+        match request.operation.as_str() {
+            "put" => {
+                let key = required_key(&request).map_err(error)?;
+                let value = request.value.as_deref().ok_or_else(||error("Source storage put request has no value".to_string()))?;
+                let expiry = request.ttl_seconds.filter(|seconds|*seconds>0).map(|seconds|now.saturating_add(seconds.saturating_mul(1000).min(i64::MAX as u64) as i64));
+                tx.execute("INSERT INTO source_kv(namespace,key,value,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(namespace,key) DO UPDATE SET value=excluded.value,expires_at_ms=excluded.expires_at_ms WHERE source_kv.value!=excluded.value OR source_kv.expires_at_ms IS NOT excluded.expires_at_ms",params![request.namespace,key,value,expiry])?;
+            }
+            "delete" => {
+                let key = required_key(&request).map_err(error)?;
+                tx.execute("DELETE FROM source_kv WHERE namespace=?1 AND key=?2",params![request.namespace,key])?;
+                clear_scopes.push(key);
+            }
+            "deletePrefixes" | "deleteContains" | "clear" => {
+                let (predicate,argument) = match request.operation.as_str() {
+                    "deletePrefixes" => ("EXISTS(SELECT 1 FROM json_each(?2) WHERE substr(source_kv.key,1,length(value))=value)",serde_json::to_string(request.key_prefixes.as_ref().ok_or_else(||error("Source storage deletePrefixes request has no prefixes".into()))?).unwrap()),
+                    "deleteContains" => ("instr(key,?2)>0",request.contains.clone().ok_or_else(||error("Source storage deleteContains request has no substring".into()))?),
+                    _ => ("?2 IS NOT NULL",String::new())
+                };
+                if request.namespace == "cookies" {
+                    let mut stmt = tx.prepare(&format!("SELECT key FROM source_kv WHERE namespace=?1 AND ({predicate})"))?;
+                    clear_scopes = stmt.query_map(params![request.namespace,argument],|row|row.get(0))?.collect::<Result<Vec<String>,_>>()?;
+                }
+                tx.execute(&format!("DELETE FROM source_kv WHERE namespace=?1 AND ({predicate})"),params![request.namespace,argument])?;
+            }
+            operation => return Err(error(format!("Unsupported source storage operation: {operation}")))
+        }
+        Ok(())
+    }).map_err(|e|e.to_string())?;
+    if request.namespace == "cookies" {
+        if request.operation == "clear" {
+            crate::source_http::clear_all_cookie_jars()?;
+        } else {
+            for scope in clear_scopes {
+                crate::source_http::clear_cookie_jar(&scope)?;
+            }
+        }
+    }
+    Ok(SourceStorageResponse { value: None })
 }
 
 fn required_key(request: &SourceStorageRequest) -> Result<String, String> {
@@ -185,52 +140,133 @@ fn validate_namespace(namespace: &str) -> Result<(), String> {
     }
 }
 
-fn storage_path(data_dir: &Path, namespace: &str) -> PathBuf {
-    data_dir.join("storage").join(format!("{namespace}.json"))
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
 
-async fn read_storage(path: &Path) -> Result<StorageFile, String> {
-    match tokio::fs::read(path).await {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|error| format!("Cannot decode source storage {}: {error}", path.display())),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(StorageFile::default()),
-        Err(error) => Err(format!(
-            "Cannot read source storage {}: {error}",
-            path.display()
-        )),
+    fn request(operation: &str, key: &str, value: Option<&str>) -> SourceStorageRequest {
+        serde_json::from_value(
+            json!({"namespace":"source-cache","operation":operation,"key":key,"value":value}),
+        )
+        .unwrap()
     }
-}
 
-async fn write_storage(path: &Path, store: &StorageFile) -> Result<(), String> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| "Source storage path has no parent".to_owned())?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .map_err(|error| format!("Cannot create source storage directory: {error}"))?;
-    let bytes = serde_json::to_vec(store)
-        .map_err(|error| format!("Cannot encode source storage: {error}"))?;
-    // 先落到同目录临时文件，再替换正式文件，避免序列化/写入中断留下半份 JSON。
-    let mut temporary = path.as_os_str().to_os_string();
-    temporary.push(format!(".tmp-{}", std::process::id()));
-    let temporary = PathBuf::from(temporary);
-    tokio::fs::write(&temporary, bytes)
-        .await
-        .map_err(|error| format!("Cannot write source storage temporary file: {error}"))?;
-    if tokio::fs::try_exists(path).await.unwrap_or(false) {
-        tokio::fs::remove_file(path)
+    #[tokio::test]
+    async fn indexed_storage_preserves_concurrent_writes_and_observes_expiry() {
+        let directory = tempfile::tempdir().unwrap();
+        crate::database::Database::open(directory.path()).unwrap();
+        let mut jobs = Vec::new();
+        for index in 0..12 {
+            let root = directory.path().to_owned();
+            jobs.push(tokio::spawn(async move {
+                execute_source_storage_request(
+                    request("put", &format!("key-{index}"), Some("value")),
+                    &root,
+                )
+                .await
+                .unwrap();
+            }));
+        }
+        for job in jobs {
+            job.await.unwrap();
+        }
+        let db = crate::database::Database::at(directory.path());
+        let connection = db.connect().unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM source_kv", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            12
+        );
+        connection
+            .execute("UPDATE source_kv SET expires_at_ms=1 WHERE key='key-0'", [])
+            .unwrap();
+        assert!(
+            execute_source_storage_request(request("get", "key-0", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
+        assert_eq!(
+            execute_source_storage_request(request("get", "key-1", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .as_deref(),
+            Some("value")
+        );
+        assert!(!directory.path().join("storage").exists());
+    }
+
+    #[tokio::test]
+    async fn storage_deletion_treats_prefixes_literally_and_failed_commits_do_not_leak() {
+        let directory = tempfile::tempdir().unwrap();
+        for key in ["a%_one", "aXXone", "keep"] {
+            execute_source_storage_request(request("put", key, Some("value")), directory.path())
+                .await
+                .unwrap();
+        }
+        let deletion = serde_json::from_value(
+            json!({"namespace":"source-cache","operation":"deletePrefixes","keyPrefixes":["a%_"]}),
+        )
+        .unwrap();
+        execute_source_storage_request(deletion, directory.path())
             .await
-            .map_err(|error| format!("Cannot replace source storage file: {error}"))?;
-    }
-    tokio::fs::rename(&temporary, path)
+            .unwrap();
+        assert!(
+            execute_source_storage_request(request("get", "a%_one", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
+        assert!(
+            execute_source_storage_request(request("get", "aXXone", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .is_some()
+        );
+        let db = crate::database::Database::at(directory.path());
+        db.connect().unwrap().execute_batch("CREATE TRIGGER fail_put BEFORE INSERT ON source_kv WHEN new.key='uncommitted' BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+        assert!(execute_source_storage_request(
+            request("put", "uncommitted", Some("value")),
+            directory.path()
+        )
         .await
-        .map_err(|error| format!("Cannot finalize source storage file: {error}"))
-}
-
-fn current_time_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .min(u64::MAX as u128) as u64
+        .is_err());
+        assert!(execute_source_storage_request(
+            request("get", "uncommitted", None),
+            directory.path()
+        )
+        .await
+        .unwrap()
+        .value
+        .is_none());
+        let mut deletion = request("deleteContains", "", None);
+        deletion.contains = Some("XX".into());
+        execute_source_storage_request(deletion, directory.path())
+            .await
+            .unwrap();
+        assert!(
+            execute_source_storage_request(request("get", "aXXone", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
+        execute_source_storage_request(request("clear", "", None), directory.path())
+            .await
+            .unwrap();
+        assert!(
+            execute_source_storage_request(request("get", "keep", None), directory.path())
+                .await
+                .unwrap()
+                .value
+                .is_none()
+        );
+    }
 }

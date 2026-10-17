@@ -51,6 +51,6 @@ export const clearBookChapterCache = (bookId: string) =>
 export const getChapterCacheUsage = () => command<ChapterCacheUsage>("get_chapter_cache_usage");
 
 
-/** Rust publishes progress and prepared resources through book-updated. */
+/** Progress arrives as a small delta; prepared resources use book-updated. */
 export const notifyReading = (bookId: string, progress: ReadingProgress, refreshMedia = false) =>
   command<void>("notify_reading", { bookId, progress, refreshMedia });

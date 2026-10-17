@@ -28,7 +28,9 @@ pub(super) fn validate_unique_entries(
     }
     for delete in deletes {
         if has_cleanup_ancestor(&delete.path, &delete_paths) {
-            return Err(TransactionError::new("Overlapping post-commit cleanup paths"));
+            return Err(TransactionError::new(
+                "Overlapping post-commit cleanup paths",
+            ));
         }
     }
     for replacement in replacements {
@@ -37,9 +39,7 @@ pub(super) fn validate_unique_entries(
             continue;
         }
         let target = replacement.target.relative_path();
-        if delete_paths.contains(target.as_str())
-            || has_cleanup_ancestor(&target, &delete_paths)
-        {
+        if delete_paths.contains(target.as_str()) || has_cleanup_ancestor(&target, &delete_paths) {
             return Err(TransactionError::new(
                 "Post-commit cleanup would delete a newly written transaction target",
             ));
@@ -51,9 +51,9 @@ pub(super) fn validate_unique_entries(
 /// Only path components can be ancestors. This avoids pairwise comparisons
 /// over every chapter in large cache-clearing transactions.
 pub(super) fn has_cleanup_ancestor(path: &str, cleanup_paths: &HashSet<&str>) -> bool {
-    path.bytes().enumerate().any(|(index, byte)| {
-        byte == b'/' && cleanup_paths.contains(&path[..index])
-    })
+    path.bytes()
+        .enumerate()
+        .any(|(index, byte)| byte == b'/' && cleanup_paths.contains(&path[..index]))
 }
 
 pub(super) fn validate_public_json_bytes(bytes: &[u8]) -> Result<(), TransactionError> {
@@ -76,27 +76,14 @@ pub(super) fn validate_target_payload(
     bytes: &[u8],
 ) -> Result<(), TransactionError> {
     match target {
-        TransactionTarget::PublicJson(path) if path.ends_with(".json") => validate_public_json_bytes(bytes),
-        TransactionTarget::PublicJson(_) => { validate_json_size(bytes)?; Ok(()) },
-    }
-}
-
-pub(super) fn is_deletable_target(target: &TransactionTarget) -> bool {
-    match target {
-        TransactionTarget::PublicJson(path) => {
-            is_book_json_path(path)
+        TransactionTarget::PublicJson(path) if path.ends_with(".json") => {
+            validate_public_json_bytes(bytes)
+        }
+        TransactionTarget::PublicJson(_) => {
+            validate_json_size(bytes)?;
+            Ok(())
         }
     }
-}
-
-pub(super) fn read_validated_payload(
-    stage_dir: &Path,
-    target: &TransactionTarget,
-    snapshot: &Snapshot,
-) -> Result<Vec<u8>, TransactionError> {
-    let bytes = read_payload(stage_dir, snapshot)?;
-    validate_target_payload(target, &bytes)?;
-    Ok(bytes)
 }
 
 pub(super) fn validate_operation(operation: &str) -> Result<(), TransactionError> {
@@ -111,24 +98,12 @@ pub(super) fn validate_operation(operation: &str) -> Result<(), TransactionError
     Ok(())
 }
 
-pub(super) fn validate_transaction_id(transaction_id: &str) -> Result<(), TransactionError> {
-    let Some(uuid) = transaction_id.strip_prefix("txn-") else {
-        return Err(TransactionError::new("Invalid transaction identifier"));
-    };
-    if uuid.len() != 32 || !uuid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        return Err(TransactionError::new("Invalid transaction identifier"));
-    }
-    Ok(())
-}
-
 pub(super) fn is_chapter_resource_path(path: &str) -> bool {
-    crate::resources::content::content_path(path).is_some_and(|(_, id, name)|
-        name != format!("{id}.json") && !name.starts_with("original.")
-        && crate::resources::ResourceRef::new(format!("resource://{path}")).is_ok())
-}
-
-pub(super) fn is_book_json_path(path: &str) -> bool {
-    crate::resources::content::is_content_document(path)
+    crate::resources::content::content_path(path).is_some_and(|(_, id, name)| {
+        name != format!("{id}.json")
+            && !name.starts_with("original.")
+            && crate::resources::ResourceRef::new(format!("resource://{path}")).is_ok()
+    })
 }
 
 pub(super) fn is_book_directory_path(path: &str) -> bool {

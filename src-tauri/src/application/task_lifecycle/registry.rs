@@ -291,10 +291,6 @@ impl ApplicationService {
         Ok(())
     }
 
-    pub(in crate::application) async fn search_task_is_publisher(&self, task_id: &str) -> bool {
-        self.tasks.lock().await.active_search_task_id.as_deref() == Some(task_id)
-    }
-
     pub(in crate::application) async fn clear_search_task_claim(&self, task_id: &str) {
         let mut registry = self.tasks.lock().await;
         if registry.active_search_task_id.as_deref() == Some(task_id) {
@@ -477,7 +473,7 @@ impl ApplicationService {
         let Ok(resource) = self.task_resource_descriptor() else {
             return;
         };
-        let event = json!({ "taskId": task.id, "resource": resource });
+        let event = json!({ "taskId": task.id, "resource": resource, "task": task_summary(task) });
         if let Ok(notifier) = self.task_notifier.read() {
             if let Some(notifier) = notifier.as_ref() {
                 notifier(event);

@@ -205,10 +205,7 @@ impl ApplicationService {
         let (source, source_revision, initial_state) = {
             let _sources = self.sources_lock.lock().await;
             let source = self
-                .read_sources()
-                .await?
-                .into_iter()
-                .find(|source| source.id == source_id)
+                .lookup_source(&source_id).await?
                 .ok_or_else(|| "Search result source was removed; search again".to_owned())?;
             if !source.enabled {
                 return Err(
@@ -299,10 +296,7 @@ impl ApplicationService {
         // re-import tombstones, even when the same ID and JSON definition return.
         let _sources = self.sources_lock.lock().await;
         let current_source = self
-            .read_sources()
-            .await?
-            .into_iter()
-            .find(|candidate| candidate.id == source_id)
+            .lookup_source(&source_id).await?
             .ok_or_else(|| "Search result source was removed during book lookup".to_owned())?;
         if !current_source.enabled {
             return Err("Search result source was disabled during book lookup".into());
@@ -544,6 +538,19 @@ impl ApplicationService {
             );
         }
         Ok(Some(AddBookSnapshot { public, private }))
+    }
+
+    pub async fn get_book_preview(&self, book_id: &str) -> Result<Value, String> {
+        let _operation = self.operation_read().await;
+        validate_id(book_id,"bookId")?;
+        let database=self.store.database().clone();
+        let id=book_id.to_owned();
+        let mut preview=tokio::task::spawn_blocking(move ||database.preview(&id))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+        let reference=self.store.book_ref(book_id).map_err(|e|e.to_string())?;
+        preview["bookSrc"]=json!(self.server.url_for(&reference));
+        self.server.materialize_json(&mut preview).map_err(|e|e.to_string())?;
+        Ok(preview)
     }
 
     pub async fn get_book(&self, book_id: &str) -> Result<Value, String> {
@@ -794,10 +801,7 @@ impl ApplicationService {
 
         let _sources = self.sources_lock.lock().await;
         let current_source = self
-            .read_sources()
-            .await?
-            .into_iter()
-            .find(|candidate| candidate.id == source.id)
+            .lookup_source(&source.id).await?
             .ok_or_else(|| "Book source was removed during metadata refresh".to_owned())?;
         if !current_source.enabled {
             return Err("Book source was disabled during metadata refresh".into());

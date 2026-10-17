@@ -33,14 +33,13 @@ impl ApplicationService {
             return Err("Search keyword cannot be empty".into());
         }
         let page = page.max(1);
-        let selected = self
-            .read_sources()
-            .await?
-            .into_iter()
+        let sources = self.read_sources().await?;
+        let requested: HashSet<&str> = source_ids.iter().map(String::as_str).collect();
+        let selected = sources.iter()
             .filter(|source| {
                 source.enabled
                     && crate::source_metadata::matches_search_type(&source.source, source_type)
-                    && (source_ids.is_empty() || source_ids.contains(&source.id))
+                    && (requested.is_empty() || requested.contains(source.id.as_str()))
             })
             .collect::<Vec<_>>();
         if selected.is_empty() {

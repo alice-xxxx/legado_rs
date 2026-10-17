@@ -28,13 +28,6 @@ impl ApplicationService {
             .transaction_writer_guard()
             .await
             .map_err(|error| error.to_string())?;
-        let mut current = writer
-            .read_json_ref(&book_ref)
-            .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
-        if current.get("id").and_then(Value::as_str) != Some(book_id.as_str()) {
-            return Err("Book resource ID does not match its catalog path".into());
-        }
-
         let overrides = incoming.display_overrides;
         let mut patch = json!({
             "title": overrides.title,
@@ -52,25 +45,10 @@ impl ApplicationService {
                 .remove("coverSrc");
         }
         verify_selected_cover_asset(&writer, &patch)?;
-        crate::book_display_metadata::apply_patch(&mut current, &patch)?;
-
-        let replacement = writer
-            .public_json_replacement(&book_ref, &current)
-            .map_err(|error| error.to_string())?;
-        let root = writer.data_root().to_path_buf();
-        tokio::task::spawn_blocking(move || {
-            let transaction = crate::resource_transactions::FileTransaction::prepare(
-                &root,
-                "save-book",
-                vec![replacement],
-                Vec::new(),
-                &writer,
-            )?;
-            transaction.commit()
-        })
-        .await
-        .map_err(|error| format!("Book save worker stopped: {error}"))?
-        .map_err(|error| error.to_string())?;
+        let database=self.store.database().clone();
+        let path=book_ref.path().to_owned();
+        let kind=self.store.book_type(&book_id).map_err(|e|e.to_string())?;
+        tokio::task::spawn_blocking(move ||database.save_display(&path,&kind,&patch)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         Ok(book_ref)
     }
 
@@ -378,29 +356,11 @@ pub(super) fn public_book_resources_reference_cover(
     writer_guard: &ResourceStoreWriterGuard,
     cover_ref: &str,
 ) -> Result<bool, String> {
-    for kind in crate::resources::content::CONTENT_TYPES {
-    let books_directory = store.root().join("cache").join(kind);
-    if !books_directory.exists() { continue; }
-    let entries = std::fs::read_dir(&books_directory)
-        .map_err(|_| "Cannot inspect book resources before cover cleanup".to_owned())?;
-    for entry in entries {
-        let entry =
-            entry.map_err(|_| "Cannot inspect book resources before cover cleanup".to_owned())?;
-        let file_type = entry
-            .file_type()
-            .map_err(|_| "Cannot inspect book resources before cover cleanup".to_owned())?;
-        if file_type.is_symlink() || !file_type.is_dir() {
-            return Err("Book resource layout is unsafe; selected cover was retained".into());
-        }
-        let book_id = entry.file_name().into_string().map_err(|_| {
-            "Book resource identifier is invalid; selected cover was retained".to_owned()
-        })?;
-        if book_id == READER_BACKGROUND_BOOK_ID {
-            continue;
-        }
-        let Ok(book_ref) = store.book_ref(&book_id) else {
-            continue;
-        };
+    for path in store.database().paths().map_err(|e|e.to_string())? {
+        if !crate::resources::content::is_content_document(&path) {continue;}
+        let (_,book_id,_)=crate::resources::content::content_path(&path).expect("content path");
+        if book_id==READER_BACKGROUND_BOOK_ID {continue;}
+        let book_ref=ResourceRef::new(format!("resource://{path}")).map_err(|e|e.to_string())?;
         let book = writer_guard
             .read_optional_json_ref(&book_ref)
             .map_err(|_| {
@@ -412,8 +372,6 @@ pub(super) fn public_book_resources_reference_cover(
         {
             return Ok(true);
         }
-    }
-
     }
 
     let settings = writer_guard

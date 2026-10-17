@@ -28,18 +28,7 @@ pub(crate) fn is_content_document(path: &str) -> bool {
 
 pub(crate) fn find_content_dir(root: &Path, id: &str) -> Result<Option<PathBuf>, ResourceError> {
     super::validation::validate_id(id)?;
-    let mut found = None;
-    for kind in CONTENT_TYPES {
-        let dir = root.join("cache").join(kind).join(id);
-        super::check_path_no_symlink(root, &dir, true)?;
-        if dir.join(format!("{id}.json")).is_file() {
-            if found.is_some() {
-                return Err(ResourceError::new("Content ID exists in multiple types"));
-            }
-            found = Some(dir);
-        }
-    }
-    Ok(found)
+    Ok(crate::database::Database::at(root).content_path(id)?.and_then(|path| root.join(path).parent().map(Path::to_path_buf)))
 }
 
 fn object(value: &Value) -> Map<String, Value> {
@@ -63,7 +52,7 @@ pub(crate) fn local_ref(kind: &str, id: &str, value: &str) -> Result<ResourceRef
     }
 }
 
-fn stored_url(value: &str, id: &str) -> String {
+pub(crate) fn stored_url(value: &str, id: &str) -> String {
     if let Some(path) = value.strip_prefix("resource://") {
         if let Some((_, owner, name)) = content_path(path) {
             if owner == id {
@@ -569,95 +558,6 @@ pub(crate) fn library_positions(library: &Value) -> Value {
         "sort": "custom", "sortOrder": "ascending"})
 }
 
-pub(crate) fn preview(document: &Value, kind: &str) -> Value {
-    let mut item = Map::new();
-    for key in ["id", "title", "author", "cover"] {
-        copy(document, &mut item, key, key);
-    }
-    let chapters = document["chapters"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter(|c| c["volume"] != true)
-        .collect::<Vec<_>>();
-    let total = if kind == "pdf" {
-        document["pageCount"].as_u64().unwrap_or(0)
-    } else {
-        chapters.len() as u64
-    };
-    item.insert("total".into(), json!(total));
-    if let Some(latest) = chapters.last() {
-        copy(latest, &mut item, "title", "latest");
-    }
-    if let Some(ms) = document["progress"]["updatedAtMs"]
-        .as_u64()
-        .filter(|ms| *ms > 0)
-    {
-        item.insert("readAt".into(), json!(ms / 1000));
-        let read = if kind == "pdf" {
-            document["progress"]["page"].as_u64().unwrap_or(1)
-        } else {
-            chapters
-                .iter()
-                .position(|c| c["id"] == document["progress"]["chapterId"])
-                .unwrap_or(0) as u64
-                + 1
-        };
-        item.insert("read".into(), json!(read));
-    }
-    if let Some(ms) = document["updatedAtMs"].as_u64().filter(|ms| *ms > 0) {
-        item.insert("updatedAt".into(), json!(ms / 1000));
-    }
-    if let Some(overrides) = document["overrides"].as_object() {
-        for key in ["title", "author"] {
-            if let Some(value) = overrides.get(key) {
-                item.insert(key.into(), value.clone());
-            }
-        }
-        if let Some(cover) = overrides.get("coverSrc").and_then(Value::as_str) {
-            let id = document["id"].as_str().unwrap_or_default();
-            item.insert("cover".into(), json!(stored_url(cover, id)));
-        }
-    }
-    item.retain(|_, value| !value.is_null() && value.as_str().is_none_or(|text| !text.is_empty()));
-    Value::Object(item)
-}
-
-pub(crate) fn update_library_preview(library: &mut Value, document: &Value, kind: &str) -> bool {
-    let id = &document["id"];
-    let mut membership = false;
-    let mut position = None;
-    for current in CONTENT_TYPES {
-        if let Some(items) = library.get_mut(current).and_then(Value::as_array_mut) {
-            if let Some(index) = items.iter().position(|item| item["id"] == *id) {
-                items.remove(index);
-                membership = true;
-                if current == kind {
-                    position = Some(index);
-                }
-            }
-        }
-    }
-    if membership {
-        if !library[kind].is_array() {
-            library[kind] = json!([]);
-        }
-        let items = library[kind].as_array_mut().expect("array");
-        items.insert(
-            position.unwrap_or(items.len()).min(items.len()),
-            preview(document, kind),
-        );
-        for current in CONTENT_TYPES {
-            if library[current].as_array().is_some_and(Vec::is_empty) {
-                if let Some(values) = library.as_object_mut() {
-                    values.remove(current);
-                }
-            }
-        }
-    }
-    membership
-}
-
 pub(crate) fn validate_library(library: &Value) -> Result<(), ResourceError> {
     let values = library
         .as_object()
@@ -713,7 +613,7 @@ pub(crate) fn validate_library(library: &Value) -> Result<(), ResourceError> {
     Ok(())
 }
 
-pub(crate) fn encode_library(input: &Value, root: &Path) -> Result<Value, ResourceError> {
+pub(crate) fn encode_library(input: &Value, connection: &rusqlite::Connection) -> Result<Value, ResourceError> {
     let normalized;
     let positions = if input.get("books").is_none() {
         validate_library(input)?;
@@ -734,24 +634,8 @@ pub(crate) fn encode_library(input: &Value, root: &Path) -> Result<Value, Resour
         let id = position["id"]
             .as_str()
             .ok_or_else(|| ResourceError::new("Library entry has no ID"))?;
-        let dir = find_content_dir(root, id)?
-            .ok_or_else(|| ResourceError::new("Library content is not cached"))?;
-        let kind = dir
-            .parent()
-            .and_then(|path| path.file_name())
-            .and_then(|name| name.to_str())
-            .ok_or_else(|| ResourceError::new("Invalid content directory"))?;
-        let path = dir.join(format!("{id}.json"));
-        super::check_path_no_symlink(root, &path, false)?;
-        let bytes = std::fs::read(path).map_err(|error| ResourceError::new(error.to_string()))?;
-        let document: Value = serde_json::from_slice(&bytes)
-            .map_err(|error| ResourceError::new(error.to_string()))?;
-        library
-            .entry(kind.to_owned())
-            .or_insert_with(|| json!([]))
-            .as_array_mut()
-            .expect("array")
-            .push(preview(&document, kind));
+        let (kind, item) = crate::database::book_preview(connection,id)?;
+        library.entry(kind).or_insert_with(||json!([])).as_array_mut().expect("array").push(item);
         for name in position["groups"]
             .as_array()
             .into_iter()

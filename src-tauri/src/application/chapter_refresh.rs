@@ -144,10 +144,7 @@ impl ApplicationService {
 
         let _sources = self.sources_lock.lock().await;
         let current_source = self
-            .read_sources()
-            .await?
-            .into_iter()
-            .find(|source| source.id == source_id)
+            .lookup_source(&source_id).await?
             .ok_or_else(|| "Book source was removed while refreshing the chapter".to_owned())?;
         if current_source.source != source_definition
             || self.source_revision(&source_id).await? != source_revision

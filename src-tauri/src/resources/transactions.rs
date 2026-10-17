@@ -1,35 +1,24 @@
-//! 管理跨多个资源文件的可恢复事务提交与恢复。
-//! Recoverable commits for a small set of app-data files.
-//
-// This module deliberately does not own application locks or ResourceStore.
-// Callers must hold the app's single-writer guard for this data root from
-// snapshot capture through commit/recovery. The journal makes interrupted
-// multi-file commits recoverable at startup; it does not make several files
-// appear atomically to concurrent readers, nor promise power-loss durability
-// on filesystems that do not honor the file and directory sync operations.
+//! Commit metadata atomically in SQLite and publish immutable file assets.
+//! Cache deletion intents live in the same database transaction and retry at
+//! startup. Old JSON state and file journals are not imported.
+//!
+//! Callers own book/chapter coordination. The resource guard coordinates asset
+//! publication and cleanup. Independent SQLite updates need no file lock.
 
 use std::fmt;
 use std::fs::File;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-
 use crate::resources::ResourceRef;
 
-const JOURNAL_FORMAT: &str = "legado-rs-file-transaction";
-const JOURNAL_VERSION: u32 = 1;
-const TRANSACTIONS_RELATIVE_DIR: &str = "transactions";
 const MAX_OPERATION_BYTES: usize = 96;
 const MAX_TARGET_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TRANSACTION_BYTES: u64 = 128 * 1024 * 1024;
 
-/// Marker for the ResourceStore-wide writer guard required by this helper.
-///
-/// Implementations must return the canonical app-data root protected by the
-/// guard. The application must hold the underlying guard for the complete
-/// lifetime of a transaction. A separate per-file lock is not sufficient:
-/// ordinary shelf/bookmark/progress writes must be excluded as well.
+/// Marker for the filesystem publication/cleanup guard for this data root.
+/// SQLite transactions commit metadata; domain guards protect any application
+/// snapshot captured before this helper is called.
 pub(crate) trait ResourceWriterGuard {
     fn data_root(&self) -> &Path;
 }
@@ -62,31 +51,17 @@ impl TransactionTarget {
     }
 
     fn public_resource(reference: ResourceRef) -> Result<Self, TransactionError> {
-        if !reference.is_local() { return Err(TransactionError::new("Transaction target must be local")); }
-        ResourceRef::new(reference.as_str()).map_err(|_| TransactionError::new("Invalid transaction resource"))?;
+        if !reference.is_local() {
+            return Err(TransactionError::new("Transaction target must be local"));
+        }
+        ResourceRef::new(reference.as_str())
+            .map_err(|_| TransactionError::new("Invalid transaction resource"))?;
         Ok(Self::PublicJson(reference.path().to_owned()))
     }
 
     fn relative_path(&self) -> String {
         match self {
             Self::PublicJson(path) => path.clone(),
-        }
-    }
-
-    fn from_journal(domain: TargetDomain, path: &str) -> Result<Self, TransactionError> {
-        match domain {
-            TargetDomain::Public => {
-                let reference = ResourceRef::new(format!("resource://{path}"))
-                    .map_err(|_| TransactionError::new("Unsafe public transaction target"))?;
-                Self::public_resource(reference)
-            }
-
-        }
-    }
-
-    fn domain(&self) -> TargetDomain {
-        match self {
-            Self::PublicJson(_) => TargetDomain::Public,
         }
     }
 }
@@ -97,14 +72,13 @@ pub(crate) struct PostCommitDelete {
     path: String,
 }
 
-/// A prepared file transaction. The borrowed guard must stay alive until this
-/// value is committed or dropped. Dropping it simulates process termination:
-/// an already-written prepared journal is intentionally left for recovery.
+/// Metadata commits atomically in SQLite. Native chapter bodies are published
+/// first and unused bodies are harmless if the database transaction rolls back.
 #[derive(Debug)]
 pub(crate) struct FileTransaction<'guard> {
     root: PathBuf,
-    stage_dir: PathBuf,
-    journal: Journal,
+    replacements: Vec<Replacement>,
+    post_commit_deletes: Vec<String>,
     _writer_guard: PhantomData<&'guard ()>,
 }
 
@@ -115,60 +89,6 @@ pub(crate) struct FileTransaction<'guard> {
 pub(crate) struct AppDataProcessLock {
     _file: File,
     canonical_root: PathBuf,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum TransactionPhase {
-    Prepared,
-    Committed,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum TargetDomain {
-    Public,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Journal {
-    format: String,
-    version: u32,
-    transaction_id: String,
-    operation: String,
-    phase: TransactionPhase,
-    targets: Vec<JournalTarget>,
-    post_commit_deletes: Vec<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct JournalTarget {
-    domain: TargetDomain,
-    path: String,
-    before: Snapshot,
-    after: Snapshot,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct Snapshot {
-    missing: bool,
-    blob: Option<String>,
-    bytes: u64,
-    sha256: Option<String>,
-}
-
-impl Snapshot {
-    fn missing() -> Self {
-        Self {
-            missing: true,
-            blob: None,
-            bytes: 0,
-            sha256: None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -192,10 +112,6 @@ impl TransactionError {
             commit_state: CommitState::NotCommitted,
             recovery_required: false,
         }
-    }
-
-    fn aborted(message: impl Into<String>) -> Self {
-        Self::new(message)
     }
 
     pub(crate) fn recovery_required(message: impl Into<String>, commit_state: CommitState) -> Self {
@@ -230,10 +146,6 @@ mod cleanup;
 mod commit;
 #[path = "transactions/filesystem.rs"]
 mod filesystem;
-#[path = "transactions/journal.rs"]
-mod journal;
-#[path = "transactions/payload.rs"]
-mod payload;
 #[path = "transactions/process_lock.rs"]
 mod process_lock;
 #[path = "transactions/recovery.rs"]
@@ -245,8 +157,5 @@ mod validation;
 
 use cleanup::*;
 use filesystem::*;
-use journal::*;
-use payload::*;
-use recovery::{ensure_no_pending_transaction, restore_snapshot, rollback_prepared};
 pub(crate) use recovery::{ensure_no_unrecovered_transaction, recover_all};
 use validation::*;

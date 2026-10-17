@@ -47,22 +47,6 @@ pub(super) fn validate_target_path(
     reject_symlink_components(root, &root.join(relative), allow_missing)
 }
 
-pub(super) fn ensure_safe_directory(root: &Path, directory: &Path) -> Result<(), TransactionError> {
-    reject_symlink_components(root, directory, true)?;
-    fs::create_dir_all(directory).map_err(|error| {
-        TransactionError::new(format!("Cannot create transaction directory: {error}"))
-    })?;
-    reject_symlink_components(root, directory, false)?;
-    sync_parent_chain(root, directory)
-}
-
-pub(super) fn validate_existing_path_no_symlinks(
-    root: &Path,
-    path: &Path,
-) -> Result<(), TransactionError> {
-    reject_symlink_components(root, path, false)
-}
-
 pub(super) fn reject_symlink_components(
     root: &Path,
     path: &Path,

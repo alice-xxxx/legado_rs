@@ -113,16 +113,8 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
         .join(id)
         .join("original.txt")
         .is_file());
-    let raw: Value = serde_json::from_slice(
-        &std::fs::read(
-            dir.path()
-                .join("cache/text")
-                .join(id)
-                .join(format!("{id}.json")),
-        )
-        .unwrap(),
-    )
-    .unwrap();
+    let raw = service.resource_store().read_raw_document(&service.resource_store().book_ref(id).unwrap()).unwrap();
+    assert!(!dir.path().join("cache/text").join(id).join(format!("{id}.json")).exists());
     assert!(raw["chapters"][1]["url"]
         .as_str()
         .unwrap()
@@ -357,15 +349,14 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     assert_eq!(book["chapters"][1]["pdfPage"]["pageIndex"], 1);
     let id = book["id"].as_str().unwrap();
     let folder = dir.path().join("cache/pdf").join(id);
-    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
-    let raw: Value =
-        serde_json::from_slice(&std::fs::read(folder.join(format!("{id}.json"))).unwrap()).unwrap();
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
+    let raw = service.resource_store().read_raw_document(&service.resource_store().book_ref(id).unwrap()).unwrap();
     assert_eq!(raw["url"], "original.pdf");
     assert_eq!(raw["pageCount"], 2);
     assert!(raw.get("chapters").is_none());
     std::fs::remove_file(folder.join("original.pdf")).unwrap();
     assert_eq!(import(&service, &file).await["id"], id);
-    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 2);
+    assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
     let response = reqwest::Client::new()
         .get(book["chapters"][0]["pdfPage"]["src"].as_str().unwrap())
         .header("Range", "bytes=0-4")
@@ -427,13 +418,8 @@ async fn encrypted_pdf_can_retry_password_without_caching_password_or_partial_bo
     )
     .unwrap();
     assert_eq!(book["chapterCount"], 2);
-    let path = dir.path().join(
-        response["book"]["resourceId"]
-            .as_str()
-            .unwrap()
-            .trim_start_matches("resource://"),
-    );
-    let raw = std::fs::read_to_string(path).unwrap();
+    let reference = crate::resources::ResourceRef::new(response["book"]["resourceId"].as_str().unwrap()).unwrap();
+    let raw = service.resource_store().read_raw_document(&reference).unwrap().to_string();
     assert!(!raw.contains("user-fixture") && !raw.contains("owner-fixture"));
     assert!(service
         .retry_pending_pdf_import(token, "user-fixture".into())

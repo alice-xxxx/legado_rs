@@ -13,7 +13,10 @@ pub async fn notify_reading(
     let chapter_index = progress["chapterIndex"].as_u64()
         .ok_or_else(|| "Reading chapterIndex is missing".to_owned())? as usize;
     let resource = service.save_progress(&book_id, progress).await?;
-    let _ = app.emit("book-updated", json!({ "requestId": 0, "resource": resource }));
+    let reading = &resource["readingUpdate"];
+    if reading.is_null() { return Ok(()); }
+    let _ = app.emit("reading-progress-updated", json!({ "bookId": book_id, "progress": reading["progress"], "read": reading["read"] }));
+    let prepare = refresh_media || reading["chapterChanged"].as_bool()==Some(true);
     if refresh_media {
         let book_ref = service.store.book_ref(&book_id).map_err(|error| error.to_string())?;
         let book = service.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;
@@ -43,6 +46,7 @@ pub async fn notify_reading(
             }
         }
     }
+    if !prepare { return Ok(()); }
     let service = service.inner().clone();
     let epoch = service.restore_epoch.load(std::sync::atomic::Ordering::Acquire);
     tokio::spawn(async move {

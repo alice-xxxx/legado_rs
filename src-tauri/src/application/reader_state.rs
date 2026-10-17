@@ -34,10 +34,12 @@ mod reading_notification_tests {
             source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":source_type}),
         }]).await.unwrap();
         service.store.bind_book_type("book-a", match source_type { 1 => "audio", 2 => "image", 4 => "video", _ => "text" }).await.unwrap();
-        let chapters: Vec<Value> = (0..5).map(|index| json!({"id":format!("chapter-{index}"),"index":index,"title":format!("Chapter {index}")})).collect();
-        let raw: Vec<Value> = (0..5).map(|index| json!({"url":format!("https://example.invalid/{index}"),"title":format!("Chapter {index}")})).collect();
+        // Media reuse cases exercise one chapter; the supported preload minimum is one.
+        let chapter_count = if source_type == 0 { 5 } else { 1 };
+        let chapters: Vec<Value> = (0..chapter_count).map(|index| json!({"id":format!("chapter-{index}"),"index":index,"title":format!("Chapter {index}")})).collect();
+        let raw: Vec<Value> = (0..chapter_count).map(|index| json!({"url":format!("https://example.invalid/{index}"),"title":format!("Chapter {index}")})).collect();
         service.store.write_json_ref(&service.store.book_ref("book-a").unwrap(), &json!({
-            "schemaVersion":1,"id":"book-a","title":"Book","sourceId":"source-a","chapterCount":5,"chapters":chapters
+            "schemaVersion":1,"id":"book-a","title":"Book","sourceId":"source-a","chapterCount":chapter_count,"chapters":chapters
         })).await.unwrap();
         service.write_internal_json(service.book_engine_path("book-a").unwrap(), &json!({
             "sourceId":"source-a","book":{"bookUrl":"https://example.invalid/book","name":"Book"},"chapters":raw
@@ -106,7 +108,7 @@ mod reading_notification_tests {
             book["chapters"][0]["resource"] = descriptor;
             Ok(book)
         }).await.unwrap();
-        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":1}})).await.unwrap();
         service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
         let published = std::sync::Mutex::new(Vec::new());
         let epoch = service.restore_epoch.load(Ordering::Acquire);
@@ -149,7 +151,7 @@ mod reading_notification_tests {
             book["chapters"][0]["resource"] = descriptor;
             Ok(book)
         }).await.unwrap();
-        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+        service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":1}})).await.unwrap();
         service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
         let epoch = service.restore_epoch.load(Ordering::Acquire);
         service.prepare_reading_chapters("book-a", 0, epoch, |_| {}).await.unwrap();
@@ -176,7 +178,7 @@ mod reading_notification_tests {
             assert_eq!(content["mediaType"], expected);
             assert!(content.get("text").is_none());
             assert_eq!(calls.load(Ordering::SeqCst), 2);
-            service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":0}})).await.unwrap();
+            service.store.write_json_ref(&service.store.settings_ref(), &json!({"reader":{"preloadCount":1}})).await.unwrap();
             service.save_progress("book-a", json!({"chapterIndex":0,"offset":0})).await.unwrap();
             let epoch = service.restore_epoch.load(Ordering::Acquire);
             service.prepare_reading_chapters("book-a", 0, epoch, |_| panic!("Ready media must be reused")).await.unwrap();
@@ -243,48 +245,14 @@ impl ApplicationService {
             "offset": offset,
             "updatedAtMs": updated_at_ms,
         });
-        let chapter_id_for_book = chapter_id.clone();
-        self.store
-            .update_json_ref(&book_ref, move |mut book| {
-                if book["progress"]["updatedAtMs"].as_u64().unwrap_or(0) > updated_at_ms {
-                    return Ok(book);
-                }
-                let chapter_count = book
-                    .get("chapterCount")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_default() as usize;
-                if chapter_index >= chapter_count {
-                    return Err("Progress chapterIndex is outside the book chapter list".into());
-                }
-                if let Some(chapter_id) = chapter_id_for_book.as_deref() {
-                    let belongs_to_book = book
-                        .get("chapters")
-                        .and_then(Value::as_array)
-                        .and_then(|chapters| chapters.get(chapter_index))
-                        .and_then(|chapter| chapter.get("id"))
-                        .and_then(Value::as_str)
-                        == Some(chapter_id);
-                    if !belongs_to_book {
-                        return Err("Progress chapterId does not match chapterIndex".into());
-                    }
-                }
-                if let Some(quality) = progress_summary["quality"].as_str() {
-                    if !book["chapters"][chapter_index]["sources"].as_array().is_some_and(|sources| sources.iter().any(|source| source["label"] == quality)) {
-                        return Err("Video quality does not belong to the chapter".into());
-                    }
-                }
-                if let Some(page_id) = progress_summary["pageId"].as_str() {
-                    if !book["chapters"][chapter_index]["pages"].as_array().is_some_and(|pages| pages.iter().any(|page| page["id"] == page_id)) {
-                        return Err("Progress image page does not belong to the chapter".into());
-                    }
-                }
-                if book["contentType"] == "image" && offset > 1_000_000 { return Err("Image position ratio is outside the page".into()); }
-                book["progress"] = progress_summary;
-                Ok(book)
-            })
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(self.resource_descriptor(&book_ref))
+        let db = self.store.database().clone();
+        let path = self.store.canonical_reference(&book_ref).map_err(|e|e.to_string())?.path().to_owned();
+        let kind = self.store.book_type(book_id).map_err(|e|e.to_string())?;
+        let saved = tokio::task::spawn_blocking(move || db.save_progress(&path,&kind,&progress_summary))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+        let mut descriptor = self.resource_descriptor(&book_ref);
+        descriptor["readingUpdate"] = saved.unwrap_or(Value::Null);
+        Ok(descriptor)
     }
 
     pub async fn reset_book_progress(&self, book_id: &str) -> Result<Value, String> {
@@ -296,41 +264,11 @@ impl ApplicationService {
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
 
-        // Keep the same source → book → resource-writer order used by catalog
-        // commits so a reset cannot deadlock with a concurrent source change.
-        let _sources = self.sources_lock.lock().await;
         let _book = self.book_lock(book_id).await;
-        let writer_guard = self
-            .store
-            .transaction_writer_guard()
-            .await
-            .map_err(|error| error.to_string())?;
-
-        let mut book = writer_guard
-            .read_json_ref(&book_ref)
-            .map_err(|_| format!("Book '{book_id}' is no longer available"))?;
-        if book.get("id").and_then(Value::as_str) != Some(book_id) {
-            return Err("Book resource ID does not match its catalog path".into());
-        }
-        book["progress"] = serde_json::to_value(ProgressSummary::default())
-            .map_err(|error| format!("Cannot encode reset progress: {error}"))?;
-        let replacements = vec![
-            writer_guard
-                .public_json_replacement(&book_ref, &book)
-                .map_err(|error| error.to_string())?,
-        ];
-        let transaction_root = writer_guard.data_root().to_path_buf();
-        let transaction_result = tokio::task::spawn_blocking(move || {
-            let transaction = crate::resource_transactions::FileTransaction::prepare(
-                &transaction_root,
-                "reset-book-progress",
-                replacements,
-                Vec::new(),
-                &writer_guard,
-            )?;
-            transaction.commit()
-        })
-        .await;
+        let database=self.store.database().clone();
+        let path=book_ref.path().to_owned();
+        let transaction_result=tokio::task::spawn_blocking(move ||database.reset_progress(&path)
+            .map_err(|error|crate::resource_transactions::TransactionError::new(error.to_string()))).await;
 
         let (commit_state, recovery_required, warning) = match transaction_result {
             Ok(Ok(())) => (
@@ -832,12 +770,12 @@ impl ApplicationService {
             reader.insert("backgroundImageSrc".into(), json!(reference.as_str()));
         }
         let background = document["reader"].get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
-        let mut previous_background = None;
         document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
         let _config = self.webdav_backup_config_gate.lock().await;
+        let previous_background = self.store.read_json_ref(&settings_ref).await.map_err(|e|e.to_string())?["reader"]
+            .get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
         self.store
-            .update_json_ref(&settings_ref, |current| {
-                previous_background = current["reader"].get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
+            .update_json_ref(&settings_ref, move |current| {
                 // This value is maintained by successful picker exports. Never
                 // accept a stale or client-provided copy from reader settings.
                 let last_backup_at_ms = current.get("lastBackupAtMs").cloned();

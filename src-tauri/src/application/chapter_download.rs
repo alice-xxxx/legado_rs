@@ -277,6 +277,7 @@ impl ApplicationService {
         if signal.borrow().cancelled || signal.borrow().paused {
             return Ok(false);
         }
+        let chapter_id = chapter_id.to_owned();
         self.store
             .update_json_ref(&book_ref, move |mut current| {
                 if current["bookInstanceId"] != before["bookInstanceId"]
@@ -289,7 +290,7 @@ impl ApplicationService {
                     .ok_or("Content has no chapters")?;
                 let target = chapters
                     .iter_mut()
-                    .find(|c| c["id"].as_str() == Some(chapter_id))
+                    .find(|c| c["id"].as_str() == Some(chapter_id.as_str()))
                     .ok_or("Chapter was removed")?;
                 if *target != chapter {
                     return Err("Chapter changed during download".into());

@@ -654,10 +654,7 @@ impl ApplicationService {
             } else { None };
             let _sources_lock = self.sources_lock.lock().await;
             let current_source = self
-                .read_sources()
-                .await?
-                .into_iter()
-                .find(|candidate| candidate.id == source_id)
+                .lookup_source(&source_id).await?
                 .ok_or_else(|| "Book source was removed while preparing a chapter".to_owned())?;
             if current_source.source != source.source
                 || self.source_revision(&source_id).await? != source_revision

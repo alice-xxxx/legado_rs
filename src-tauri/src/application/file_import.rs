@@ -560,13 +560,14 @@ impl ApplicationService {
         )
         .await?;
         let book = imported.book;
+        let shelf_book_id = book.id.clone();
         self.store
-            .update_json_ref(&self.store.shelf_ref(), |mut shelf| {
+            .update_json_ref(&self.store.shelf_ref(), move |mut shelf| {
                 let books = shelf["books"]
                     .as_array_mut()
                     .ok_or_else(|| "Content library has no books array".to_owned())?;
-                if !books.iter().any(|entry| entry["id"] == book.id) {
-                    books.push(json!({ "id": book.id, "groups": [] }));
+                if !books.iter().any(|entry| entry["id"] == shelf_book_id) {
+                    books.push(json!({ "id": shelf_book_id, "groups": [] }));
                 }
                 Ok(shelf)
             })

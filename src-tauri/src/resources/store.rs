@@ -28,12 +28,13 @@ const MAX_TTS_AUDIO_FILES: usize = 32;
 
 struct StoreInner {
     root: PathBuf,
-    update_lock: Arc<Mutex<()>>,
+    database: crate::database::Database,
+    asset_lock: Arc<Mutex<()>>,
     local_import_lock: Arc<Mutex<()>>,
     content_types: std::sync::RwLock<HashMap<String, String>>,
 }
 
-/// JSON-file storage for public app state and the resources consumed by the UI.
+/// SQLite state storage and filesystem assets consumed by the UI.
 /// Complete content documents include private engine state. The HTTP response
 /// is a filtered runtime view and never exposes that private state.
 #[derive(Clone)]
@@ -42,9 +43,7 @@ pub struct ResourceStore {
 }
 
 impl ResourceStore {
-    /// Open (or create) the public app-data root and its first JSON documents.
-    /// Existing documents are left untouched, including documents this version
-    /// does not understand.
+    /// Open the application database. Legacy JSON files are not imported.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ResourceError> {
         std::fs::create_dir_all(root.as_ref())
             .map_err(|error| ResourceError::new(format!("Cannot create resource root: {error}")))?;
@@ -54,8 +53,9 @@ impl ResourceStore {
         ensure_resource_writes_recovered(&root)?;
         let store = Self {
             inner: Arc::new(StoreInner {
+                database: crate::database::Database::open(&root)?,
                 root,
-                update_lock: Arc::new(Mutex::new(())),
+                asset_lock: Arc::new(Mutex::new(())),
                 local_import_lock: Arc::new(Mutex::new(())),
                 content_types: std::sync::RwLock::new(HashMap::new()),
             }),
@@ -73,20 +73,18 @@ impl ResourceStore {
                 crate::http_tts_config::empty_document(),
             ),
         ] {
-            let path = store.path_for(&resource)?;
-            if !path.exists() {
-                let bytes = serde_json::to_vec_pretty(&value).map_err(|error| {
-                    ResourceError::new(format!("Cannot encode initial JSON resource: {error}"))
-                })?;
-                atomic_replace(&path, &bytes).map_err(|error| {
-                    ResourceError::new(format!("Cannot initialize {}: {error}", resource.path()))
-                })?;
+            if !store.database().exists(resource.path())? {
+                store.database().write(resource.path(), &value)?;
             }
         }
         // Cache garbage collection is maintenance, not app-data recovery.
         // A locked, damaged or read-only orphan file must not prevent the
         // user from opening an otherwise valid library.
         Ok(store)
+    }
+
+    pub(crate) fn database(&self) -> &crate::database::Database {
+        &self.inner.database
     }
 
     pub fn root(&self) -> &Path {
@@ -97,13 +95,13 @@ impl ResourceStore {
         self.inner.local_import_lock.clone().lock_owned().await
     }
 
-    /// Acquire the same store-wide mutex used by all public resource writers.
-    /// The owned guard can move into a blocking transaction worker without
-    /// releasing the mutex between the caller's reads and the commit.
+    /// Coordinate immutable file publication and cache cleanup. SQLite state
+    /// updates use their own transactions and do not take this filesystem guard.
+    /// Callers retain the relevant book/chapter guard while preparing metadata.
     pub(crate) async fn transaction_writer_guard(
         &self,
     ) -> Result<ResourceStoreWriterGuard, ResourceError> {
-        let guard = Arc::clone(&self.inner.update_lock).lock_owned().await;
+        let guard = Arc::clone(&self.inner.asset_lock).lock_owned().await;
         ensure_resource_writes_recovered(&self.inner.root)?;
         Ok(ResourceStoreWriterGuard {
             store: self.clone(),
@@ -191,23 +189,24 @@ impl ResourceStore {
             let target = self.root().join("cache").join(kind).join(book_id);
             check_path_no_symlink(self.root(), &old, true)?;
             check_path_no_symlink(self.root(), &target, true)?;
-            if old.join(format!("{book_id}.json")).is_file() {
-                if target.exists() {
+            let old_path = format!("cache/{current}/{book_id}/{book_id}.json");
+            let new_path = format!("cache/{kind}/{book_id}/{book_id}.json");
+            if let Some(mut document) = self.database().read(&old_path)? {
+                if self.database().exists(&new_path)? {
                     return Err(ResourceError::new(
                         "Content already exists in the target type",
                     ));
                 }
-                std::fs::create_dir_all(target.parent().expect("content parent"))
-                    .map_err(|error| ResourceError::new(error.to_string()))?;
-                std::fs::rename(&old, &target)
-                    .map_err(|error| ResourceError::new(error.to_string()))?;
+                if old.is_dir() {
+                    std::fs::create_dir_all(target.parent().expect("parent"))?;
+                    if target.exists() {
+                        return Err(ResourceError::new(
+                            "Content assets already exist in the target type",
+                        ));
+                    }
+                    std::fs::rename(&old, &target)?;
+                }
                 if current == "text" && kind == "html" {
-                    let metadata = target.join(format!("{book_id}.json"));
-                    check_path_no_symlink(self.root(), &metadata, false)?;
-                    let mut document: Value = serde_json::from_slice(
-                        &std::fs::read(&metadata).map_err(|e| ResourceError::new(e.to_string()))?,
-                    )
-                    .map_err(|e| ResourceError::new(e.to_string()))?;
                     for chapter in document["chapters"].as_array_mut().into_iter().flatten() {
                         if let Some(name) = chapter["url"]
                             .as_str()
@@ -217,27 +216,27 @@ impl ResourceStore {
                             let from = target.join(&name);
                             check_path_no_symlink(self.root(), &from, true)?;
                             if from.is_file() {
-                                let text = std::fs::read_to_string(&from)
-                                    .map_err(|e| ResourceError::new(e.to_string()))?;
+                                let text = std::fs::read_to_string(&from)?;
                                 let name = format!("{}.html", name.trim_end_matches(".txt"));
-                                let html =
-                                    format!("<pre>{}</pre>", quick_xml::escape::escape(&text));
                                 let to = target.join(&name);
                                 check_path_no_symlink(self.root(), &to, true)?;
-                                atomic_replace(&to, html.as_bytes()).map_err(ResourceError::new)?;
+                                atomic_replace(
+                                    &to,
+                                    format!("<pre>{}</pre>", quick_xml::escape::escape(&text))
+                                        .as_bytes(),
+                                )
+                                .map_err(ResourceError::new)?;
                                 chapter["url"] = json!(name);
-                                std::fs::remove_file(from)
-                                    .map_err(|e| ResourceError::new(e.to_string()))?;
+                                std::fs::remove_file(from)?;
                             }
                         }
                     }
-                    atomic_replace(
-                        &metadata,
-                        &serde_json::to_vec(&document)
-                            .map_err(|e| ResourceError::new(e.to_string()))?,
-                    )
-                    .map_err(ResourceError::new)?;
                 }
+                self.database().transaction(|tx| {
+                    tx.execute("DELETE FROM documents WHERE path=?1", [&old_path])?;
+                    crate::database::write(tx, &new_path, &document)?;
+                    Ok(())
+                })?;
             }
         }
         self.inner
@@ -313,7 +312,7 @@ impl ResourceStore {
         let reference = self.asset_ref(book_id, asset_id)?;
         let root = self.inner.root.clone();
         let bytes = bytes.to_vec();
-        let _guard = self.inner.update_lock.lock().await;
+        let _guard = self.inner.asset_lock.lock().await;
         let write_path = self.path_for(&reference)?;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
@@ -344,7 +343,7 @@ impl ResourceStore {
         let path = self.path_for(&reference)?;
         let root = self.inner.root.clone();
         let bytes = bytes.to_vec();
-        let _guard = self.inner.update_lock.lock().await;
+        let _guard = self.inner.asset_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &path, true)?;
@@ -409,6 +408,11 @@ impl ResourceStore {
         &self,
         reference: &ResourceRef,
     ) -> Result<bool, ResourceError> {
+        if reference.path().ends_with(".json") {
+            return self
+                .database()
+                .exists(self.canonical_reference(reference)?.path());
+        }
         let path = self.path_for(reference)?;
         check_path_no_symlink(&self.inner.root, &path, true)?;
         match tokio::fs::symlink_metadata(&path).await {
@@ -425,24 +429,26 @@ impl ResourceStore {
     }
 
     pub async fn read_json_ref(&self, reference: &ResourceRef) -> Result<Value, ResourceError> {
-        let path = self.path_for(reference)?;
-        check_path_no_symlink(&self.inner.root, &path, false)?;
-        let bytes = tokio::fs::read(&path).await.map_err(|error| {
-            ResourceError::new(format!("Cannot read {}: {error}", reference.path()))
-        })?;
-        if !reference.path().ends_with(".json") {
-            let text =
-                String::from_utf8(bytes).map_err(|error| ResourceError::new(error.to_string()))?;
-            return Ok(if reference.path().ends_with(".html") {
-                json!({"kind": "richText", "markup": text})
-            } else {
-                json!({"kind": "text", "text": text})
-            });
+        if reference.path().ends_with(".json") {
+            let store = self.clone();
+            let reference = self.canonical_reference(reference)?;
+            return tokio::task::spawn_blocking(move || {
+                let value = store.database().read(reference.path())?.ok_or_else(|| {
+                    ResourceError::new(format!("Resource does not exist: {}", reference.path()))
+                })?;
+                store.document_view(&reference, value)
+            })
+            .await
+            .map_err(|error| ResourceError::new(error.to_string()))?;
         }
-        let value = serde_json::from_slice(&bytes).map_err(|error| {
-            ResourceError::new(format!("Cannot decode {}: {error}", reference.path()))
-        })?;
-        self.document_view(reference, value)
+        let path = self.path_for(reference)?;
+        check_path_no_symlink(self.root(), &path, false)?;
+        let text = tokio::fs::read_to_string(path).await?;
+        Ok(if reference.path().ends_with(".html") {
+            json!({"kind":"richText","markup":text})
+        } else {
+            json!({"kind":"text","text":text})
+        })
     }
 
     pub(crate) fn document_view(
@@ -465,14 +471,11 @@ impl ResourceStore {
         &self,
         reference: &ResourceRef,
     ) -> Result<Value, ResourceError> {
-        let path = self.path_for(reference)?;
-        check_path_no_symlink(self.root(), &path, true)?;
-        match std::fs::read(path) {
-            Ok(bytes) => serde_json::from_slice(&bytes)
-                .map_err(|error| ResourceError::new(error.to_string())),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(json!({})),
-            Err(error) => Err(ResourceError::new(error.to_string())),
-        }
+        let reference = self.canonical_reference(reference)?;
+        Ok(self
+            .database()
+            .read(reference.path())?
+            .unwrap_or_else(|| json!({})))
     }
 
     pub(crate) fn encode_document(
@@ -482,7 +485,7 @@ impl ResourceStore {
         state: Option<&Value>,
     ) -> Result<Value, ResourceError> {
         if reference.path() == super::content::LIBRARY_FILE {
-            return super::content::encode_library(value, self.root());
+            return super::content::encode_library(value, &self.database().connect()?);
         }
         if let Some((_, id, _)) = super::content::content_path(reference.path())
             .filter(|_| super::content::is_content_document(reference.path()))
@@ -497,83 +500,47 @@ impl ResourceStore {
         Ok(value.clone())
     }
 
-    fn refresh_library_preview(
+    fn refresh_database_preview(
         &self,
+        tx: &rusqlite::Connection,
         reference: &ResourceRef,
-        document: &Value,
+        _document: &Value,
     ) -> Result<(), ResourceError> {
         if !super::content::is_content_document(reference.path()) {
             return Ok(());
         }
-        let id = document["id"]
-            .as_str()
-            .ok_or_else(|| ResourceError::new("Content has no ID"))?;
-        let kind = self.book_type(id)?;
-        let mut library = self.read_raw_document(&self.shelf_ref())?;
-        let mut changed = false;
-        for ty in super::content::CONTENT_TYPES {
-            if let Some(items) = library.get_mut(ty).and_then(Value::as_array_mut) {
-                if let Some(index) = items.iter().position(|item| item["id"] == id) {
-                    items.remove(index);
-                    if ty == kind {
-                        items.insert(index, super::content::preview(document, &kind));
-                    }
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let already_present = library[kind.as_str()]
-                .as_array()
-                .is_some_and(|items| items.iter().any(|item| item["id"] == id));
-            if !already_present {
-                if !library[kind.as_str()].is_array() {
-                    library[kind.as_str()] = json!([]);
-                }
-                library[kind.as_str()]
-                    .as_array_mut()
-                    .expect("array")
-                    .push(super::content::preview(document, &kind));
-            }
-            let bytes = serde_json::to_vec(&library)
-                .map_err(|error| ResourceError::new(error.to_string()))?;
-            atomic_replace(&self.path_for(&self.shelf_ref())?, &bytes)
-                .map_err(|error| ResourceError::new(error.to_string()))?;
-        }
+        let (kind, id, _) = super::content::content_path(reference.path()).expect("content path");
+        let (_, preview) = crate::database::book_preview(tx, id)?;
+        tx.execute(
+            "UPDATE records SET value=?1 WHERE path=?2 AND field=?3 AND item_id=?4 AND value!=?1",
+            rusqlite::params![preview.to_string(), super::content::LIBRARY_FILE, kind, id],
+        )?;
         Ok(())
     }
 
-    /// Read mutable app-owned JSON state and atomically initialize a missing
-    /// or malformed file. Callers must use this only for state with a known
-    /// default; resource payloads keep strict reads.
+    /// Read app-owned state, initializing a missing database document from
+    /// the caller's default. Database corruption remains an explicit error.
     pub async fn read_json_ref_or_default(
         &self,
         reference: &ResourceRef,
         default: Value,
     ) -> Result<Value, ResourceError> {
-        let path = self.path_for(reference)?;
-        check_path_no_symlink(&self.inner.root, &path, true)?;
-        let bytes = match tokio::fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return self
-                    .update_json_ref_or_default(reference, default, |value| Ok(value))
-                    .await;
-            }
-            Err(error) => {
-                return Err(ResourceError::new(format!(
-                    "Cannot read {}: {error}",
-                    reference.path()
-                )));
-            }
-        };
-        match serde_json::from_slice(&bytes) {
-            Ok(value) => self.document_view(reference, value),
-            Err(_) => {
-                self.update_json_ref_or_default(reference, default, |value| Ok(value))
-                    .await
-            }
-        }
+        let store = self.clone();
+        let reference = self.canonical_reference(reference)?;
+        tokio::task::spawn_blocking(move || {
+            let value = store.database().transaction(|tx| {
+                match crate::database::read(tx, reference.path())? {
+                    Some(value) => Ok(value),
+                    None => {
+                        crate::database::write(tx, reference.path(), &default)?;
+                        Ok(default)
+                    }
+                }
+            })?;
+            store.document_view(&reference, value)
+        })
+        .await
+        .map_err(|error| ResourceError::new(error.to_string()))?
     }
 
     /// Atomically replace a public JSON document. Stable references embedded in
@@ -600,43 +567,39 @@ impl ResourceStore {
         if reference.path() != "sources.json" {
             validate_embedded_refs(value)?;
         }
-        let _guard = self.inner.update_lock.lock().await;
-        let path = self.path_for(reference)?;
-        let encoded = self.encode_document(reference, value, None)?;
-        let bytes = serde_json::to_vec(&encoded)
-            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
-        let root = self.inner.root.clone();
-        let write_path = path.clone();
+        let store = self.clone();
+        let reference = self.canonical_reference(reference)?;
+        let value = value.clone();
         tokio::task::spawn_blocking(move || {
-            ensure_resource_writes_recovered(&root)?;
-            check_path_no_symlink(&root, &write_path, true)?;
-            atomic_replace(&write_path, &bytes).map_err(|error| {
-                ResourceError::new(format!("Cannot atomically update JSON resource: {error}"))
+            store.database().transaction(|tx| {
+                let encoded = if reference.path() == super::content::LIBRARY_FILE {
+                    super::content::encode_library(&value, tx)?
+                } else {
+                    store.encode_document(&reference, &value, None)?
+                };
+                crate::database::write(tx, reference.path(), &encoded)?;
+                store.refresh_database_preview(tx, &reference, &encoded)
             })
         })
         .await
-        .map_err(|error| ResourceError::new(format!("JSON storage worker failed: {error}")))??;
-        self.refresh_library_preview(reference, &encoded)?;
-        Ok(())
+        .map_err(|error| ResourceError::new(error.to_string()))?
     }
 
-    /// Serialize a concurrent read/modify/write operation under the same
-    /// store lock used for all persistent JSON documents.
+    /// Read and modify state in one SQLite transaction. Filesystem operations
+    /// use a separate guard; database updates do not acquire that mutex.
     pub async fn update_json_ref<F>(
         &self,
         reference: &ResourceRef,
         update: F,
     ) -> Result<Value, ResourceError>
     where
-        F: FnOnce(Value) -> Result<Value, String> + Send,
+        F: FnOnce(Value) -> Result<Value, String> + Send + 'static,
     {
         self.update_json_ref_inner(reference, None, update).await
     }
 
-    /// Update mutable app-owned state, treating a missing or malformed JSON
-    /// file as the supplied default. The next successful update atomically
-    /// replaces the damaged file. Use only when the caller owns a default
-    /// document; immutable resources and transaction metadata remain strict.
+    /// Update app-owned state in a transaction, initializing a missing
+    /// document from the supplied default.
     pub async fn update_json_ref_or_default<F>(
         &self,
         reference: &ResourceRef,
@@ -644,7 +607,7 @@ impl ResourceStore {
         update: F,
     ) -> Result<Value, ResourceError>
     where
-        F: FnOnce(Value) -> Result<Value, String> + Send,
+        F: FnOnce(Value) -> Result<Value, String> + Send + 'static,
     {
         self.update_json_ref_inner(reference, Some(default), update)
             .await
@@ -657,59 +620,34 @@ impl ResourceStore {
         update: F,
     ) -> Result<Value, ResourceError>
     where
-        F: FnOnce(Value) -> Result<Value, String> + Send,
+        F: FnOnce(Value) -> Result<Value, String> + Send + 'static,
     {
         if !reference.is_local() || !reference.path().ends_with(".json") {
             return Err(ResourceError::new(
                 "JSON update requires a local .json resource",
             ));
         }
-        let _guard = self.inner.update_lock.lock().await;
-        let path = self.path_for(reference)?;
-        ensure_resource_writes_recovered(&self.inner.root)?;
-        check_path_no_symlink(&self.inner.root, &path, true)?;
-        let current = match tokio::fs::read(&path).await {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(value) => value,
-                Err(error) => match &default {
-                    Some(default) => default.clone(),
-                    None => {
-                        return Err(ResourceError::new(format!(
-                            "Cannot decode {}: {error}",
-                            reference.path()
-                        )));
-                    }
-                },
-            },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                default.unwrap_or(Value::Null)
-            }
-            Err(error) => {
-                return Err(ResourceError::new(format!(
-                    "Cannot read {}: {error}",
-                    reference.path()
-                )));
-            }
-        };
-        let current = self.document_view(reference, current)?;
-        let updated = update(current).map_err(ResourceError::new)?;
-        validate_embedded_refs(&updated)?;
-        let encoded = self.encode_document(reference, &updated, None)?;
-        let bytes = serde_json::to_vec(&encoded)
-            .map_err(|error| ResourceError::new(format!("Cannot encode JSON: {error}")))?;
-        let root = self.inner.root.clone();
-        let write_path = path;
+        let store = self.clone();
+        let reference = self.canonical_reference(reference)?;
         tokio::task::spawn_blocking(move || {
-            ensure_resource_writes_recovered(&root)?;
-            check_path_no_symlink(&root, &write_path, true)?;
-            atomic_replace(&write_path, &bytes).map_err(|error| {
-                ResourceError::new(format!("Cannot atomically update JSON resource: {error}"))
+            store.database().transaction(|tx| {
+                let current = crate::database::read(tx, reference.path())?
+                    .unwrap_or_else(|| default.unwrap_or(Value::Null));
+                let current = store.document_view(&reference, current)?;
+                let updated = update(current).map_err(ResourceError::new)?;
+                validate_embedded_refs(&updated)?;
+                let encoded = if reference.path() == super::content::LIBRARY_FILE {
+                    super::content::encode_library(&updated, tx)?
+                } else {
+                    store.encode_document(&reference, &updated, None)?
+                };
+                crate::database::write(tx, reference.path(), &encoded)?;
+                store.refresh_database_preview(tx, &reference, &encoded)?;
+                Ok(updated)
             })
         })
         .await
-        .map_err(|error| ResourceError::new(format!("JSON storage worker failed: {error}")))??;
-        self.refresh_library_preview(reference, &encoded)?;
-        Ok(updated)
+        .map_err(|error| ResourceError::new(error.to_string()))?
     }
 
     /// Serialize and atomically write a typed JSON document at a stable public ref.
@@ -746,17 +684,19 @@ impl ResourceStore {
         view: &Value,
         state: &Value,
     ) -> Result<(), ResourceError> {
-        let writer = self.transaction_writer_guard().await?;
+        let store = self.clone();
         let reference = self.book_ref(book_id)?;
-        let encoded = self.encode_document(&reference, view, Some(state))?;
-        let bytes =
-            serde_json::to_vec(&encoded).map_err(|error| ResourceError::new(error.to_string()))?;
-        let path = self.path_for(&reference)?;
-        check_path_no_symlink(self.root(), &path, true)?;
-        atomic_replace(&path, &bytes).map_err(|error| ResourceError::new(error.to_string()))?;
-        self.refresh_library_preview(&reference, &encoded)?;
-        drop(writer);
-        Ok(())
+        let view = view.clone();
+        let state = state.clone();
+        tokio::task::spawn_blocking(move || {
+            store.database().transaction(|tx| {
+                let encoded = store.encode_document(&reference, &view, Some(&state))?;
+                crate::database::write(tx, reference.path(), &encoded)?;
+                store.refresh_database_preview(tx, &reference, &encoded)
+            })
+        })
+        .await
+        .map_err(|error| ResourceError::new(error.to_string()))?
     }
 
     /// Store engine-processed plain text as data. Rendering belongs to Vue.
@@ -1118,7 +1058,7 @@ impl ResourceStore {
     ) -> Result<(), ResourceError> {
         let path = self.path_for(reference)?;
         let bytes = html.as_bytes().to_vec();
-        let _guard = self.inner.update_lock.lock().await;
+        let _guard = self.inner.asset_lock.lock().await;
         let root = self.inner.root.clone();
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
@@ -1166,7 +1106,7 @@ impl ResourceStore {
         let target = book_dir.join(format!("original.{extension}"));
         let root = self.inner.root.clone();
         let source_path = source_path.to_path_buf();
-        let _guard = self.inner.update_lock.lock().await;
+        let _guard = self.inner.asset_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
             check_path_no_symlink(&root, &book_dir, true)?;
@@ -1207,9 +1147,14 @@ impl ResourceStore {
             .map(|kind| self.inner.root.join("cache").join(kind).join(book_id))
             .collect::<Vec<_>>();
         let root = self.inner.root.clone();
-        let _guard = self.inner.update_lock.lock().await;
+        let database = self.database().clone();
+        let book_id = book_id.to_owned();
+        let _guard = self.inner.asset_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
+            for kind in super::content::CONTENT_TYPES {
+                database.delete_prefix(&format!("cache/{kind}/{book_id}/"))?;
+            }
             for book_dir in directories {
                 check_path_no_symlink(&root, &book_dir, true)?;
                 match std::fs::remove_dir_all(&book_dir) {
@@ -1236,12 +1181,19 @@ impl ResourceStore {
         validate_id(source_id)?;
         let rss_book_id = format!("rss-{source_id}");
         validate_id(&rss_book_id)?;
-        let book_dir = self.inner.root.join("cache").join("html").join(rss_book_id);
+        let book_dir = self
+            .inner
+            .root
+            .join("cache")
+            .join("html")
+            .join(&rss_book_id);
         let directories = [book_dir];
         let root = self.inner.root.clone();
-        let _guard = self.inner.update_lock.lock().await;
+        let database = self.database().clone();
+        let _guard = self.inner.asset_lock.lock().await;
         tokio::task::spawn_blocking(move || {
             ensure_resource_writes_recovered(&root)?;
+            database.delete_prefix(&format!("cache/html/{rss_book_id}/"))?;
             for directory in directories {
                 check_path_no_symlink(&root, &directory, true)?;
                 match std::fs::remove_dir_all(&directory) {
@@ -1294,8 +1246,8 @@ impl ResourceStore {
     }
 }
 
-/// An owned permit for the store-wide writer mutex used by ordinary resource
-/// writes. This is the adapter held for the full file-transaction lifetime.
+/// An owned filesystem permit retained while publishing or removing assets.
+/// Metadata writes are committed together by SQLite.
 pub(crate) struct ResourceStoreWriterGuard {
     store: ResourceStore,
     _guard: OwnedMutexGuard<()>,
@@ -1313,6 +1265,12 @@ impl ResourceStoreWriterGuard {
     }
 
     pub(crate) fn asset_exists(&self, reference: &ResourceRef) -> Result<bool, ResourceError> {
+        if reference.path().ends_with(".json") {
+            return self
+                .store
+                .database()
+                .exists(self.store.canonical_reference(reference)?.path());
+        }
         let path = self.store.path_for(reference)?;
         check_path_no_symlink(self.store.root(), &path, true)?;
         match std::fs::symlink_metadata(&path) {
@@ -1350,7 +1308,7 @@ impl ResourceStoreWriterGuard {
 
     pub(crate) fn read_json_ref(&self, reference: &ResourceRef) -> Result<Value, ResourceError> {
         let path = self.store.path_for(reference)?;
-        check_path_no_symlink(self.store.root(), &path, false)?;
+        check_path_no_symlink(self.store.root(), &path, true)?;
         let value = self.store.read_raw_document(reference)?;
         self.store.document_view(reference, value)
     }

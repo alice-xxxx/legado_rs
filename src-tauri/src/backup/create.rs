@@ -24,8 +24,9 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub(super) struct SnapshotFile {
-    archive_path: String,
-    source_path: PathBuf,
+    pub(super) archive_path: String,
+    pub(super) source_path: PathBuf,
+    inline_bytes: Option<Vec<u8>>,
     size: u64,
     sha256: String,
 }
@@ -104,8 +105,13 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
             writer.write_all(&manifest_bytes)?;
             for entry in &files {
                 writer.start_file(&entry.archive_path, options)?;
-                let mut input = File::open(&entry.source_path)?;
-                let copied = std::io::copy(&mut input, &mut writer)?;
+                let copied = if let Some(bytes) = &entry.inline_bytes {
+                    writer.write_all(bytes)?;
+                    bytes.len() as u64
+                } else {
+                    let mut input = File::open(&entry.source_path)?;
+                    std::io::copy(&mut input, &mut writer)?
+                };
                 if copied != entry.size {
                     return Err(std::io::Error::other(
                         "Application data changed while backup was being written",
@@ -121,6 +127,7 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
 }
 
 pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
+    if root.join(crate::database::FILE_NAME).is_file() { return collect_database_snapshot(root); }
     let mut files = Vec::new();
     for required in [crate::resources::content::LIBRARY_FILE, "settings.json", "http-tts.json", "history.json"] {
         let path = root.join(required);
@@ -246,6 +253,7 @@ fn collect_tree(
             }
             collect_tree(root, &path, &archive_path, files)?;
         } else if metadata.is_file() {
+            if root.join(crate::database::FILE_NAME).is_file() && archive_path.ends_with(".json") { continue; }
             add_snapshot_file(files, root, &path, archive_path)?;
         } else {
             return Err(format!(
@@ -279,6 +287,7 @@ fn add_snapshot_file(
     files.push(SnapshotFile {
         archive_path,
         source_path: path.to_path_buf(),
+        inline_bytes: None,
         size,
         sha256,
     });
@@ -307,7 +316,7 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
 
 pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
     for file in files {
-        let bytes = fs::read(&file.source_path).map_err(|error| {
+        let bytes = file.inline_bytes.clone().map(Ok).unwrap_or_else(||fs::read(&file.source_path)).map_err(|error| {
             format!("Cannot read {} for validation: {error}", file.archive_path)
         })?;
         match file.archive_path.as_str() {
@@ -497,5 +506,43 @@ pub(super) fn validate_archive_path(path: &str) -> Result<(), String> {
     {
         return Err(format!("Backup contains an unsafe path: {path:?}"));
     }
+    Ok(())
+}
+
+// JSON is an archive interchange format. Runtime state is read from a single
+// database snapshot, including WAL commits; the live database file is not copied.
+fn collect_database_snapshot(root: &Path) -> Result<Vec<SnapshotFile>,String> {
+    let db = crate::database::Database::at(root);
+    let mut connection = db.connect().map_err(|e|e.to_string())?;
+    let tx = connection.transaction().map_err(|e|e.to_string())?;
+    let mut files = Vec::new();
+    let mut stmt = tx.prepare("SELECT path FROM documents WHERE owner_path IS NULL ORDER BY path").map_err(|e|e.to_string())?;
+    let paths = stmt.query_map([],|row|row.get::<_,String>(0)).map_err(|e|e.to_string())?
+        .collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
+    drop(stmt);
+    for path in paths {
+        if !is_allowed_snapshot_path(&path) { continue; }
+        let value = crate::database::read(&tx,&path).map_err(|e|e.to_string())?.ok_or("Snapshot document disappeared")?;
+        add_inline_snapshot(&mut files,path,&value)?;
+    }
+    for namespace in BACKED_SOURCE_STORAGE {
+        let mut stmt = tx.prepare("SELECT key,value,expires_at_ms FROM source_kv WHERE namespace=?1 ORDER BY key").map_err(|e|e.to_string())?;
+        let rows = stmt.query_map([namespace],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?))).map_err(|e|e.to_string())?;
+        let mut entries = serde_json::Map::new();
+        for row in rows { let (key,value,expiry)=row.map_err(|e|e.to_string())?; entries.insert(key,serde_json::json!({"value":value,"expiresAtMs":expiry})); }
+        add_inline_snapshot(&mut files,format!("source-engine/storage/{namespace}.json"),&serde_json::json!({"entries":entries}))?;
+    }
+    tx.commit().map_err(|e|e.to_string())?;
+    for required in [crate::resources::content::LIBRARY_FILE,"settings.json","http-tts.json","history.json"] {
+        if !files.iter().any(|file|file.archive_path==required) { return Err(format!("Required app data is missing: {required}")); }
+    }
+    collect_tree(root,&root.join("cache"),"cache",&mut files)?;
+    files.sort_by(|left,right|left.archive_path.cmp(&right.archive_path));
+    Ok(files)
+}
+
+fn add_inline_snapshot(files: &mut Vec<SnapshotFile>,archive_path: String,value: &Value) -> Result<(),String> {
+    let bytes=serde_json::to_vec(value).map_err(|e|e.to_string())?;
+    files.push(SnapshotFile { archive_path,source_path:PathBuf::new(),size:bytes.len() as u64,sha256:hex_digest(&Sha256::digest(&bytes)),inline_bytes:Some(bytes) });
     Ok(())
 }

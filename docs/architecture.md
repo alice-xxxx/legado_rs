@@ -29,32 +29,32 @@ Android 业务数据位于应用私有目录的 `files/legado/`，其他平台�
 
 | 文件或目录 | 内容 |
 |---|---|
-| `settings.json` | 应用、阅读器、主页和 WebDAV 配置。 |
-| `content-library.json` | 内容库预览、成员和分组。 |
-| `history.json` | 阅读会话、统计、搜索历史和书签。 |
-| `sources.json` | 完整书源定义。 |
-| `replacement-rules.json`、`txt-toc-rules.json`、`http-tts.json` | 显示替换、TXT 目录识别、HTTP TTS 配置。 |
-| `tasks.json`、`rss-state.json` | 持久化任务与 RSS 状态。 |
-| `cache/{类型}/{id}/` | 完整内容 JSON、正文、资源和导入原文件。 |
-| `source-engine/` | 引擎数据、登录状态和发现分类映射。 |
-| `transactions/` | 多文件写入的恢复日志。 |
+| `app.sqlite3` | 设置、书源、内容资料与章节索引、进度、内容库、历史、书签、规则、任务、RSS、发现分类和引擎键值数据。 |
+| `app.sqlite3-wal`、`app.sqlite3-shm` | SQLite 写入日志和共享内存文件，由 SQLite 管理。 |
+| `cache/{类型}/{id}/` | 正文、图片、媒体、封面和导入原文件。 |
+| `source-engine/` | 引擎运行时文件。 |
+
+应用使用随程序编译的 SQLite。`documents` 保存资源身份，`fields` 保存字段和结构，`records` 保存有序章节、书源和其他集合条目；结构性嵌套对象继续拆分，单个书源或章节的引擎载荷保留在各自记录中。内容 ID、条目 ID 和顺序有索引，`source_kv` 按命名空间和键查询并检查过期时间。
+
+进度、媒体映射、显示覆盖和进度重置使用独立 SQL 更新；修改单个书源仅提交变更记录。普通数据库更新不获取文件写锁。SQLite 事务负责数据库一致性，章节获取、任务状态和文件资源发布仍保留必要的同步。
+
+旧 JSON 数据不自动迁移，也不作为运行时回退数据。`resource://...json` 继续作为接口地址，HTTP 按需生成 JSON。备份在同一数据库快照内导出 JSON 和资源，显式恢复时将校验后的归档写入数据库，不直接复制正在使用的数据库文件。
 
 ### 内容库与缓存
 
 ```text
 app-data/
-├─ content-library.json
+├─ app.sqlite3
 └─ cache/
    └─ {text|html|image|audio|video|pdf}/
       └─ {id}/
-         ├─ {id}.json
          ├─ original.*
          └─ 正文、封面和媒体资源
 ```
 
-内容 ID 标识一份缓存，不按书名共用目录。`{id}.json` 保存完整资料、目录、进度及引擎状态，目录内资源平铺；TXT/HTML 正文文件名由章节与内容哈希生成。
+内容 ID 标识一份缓存，不按书名共用目录。资料、目录、进度及引擎状态保存在数据库中，目录内资源平铺；TXT/HTML 正文文件名由章节与内容哈希生成。
 
-`content-library.json` 按内容类型保存预览数组，分组使用 `{name, id: [内容ID]}`。预览包含标题、作者、封面、目录总数、最新标题和阅读摘要；`readAt`、`updatedAt` 使用秒。内容库成员由预览列表决定。
+内容库接口 `content-library.json` 按内容类型返回预览数组，分组使用 `{name, id: [内容ID]}`。预览包含标题、作者、封面、目录总数、最新标题和阅读摘要；`readAt`、`updatedAt` 使用秒。内容库成员由预览列表决定。
 
 加入内容库时提取预览，更新完整资料时仅刷新已存在的预览。移出内容库或删除分组保留缓存，不在启动时按内容库成员清理缓存。普通详情与阅读入口不自动上架，本地导入完成后自动上架。
 
@@ -72,7 +72,7 @@ app-data/
 
 ### 阅读进度
 
-阅读位置通过 `notify_reading` 保存，准备的章节通过 `book-updated` 发布。磁盘进度包含 `updatedAtMs`，位置按类型记录：
+阅读位置通过 `notify_reading` 保存，`reading-progress-updated` 增量更新前端进度；仅切换章节或显式刷新时触发预加载，准备的章节通过 `book-updated` 发布。数据库进度包含 `updatedAtMs`，位置按类型记录：
 
 | 类型 | 位置 |
 |---|---|
@@ -87,9 +87,9 @@ app-data/
 
 `src/main.ts` 初始化 `src/features/` 下的共享状态：设置由 `settingsStore.ts` 管理，历史和书签由 `historyStore.ts` 管理，规则和 HTTP TTS 由 `configurationStores.ts` 管理。内容库使用 `contentLibraryState.ts`，书架模块提供派生视图；`sourcesStore.ts` 和 `tasksStore.ts` 分别管理书源与任务。
 
-详情与阅读共用 `bookDetailState.ts` 的 `openedBook` 和轻量 `bookPreviews`。完整资料按需加载：先调用 `get_book` 获取描述符，再读取资源。
+详情与阅读共用 `bookDetailState.ts` 的 `openedBook` 和轻量 `bookPreviews`。列表由 `get_book_preview` 查询元数据和索引，不读取完整目录。完整资料按需加载：先调用 `get_book` 获取描述符，再读取资源。
 
-Vue 修改共享状态或提交编辑字段，Rust 持久化并通知回读。编辑书籍只提交显示覆盖字段；完整书源规则仅保存在编辑草稿中。内容库排序保存在 WebView 的 localStorage，分组和成员写入 `content-library.json`。换源时替换已有成员的预览，非成员只切换当前内容。
+Vue 修改共享状态或提交编辑字段，Rust 持久化并通知回读。编辑书籍只提交显示覆盖字段；完整书源规则仅保存在编辑草稿中。内容库排序保存在 WebView 的 localStorage，分组和成员写入数据库。换源时替换已有成员的预览，非成员只切换当前内容。
 
 ## 本地导入
 
@@ -98,7 +98,7 @@ Rust 解析并持久化，Vue 展示缓存。导入按内容、格式和解析�
 - **TXT**：缓存为 `text`，支持 UTF-8、带 BOM 的 UTF-16、GBK 和显式字符集。使用启用的目录规则，无配置时使用内置识别；无匹配或全部禁用时按正文分段。标题不重复写入正文。
 - **EPUB**：缓存为 `html`，读取 EPUB 3 导航或 EPUB 2 NCX，按 spine 与片段边界分章，目录不可用时回退到 spine。提取元数据并重写本地资源链接；使用阅读设置，段落默认首行缩进两字。
 - **CBZ**：缓存为 `image`，图片自然排序，已有 WebP 校验后复用，其他格式转为无损 WebP。存在 ComicInfo.xml 时读取元数据。
-- **PDF**：缓存为 `pdf`，保留原文件和页数，运行时生成页索引。加密文件通过临时令牌重试密码，密码不写入 JSON。
+- **PDF**：缓存为 `pdf`，保留原文件和页数，运行时生成页索引。加密文件通过临时令牌重试密码，密码不持久化。
 
 入口为 `src-tauri/src/books/local_books.rs`、`src-tauri/src/application/file_import.rs` 和 `src/features/books/useLocalBookImport.ts`。
 
