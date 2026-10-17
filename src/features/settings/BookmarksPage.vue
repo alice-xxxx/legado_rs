@@ -274,6 +274,7 @@ onBeforeUnmount(() => {
     <BackButton label="返回我的" @click="returnToSettings" />
     <div class="history-heading"><strong>书签</strong></div>
     <button v-if="bookmarks.length" type="button" class="record-icon-button"
+      aria-label="搜索书签"
       :disabled="mutationBlocked || loading || bookmarkDeleteBusy" @click="closeBookmarkSearch"><PrototypeIcon name="search"/></button>
     <span v-else></span>
   </header>

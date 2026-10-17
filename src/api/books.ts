@@ -20,8 +20,11 @@ export const importProtectedPdf = (importToken: string, password: string) =>
 export const cancelPendingPdfImport = (importToken: string) =>
   command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
 
-export const prepareSearchResultBook = (resultId: string) =>
-  command<{ book: ResourceDescriptor }>("prepare_search_result_book", { resultId });
+export const prepareSearchResultBook = (resultId: string, requestRevision?: number) =>
+  command<{ book: ResourceDescriptor }>("prepare_search_result_book", { resultId, requestRevision });
+
+export const cancelBookPreparation = (requestRevision: number) =>
+  command<void>("cancel_book_preparation", { requestRevision });
 
 export const prepareAlternativeBook = (bookId: string, alternativeIndex: number, sourceId: string) =>
   command<{ book: ResourceDescriptor }>("prepare_alternative_book", { bookId, alternativeIndex, sourceId });
@@ -52,5 +55,5 @@ export const getChapterCacheUsage = () => command<ChapterCacheUsage>("get_chapte
 
 
 /** Progress arrives as a small delta; prepared resources use book-updated. */
-export const notifyReading = (bookId: string, progress: ReadingProgress, refreshMedia = false) =>
-  command<void>("notify_reading", { bookId, progress, refreshMedia });
+export const notifyReading = (bookId: string, progress: ReadingProgress, refreshMedia = false, prepareCurrent = false) =>
+  command<void>("notify_reading", { bookId, progress, refreshMedia, prepareCurrent });

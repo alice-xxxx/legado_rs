@@ -256,6 +256,35 @@ button:disabled {
   opacity: 0.48;
 }
 
+button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 3px;
+}
+.app-dialog-open { overflow: hidden; }
+.empty-state-glyph { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 4px; border-radius: 20px; color: var(--app-accent-ink); background: var(--app-accent-soft); }
+.empty-state-glyph .prototype-icon { width: 28px; height: 28px; }
+.page-empty-state > p { max-width: 30em; margin: 0; line-height: 1.7; }
+.button, .back-button, .rail-link, .mobile-links button, .settings-menu-row, .managed-list-row__main, .search-result-open, .book-detail-icon-button {
+  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease, transform 100ms ease;
+}
+.button:enabled:active, .back-button:enabled:active, .book-detail-icon-button:enabled:active, .search-result-open:enabled:active { transform: scale(.97); }
+.settings-menu-row:enabled:active, .managed-list-row__main:enabled:active { background: var(--app-panel-soft); }
+.modal-backdrop, .overlay-backdrop { animation: app-scrim-in 140ms ease both; overscroll-behavior: contain; }
+.modal-backdrop > :first-child, .overlay-backdrop > :first-child,
+.reader-directory-panel, .reader-settings-popover { animation: app-panel-in 180ms cubic-bezier(.2,.8,.2,1) both; }
+@keyframes app-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes app-panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@media (pointer: coarse) {
+  .button.small, .text-button, .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-height: 44px; }
+  .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-width: 44px; }
+  .reader-tool-button, .reader-directory-header > button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
 .button {
   display: inline-flex;
   min-height: var(--ui-control-height);

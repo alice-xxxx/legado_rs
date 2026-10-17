@@ -382,19 +382,23 @@ function hasTaskDetails(task: AppTask): boolean {
           </time>
           <div class="task-actions">
             <button v-if="task.status === 'running' || task.status === 'queued'"
+              aria-label="暂停任务"
               class="task-primary-action" type="button" :disabled="mutationLocked || taskManagementBusy"
 @click="command('pause',task.id)">
               <PrototypeIcon name="pause"/>
             </button>
             <button v-else-if="(task.status === 'paused' || task.status === 'interrupted') && canResume(task)"
+              aria-label="继续任务"
               class="task-primary-action" type="button" :disabled="mutationLocked || taskManagementBusy"
 @click="command('resume',task.id)">
               <PrototypeIcon name="play"/>
             </button>
             <button v-else-if="canRetry(task)" class="task-primary-action" type="button"
+              aria-label="重试任务"
               :disabled="retryDisabled(task) || clearBusy"
               @click="retry(task.id)"><PrototypeIcon name="refresh"/></button>
             <button v-else-if="hasTaskDetails(task)" class="task-primary-action" type="button"
+              aria-label="查看任务详情" :aria-expanded="expandedTaskId === task.id"
 
               @click="toggleTaskDetails(task.id)"><PrototypeIcon name="more"/></button>
           </div>

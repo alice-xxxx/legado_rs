@@ -156,11 +156,11 @@ function getReaderCurrentOffset(): number {
   return readerCurrentOffset.value;
 }
 
-function notifyCurrentReading(refresh = false): Promise<void> {
+function notifyCurrentReading(refresh = false, prepareCurrent = false): Promise<void> {
   const book = openedBook.value;
   if (!book) return Promise.resolve();
   return notifyReading(book.id, { chapterId: currentChapter.value?.id ?? null,
-    chapterIndex: readingChapterIndex.value, ...currentReaderPosition(), updatedAtMs: Date.now() }, refresh);
+    chapterIndex: readingChapterIndex.value, ...currentReaderPosition(), updatedAtMs: Date.now() }, refresh, prepareCurrent);
 }
 
 function selectedReaderText(): string {

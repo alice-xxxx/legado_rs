@@ -302,6 +302,7 @@ pub fn run() {
         application::resume_task,
         application::cancel_task,
         application::prepare_search_result_book,
+        application::cancel_book_preparation,
         application::prepare_alternative_book,
             application::prepare_book_from_url,
         application::change_book_source,

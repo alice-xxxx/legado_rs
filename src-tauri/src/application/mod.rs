@@ -141,6 +141,8 @@ pub struct ApplicationService {
     source_revisions: Arc<tokio::sync::Mutex<HashMap<String, u64>>>,
     tasks: Arc<tokio::sync::Mutex<TaskRegistry>>,
     task_slots: Arc<tokio::sync::Semaphore>,
+    search_slots: Arc<tokio::sync::Semaphore>,
+    detail_preparation: Arc<std::sync::Mutex<(u64, Option<tokio_util::sync::CancellationToken>)>>,
     book_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
     task_recovery_notifier: Arc<std::sync::RwLock<Option<Arc<dyn Fn(Value) + Send + Sync>>>>,
@@ -233,8 +235,10 @@ struct TaskRegistry {
     search_replacement_contexts: HashMap<String, Value>,
     /// Associates a prepared shelf book with the discovery group it came from.
     search_book_group_roots: HashMap<String, String>,
-    /// Last published groups, used to send IPC deltas rather than file snapshots.
-    published_search_results: HashMap<String, Value>,
+    /// Group positions stay valid until a publication sorts the display order.
+    search_group_indexes: SearchResultGroupIndexes,
+    dirty_search_results: HashSet<String>,
+    search_results_need_sort: bool,
     published_search_error_count: usize,
 }
 

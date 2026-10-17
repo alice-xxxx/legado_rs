@@ -51,13 +51,21 @@ async fn application_hot_path_workload() {
 
     let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let delivered = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let output_batches = batches.clone();
     let output_bytes = bytes.clone();
+    let output_delivered = delivered.clone();
+    let output_completed = completed.clone();
     let selected = records.iter().take(150).map(|source| source.id.clone()).collect::<Vec<_>>();
     let started = Instant::now();
     let response = service.start_search("text", &selected, "fixture", 1, false, Some(Arc::new(move |batch| {
         output_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         output_bytes.fetch_add(serde_json::to_vec(&batch).unwrap().len(), std::sync::atomic::Ordering::Relaxed);
+        for result in batch["results"].as_array().into_iter().flatten() {
+            output_delivered.lock().unwrap().insert(result["resultId"].as_str().unwrap().to_owned());
+        }
+        if batch["complete"] == true { output_completed.store(true, std::sync::atomic::Ordering::Release); }
     }))).await.unwrap();
     let task_id = response["taskId"].as_str().unwrap();
     tokio::time::timeout(Duration::from_secs(120), async {
@@ -66,7 +74,9 @@ async fn application_hot_path_workload() {
                 let registry = service.tasks.lock().await;
                 registry.records.iter().find(|task| task.id == task_id).unwrap().status.clone()
             };
-            if status == "completed" { break; }
+            // The task record commits before the final IPC flush. Measure and
+            // validate delivery too, so batching cannot hide missing results.
+            if status == "completed" && completed.load(std::sync::atomic::Ordering::Acquire) { break; }
             assert!(!matches!(status.as_str(), "failed" | "recoveryRequired"));
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -75,6 +85,7 @@ async fn application_hot_path_workload() {
     let result = service.get_search_task_results(task_id).await.unwrap();
     assert_eq!(result["results"].as_array().unwrap().len(), 1500);
     assert_eq!(result["errors"], json!([]));
+    assert_eq!(delivered.lock().unwrap().len(), 1500);
     eprintln!("PERF search_150_sources_1500_books_ms={} batches={} ipc_bytes={}", elapsed.as_millis(),
         batches.load(std::sync::atomic::Ordering::Relaxed), bytes.load(std::sync::atomic::Ordering::Relaxed));
 }
@@ -113,6 +124,11 @@ async fn database_storage_workload() {
     // A database trigger rejects even an unchanged chapter UPDATE. These
     // workloads must operate exclusively on progress, metadata and media rows.
     service.store.database().connect().unwrap().execute_batch("CREATE TRIGGER no_chapter_updates BEFORE UPDATE ON records WHEN old.field='chapters' BEGIN SELECT RAISE(ABORT,'chapter rewrite'); END;").unwrap();
+    let started = Instant::now();
+    for index in 0..100 {
+        service.set_alternatives("perf-book", vec![json!({"sourceId": format!("source-{index}"), "engineurl": format!("https://fixture/{index}"), "engine": {"name": "Fixture"}})]).await.unwrap();
+    }
+    eprintln!("PERF alternatives_5000_chapters_100_sources_ms={}", started.elapsed().as_millis());
     let started=Instant::now();
     for index in 0..100 {
         service.store.database().set_media(path,"perf-book",&format!("image-{index}"),Some(&json!({"url":format!("https://fixture/{index}.webp")}))).unwrap();

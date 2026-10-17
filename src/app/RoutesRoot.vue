@@ -3,11 +3,14 @@ import { KeepAlive, onBeforeUnmount, onMounted } from "vue";
 import { RouterView } from "vue-router";
 import { disposeSearchState } from "../features/discovery/searchState";
 import { installNativeBackNavigation } from "./nativeBack";
+import { installDialogInteractions } from "../ui/dialogInteractions";
 
 onBeforeUnmount(disposeSearchState);
 let disposeNativeBack: (() => void) | undefined;
-onMounted(() => { disposeNativeBack = installNativeBackNavigation(); });
+let disposeDialogs: (() => void) | undefined;
+onMounted(() => { disposeNativeBack = installNativeBackNavigation(); disposeDialogs = installDialogInteractions(); });
 onBeforeUnmount(() => disposeNativeBack?.());
+onBeforeUnmount(() => disposeDialogs?.());
 </script>
 
 <template>

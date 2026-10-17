@@ -8,6 +8,7 @@ pub async fn notify_reading(
     book_id: String,
     progress: Value,
     refresh_media: bool,
+    prepare_current: Option<bool>,
     service: State<'_, ApplicationService>,
 ) -> Result<(), String> {
     let chapter_index = progress["chapterIndex"].as_u64()
@@ -16,7 +17,8 @@ pub async fn notify_reading(
     let reading = &resource["readingUpdate"];
     if reading.is_null() { return Ok(()); }
     let _ = app.emit("reading-progress-updated", json!({ "bookId": book_id, "progress": reading["progress"], "read": reading["read"] }));
-    let prepare = refresh_media || reading["chapterChanged"].as_bool()==Some(true);
+    // Reopening the saved chapter must check its body even if its ID is unchanged.
+    let prepare = prepare_current.unwrap_or(false) || refresh_media || reading["chapterChanged"].as_bool()==Some(true);
     if refresh_media {
         let book_ref = service.store.book_ref(&book_id).map_err(|error| error.to_string())?;
         let book = service.store.read_json_ref(&book_ref).await.map_err(|error| error.to_string())?;

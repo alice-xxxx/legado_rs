@@ -14,9 +14,15 @@ pub async fn prepare_book_from_url(
 #[tauri::command]
 pub async fn prepare_search_result_book(
     result_id: String,
+    request_revision: Option<u64>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    service.prepare_search_result_book(&result_id).await
+    service.prepare_search_result_book_with_revision(&result_id, request_revision).await
+}
+
+#[tauri::command]
+pub fn cancel_book_preparation(request_revision: u64, service: State<'_, ApplicationService>) {
+    service.cancel_book_preparation(request_revision);
 }
 
 #[tauri::command]

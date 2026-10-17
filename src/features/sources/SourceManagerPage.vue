@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // 书源页管理本地筛选和选择视图；保存、登录、导入等副作用交给应用层处理。
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
+import { useVirtualList } from "../../ui/useVirtualList";
 import type { SourceMetadata } from "../../api/types";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
@@ -82,8 +83,13 @@ const filteredSources = computed(() => {
     return !needle || `${source.name} ${source.group ?? ""} ${source.id}`.toLocaleLowerCase("zh-CN").includes(needle);
   });
 });
+const sourceViewport = ref<HTMLElement | null>(null);
+const sourceWindow = useVirtualList(filteredSources, sourceViewport, 54);
+const { range: sourceRange, visibleItems: visibleSources } = sourceWindow;
+watch([query, groupFilter, statusFilter], () => { void sourceWindow.reset(); });
+const selectedSourceSet = computed(() => new Set(props.selectedIds));
 const allFilteredSelected = computed(() => filteredSources.value.length > 0
-  && filteredSources.value.every((source) => props.selectedIds.includes(source.id)));
+  && filteredSources.value.every((source) => selectedSourceSet.value.has(source.id)));
 const activeSource = computed(() =>
   filteredSources.value.find((source) => source.id === activeSourceId.value)
   ?? filteredSources.value[0]
@@ -203,12 +209,14 @@ useOutsidePointerDismiss(
             </div>
           </template>
         </ManagedListToolbar>
-        <div v-if="filteredSources.length" class="source-master-list" @scroll.passive="filterMenuOpen = false; actionsMenuOpen = false; openSourceMenuId = null">
-          <ManagedListRow v-for="source in filteredSources" :key="source.id"
+        <div v-if="filteredSources.length" ref="sourceViewport" class="source-master-list" @scroll.passive="filterMenuOpen = false; actionsMenuOpen = false; openSourceMenuId = null">
+          <div :ref="sourceWindow.list">
+          <div aria-hidden="true" :style="{ height: `${sourceRange.top}px` }"></div>
+          <ManagedListRow v-for="source in visibleSources" :key="source.id"
             :name="source.name" :subtitle="`${sourceKindLabel(source)} · ${source.group || '未分组'}`"
             :enabled="source.enabled"
             :active="editorOpen ? editingSourceId === source.id : activeSource?.id === source.id"
-            :busy="writeLocked" :batch-mode="batchMode" :selected="selectedIds.includes(source.id)"
+            :busy="writeLocked" :batch-mode="batchMode" :selected="selectedSourceSet.has(source.id)"
             :menu-open="openSourceMenuId === source.id"
             @open="editorOpen ? emit('switch-editor', source) : activateSource(source)"
             @select="emit('toggle-source', source.id)"
@@ -221,6 +229,8 @@ useOutsidePointerDismiss(
                   @click="openSourceMenuId = null; emit('remove', [source.id])">删除来源</button>
             </template>
           </ManagedListRow>
+          <div aria-hidden="true" :style="{ height: `${sourceRange.bottom}px` }"></div>
+          </div>
         </div>
         <div v-else class="source-master-empty">
           <strong>{{ sources.length ? '没有匹配的来源' : '还没有来源' }}</strong>
@@ -367,6 +377,7 @@ useOutsidePointerDismiss(
 .source-filter-divider{height:1px;margin:4px 2px;background:var(--app-line)}
 .source-toolbar-actions-menu>button:disabled{opacity:.5;cursor:default}
 .source-master-list { min-height:0; flex:1; margin-right:-14px; padding-right:14px; overflow:auto; }
+.source-master-list :deep(.managed-list-row) { height: 54px; }
 .source-dot { width:7px; height:7px; border-radius:50%; background:#5e8b6b; }
 .source-dot.off { background:var(--app-track); }
 .source-master-empty { flex:1; display:grid; place-items:center; color:var(--app-subtle); font-size:var(--ui-font-caption); text-align:center; }

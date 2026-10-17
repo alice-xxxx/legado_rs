@@ -17,6 +17,7 @@ import {
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
+import { useVirtualList } from "../../ui/useVirtualList";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import router, { routeNames } from "../../router";
 
@@ -105,6 +106,15 @@ const sourceFilter = ref("");
 const searchOptionsOpen = ref(false);
 const searchOptionsElement = ref<HTMLElement | null>(null);
 const searchOptionsButton = ref<HTMLButtonElement | null>(null);
+const searchSourceQuery = ref("");
+const searchSourceViewport = ref<HTMLElement | null>(null);
+const filteredSearchSources = computed(() => {
+  const query = searchSourceQuery.value.trim().toLocaleLowerCase();
+  return query ? searchSources.value.filter(source => source.name.toLocaleLowerCase().includes(query)) : searchSources.value;
+});
+const sourceWindow = useVirtualList(filteredSearchSources, searchSourceViewport, 44);
+const { range: searchSourceRange, visibleItems: visibleSearchSources } = sourceWindow;
+watch(searchSourceQuery, () => { void sourceWindow.reset(); });
 
 function closeSearchOptions(restoreFocus = false): void {
   searchOptionsOpen.value = false;
@@ -268,12 +278,19 @@ watch(selectedContentType, clearResultFilters);
                 <button type="button" :disabled="shelfBatchRecoveryRequired || !searchSources.length"
                   @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</button>
               </div>
-              <div v-if="searchSources.length" class="search-menu-sources">
-                <label v-for="source in searchSources" :key="source.id" class="search-menu-source">
+              <input v-if="searchSources.length > 12" v-model="searchSourceQuery" class="search-source-query" type="search"
+                aria-label="筛选搜索来源" placeholder="筛选来源名称" />
+              <div v-if="searchSources.length" ref="searchSourceViewport" class="search-menu-sources">
+                <div :ref="sourceWindow.list">
+                <div aria-hidden="true" :style="{ height: `${searchSourceRange.top}px` }"></div>
+                <label v-for="source in visibleSearchSources" :key="source.id" class="search-menu-source">
                   <input type="checkbox" :checked="selectedSourceSet.has(source.id)"
                     :disabled="shelfBatchRecoveryRequired" @change="toggleSearchSource(source.id)" />
                   <span :title="source.name">{{ source.name }}</span>
                 </label>
+                <div aria-hidden="true" :style="{ height: `${searchSourceRange.bottom}px` }"></div>
+                <p v-if="!filteredSearchSources.length" class="search-sidebar-no-source">没有匹配的来源。</p>
+                </div>
               </div>
               <div v-else class="search-sidebar-no-source">没有已启用的源。
                 <button type="button" @click="openSources">管理源</button>
@@ -293,13 +310,6 @@ watch(selectedContentType, clearResultFilters);
                 </button>
               </div>
             </section>
-            <div v-if="searchWasRun && (searchBusy || activeSearchCancellationPending || (searchProgress && !searchComplete))"
-              class="search-menu-section search-progress-row">
-              <span class="search-list-progress" role="status">{{ searchProgress }}</span>
-              <button v-if="searchBusy || activeSearchCancellationPending" type="button" class="search-list-utility"
-                :disabled="activeSearchCancellationPending" @click="cancelActiveSearch">
-                {{ activeSearchCancellationPending ? '取消中…' : '取消搜索' }}</button>
-            </div>
             <details v-if="searchErrors.length" class="search-errors" :open="searchErrorsOpen" @toggle="onSearchErrorsToggle">
               <summary>
                 <span>{{ failedSourceCount ? `${failedSourceCount} 个源未完成搜索` : `搜索异常（${searchErrors.length} 条）` }}</span>
@@ -323,11 +333,22 @@ watch(selectedContentType, clearResultFilters);
             :disabled="shelfBatchRecoveryRequired" @click="selectedContentType = type.id">{{ type.label }}</button>
         </div>
       </nav>
+      <div v-if="searchWasRun && (searchBusy || activeSearchCancellationPending || (searchProgress && !searchComplete))" class="search-status-strip">
+        <span class="search-list-progress" role="status">{{ searchProgress }}</span>
+        <button v-if="searchBusy || activeSearchCancellationPending" type="button" class="text-button"
+          :disabled="activeSearchCancellationPending" @click="cancelActiveSearch">{{ activeSearchCancellationPending ? '取消中…' : '取消搜索' }}</button>
+      </div>
       <main class="search-prototype-results" @wheel.passive="onSearchWheel" @touchstart.passive="onSearchTouchStart"
         @touchmove.passive="onSearchTouchMove" @keydown="onSearchKeyDown">
         <SearchHistory v-if="!searchWasRun && searchHistoryEntries.length" :entries="searchHistoryEntries"
           @use-query="reuseSearchQuery" @delete-query="removeSearchHistoryEntry"
           @clear-all="clearSearchHistoryEntries" />
+        <div v-else-if="!searchWasRun" class="page-empty-state search-start-state">
+          <span class="empty-state-glyph"><PrototypeIcon name="search" /></span>
+          <strong>{{ searchSources.length ? '找到下一本想读的书' : '先添加内容来源' }}</strong>
+          <p>{{ searchSources.length ? '输入书名、作者或关键词，开始搜索。' : '添加并启用来源后，就可以搜索和阅读。' }}</p>
+          <button v-if="!searchSources.length" type="button" class="button primary" @click="openSources">管理来源</button>
+        </div>
         <div class="results-section">
           <template v-if="searchWasRun">
             <p v-if="searchBusy && !searchResults.length" class="search-empty-inline" role="status">正在搜索…</p>
@@ -361,9 +382,7 @@ watch(selectedContentType, clearResultFilters);
               <p v-if="!visibleSearchResults.length && !searchBusy" class="search-empty-inline">暂无匹配结果</p>
             </template>
             <p v-else-if="!searchBusy" class="search-empty-inline">暂无匹配结果</p>
-            <div ref="loadMoreMarker" class="search-load-more" aria-live="polite">
-              <span v-if="searchBusy && searchResults.length">正在加载…</span>
-            </div>
+            <div ref="loadMoreMarker" class="search-load-more" aria-hidden="true"></div>
           </template>
         </div>
       </main>
@@ -568,6 +587,10 @@ watch(selectedContentType, clearResultFilters);
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+.search-menu-source { height: 44px; }
+.search-source-query { width: 100%; min-height: 40px; padding: 0 10px; border: 1px solid var(--app-line); border-radius: 8px; color: var(--app-text); background: var(--app-panel-softer); font: inherit; }
+.search-status-strip { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 var(--ui-page-gutter); min-height: 44px; border-bottom: 1px solid var(--app-line); }
+.search-start-state { min-height: 42dvh; }
 
 .search-menu-filter-label {
   font-size: var(--ui-font-caption);

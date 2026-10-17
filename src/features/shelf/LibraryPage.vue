@@ -432,7 +432,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
                     :style="{ width: `${readingProgressPercent(book.progress, book.chapterCount)}%` }"></i></span>
               </button>
               <div class="shelf-card-info library-cardcopy">
-                <button class="book-title-button" @click="openBookInfo(book.id)">{{ book.title }}</button>
+                <button class="book-title-button" :aria-label="`查看《${book.title}》详情`" @click="openBookInfo(book.id)">{{ book.title }}</button>
                 <span class="book-author">{{ book.author || '作者未知' }}</span>
                 <div class="book-card-meta"><span>{{ chapterCountLabel(book) }}</span></div>
               </div>

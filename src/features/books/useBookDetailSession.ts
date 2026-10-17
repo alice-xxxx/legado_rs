@@ -1,7 +1,8 @@
 import { addLibraryContent } from "./contentLibraryState";
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
-import { prepareSearchResultBook } from "../../api/books";
-import type { BookResource, SearchBookResult } from "../../api/types";
+import { cancelBookPreparation, prepareSearchResultBook } from "../../api/books";
+import type { BookResource, SearchBookResult, SearchResultSource } from "../../api/types";
+import { searchResults } from "../discovery/searchState";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { clearOpenedBook, closeBookDetail, switchOpenedBook, openedBookFromShelf, openedBook } from "./bookDetailState";
 import type { BookDetailOpenRequest, BookDetailTab } from "./bookDetailOpenRequest";
@@ -14,6 +15,7 @@ export interface BookDetailSessionState {
   error: string;
 }
 type ActiveBookDetailSession = UnwrapNestedRefs<BookDetailSessionState>;
+let preparationRevision = Date.now();
 
 export interface BookDetailSessionDependencies {
   /** Shared busy state lets other book actions keep their existing exclusion guards. */
@@ -32,6 +34,21 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   const { bookPanelBusy } = dependencies;
   const searchResultDetailsReadingBusy = ref(false);
   let generation = 0;
+  let activePreparation: number | null = null;
+  const sourceGroup = shallowRef<SearchBookResult | null>(null);
+  const searchResultSources = computed(() => {
+    const original = sourceGroup.value;
+    if (!original) return [];
+    const current = searchResults.value.find(group => group.resultId === original.resultId
+      || group.sources?.some(source => source.resultId === original.resultId)) ?? original;
+    return current.sources?.length ? current.sources : [current];
+  });
+  function cancelPreparation(): void {
+    if (activePreparation === null) return;
+    const revision = activePreparation;
+    activePreparation = null;
+    void cancelBookPreparation(revision).catch(error => console.error("Cancel book preparation failed", error));
+  }
   const searchResultDetailsShelfBook = computed(() => {
     const bookId = openedBook.value?.id;
     return bookId ? shelf.value.books.find((book) => book.id === bookId) ?? null : null;
@@ -55,6 +72,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     restoreRevision: number;
     details: ActiveBookDetailSession;
   } {
+    cancelPreparation();
     generation += 1;
     const currentGeneration = generation;
     const restoreRevision = dependencies.getRestoreRevision();
@@ -70,16 +88,21 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
 
   async function openSearchResultDetails(
     result: SearchBookResult,
+    initialTab: BookDetailTab = "info",
+    preserveSourceGroup = false,
   ): Promise<void> {
+    if (!preserveSourceGroup) sourceGroup.value = result;
     const request = beginSession({
       result,
       bookId: null,
       inShelf: false,
-      initialTab: "info",
+      initialTab,
       error: "",
     });
+    const revision = preparationRevision = Math.max(preparationRevision + 1, Date.now());
+    activePreparation = revision;
     try {
-      const response = await prepareSearchResultBook(result.resultId);
+      const response = await prepareSearchResultBook(result.resultId, revision);
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       const book = await switchOpenedBook(response.book);
       if (!book) return;
@@ -90,11 +113,18 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
         request.details.error = dependencies.errorText(error);
       }
     } finally {
+      if (activePreparation === revision) activePreparation = null;
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) bookPanelBusy.value = false;
     }
   }
 
+  async function selectSearchResultSource(candidate: SearchResultSource): Promise<void> {
+    if (dependencies.isRecoveryRequired() || candidate.resultId === searchResultDetails.value?.result?.resultId) return;
+    await openSearchResultDetails(candidate, "sources", true);
+  }
+
   async function openShelfBook(bookId: string, initialTab: BookDetailTab = "catalog", fromShelf = true): Promise<void> {
+    sourceGroup.value = null;
     const request = beginSession({
       result: null,
       bookId,
@@ -131,7 +161,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     const details = searchResultDetails.value;
     if (!details) return;
     if (details.result) {
-      await openSearchResultDetails(details.result);
+      await openSearchResultDetails(details.result, details.initialTab, true);
       return;
     }
     if (details.bookId) await openShelfBook(details.bookId, details.initialTab, openedBookFromShelf.value);
@@ -165,6 +195,8 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   }
 
   function clear(options: { preserveOpenedBook?: boolean } = {}): void {
+    cancelPreparation();
+    sourceGroup.value = null;
     generation += 1;
     bookPanelBusy.value = false;
     searchResultDetailsReadingBusy.value = false;
@@ -175,6 +207,8 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
 
   return {
     searchResultDetails,
+    searchResultSources,
+    selectSearchResultSource,
     searchResultDetailsShelfBook,
     searchResultDetailsReadingBusy,
     bookPanelBusy,

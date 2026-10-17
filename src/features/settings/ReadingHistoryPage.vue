@@ -300,7 +300,7 @@ onBeforeUnmount(() => {
             :disabled="blocked || statisticsBusy" @click="changeStatisticsPeriod(option[0])">{{ option[1] }}</button>
         </nav>
         <div class="record-toolbar-actions">
-          <button v-if="allTimeTotalSessions" type="button" class="record-icon-button" @click="toggleHistorySearch"><PrototypeIcon name="search"/></button>
+          <button v-if="allTimeTotalSessions" type="button" class="record-icon-button" aria-label="搜索阅读历史" @click="toggleHistorySearch"><PrototypeIcon name="search"/></button>
           <details v-if="allTimeTotalSessions" class="record-row-menu record-clear-menu">
             <summary><PrototypeIcon name="more"/></summary>
             <div><button type="button" class="record-delete" :disabled="blocked" @click="historyClearPending = true">清空全部历史记录</button></div>
@@ -326,6 +326,7 @@ onBeforeUnmount(() => {
             <time :datetime="new Date(book.lastReadAtMs).toISOString()"
               :title="new Date(book.lastReadAtMs).toLocaleString('zh-CN')">{{ historyTimeLabel(book.lastReadAtMs) }}</time>
             <button type="button" class="record-book-icon record-book-open"
+              :aria-label="`继续阅读《${title(book.bookId)}》`"
               :disabled="!canOpenHistoryBook(book.bookId) || blocked"
               @click="openHistoryBook(book.bookId)">
               <img v-if="coverForBook(book.bookId)" :src="coverForBook(book.bookId)"

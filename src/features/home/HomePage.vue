@@ -404,7 +404,13 @@ onBeforeUnmount(() => {
           <span>正在从源加载发现内容…</span>
         </div>
         <div v-else class="page-empty-state discover-grid-state">
+          <span class="empty-state-glyph"><PrototypeIcon name="compass" /></span>
           <strong>{{ activeType !== 'all' && gridResults.length ? '暂无匹配内容' : '暂无发现内容' }}</strong>
+          <p>{{ gridResults.length ? '试试其他内容类型，或搜索感兴趣的内容。' : '搜索感兴趣的书，或添加发现栏目。' }}</p>
+          <div class="page-empty-actions">
+            <button type="button" class="button primary" @click="openSearch">搜索内容</button>
+            <button v-if="!gridResults.length" type="button" class="button secondary" @click="manageHome">设置发现栏目</button>
+          </div>
         </div>
         <p v-if="loadError" class="discover-grid-warning">{{ loadError }}</p>
       </section>

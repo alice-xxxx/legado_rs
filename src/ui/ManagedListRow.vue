@@ -34,6 +34,7 @@ const emit = defineEmits<{
       v-if="batchMode"
       class="managed-list-row__checkbox"
       type="checkbox"
+      :aria-label="`选择${name}`"
       :checked="selected"
       :disabled="busy"
       @click.stop
@@ -48,6 +49,8 @@ const emit = defineEmits<{
         <button
           type="button"
           class="managed-list-row__menu-button"
+          :aria-label="`${name}的更多操作`"
+          :aria-expanded="menuOpen"
           :class="{ 'is-open': menuOpen }"
           :disabled="busy"
           @click.stop="emit('toggle-menu')"
@@ -222,5 +225,9 @@ const emit = defineEmits<{
 .managed-list-row__menu :slotted(button:disabled) {
   cursor: default;
   opacity: .5;
+}
+@media (pointer: coarse) {
+  .managed-list-row.has-menu { grid-template-columns: minmax(0, 1fr) 44px; }
+  .managed-list-row.is-batch.has-menu { grid-template-columns: 24px minmax(0, 1fr) 44px; }
 }
 </style>

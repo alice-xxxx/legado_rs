@@ -27,6 +27,7 @@ const emit = defineEmits<{
         type="search"
         autocomplete="off"
         :placeholder="searchPlaceholder"
+        :aria-label="searchPlaceholder"
         @input="emit('update:query', ($event.target as HTMLInputElement).value)"
       />
     </label>
@@ -34,6 +35,8 @@ const emit = defineEmits<{
       <button
         type="button"
         class="managed-list-toolbar__button"
+        aria-label="筛选列表"
+        :aria-expanded="filterExpanded"
         :class="{ 'is-active': filterActive, 'is-open': filterExpanded }"
         @click="emit('toggle-filter', $event)"
       ><PrototypeIcon name="filter" /></button>
@@ -44,6 +47,8 @@ const emit = defineEmits<{
         type="button"
         class="managed-list-toolbar__button"
         :class="{ 'is-open': actionsExpanded }"
+        aria-label="更多列表操作"
+        :aria-expanded="actionsExpanded"
         @click="emit('toggle-actions', $event)"
       ><PrototypeIcon name="more" /></button>
       <slot name="actions-menu" />
@@ -136,5 +141,10 @@ const emit = defineEmits<{
   .managed-list-toolbar__search {
     height: 36px;
   }
+}
+@media (pointer: coarse) {
+  .managed-list-toolbar { grid-template-columns: minmax(0, 1fr) 44px 44px; }
+  .managed-list-toolbar__button { width: 44px; height: 44px; }
+  .managed-list-toolbar__search { height: 44px; }
 }
 </style>

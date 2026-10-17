@@ -157,6 +157,8 @@
 .chapter-frame { display: block; border: 0; }
 .reader-loading { position: absolute; inset: 0; display: grid; place-content: center; gap: 10px; text-align: center; }
 .reader-loading p { margin: 0; }
+.loader-ring { width: 28px; height: 28px; justify-self: center; border: 2px solid var(--reader-chrome-border); border-top-color: var(--app-accent); border-radius: 50%; animation: reader-loading-spin .8s linear infinite; }
+@keyframes reader-loading-spin { to { transform: rotate(360deg); } }
 .reader-load-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .reader-media-error { position: absolute; z-index: 4; right: 10px; bottom: 68px; left: 10px; }
 .reader-chrome-hidden .reader-topbar, .reader-chrome-hidden .reader-footer {
@@ -284,6 +286,8 @@
   font-size: var(--ui-font-body);
 }
 .reader-directory-chapter {
+  height: 48px;
+  margin-bottom: 6px;
   display: grid; width: 100%;
   min-height: 48px; grid-template-columns: 30px minmax(0, 1fr) auto;
   align-items: center; gap: 8px;

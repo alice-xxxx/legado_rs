@@ -26,7 +26,9 @@ impl ApplicationService {
         registry.search_result_documents.retain(|_, cache| cache["searchId"].as_str() != Some(search_id.as_str()));
         if registry.active_search_task_id.as_deref() == Some(task_id) {
             registry.active_search_task_id = None;
-            registry.published_search_results.clear();
+            registry.search_group_indexes.clear();
+            registry.dirty_search_results.clear();
+            registry.search_results_need_sort = false;
             registry.published_search_error_count = 0;
         }
         drop(registry);
@@ -40,8 +42,12 @@ impl ApplicationService {
         let task = registry.records.iter().find(|task| task.id == task_id)
             .ok_or_else(|| "Search task no longer exists".to_owned())?;
         let search_id = task.search_id.as_ref().ok_or_else(|| "Task is not a search".to_owned())?;
-        registry.search_documents.get(search_id).cloned().map(public_search_view)
-            .ok_or_else(|| "Search results have been released".to_owned())
+        let mut document = registry.search_documents.get(search_id).cloned()
+            .ok_or_else(|| "Search results have been released".to_owned())?;
+        if let Some(results) = document["results"].as_array_mut() {
+            sort_search_results(results, task.keyword.as_deref().unwrap_or_default());
+        }
+        Ok(public_search_view(document))
     }
 
     /// One-shot source-debug search. Discovery search uses `start_search`
@@ -643,6 +649,9 @@ impl ApplicationService {
             let TaskRegistry {
                 search_documents,
                 search_result_documents,
+                search_group_indexes,
+                dirty_search_results,
+                search_results_need_sort,
                 ..
             } = &mut *registry;
             let document = search_documents
@@ -653,8 +662,9 @@ impl ApplicationService {
             }
             let grouped_results = document.get_mut("results").and_then(Value::as_array_mut)
                 .ok_or_else(|| "Search state has no results array".to_owned())?;
-            let mut result_indexes = if results.is_empty() { HashMap::new() } else { search_result_group_indexes(grouped_results) };
-            let mut results_changed = false;
+            if search_group_indexes.is_empty() && !grouped_results.is_empty() {
+                *search_group_indexes = search_result_group_indexes(grouped_results);
+            }
             let keyword = task.keyword.as_deref().unwrap_or_default().trim().to_lowercase();
             for (result, cache) in results {
                 if task.precision_search.unwrap_or(true)
@@ -662,12 +672,16 @@ impl ApplicationService {
                     continue;
                 }
                 let result_id = result.result_id.clone();
-                if merge_search_result(grouped_results, &mut result_indexes, result)? {
-                    results_changed = true;
+                let identity = search_result_identity(&result.title, result.author.as_deref(), &result.content_type);
+                if merge_search_result(grouped_results, search_group_indexes, result)? {
+                    let index = search_group_indexes[&identity];
+                    if let Some(id) = grouped_results[index]["resultId"].as_str() {
+                        dirty_search_results.insert(id.to_owned());
+                    }
+                    *search_results_need_sort = true;
                     search_result_documents.insert(result_id, cache);
                 }
             }
-            if results_changed { sort_search_results(grouped_results, &keyword); }
             if let Some((source_id, has_next_page)) = pagination {
                 let exhausted = document["exhaustedSourceIds"].as_array_mut()
                     .ok_or_else(|| "Search state has no exhausted source list".to_owned())?;
@@ -705,20 +719,28 @@ impl ApplicationService {
         if registry.active_search_task_id.as_deref() != Some(task_id) {
             return Ok(());
         }
-        let TaskRegistry { search_documents, published_search_results, published_search_error_count, .. } = &mut *registry;
-        let document = search_documents.get(search_id)
+        let TaskRegistry { search_documents, search_group_indexes, dirty_search_results, search_results_need_sort, published_search_error_count, .. } = &mut *registry;
+        let document = search_documents.get_mut(search_id)
             .ok_or("In-memory search state is unavailable; start the search again")?;
+        if *search_results_need_sort {
+            let keyword = document["keyword"].as_str().unwrap_or_default().to_owned();
+            if let Some(results) = document["results"].as_array_mut() {
+                sort_search_results(results, &keyword);
+                *search_group_indexes = search_result_group_indexes(results);
+            }
+            *search_results_need_sort = false;
+        }
         let mut batch = Value::Object(document.as_object().into_iter().flatten()
             .filter(|(key, _)| matches!(key.as_str(), "taskId" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"))
             .map(|(key, value)| (key.clone(), value.clone())).collect());
         let mut changed = Vec::new();
         for result in document["results"].as_array().into_iter().flatten() {
             let Some(id) = result["resultId"].as_str() else { continue; };
-            if published_search_results.get(id) != Some(result) {
-                published_search_results.insert(id.to_owned(), result.clone());
+            if dirty_search_results.contains(id) {
                 changed.push(result.clone());
             }
         }
+        dirty_search_results.clear();
         batch["results"] = json!(changed);
         let errors = document["errors"].as_array();
         batch["errors"] = json!(errors.into_iter().flatten()
@@ -1197,6 +1219,38 @@ mod search_stream_tests {
         };
         let book = json!({"name": title, "author": author, "bookUrl": format!("https://fixture/{id}")});
         (project_search_result(id, &source, &book), json!({"book": book}))
+    }
+
+    #[tokio::test]
+    async fn search_stream_batches_group_changes_and_reuses_indexes_after_sorting() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let mut task: AppTask = serde_json::from_value(json!({
+            "id": "task-batched", "kind": "search", "status": "running", "keyword": "fixture",
+            "searchId": "search-batched", "total": 4, "createdAtMs": 1, "updatedAtMs": 1,
+        })).unwrap();
+        {
+            let mut registry = service.tasks.lock().await;
+            registry.active_search_task_id = Some(task.id.clone());
+            registry.search_documents.insert("search-batched".into(), empty_search_task_document(&task));
+        }
+        let batches = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let captured = batches.clone();
+        service.search_notifiers.write().unwrap().insert(task.id.clone(), Arc::new(move |batch| captured.lock().unwrap().push(batch)));
+        for (i, publish) in [false, true, false, true].into_iter().enumerate() {
+            let title = if i == 0 { "fixture extra" } else { "fixture" };
+            service.append_and_publish_search_snapshot(&task, vec![leaf(&format!("result-{i}"), &format!("source-{i}"), title, "Author")], vec![], publish, None).await.unwrap();
+            task.completed += 1;
+        }
+        let batches = batches.lock().unwrap();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[0]["resultOrder"], json!(["result-1", "result-0"]));
+        assert_eq!(batches[1]["results"].as_array().unwrap().len(), 1);
+        assert_eq!(batches[1]["results"][0]["sources"].as_array().unwrap().len(), 3);
+        let registry = service.tasks.lock().await;
+        assert!(registry.dirty_search_results.is_empty());
+        assert!(!registry.search_results_need_sort);
+        assert_eq!(registry.search_group_indexes.len(), 2);
     }
 
     #[tokio::test]

@@ -116,7 +116,9 @@ impl ApplicationService {
             search_result_documents: HashMap::new(),
             search_replacement_contexts: HashMap::new(),
             search_book_group_roots: HashMap::new(),
-            published_search_results: HashMap::new(),
+            search_group_indexes: HashMap::new(),
+            dirty_search_results: HashSet::new(),
+            search_results_need_sort: false,
             published_search_error_count: 0,
         };
         for task in &mut task_registry.records {
@@ -198,6 +200,8 @@ impl ApplicationService {
             source_revisions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
             task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
+            search_slots: Arc::new(tokio::sync::Semaphore::new(task_execution::SEARCH_CONCURRENCY)),
+            detail_preparation: Arc::new(std::sync::Mutex::new((0, None))),
             book_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_notifier: Arc::new(std::sync::RwLock::new(None)),
             task_recovery_notifier: Arc::new(std::sync::RwLock::new(None)),

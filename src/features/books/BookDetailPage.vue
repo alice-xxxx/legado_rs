@@ -5,10 +5,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources } from "../sources/sourcesStore";
 import { clearBookChapterCache as clearBookChapterCacheApi } from "../../api/books";
 import { checkNewChapters, refreshChapters, startBookDownload } from "../../api/tasks";
-import type { AppBootstrap, BookResource, SearchBookResult } from "../../api/types";
+import type { AppBootstrap, BookResource, SearchBookResult, SearchResultSource } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
+import { useVirtualList } from "../../ui/useVirtualList";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookDisplayMetadataEditor from "./BookDisplayMetadataEditor.vue";
 import { useBookDetailActions } from "./useBookDetailActions";
@@ -94,12 +95,20 @@ const {
   searchResultDetails,
   searchResultDetailsShelfBook,
   searchResultDetailsReadingBusy,
+  searchResultSources,
 } = detailSession;
 const currentSearchResultDetails = computed(() => searchResultDetails.value ?? {
   result: openRequest?.kind === "search-result" ? openRequest.result : null,
   bookId: openRequest && openRequest.kind !== "search-result" ? openRequest.bookId : null,
   initialTab: openRequest && openRequest.kind !== "search-result" ? openRequest.initialTab ?? "catalog" : "info",
   error: pageResourceError.value,
+});
+const searchDetailSourceCandidates = computed(() => {
+  const live = searchResultSources.value;
+  const sourceIds = new Set(live.map(candidate => candidate.sourceId));
+  const cached = openedBook.value && bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.value.id
+    ? bookSourceSwitch.bookSourceCandidateResults : [];
+  return [...live, ...cached.filter(candidate => !sourceIds.has(candidate.sourceId))];
 });
 let openRequestStarted = false;
 async function startOpenRequestOnce(): Promise<void> {
@@ -195,9 +204,13 @@ onMounted(async () => {
   clearOpenedBook();
   try {
     await setupPageEvents();
-    if (await loadPageResources()) {
+    if (!disposed && !closing) {
+      // Task-list hydration is independent of preparing the selected result.
+      void loadPageResources().catch(error => {
+        if (!disposed && !closing) notify(`任务列表加载失败：${errorText(error)}`, "error");
+      });
       pageResourceError.value = "";
-      clearOpenedBook();
+      pageResourceLoading.value = false;
       await startOpenRequestOnce();
     }
   } catch (error) {
@@ -235,9 +248,7 @@ watch(() => {
   if (bookWasRemoved) closeBookDetails();
 });
 const recentCatalogChapters = computed(() => (openedBook.value?.chapters ?? [])
-  .slice()
-  .sort((left, right) => right.index - left.index)
-  .slice(0, 4));
+  .slice(-4).reverse());
 const catalogRefreshBusy = computed(() => openedBook.value
   ? isBookTaskBusy(openedBook.value.id, "refreshChapters") : false);
 const catalogCheckBusy = computed(() => openedBook.value
@@ -255,9 +266,11 @@ const filteredCatalogChapters = computed(() => {
     ? chapters.filter((chapter) => `${chapter.index + 1} ${chapter.title}`.toLocaleLowerCase().includes(query))
     : chapters;
   // Sorting is a view preference. Never mutate the Rust-owned chapter order.
-  return filtered.slice().sort((left, right) => catalogDescending.value
-    ? right.index - left.index : left.index - right.index);
+  return catalogDescending.value ? filtered.slice().reverse() : filtered;
 });
+const catalogWindow = useVirtualList(filteredCatalogChapters, bookDetailContentRef, 56);
+const { range: catalogRange, visibleItems: visibleCatalogChapters } = catalogWindow;
+watch([catalogQuery, catalogDescending], () => { void catalogWindow.reset(); });
 function selectBookDetailTab(tab: "catalog" | "info" | "sources"): void {
   bookDetailTab.value = tab;
   bookDetailMenuOpen.value = false;
@@ -270,8 +283,7 @@ async function locateCurrentCatalogChapter(): Promise<void> {
   if (chapterIndex == null) return;
   catalogQuery.value = "";
   await nextTick();
-  document.querySelector<HTMLButtonElement>(`[data-chapter-index="${chapterIndex}"]`)
-    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+  catalogWindow.scrollToIndex(filteredCatalogChapters.value.findIndex(chapter => chapter.index === chapterIndex));
 }
 watch(() => searchResultDetails.value, (details) => {
   bookDetailTab.value = details?.initialTab ?? "catalog";
@@ -415,6 +427,13 @@ async function chooseCachedBookSource(candidate: SearchBookResult): Promise<void
   bookSourceSwitch.selectBookSourceCandidate(candidate);
   bookSourceSwitch.bookSourceSwitchConfirmOpen = true;
 }
+async function chooseSearchResultSource(candidate: SearchResultSource): Promise<void> {
+  if (openedBook.value && !bookPanelBusy.value) {
+    await chooseCachedBookSource(candidate);
+  } else {
+    await detailSession.selectSearchResultSource(candidate);
+  }
+}
 const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   book?.mediaType === "audio" || book?.mediaType === "video";
 </script>
@@ -430,7 +449,8 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
           </nav>
           <div v-if="openedBook" class="book-detail-toolbar-actions">
             <div class="book-detail-menu-wrap">
-              <button type="button" class="book-detail-icon-button" @click.stop="bookDetailMenuOpen = !bookDetailMenuOpen"><PrototypeIcon name="more"/></button>
+              <button type="button" class="book-detail-icon-button" aria-label="更多书籍操作" :aria-expanded="bookDetailMenuOpen"
+                @click.stop="bookDetailMenuOpen = !bookDetailMenuOpen"><PrototypeIcon name="more"/></button>
               <div v-if="bookDetailMenuOpen" class="book-detail-menu" @click.stop>
                 <button v-if="!searchResultDetailsShelfBook && currentSearchResultDetails.result"
                   class="book-detail-menu-item"
@@ -499,7 +519,65 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
         <main ref="bookDetailContentRef" class="book-detail-content"
           :class="{ 'book-detail-content--catalog': bookDetailTab === 'catalog' }"
           @click="bookDetailMenuOpen = false">
-          <div v-if="bookPanelBusy || pageResourceLoading" class="catalog-empty">正在读取内容详情…</div>
+          <section v-if="bookDetailTab === 'sources' && currentSearchResultDetails.result"
+            class="detail-sources-page">
+            <section class="detail-source-block">
+              <h2>当前来源</h2>
+              <article class="detail-source-current">
+                <span class="detail-source-glyph"><PrototypeIcon name="source"/></span>
+                <div><strong>{{ openedBook?.sourceName || currentSearchResultDetails.result.sourceName }}</strong></div>
+                <button v-if="canRefreshOpenedBookInfo" type="button" class="button secondary small"
+                  :disabled="bookInfoRefreshBusy || recoveryRequired" @click="bookDetailActions.refreshOpenedBookInfo()">
+                  {{ bookInfoRefreshBusy ? '刷新中…' : '刷新信息' }}
+                </button>
+              </article>
+            </section>
+            <section class="detail-source-block detail-alternates">
+              <div class="detail-alternates-heading"><h2>可更换源</h2></div>
+              <p v-if="bookPanelBusy" class="detail-loading-notice" role="status">正在加载 {{ currentSearchResultDetails.result.sourceName }}，可以直接选择其他来源。</p>
+              <p v-if="currentSearchResultDetails.error" class="detail-source-partial">{{ currentSearchResultDetails.error }}
+                <button type="button" class="text-button" @click="retryBookDetails">重试</button>
+              </p>
+              <div class="detail-alternates-list">
+                <article v-for="candidate in searchDetailSourceCandidates" :key="candidate.resultId" class="detail-alternate-row">
+                  <div><strong>{{ candidate.sourceName }}</strong>
+                    <span>{{ candidate.title }}{{ candidate.author ? ' · ' + candidate.author : '' }}</span>
+                    <small v-if="candidate.latestChapter">最新：{{ candidate.latestChapter }}</small>
+                  </div>
+                  <span v-if="candidate.sourceId === (openedBook?.sourceId || currentSearchResultDetails.result.sourceId)" class="detail-source-current-badge">
+                    {{ bookPanelBusy ? '加载中…' : '当前' }}
+                  </span>
+                  <button v-else type="button" :disabled="recoveryRequired || bookSourceSwitch.bookSourceSwitchBusy" @click="chooseSearchResultSource(candidate)">换源</button>
+                </article>
+              </div>
+              <p v-if="searchDetailSourceCandidates.length < 2" class="detail-alternates-empty">其他来源的搜索结果到达后会显示在这里。</p>
+              <button v-if="openedBook" type="button" class="button secondary small"
+                :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired || !bookSourceSwitch.bookSourceEligibleSources.length"
+                @click="searchMoreBookSources()">搜索更多来源</button>
+            </section>
+          </section>
+          <section v-else-if="!openedBook && currentSearchResultDetails.result && bookDetailTab === 'info'" class="book-info-view">
+            <div class="detail-hero">
+              <img v-if="currentSearchResultDetails.result.coverSrc" :src="currentSearchResultDetails.result.coverSrc" decoding="async"/>
+              <div v-else class="detail-cover-fallback">{{ currentSearchResultDetails.result.title.slice(0, 1) }}</div>
+              <div class="detail-title-copy">
+                <h2>{{ currentSearchResultDetails.result.title }}</h2>
+                <p class="detail-author">{{ currentSearchResultDetails.result.author || '作者未知' }}</p>
+                <p>{{ currentSearchResultDetails.result.sourceName }}</p>
+                <button type="button" class="button secondary" @click="selectBookDetailTab('sources')">更换来源（{{ searchResultSources.length }}）</button>
+              </div>
+            </div>
+            <p v-if="bookPanelBusy || pageResourceLoading" class="detail-loading-notice" role="status">正在加载详情和目录，可在来源页切换其他源。</p>
+            <p v-if="currentSearchResultDetails.error">{{ currentSearchResultDetails.error }}
+              <button type="button" class="text-button" @click="retryBookDetails">重试</button>
+            </p>
+            <section class="detail-section detail-intro"><header><h3>简介</h3></header>
+              <p>{{ currentSearchResultDetails.result.intro || '暂无简介。' }}</p>
+            </section>
+          </section>
+          <div v-else-if="bookPanelBusy || pageResourceLoading" class="catalog-empty">正在读取内容详情…
+            <button v-if="currentSearchResultDetails.result" type="button" class="text-button" @click="selectBookDetailTab('sources')">更换来源</button>
+          </div>
           <div v-else-if="currentSearchResultDetails.error" class="catalog-empty">
             {{ currentSearchResultDetails.error }}
             <button v-if="currentSearchResultDetails.result" class="button secondary small" @click="retryBookDetails">重试</button>
@@ -529,8 +607,9 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
                     @click="enqueueCurrentBookTask('download')"><PrototypeIcon name="download"/><span>缓存全部</span></button>
                 </div>
               </div>
-              <div class="catalog-list">
-                <article v-for="chapter in filteredCatalogChapters" :key="chapter.id"
+              <div :ref="catalogWindow.list" class="catalog-list">
+                <div aria-hidden="true" :style="{ height: `${catalogRange.top}px` }"></div>
+                <article v-for="chapter in visibleCatalogChapters" :key="chapter.id"
                   class="catalog-row-wrap"
                   :class="{ current: hasReadingProgress(openedBook.progress) && chapter.index === openedBook.progress?.chapterIndex }">
                   <button :data-chapter-index="chapter.index" type="button"
@@ -555,6 +634,7 @@ title="更换章节来源"
                     <PrototypeIcon name="source-switch"/>
                   </button>
                 </article>
+                <div aria-hidden="true" :style="{ height: `${catalogRange.bottom}px` }"></div>
                 <div v-if="!openedBook.chapters?.length" class="catalog-empty">暂无可显示的目录。</div>
                 <div v-else-if="!filteredCatalogChapters.length" class="catalog-empty">
                   没有匹配的内容。<button type="button" class="text-button"
@@ -946,6 +1026,7 @@ loading="lazy" decoding="async"/>
 .book-info-view {
   display: block;
 }
+.detail-loading-notice { margin: 16px 0; padding: 12px 14px; border-radius: 12px; color: var(--app-accent-ink); background: var(--app-accent-soft); line-height: 1.7; }
 
 .detail-hero {
   display: grid;
@@ -1221,6 +1302,7 @@ loading="lazy" decoding="async"/>
 }
 
 .catalog-row-wrap {
+  height: 56px;
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
@@ -1533,7 +1615,7 @@ loading="lazy" decoding="async"/>
   }
 
   .catalog-row {
-    min-height: 56px;
+    min-height: 55px;
     padding: 0 2px;
   }
 

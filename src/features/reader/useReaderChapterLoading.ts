@@ -46,7 +46,7 @@ export interface ReaderChapterLoadingOptions {
     chapterError: Ref<string>;
   };
   actions: {
-    notifyCurrentReading: (refresh?: boolean) => Promise<void>;
+    notifyCurrentReading: (refresh?: boolean, prepareCurrent?: boolean) => Promise<void>;
     showShelfBehindReader: (book: BookResource) => Promise<void>;
     stopTts: (showNotice?: boolean) => void;
     pauseReaderMediaAndSave: () => Promise<boolean>;
@@ -168,7 +168,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     reader.setPendingFragment(fragment != null ? { fragment, loadRevision: reader.getLoadRevision(), chapterIndex: index } : null);
     const done = new Promise<boolean>(resolve => { finishLoad = resolve; });
     const revision = reader.getLoadRevision();
-    void actions.notifyCurrentReading()
+    void actions.notifyCurrentReading(false, true)
       .catch(error => { if (reader.getLoadRevision() === revision && openedBook.value?.id === book.id) failPending(actions.errorText(error)); });
     request.value += 1;
     return done;

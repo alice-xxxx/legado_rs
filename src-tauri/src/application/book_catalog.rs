@@ -7,6 +7,80 @@ struct AddBookSnapshot {
     private: Value,
 }
 
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+
+    struct DetailExecutor {
+        stall_operation: &'static str,
+        entered: tokio::sync::Notify,
+        cancellation: std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl SourceExecutor for DetailExecutor {
+        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+            Box::pin(async move {
+                self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if request.source["bookSourceName"] == "slow" && request.operation == self.stall_operation {
+                    *self.cancellation.lock().unwrap() = request.cancellation.clone();
+                    self.entered.notify_one();
+                    return std::future::pending().await;
+                }
+                match request.operation.as_str() {
+                    "bookInfo" => Ok(request.book.unwrap()),
+                    "chapters" => Ok(json!([{"title": "Chapter", "url": "https://fixture/chapter"}])),
+                    _ => Err("Unexpected detail operation".into()),
+                }
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn selecting_another_source_cancels_pending_info_or_catalog_without_waiting() {
+        for stall_operation in ["bookInfo", "chapters"] {
+            let directory = tempfile::tempdir().unwrap();
+            let executor = Arc::new(DetailExecutor { stall_operation, entered: tokio::sync::Notify::new(), cancellation: std::sync::Mutex::new(None), calls: 0.into() });
+            let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
+            let records = ["slow", "fast"].map(|id| SourceRecord {
+                id: id.into(), name: id.into(), group: None, enabled: true,
+                source: json!({"bookSourceName": id, "bookSourceUrl": format!("https://fixture/{id}"), "bookSourceType": 0}),
+            });
+            service.write_sources(&records).await.unwrap();
+            for source in &records {
+                let cache = json!({"sourceId": source.id, "sourceRevision": service.source_revision(&source.id).await.unwrap(),
+                    "sourceDefinitionFingerprint": source_definition_fingerprint(&source.source).unwrap(),
+                    "book": {"name": "Fixture", "author": "Author", "bookUrl": format!("https://fixture/{}/book", source.id)}});
+                service.tasks.lock().await.search_result_documents.insert(format!("result-{}", source.id), cache);
+            }
+            let worker = service.clone();
+            let slow = tokio::spawn(async move { worker.prepare_search_result_book_with_revision("result-slow", Some(10)).await });
+            tokio::time::timeout(Duration::from_secs(2), executor.entered.notified()).await.unwrap();
+            let fast = tokio::time::timeout(Duration::from_secs(2), service.prepare_search_result_book_with_revision("result-fast", Some(11)))
+                .await.unwrap().unwrap();
+            assert!(fast["book"]["resourceId"].as_str().unwrap().contains("cache-"));
+            assert!(tokio::time::timeout(Duration::from_secs(1), slow).await.unwrap().unwrap().unwrap_err().contains("cancelled"));
+            assert!(executor.cancellation.lock().unwrap().as_ref().unwrap().is_cancelled());
+            // Out-of-order cancellation must not cancel a newer request, and a
+            // cancel received before command admission must still take effect.
+            service.cancel_book_preparation(10);
+            assert_eq!(service.detail_preparation.lock().unwrap().0, 11);
+            service.cancel_book_preparation(12);
+            assert!(service.prepare_search_result_book_with_revision("result-fast", Some(12)).await.unwrap_err().contains("superseded"));
+            let path = fast["book"]["resourceId"].as_str().unwrap().trim_start_matches("resource://");
+            let (_, id, _) = crate::resources::content::content_path(path).unwrap();
+            service.save_progress(id, json!({"chapterIndex": 0, "offset": 17, "updatedAtMs": 100})).await.unwrap();
+            let before = service.store.database().read(path).unwrap().unwrap();
+            let calls = executor.calls.load(std::sync::atomic::Ordering::SeqCst);
+            service.prepare_search_result_book_with_revision("result-fast", Some(13)).await.unwrap();
+            assert_eq!(executor.calls.load(std::sync::atomic::Ordering::SeqCst), calls, "Cached SQLite book must not rerun bookInfo/chapters");
+            let after = service.store.database().read(path).unwrap().unwrap();
+            for field in ["progress", "bookInstanceId", "catalogGeneration", "chapters"] {
+                assert_eq!(after[field], before[field], "Reopening must preserve {field}");
+            }
+        }
+    }
+}
+
 impl ApplicationService {
     pub(super) async fn saved_alternative_candidate(&self, book_id: &str, index: usize, expected_source: Option<&str>) -> Result<Value, String> {
         let _sources = self.sources_lock.lock().await;
@@ -129,8 +203,32 @@ impl ApplicationService {
     }
 
     pub async fn prepare_search_result_book(&self, result_id: &str) -> Result<Value, String> {
+        self.prepare_search_result_book_with_revision(result_id, None).await
+    }
+
+    pub fn cancel_book_preparation(&self, revision: u64) {
+        let mut current = self.detail_preparation.lock().unwrap_or_else(|error| error.into_inner());
+        if revision >= current.0 {
+            if let Some(token) = current.1.take() { token.cancel(); }
+            current.0 = revision;
+        }
+    }
+
+    pub async fn prepare_search_result_book_with_revision(&self, result_id: &str, revision: Option<u64>) -> Result<Value, String> {
+        let token = tokio_util::sync::CancellationToken::new();
+        if let Some(revision) = revision {
+            let mut current = self.detail_preparation.lock().unwrap_or_else(|error| error.into_inner());
+            // A cancel or a newer selection can arrive before this command is admitted.
+            if revision <= current.0 { return Err("Book preparation superseded".into()); }
+            if let Some(previous) = current.1.replace(token.clone()) { previous.cancel(); }
+            current.0 = revision;
+        }
+        let _cancel_on_drop = token.clone().drop_guard();
         let _operation = self.operation_read().await;
-        let selected = self.materialize_search_result_book(result_id).await?;
+        validate_id(result_id, "resultId")?;
+        let cache = self.read_search_result_cache(result_id).await?;
+        let selected = self.materialize_source_book_cancellable(result_id, cache, token.clone()).await?;
+        if token.is_cancelled() { return Err("Book preparation cancelled".into()); }
         let reference = selected["book"]["resourceId"].as_str().ok_or_else(|| "Prepared content has no reference".to_owned())?;
         let (_, book_id, _) = crate::resources::content::content_path(reference.trim_start_matches("resource://"))
             .ok_or_else(|| "Invalid prepared content reference".to_owned())?;
@@ -167,16 +265,14 @@ impl ApplicationService {
         self.materialize_source_book("alternative", cache).await
     }
 
-    async fn materialize_search_result_book(
-        &self,
-        result_id: &str,
-    ) -> Result<Value, String> {
-        validate_id(result_id, "resultId")?;
-        let cache = self.read_search_result_cache(result_id).await?;
-        self.materialize_source_book(result_id, cache).await
+    async fn materialize_source_book(&self, result_id: &str, cache: Value) -> Result<Value, String> {
+        let token = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = token.clone().drop_guard();
+        self.materialize_source_book_cancellable(result_id, cache, token).await
     }
 
-    async fn materialize_source_book(&self, result_id: &str, cache: Value) -> Result<Value, String> {
+    async fn materialize_source_book_cancellable(&self, result_id: &str, cache: Value, token: tokio_util::sync::CancellationToken) -> Result<Value, String> {
+        if token.is_cancelled() { return Err("Book preparation cancelled".into()); }
         let source_id = cache
             .get("sourceId")
             .and_then(Value::as_str)
@@ -236,9 +332,18 @@ impl ApplicationService {
             return Ok(json!({ "book": self.resource_descriptor(&book_ref) }));
         }
         let legacy_rss = crate::rss::is_legacy_rss_source(&source.source);
-        let info = self
-            .executor
-            .execute(engine_request(
+        let execute = |mut request: SourceEngineRequest| {
+            request.cancellation = Some(token.clone());
+            let token = token.clone();
+            async move {
+                tokio::select! {
+                    biased;
+                    _ = token.cancelled() => Err("Book preparation cancelled".to_owned()),
+                    result = self.executor.execute(request) => result,
+                }
+            }
+        };
+        let info = execute(engine_request(
                 if legacy_rss {
                     "rssBookInfo"
                 } else {
@@ -257,9 +362,7 @@ impl ApplicationService {
         } else {
             raw_book.clone()
         };
-        let chapters = self
-            .executor
-            .execute(engine_request(
+        let chapters = execute(engine_request(
                 if legacy_rss {
                     "rssChapters"
                 } else {
@@ -295,6 +398,7 @@ impl ApplicationService {
         // both KMP calls have completed. Revisions include source deletion and
         // re-import tombstones, even when the same ID and JSON definition return.
         let _sources = self.sources_lock.lock().await;
+        if token.is_cancelled() { return Err("Book preparation cancelled".into()); }
         let current_source = self
             .lookup_source(&source_id).await?
             .ok_or_else(|| "Search result source was removed during book lookup".to_owned())?;
@@ -465,17 +569,14 @@ impl ApplicationService {
     }
 
     pub(super) async fn set_alternatives(&self, book_id: &str, alternatives: Vec<Value>) -> Result<(), String> {
+        if alternatives.is_empty() { return Ok(()); }
         let _book = self.book_lock(book_id).await;
         let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
-        self.store.update_json_ref(&reference, move |mut book| {
-            let mut merged = book["alternatives"].as_array().cloned().unwrap_or_default();
-            for candidate in alternatives {
-                merged.retain(|old| !(old["sourceId"] == candidate["sourceId"] && old["engineurl"] == candidate["engineurl"]));
-                merged.push(candidate);
-            }
-            book["alternatives"] = json!(merged);
-            Ok(book)
-        }).await.map_err(|error| error.to_string())?;
+        let database = self.store.database().clone();
+        let path = reference.path().to_owned();
+        let changed = tokio::task::spawn_blocking(move || database.merge_alternatives(&path, alternatives))
+            .await.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?;
+        if !changed { return Ok(()); }
         if let Ok(notifier) = self.book_notifier.read() {
             if let Some(notifier) = notifier.as_ref() { notifier(json!({"requestId": 0, "resource": self.resource_descriptor(&reference)})); }
         }
@@ -499,30 +600,17 @@ impl ApplicationService {
         &self,
         book_id: &str,
     ) -> Result<Option<AddBookSnapshot>, String> {
-        let public_path = self.root.join(self.book_engine_path(book_id)?);
-        let private_relative = self.book_engine_path(book_id)?;
-        let private_path = self.root.join(&private_relative);
-        let public_exists = tokio::fs::try_exists(&public_path)
-            .await
-            .map_err(|error| format!("Cannot inspect book resource: {error}"))?;
-        let private_exists = tokio::fs::try_exists(&private_path)
-            .await
-            .map_err(|error| format!("Cannot inspect private book resource: {error}"))?;
-        match (public_exists, private_exists) {
-            (false, false) => return Ok(None),
-            (true, true) => {}
-            _ => return Err("Book resource is incomplete; repair it before adding again".into()),
-        }
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let public = self
-            .store
-            .read_json_ref(&book_ref)
-            .await
-            .map_err(|error| error.to_string())?;
-        let private = self.read_internal_json(&private_relative).await?;
+        // Metadata and engine state share one SQLite document. Checking the old
+        // JSON file always reports a cache miss and refetches/reset cached books.
+        let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+        let database = self.store.database().clone();
+        let path = reference.path().to_owned();
+        let document = tokio::task::spawn_blocking(move || database.read(&path))
+            .await.map_err(|error| error.to_string())?.map_err(|error| error.to_string())?;
+        let Some(document) = document else { return Ok(None); };
+        let kind = self.store.book_type(book_id).map_err(|error| error.to_string())?;
+        let public = crate::resources::content::book_view(&document, &kind).map_err(|error| error.to_string())?;
+        let private = crate::resources::content::source_state(&document);
         if public.get("id").and_then(Value::as_str) != Some(book_id)
             || public.get("chapters").and_then(Value::as_array).is_none()
             || private.get("sourceId").and_then(Value::as_str).is_none()

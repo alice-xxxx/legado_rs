@@ -240,6 +240,27 @@ impl Database {
             Ok(())
         })
     }
+
+    /// Source discovery updates only alternatives, never reads/rebuilds the catalogue.
+    pub(crate) fn merge_alternatives(&self, path: &str, candidates: Vec<Value>) -> Result<bool, ResourceError> {
+        if candidates.is_empty() { return Ok(false); }
+        self.transaction(|tx| {
+            if !exists(tx, path)? { return Err(ResourceError::new("Book does not exist")); }
+            let mut alternatives = field(tx, path, "alternatives")?.as_array().cloned().unwrap_or_default();
+            let mut changed = false;
+            for candidate in candidates {
+                if let Some(existing) = alternatives.iter_mut().find(|old|
+                    old["sourceId"] == candidate["sourceId"] && old["engineurl"] == candidate["engineurl"]) {
+                    if *existing != candidate { *existing = candidate; changed = true; }
+                } else {
+                    alternatives.push(candidate);
+                    changed = true;
+                }
+            }
+            if changed { write_field(tx, path, "alternatives", &json!(alternatives))?; }
+            Ok(changed)
+        })
+    }
     pub(crate) fn media(&self) -> Result<Vec<(String, Value)>, ResourceError> {
         let connection = self.connect()?;
         let mut stmt = connection.prepare("SELECT key,value FROM records WHERE field='media' AND path LIKE 'cache/%' ORDER BY path,key")?;

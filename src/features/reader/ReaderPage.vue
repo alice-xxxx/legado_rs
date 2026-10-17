@@ -4,6 +4,7 @@ import type { ReaderContextFeatures } from "./readerContext";
 import type { SourceMetadata } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
 import BackButton from "../../ui/BackButton.vue";
+import { useVirtualList } from "../../ui/useVirtualList";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
 import { settings } from "../settings/settingsStore";
@@ -30,6 +31,19 @@ export default defineComponent({
       closeReader: props.closeReader,
     };
     const comicBrightness = ref(100);
+    const directoryViewport = ref<HTMLElement | null>(null);
+    const directoryChapters = computed(() => {
+      const query = context.readerDirectoryQuery.value.trim().toLocaleLowerCase();
+      const chapters = openedBook.value?.chapters ?? [];
+      return query ? chapters.filter(chapter => `${chapter.index + 1} ${chapter.title}`.toLocaleLowerCase().includes(query)) : chapters;
+    });
+    const directoryWindow = useVirtualList(directoryChapters, directoryViewport, 54);
+    watch(context.readerDirectoryQuery, () => { void directoryWindow.reset(); });
+    watch(context.readerDirectoryOpen, async open => {
+      if (!open) return;
+      await nextTick();
+      directoryWindow.scrollToIndex(directoryChapters.value.findIndex(chapter => chapter.index === context.readingChapterIndex.value));
+    });
     const horizontalReaderEdges = computed(() => context.readingImagePage.value || context.readingPdfPage.value
       || (!context.readingMediaChapter.value && !isVerticalReadingMode(settings.value.reader.readingMode)));
     const bookmarkNoteInput = ref<HTMLTextAreaElement | null>(null);
@@ -186,7 +200,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, directoryViewport, directoryChapters, directoryList: directoryWindow.list, directoryRange: directoryWindow.range, visibleDirectoryChapters: directoryWindow.visibleItems };
   },
 });
 </script>
@@ -194,7 +208,7 @@ export default defineComponent({
 <template>
   <section v-if="ctx.readerVisible" class="reader-shell"
     :data-reader-mode="ctx.readingPdfPage ? 'pdf' : ctx.readingVideoChapter ? 'video' : ctx.readingMediaChapter ? 'audio' : ctx.readingImagePage ? 'comic' : 'novel'"
-    :class="{ 'reader-menu-open': ctx.readingMediaChapter || readerMenuOpen, 'reader-chrome-hidden': !ctx.readingMediaChapter && !readerMenuOpen, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingContent }"
+    :class="{ 'reader-menu-open': ctx.readingMediaChapter || readerMenuOpen || readerBusy || ctx.readerChapterError, 'reader-chrome-hidden': !ctx.readingMediaChapter && !readerMenuOpen && !readerBusy && !ctx.readerChapterError, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingContent }"
     @click="onReaderSurfaceClick">
     <header class="reader-topbar">
       <div class="reader-toolbar-row">
@@ -205,15 +219,15 @@ export default defineComponent({
           <span class="read-save-state" :class="progressSaveState">{{ progressSaveState === 'saving' ? '保存中' :
             progressSaveState === 'saved' ? '已保存' : progressSaveState === 'error' ? '保存失败' : '' }}</span>
           <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button"
-            class="reader-tool-button" @click.stop="ctx.openReaderControls('search')">
+            class="reader-tool-button" aria-label="在本章中查找" @click.stop="ctx.openReaderControls('search')">
             <PrototypeIcon name="search" />
           </button>
           <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button"
-            class="reader-tool-button" @click.stop="ctx.toggleCurrentBookmark">
+            class="reader-tool-button" aria-label="添加或编辑当前书签" @click.stop="ctx.toggleCurrentBookmark">
             <PrototypeIcon name="bookmark" />
           </button>
           <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && openedBook?.canChangeSource" type="button"
-            class="reader-tool-button" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy"
+            class="reader-tool-button" aria-label="切换内容来源" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy"
             @click.stop="openBookSourceSwitch(true)">
             <PrototypeIcon name="source-switch" />
           </button>
@@ -430,9 +444,10 @@ export default defineComponent({
           <PrototypeIcon name="search" /><input v-model="readerDirectoryQuery" type="search"
             :placeholder="ctx.readingPdfPage ? '搜索页码或页名' : ctx.readingVideoChapter ? '搜索剧集' : ctx.readingMediaChapter ? '搜索节目' : ctx.readingImagePage ? '搜索话数' : '搜索章节名称'" />
         </label>
-        <div class="reader-directory-list">
-          <button v-for="chapter in openedBook?.chapters"
-            v-show="!readerDirectoryQuery || chapter.title.toLowerCase().includes(readerDirectoryQuery.toLowerCase())"
+        <div ref="directoryViewport" class="reader-directory-list">
+          <div ref="directoryList">
+          <div aria-hidden="true" :style="{ height: `${directoryRange.top}px` }"></div>
+          <button v-for="chapter in visibleDirectoryChapters"
             :key="chapter.id" type="button" class="reader-directory-chapter"
             :class="{ current: chapter.index === ctx.readingChapterIndex }" :disabled="readerBusy"
             @click="ctx.selectReaderChapter(chapter.index)">
@@ -441,8 +456,10 @@ export default defineComponent({
             <span v-if="chapter.index === ctx.readingChapterIndex" class="reader-directory-current">{{
               ctx.readingVideoChapter ? '正在播放' : ctx.readingMediaChapter ? '正在收听' : '当前位置' }}</span>
           </button>
-          <p v-if="!openedBook?.chapters.some(chapter => !readerDirectoryQuery || chapter.title.toLowerCase().includes(readerDirectoryQuery.toLowerCase()))"
+          <div aria-hidden="true" :style="{ height: `${directoryRange.bottom}px` }"></div>
+          <p v-if="!directoryChapters.length"
             class="reader-directory-empty">没有匹配的章节。</p>
+          </div>
         </div>
       </aside>
     </div>

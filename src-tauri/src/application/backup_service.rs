@@ -630,6 +630,10 @@ impl ApplicationService {
         // Restored tasks have no running workers. Search publication
         // ownership never survives a backup restore.
         registry.active_search_task_id = None;
+        registry.search_group_indexes.clear();
+        registry.dirty_search_results.clear();
+        registry.search_results_need_sort = false;
+        registry.published_search_error_count = 0;
         Ok(())
     }
 

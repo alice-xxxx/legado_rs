@@ -174,7 +174,9 @@ impl ApplicationService {
             // leaving unrelated home/debug result caches available.
             let old_round_ids = registry.search_documents.keys().cloned().collect::<HashSet<_>>();
             registry.search_documents.clear();
-            registry.published_search_results.clear();
+            registry.search_group_indexes.clear();
+            registry.dirty_search_results.clear();
+            registry.search_results_need_sort = false;
             registry.published_search_error_count = 0;
             if previous_page.is_none() {
                 registry.search_result_documents.retain(|_, cache| {
@@ -194,6 +196,11 @@ impl ApplicationService {
                 if let Some(previous) = previous_page {
                     document["results"] = previous["results"].clone();
                     document["exhaustedSourceIds"] = previous["exhaustedSourceIds"].clone();
+                }
+                if let Some(results) = document["results"].as_array() {
+                    registry.search_group_indexes = search_result_group_indexes(results);
+                    registry.dirty_search_results = results.iter()
+                        .filter_map(|result| result["resultId"].as_str().map(str::to_owned)).collect();
                 }
                 registry.search_documents.insert(search_id.to_owned(), document);
             }

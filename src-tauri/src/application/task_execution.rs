@@ -3,7 +3,10 @@
 use super::*;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 
-const SEARCH_CONCURRENCY: usize = 16;
+// Each source can run JS, parse HTML and create a browser. Leave mobile CPU
+// capacity for foreground content instead of admitting sixteen rule engines.
+pub(super) const SEARCH_CONCURRENCY: usize = if cfg!(any(target_os = "ios", target_os = "android")) { 4 } else { 8 };
+const SEARCH_PUBLICATION_INTERVAL: Duration = Duration::from_millis(250);
 const SEARCH_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Resolve worker termination against a later persisted control request.
@@ -578,7 +581,10 @@ impl ApplicationService {
         };
         loop {
             if !self.task_checkpoint_with_cancel(task_id, signal, || { cancellation.cancel(); running.clear(); }).await? { return Ok(None); }
-            while running.len() < SEARCH_CONCURRENCY {
+            let foreground_loading = self.detail_preparation.lock().unwrap_or_else(|error| error.into_inner())
+                .1.as_ref().is_some_and(|token| !token.is_cancelled());
+            let concurrency = if foreground_loading { 1 } else { SEARCH_CONCURRENCY };
+            while running.len() < concurrency {
                 if signal.borrow().paused || signal.borrow().cancelled { break; }
                 let Some((id, source)) = pending.next() else { break; };
                 let executor = self.executor.clone();
@@ -586,6 +592,7 @@ impl ApplicationService {
                 let page = task.page;
                 let token = cancellation.child_token();
                 let operation_gate = self.operation_gate.clone();
+                let search_slots = self.search_slots.clone();
                 running.push(async move {
                     let _cancel_on_drop = token.clone().drop_guard();
                     let _operation = operation_gate.read_owned().await;
@@ -595,8 +602,13 @@ impl ApplicationService {
                         tokio::select! {
                             biased;
                             _ = token.cancelled() => Err("Source search cancelled".into()),
-                            result = tokio::time::timeout(SEARCH_SOURCE_TIMEOUT, executor.execute(request)) =>
-                                result.unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into())),
+                            result = async {
+                                // Discovery and source-switch searches share the same CPU/network
+                                // budget. Waiting for admission does not consume a source timeout.
+                                let _slot = search_slots.acquire_owned().await.map_err(|error| error.to_string())?;
+                                tokio::time::timeout(SEARCH_SOURCE_TIMEOUT, executor.execute(request)).await
+                                    .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()))
+                            } => result,
                         }
                     } else { Err("Search source changed, was removed, or is no longer enabled".into()) };
                     (id, source, response)
@@ -613,7 +625,7 @@ impl ApplicationService {
                     continue;
                 }
                 _ = tokio::time::sleep_until((last_result_publication.unwrap_or_else(Instant::now)
-                    + Duration::from_millis(100)).into()), if unpublished_results && task.kind == "search" => {
+                    + SEARCH_PUBLICATION_INTERVAL).into()), if unpublished_results && task.kind == "search" => {
                     // Flush fast sources even if the remaining network requests stall.
                     self.publish_search_task_state(&task, "running", None).await?;
                     last_result_publication = Some(Instant::now());
@@ -627,7 +639,7 @@ impl ApplicationService {
             if !self.task_checkpoint_with_cancel(task_id, signal, || { cancellation.cancel(); running.clear(); }).await? { return Ok(None); }
             let _operation = self.operation_gate.clone().read_owned().await;
             if !self.task_worker_is_current(task_id, signal).await { return Ok(None); }
-            let publish = last_result_publication.is_none_or(|last| last.elapsed() >= Duration::from_millis(100));
+            let publish = last_result_publication.is_none_or(|last| last.elapsed() >= SEARCH_PUBLICATION_INTERVAL);
             if let Some((source, revision)) = source {
                 self.append_search_source(&task, &source, revision, response, publish).await?;
             } else {
@@ -1252,6 +1264,32 @@ mod search_task_tests {
     }
 
     #[tokio::test]
+    async fn search_delivers_every_result_before_terminal_ipc_even_for_a_fast_round() {
+        let directory = tempfile::tempdir().unwrap();
+        let executor = Arc::new(StreamingExecutor { release: tokio::sync::Notify::new(), started: 0.into() });
+        let service = ApplicationService::open_with_executor(directory.path(), executor).await.unwrap();
+        service.write_sources(&(0..30).map(|i| source(&format!("fast-{i}"), 0)).collect::<Vec<_>>()).await.unwrap();
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let response = service.start_search("text", &[], "fixture", 1, false,
+            Some(Arc::new(move |batch| { let _ = sender.send(batch); }))).await.unwrap();
+        let mut delivered = HashSet::new();
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                let batch = receiver.recv().await.expect("Search channel must remain live until completion");
+                for result in batch["results"].as_array().into_iter().flatten() {
+                    delivered.insert(result["resultId"].as_str().unwrap().to_owned());
+                }
+                if batch["complete"] == true {
+                    assert_eq!(batch["status"], "completed");
+                    break;
+                }
+            }
+        }).await.unwrap();
+        assert_eq!(delivered.len(), 30);
+        assert_eq!(service.get_search_task_results(response["taskId"].as_str().unwrap()).await.unwrap()["results"].as_array().unwrap().len(), 30);
+    }
+
+    #[tokio::test]
     async fn search_keeps_results_when_native_execution_scope_finishes() {
         struct ScopedExecutor;
         impl SourceExecutor for ScopedExecutor {
@@ -1358,23 +1396,46 @@ mod search_task_tests {
     }
 
     #[tokio::test]
-    async fn search_admits_sixteen_sources_and_replaces_one_finished_source() {
+    async fn search_bounds_concurrency_and_replaces_one_finished_source() {
         let directory = tempfile::tempdir().unwrap();
         let executor = Arc::new(CapacityExecutor { permits: tokio::sync::Semaphore::new(0), started: 0.into() });
         let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
         service.write_sources(&(0..40).map(|i| source(&format!("source-{i}"), 0)).collect::<Vec<_>>()).await.unwrap();
         let response = service.start_search("text", &[], "fixture", 1, false, None).await.unwrap();
         let id = response["taskId"].as_str().unwrap();
-        for expected in [16, 17] {
+        for expected in [SEARCH_CONCURRENCY, SEARCH_CONCURRENCY + 1] {
             tokio::time::timeout(Duration::from_secs(2), async {
                 while executor.started.load(Ordering::SeqCst) < expected { tokio::task::yield_now().await; }
             }).await.unwrap();
             tokio::time::sleep(Duration::from_millis(20)).await;
             assert_eq!(executor.started.load(Ordering::SeqCst), expected);
-            if expected == 16 { executor.permits.add_permits(1); }
+            if expected == SEARCH_CONCURRENCY { executor.permits.add_permits(1); }
         }
         service.cancel_task(id).await.unwrap();
         assert_eq!(wait_for_terminal(&service, id).await.completed, 1);
+    }
+
+    #[tokio::test]
+    async fn foreground_details_reduce_search_admission_until_the_request_finishes() {
+        let directory = tempfile::tempdir().unwrap();
+        let executor = Arc::new(CapacityExecutor { permits: tokio::sync::Semaphore::new(0), started: 0.into() });
+        let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
+        service.write_sources(&(0..40).map(|i| source(&format!("source-{i}"), 0)).collect::<Vec<_>>()).await.unwrap();
+        let foreground = tokio_util::sync::CancellationToken::new();
+        *service.detail_preparation.lock().unwrap() = (1, Some(foreground.clone()));
+        let response = service.start_search("text", &[], "fixture", 1, false, None).await.unwrap();
+        let id = response["taskId"].as_str().unwrap();
+        for expected in [1, 2, SEARCH_CONCURRENCY + 2] {
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while executor.started.load(Ordering::SeqCst) < expected { tokio::task::yield_now().await; }
+            }).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert_eq!(executor.started.load(Ordering::SeqCst), expected);
+            if expected == 2 { foreground.cancel(); }
+            if expected < SEARCH_CONCURRENCY + 2 { executor.permits.add_permits(1); }
+        }
+        service.cancel_task(id).await.unwrap();
+        assert_eq!(wait_for_terminal(&service, id).await.completed, 2);
     }
 
     #[tokio::test]
