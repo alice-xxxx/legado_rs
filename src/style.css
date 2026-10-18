@@ -272,13 +272,13 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
 .settings-menu-row:enabled:active, .managed-list-row__main:enabled:active { background: var(--app-panel-soft); }
 .modal-backdrop, .overlay-backdrop { animation: app-scrim-in 140ms ease both; overscroll-behavior: contain; }
 .modal-backdrop > :first-child, .overlay-backdrop > :first-child,
-.reader-directory-panel, .reader-settings-popover { animation: app-panel-in 180ms cubic-bezier(.2,.8,.2,1) both; }
+.reader-book-page, .book-source-switch-page, .reader-settings-popover { animation: app-panel-in 180ms cubic-bezier(.2,.8,.2,1) both; }
 @keyframes app-scrim-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes app-panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (pointer: coarse) {
   .button.small, .text-button, .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-height: 44px; }
   .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-width: 44px; }
-  .reader-tool-button, .reader-directory-header > button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
+  .reader-tool-button, .reader-book-page-header > .back-button, .source-page-header > .back-button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
   input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
 }
 @media (prefers-reduced-motion: reduce) {

@@ -33,7 +33,7 @@ defineProps<{ session: BookSourceSwitchSession; locked: boolean }>();
 </template>
 
 <style scoped>
-.book-source-switch-page { display: flex; position: fixed; z-index: 60; inset: 0; min-height: 0; flex-direction: column; pointer-events: auto; color: var(--app-text); background: var(--app-background); color-scheme: light dark; }
+.book-source-switch-page { display: flex; position: fixed; z-index: 60; inset: 0; min-height: 0; flex-direction: column; pointer-events: auto; color: var(--app-text); background: var(--app-background); }
 .source-page-header { display: flex; flex: none; align-items: center; gap: 12px; padding: calc(8px + var(--safe-top)) 12px 8px; border-bottom: 1px solid var(--app-line); background: var(--app-surface); }
 .source-page-header > div { display: grid; min-width: 0; gap: 3px; }
 .source-page-header strong { font-size: var(--ui-font-body); }

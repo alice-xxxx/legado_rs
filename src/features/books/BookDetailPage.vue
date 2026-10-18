@@ -268,7 +268,10 @@ watch(() => searchResultDetails.value, (details) => {
   bookDetailMenuOpen.value = false;
 }, { immediate: true });
 watch(() => readerVisible.value, (visible) => {
-  if (visible) bookDetailMenuOpen.value = false;
+  if (visible) {
+    bookDetailMenuOpen.value = false;
+    if (bookSourceSwitch.bookSourceSwitchInline) bookSourceSwitch.closeBookSourceSwitch();
+  }
 });
 function isBookTaskBusy(bookId: string, kind: BookTaskKind): boolean {
   return tasks.value.some((task) => task.bookId === bookId && task.kind === kind

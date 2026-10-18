@@ -1,6 +1,6 @@
 import type { BookSourceSwitchContract } from "./sourceContext";
 
-/** Source-switch state consumed by the detail screen and its confirmation sheet. */
+/** Source-switch state shared by the detail and reader screens. */
 export type BookSourceSwitchSession = Pick<
   BookSourceSwitchContract,
   | "bookSourceSwitchOpen"
