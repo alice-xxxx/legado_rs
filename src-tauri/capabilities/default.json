@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "deep-link:allow-get-current"
+    "deep-link:allow-get-current",
+    "sql:allow-select"
   ]
 }

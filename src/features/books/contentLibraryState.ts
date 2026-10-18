@@ -1,9 +1,9 @@
 import { computed, nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { command } from "../../api/ipc";
-import { readResource } from "../../api/resources";
+import { readLibrary, assetUrl } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
-import type { AppBootstrap, BookResource, ContentLibrary, ContentPreview, ContentType, ResourceDescriptor, ShelfDocument, ShelfSortKey, ShelfSortOrder } from "../../api/types";
+import type { AppBootstrap, BookResource, ContentLibrary, ContentPreview, ContentType, MutationAck, ShelfDocument, ShelfSortKey, ShelfSortOrder } from "../../api/types";
 
 export const contentTypes: ContentType[] = ["text", "html", "image", "audio", "video", "pdf"];
 export const contentLibrary = ref<ContentLibrary>({});
@@ -13,17 +13,15 @@ export const librarySort = ref<ShelfSortKey>(sortKeys.includes(savedSort) ? save
 export const librarySortOrder = ref<ShelfSortOrder>(localStorage.getItem("librarySortOrder") === "descending" ? "descending" : "ascending");
 watch(librarySort, value => localStorage.setItem("librarySort", value));
 watch(librarySortOrder, value => localStorage.setItem("librarySortOrder", value));
-let resource: ResourceDescriptor;
+let initialized = false;
 let requestId = 0;
 let stopWatch: WatchStopHandle = () => {};
 const progressUpdates = new Map<string, { updatedAtMs: number; read: number }>();
 let refreshId = 0;
 
-export function contentUrl(type: ContentType, id: string, name = `${id}.json`): string {
+export function contentUrl(type: ContentType, id: string, name: string): string {
   if (name.startsWith("http://") || name.startsWith("https://")) return name;
-  const path = name.startsWith("resource://") ? name.slice("resource://".length)
-    : `cache/${type}/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
-  return resource ? new URL(path, resource.src).href : "";
+  return assetUrl(type,id,name);
 }
 
 const libraryIndex = computed(() => {
@@ -49,20 +47,21 @@ export function libraryEntries(): Array<ContentPreview & { type: ContentType }> 
 }
 
 /** This positional view is read-only. Every writer changes contentLibrary. */
-export const libraryPositions = computed<ShelfDocument>(() => ({
-  schemaVersion: 1,
-  sort: librarySort.value,
-  sortOrder: librarySortOrder.value,
-  groups: (contentLibrary.value.groups ?? []).map(group => group.name),
-  books: libraryEntries().map(item => ({ id: item.id,
-    groups: (contentLibrary.value.groups ?? []).filter(group => group.id.includes(item.id)).map(group => group.name) })),
-}));
+export const libraryPositions = computed<ShelfDocument>(() => {
+  const groups=contentLibrary.value.groups ?? [];
+  const names=new Map<string,string[]>();
+  for (const group of groups) for (const id of group.id) {
+    const values=names.get(id) ?? []; values.push(group.name); names.set(id,values);
+  }
+  return { schemaVersion:1,sort:librarySort.value,sortOrder:librarySortOrder.value,groups:groups.map(group=>group.name),
+    books:contentTypes.flatMap(type=>(contentLibrary.value[type] ?? []).map(item=>({id:item.id,groups:names.get(item.id) ?? []}))) };
+});
 
 function preview(book: BookResource): ContentPreview {
   const value: ContentPreview = { id: book.id, title: book.title };
   if (book.author) value.author = book.author;
   if (book.cover) value.cover = book.cover;
-  else if (book.coverSrc && !book.coverSrc.startsWith(resource ? new URL(".", resource.src).href : "resource://")) value.cover = book.coverSrc;
+  else if (book.coverSrc && !book.coverSrc.includes("/r/")) value.cover = book.coverSrc;
   value.total = book.chapterCount;
   if (book.updatedAtMs) value.updatedAt = Math.floor(book.updatedAtMs / 1000);
   if (book.latestChapter) value.latest = book.latestChapter;
@@ -121,14 +120,14 @@ function installWatch(): void {
     members: contentTypes.map(type => contentLibrary.value[type]?.map(item => item.id) ?? []),
     groups: (contentLibrary.value.groups ?? []).map(group => ({ name: group.name, id: [...group.id] })),
   }), () => {
-    void command("save_shelf", { shelf: contentLibrary.value, requestId: ++requestId }).catch(console.error);
+    void command("save_shelf", { shelf: libraryPositions.value, requestId: ++requestId }).catch(console.error);
   }, { deep: true });
 }
 
 export async function refreshContentLibrary(): Promise<void> {
-  if (!resource) return;
+  if (!initialized) return;
   const currentRequest = requestId, currentRefresh = ++refreshId;
-  const next = await readResource<ContentLibrary>(resource);
+  const next = await readLibrary();
   await nextTick();
   if (currentRequest !== requestId || currentRefresh !== refreshId) return;
   for (const type of contentTypes) for (const item of next[type] ?? []) {
@@ -142,18 +141,16 @@ export async function refreshContentLibrary(): Promise<void> {
   installWatch();
 }
 
-export async function loadContentLibrary(descriptor: ResourceDescriptor): Promise<void> {
-  resource = descriptor;
-  contentLibrary.value = await readResource<ContentLibrary>(resource);
-  await listen<{ requestId: number; resource: ResourceDescriptor }>("shelf-updated", ({ payload }) => {
+export async function loadContentLibrary(): Promise<void> {
+  initialized = true;
+  contentLibrary.value = await readLibrary();
+  await listen<{ requestId: number; resource: MutationAck }>("shelf-updated", ({ payload }) => {
     if (payload.requestId !== 0 && payload.requestId !== requestId) return;
-    resource = payload.resource;
     void refreshContentLibrary().catch(console.error);
   });
-  await listen<AppBootstrap>("app-state-updated", ({ payload }) => {
+  await listen<AppBootstrap>("app-state-updated", () => {
     progressUpdates.clear();
     requestId++;
-    resource = payload.shelf;
     void refreshContentLibrary().catch(console.error);
   });
   installWatch();

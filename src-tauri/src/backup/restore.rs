@@ -42,7 +42,7 @@ pub(crate) async fn restore_backup(
     let archive_path = archive_path.as_ref().to_path_buf();
     tokio::task::spawn_blocking(move || {
         database
-            .with_writer_closed(|| restore_backup_sync(&root, &archive_path))
+            .with_writer_closed(move || restore_backup_sync(&root, &archive_path))
             .map_err(|error| TransactionError::new(error.to_string()))?
     })
     .await
@@ -513,8 +513,13 @@ fn validate_extracted_snapshot(stage: &Path) -> Result<(), String> {
 fn import_snapshot_database(current_root: &Path, stage: &Path) -> Result<(), String> {
     let files = collect_snapshot_files(stage)?;
     let db = crate::database::Database::open(stage).map_err(|e| e.to_string())?;
-    db.transaction(|tx| {
-        for file in &files {
+    let current_root = current_root.to_owned();
+    let snapshot = files.clone();
+    db.transaction(move |tx| {
+        // Cache metadata precedes library membership because of foreign keys.
+        let mut ordered = snapshot.iter().collect::<Vec<_>>();
+        ordered.sort_by_key(|file| if file.archive_path.starts_with("cache/") {0} else {1});
+        for file in ordered {
             if !file.archive_path.ends_with(".json") { continue; }
             let value: serde_json::Value=serde_json::from_slice(&fs::read(&file.source_path)?).map_err(|e|crate::resources::ResourceError::new(e.to_string()))?;
             if let Some(namespace)=file.archive_path.strip_prefix("source-engine/storage/").and_then(|name|name.strip_suffix(".json")) {
@@ -526,7 +531,7 @@ fn import_snapshot_database(current_root: &Path, stage: &Path) -> Result<(), Str
         // Rebuildable device caches are retained from this device, not restored
         // from another device's archive.
         if current_root.join(crate::database::FILE_NAME).is_file() {
-            let current=crate::database::Database::at(current_root).connect()?;
+            let current=crate::database::Database::at(&current_root).connect()?;
             for namespace in DEVICE_SOURCE_CACHES {
                 let mut stmt=current.prepare("SELECT key,value,expires_at_ms FROM source_kv WHERE namespace=?1")?;
                 let rows=stmt.query_map([namespace],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?)))?;
@@ -536,9 +541,10 @@ fn import_snapshot_database(current_root: &Path, stage: &Path) -> Result<(), Str
         Ok(())
     }).map_err(|e|e.to_string())?;
     for file in files {
-        if file.archive_path.ends_with(".json") {
+        if file.archive_path.ends_with(".json") && file.archive_path != "settings.json" {
             fs::remove_file(file.source_path).map_err(|e| e.to_string())?;
         }
     }
+    db.with_writer_closed(|| ()).map_err(|e|e.to_string())?;
     Ok(())
 }

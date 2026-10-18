@@ -15,11 +15,6 @@ pub(super) fn task_resource_response(mut response: Value) -> Value {
 }
 
 #[tauri::command]
-pub async fn tasks_resource(service: State<'_, ApplicationService>) -> Result<Value, String> {
-    service.tasks_resource().await
-}
-
-#[tauri::command]
 pub async fn clear_finished_tasks(
     app: tauri::AppHandle,
     service: State<'_, ApplicationService>,

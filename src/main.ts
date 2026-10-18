@@ -13,6 +13,7 @@ import { initializeTheme } from "./features/settings/themeState";
 import { loadHistory } from "./features/settings/historyStore";
 import { loadConfigurations } from "./features/settings/configurationStores";
 import { initializeBookStore } from "./features/books/bookDetailState";
+import { initializeDatabase } from "./api/database";
 import { loadShelf } from "./features/shelf/shelfStore";
 import { loadSources } from "./features/sources/sourcesStore";
 import { initializeTaskStore, disposeTaskStore } from "./features/tasks/tasksStore";
@@ -77,15 +78,15 @@ const removeRouterError = router.onError(error => {
 // Recovery listening starts immediately; settings initialize before session hosts and pages.
 mountRoot(RecoveryRuntime, "#recovery-runtime", "recovery");
 
-void appBootstrap().then((bootstrap) => Promise.all([
+void appBootstrap().then((bootstrap) => { initializeDatabase(bootstrap); return Promise.all([
   loadSettings(bootstrap.settings),
-  loadHistory(bootstrap.history),
-  loadShelf(bootstrap.shelf),
-  loadSources(bootstrap.sources),
-  loadConfigurations(bootstrap),
-  initializeBookStore(bootstrap.shelf),
+  loadHistory(),
+  loadShelf(),
+  loadSources(),
+  loadConfigurations(),
+  initializeBookStore(),
   initializeTaskStore(),
-])).then(() => {
+]); }).then(() => {
   if (startupDisposed) return;
   // The import host installs its session before ReaderHost consumes it.
   mountRoot(ExternalImportHost, "#external-import-host", "external-import");

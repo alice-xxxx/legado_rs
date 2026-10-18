@@ -268,6 +268,13 @@ impl ApplicationService {
     }
 
     pub fn resource_descriptor(&self, resource: &ResourceRef) -> Value {
+        if crate::resources::content::is_content_document(resource.path()) {
+            let (_,id,_)=crate::resources::content::content_path(resource.path()).expect("book identity");
+            return json!({"bookId":id});
+        }
+        if resource.path().ends_with(".json") {
+            return json!({"updated":true});
+        }
         json!({
             "resourceId": resource.as_str(),
             "src": self.server.url_for(resource),
@@ -408,9 +415,9 @@ mod settings_startup_tests {
         std::fs::write(legacy.path().join("settings.json"), serde_json::to_vec(&settings).unwrap()).unwrap();
         let service = ApplicationService::open_with_executor(legacy.path(), Arc::new(UnusedExecutor)).await.unwrap();
         let mut persisted = service.store.read_json_ref(&service.store.settings_ref()).await.unwrap();
-        assert_eq!(persisted["theme"], "system", "Legacy JSON is deliberately not imported");
-        assert_eq!(persisted["reader"]["themes"]["light"], "paper");
-        assert_ne!(persisted["reader"]["fontSizePx"], 25);
+        assert_eq!(persisted["theme"], "light", "Settings remain in their existing JSON file");
+        assert_eq!(persisted["reader"]["themes"]["light"], "sepia");
+        assert_eq!(persisted["reader"]["fontSizePx"], 25);
         persisted["reader"]["themes"]["light"] = json!("sepia");
         persisted["reader"]["fontSizePx"] = json!(25);
         assert_eq!(persisted["reader"]["audioSkipSeconds"], 15);

@@ -66,20 +66,13 @@ pub async fn restore_webdav_backup(
     app: tauri::AppHandle,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    let result = service.restore_webdav_backup().await?;
+    let result = service.restore_webdav_backup(crate::readonly_sql::close(&app)).await;
+    crate::readonly_sql::open(&app,&service.resource_store().database().file_path()).await?;
+    let result = result?;
     if result["commitState"] == "committed" && !result["recoveryRequired"].as_bool().unwrap_or(true)
     {
         let bootstrap = result["bootstrap"].clone();
         let _ = app.emit("app-state-updated", bootstrap.clone());
-        let _ = app.emit(
-            "history-updated",
-            json!({ "requestId": 0, "resource": bootstrap["history"].clone() }),
-        );
-        let _ = app.emit("shelf-updated", bootstrap["shelf"].clone());
-        let _ = app.emit(
-            "settings-updated",
-            json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
-        );
     }
     Ok(result)
 }
@@ -100,7 +93,10 @@ pub async fn restore_backup_from_picker(
     let Some(path) = selected else {
         return Ok(json!({ "cancelled": true }));
     };
-    let mut bootstrap = match service.restore_backup(&path.path).await {
+    crate::readonly_sql::close(&app).await;
+    let restored = service.restore_backup(&path.path).await;
+    crate::readonly_sql::open(&app,&service.resource_store().database().file_path()).await?;
+    let mut bootstrap = match restored {
         Ok(bootstrap) => bootstrap,
         Err(error) => return Ok(restore_error_response(error)),
     };
@@ -108,15 +104,6 @@ pub async fn restore_backup_from_picker(
         .as_object_mut()
         .and_then(|object| object.remove("webdavBackupWarning"));
     let _ = app.emit("app-state-updated", bootstrap.clone());
-    let _ = app.emit(
-        "history-updated",
-        json!({ "requestId": 0, "resource": bootstrap["history"].clone() }),
-    );
-    let _ = app.emit("shelf-updated", bootstrap["shelf"].clone());
-    let _ = app.emit(
-        "settings-updated",
-        json!({ "requestId": 0, "resource": bootstrap["settings"].clone() }),
-    );
     Ok(json!({
         "restored": true,
         "commitState": "committed",

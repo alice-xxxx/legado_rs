@@ -1,12 +1,11 @@
 import { nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { readResource } from "../../api/resources";
 import { saveSettings } from "../../api/settings";
-import type { AppBootstrap, AppSettingsResource, ResourceDescriptor } from "../../api/types";
+import type { AppBootstrap, AppSettingsResource } from "../../api/types";
 import { defaultSettings } from "./settingsDefaults";
 export const settings = ref<AppSettingsResource>(defaultSettings);
 
-type SettingsUpdatedEvent = { requestId: number; resource: ResourceDescriptor };
+type SettingsUpdatedEvent = { requestId: number; resource: AppSettingsResource };
 let requestId = 0, stopWatch: WatchStopHandle = () => { };
 
 function watchSettings() {
@@ -18,7 +17,7 @@ async function updateSettings({ requestId: eventRequestId, resource }: SettingsU
     return;
   }
   const id = requestId;
-  const next = await readResource<AppSettingsResource>(resource);
+  const next = resource;
   await nextTick();
   if (id !== requestId) return;
 
@@ -27,8 +26,8 @@ async function updateSettings({ requestId: eventRequestId, resource }: SettingsU
   watchSettings();
 }
 
-export async function loadSettings(descriptor: ResourceDescriptor): Promise<void> {
-  settings.value = await readResource<AppSettingsResource>(descriptor);
+export async function loadSettings(initial: AppSettingsResource): Promise<void> {
+  settings.value = initial;
   await listen<AppBootstrap>("app-state-updated", ({ payload }) => { requestId++; void updateSettings({ requestId: 0, resource: payload.settings }).catch(console.error); });
   await listen<SettingsUpdatedEvent>("settings-updated", ({ payload }) => { void updateSettings(payload).catch(console.error); });
   watchSettings();

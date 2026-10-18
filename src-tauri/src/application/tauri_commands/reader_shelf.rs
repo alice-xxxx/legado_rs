@@ -145,14 +145,15 @@ pub async fn save_shelf(
 }
 
 #[tauri::command]
-pub async fn save_history(
+pub async fn mutate_history(
     app: tauri::AppHandle,
-    history: Value,
+    kind: String,
+    payload: Value,
     request_id: u64,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
-    let resource = service.save_history(history).await?;
-    let result = json!({ "requestId": request_id, "resource": resource });
+    service.mutate_history(&kind,payload).await?;
+    let result = json!({ "requestId": request_id });
     let _ = app.emit("history-updated", result.clone());
     Ok(result)
 }

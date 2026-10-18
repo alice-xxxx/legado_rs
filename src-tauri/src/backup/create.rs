@@ -516,10 +516,8 @@ fn collect_database_snapshot(root: &Path) -> Result<Vec<SnapshotFile>,String> {
     let mut connection = db.connect().map_err(|e|e.to_string())?;
     let tx = connection.transaction().map_err(|e|e.to_string())?;
     let mut files = Vec::new();
-    let mut stmt = tx.prepare("SELECT path FROM documents WHERE owner_path IS NULL ORDER BY path").map_err(|e|e.to_string())?;
-    let paths = stmt.query_map([],|row|row.get::<_,String>(0)).map_err(|e|e.to_string())?
-        .collect::<Result<Vec<_>,_>>().map_err(|e|e.to_string())?;
-    drop(stmt);
+    let mut paths = crate::database::paths(&tx).map_err(|e|e.to_string())?;
+    paths.push("settings.json".into());
     for path in paths {
         if !is_allowed_snapshot_path(&path) { continue; }
         let value = crate::database::read(&tx,&path).map_err(|e|e.to_string())?.ok_or("Snapshot document disappeared")?;

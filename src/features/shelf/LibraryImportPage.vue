@@ -98,7 +98,7 @@ function parseLink(): void {
 
 async function openLocalBook(bookId: string): Promise<void> {
   const book = shelf.value.books.find((entry) => entry.id === bookId);
-  if (!book?.bookSrc) {
+  if (!book) {
     notify("本地书籍资源暂不可用", "error");
     return;
   }

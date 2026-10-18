@@ -81,11 +81,7 @@ pub async fn read_document(store: &ResourceStore) -> Result<TxtTocRulesDocument,
     let default = serde_json::to_value(TxtTocRulesDocument::default())
         .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))?;
     let value = store
-        .update_json_ref_or_default(&reference, default, |current| {
-            let document = decode_current(current).unwrap_or_default();
-            serde_json::to_value(document)
-                .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))
-        })
+        .read_json_ref_or_default(&reference, default)
         .await
         .map_err(|error| error.to_string())?;
     let document = decode_document(value)?;
@@ -436,16 +432,4 @@ fn validate_rule_id(id: &str) -> Result<(), String> {
 
 fn decode_document(value: Value) -> Result<TxtTocRulesDocument, String> {
     serde_json::from_value(value).map_err(|error| format!("Invalid TXT TOC rules JSON: {error}"))
-}
-
-fn decode_current(value: Value) -> Result<TxtTocRulesDocument, String> {
-    if value.is_null() {
-        return Ok(TxtTocRulesDocument::default());
-    }
-    Ok(decode_document(value)
-        .and_then(|document| {
-            validate_document(&document)?;
-            Ok(document)
-        })
-        .unwrap_or_default())
 }

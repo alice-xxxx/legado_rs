@@ -129,18 +129,8 @@ pub struct BookDailySummary {
 
 pub async fn history_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
     let reference = history_ref();
-    store
-        .update_json_ref_or_default(
-            &reference,
-            serde_json::to_value(HistoryDocument::default()).map_err(|error| error.to_string())?,
-            |value| {
-                let document: HistoryDocument = serde_json::from_value(value)
-                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
-                serde_json::to_value(document).map_err(|error| error.to_string())
-            },
-        )
-        .await
-        .map_err(|error| error.to_string())?;
+    let value=store.read_json_ref(&reference).await.map_err(|e|e.to_string())?;
+    parse_history(&value)?;
     Ok(reference)
 }
 
@@ -276,7 +266,7 @@ struct MutableBookDailySummary {
     total_duration_ms: u64,
 }
 
-fn split_session_by_local_day(session: &ReadingSession) -> Vec<(String, u64)> {
+pub(crate) fn split_session_by_local_day(session: &ReadingSession) -> Vec<(String, u64)> {
     const DAY_MS: i128 = 86_400_000;
     const MINUTE_MS: i128 = 60_000;
     let end = session.ended_at_ms as i128;

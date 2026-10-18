@@ -435,7 +435,7 @@ impl ApplicationService {
                                 let chapter = &mut public_book["chapters"][index];
                                 chapter["pages"] = pages;
                                 if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
-                                self.store.write_json_ref(&book_ref, &public_book).await.map_err(|error| error.to_string())?;
+                                self.store.save_chapter_view(book_id, &chapter_id, &public_book["chapters"][index]).await.map_err(|error| error.to_string())?;
                                 prepared += 1; changed = true;
                                 continue;
                             }
@@ -485,7 +485,7 @@ impl ApplicationService {
                             changed = true;
                             public_book["chapters"][index]["resource"] = expected_descriptor;
                             self.store
-                                .write_json_ref(&book_ref, &public_book)
+                                .save_chapter_view(book_id, &chapter_id, &public_book["chapters"][index])
                                 .await
                                 .map_err(|error| error.to_string())?;
                         }
@@ -502,10 +502,6 @@ impl ApplicationService {
                 continue;
             }
 
-            // Clone the current source metadata for this request. Before
-            // publishing the result, verify that the source has not been
-            // replaced while the executor was working.
-            let source_revision = self.source_revision(&source_id).await?;
             let content = self
                 .executor
                 .execute(engine_request(
@@ -652,18 +648,6 @@ impl ApplicationService {
                 Some(self.source_image_pages(book_id, &chapter_id, &source.source, &engine_book,
                     &raw_chapter, content, content_base_url.as_deref()).await?)
             } else { None };
-            let _sources_lock = self.sources_lock.lock().await;
-            let current_source = self
-                .lookup_source(&source_id).await?
-                .ok_or_else(|| "Book source was removed while preparing a chapter".to_owned())?;
-            if current_source.source != source.source
-                || self.source_revision(&source_id).await? != source_revision
-            {
-                return Err(
-                    "Book source changed while preparing a chapter; retry the request".into(),
-                );
-            }
-
             let _book_lock = self.book_lock(book_id).await;
             let current_private = self
                 .read_internal_json(self.book_engine_path(book_id)?)
@@ -703,7 +687,7 @@ impl ApplicationService {
                 let chapter = &mut current_book["chapters"][index];
                 chapter["pages"] = pages;
                 if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
-                self.store.write_json_ref(&book_ref, &current_book).await.map_err(|error| error.to_string())?;
+                self.store.save_chapter_view(book_id, &chapter_id, &current_book["chapters"][index]).await.map_err(|error| error.to_string())?;
                 prepared += 1;
                 changed = true;
                 continue;
@@ -855,7 +839,7 @@ impl ApplicationService {
                 .map_err(|error| format!("Cannot encode chapter resource descriptor: {error}"))?;
             }
             self.store
-                .write_json_ref(&book_ref, &current_book)
+                .save_chapter_view(book_id, &chapter_id, &current_book["chapters"][index])
                 .await
                 .map_err(|error| error.to_string())?;
             prepared += 1;

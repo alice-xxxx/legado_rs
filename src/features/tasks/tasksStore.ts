@@ -1,7 +1,7 @@
 import { computed, ref, shallowRef } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { command } from "../../api/ipc";
-import type { AppBootstrap, AppTask, ResourceDescriptor, TasksResource } from "../../api/types";
+import { readTasks } from "../../api/database";
+import type { AppBootstrap, AppTask, MutationAck } from "../../api/types";
 import { getFrontendRestoreRevision } from "../../app/recoveryState";
 import { errorText, notify } from "../../app/notifications";
 
@@ -15,6 +15,7 @@ export const taskRecoveryRequired = computed(() => recoveryTaskSignaled.value
   || tasks.value.some(task => task.status === "recoveryRequired"));
 
 const recoveryTasks = new Map<string, AppTask>();
+const runningUpdates = new Map<string, Partial<AppTask>>();
 const unlisteners: UnlistenFn[] = [];
 let requestRevision = 0;
 let lifetime = 0;
@@ -22,7 +23,7 @@ let pendingRead: Promise<void> | null = null;
 let refreshQueued = false;
 let initialization: Promise<void> | null = null;
 
-/** Rust publishes current progress from memory; tasks.json is the durable lifecycle checkpoint. */
+/** SQLite stores lifecycle checkpoints; events supply live progress between commits. */
 export function refreshTasks(): Promise<void> {
   if (pendingRead) { refreshQueued = true; return pendingRead; }
   const revision = ++requestRevision;
@@ -38,9 +39,14 @@ export function refreshTasks(): Promise<void> {
       do {
         refreshQueued = false;
         if (!isCurrent()) return;
-        const { snapshot: document } = await command<{ snapshot: TasksResource }>("tasks_resource");
+        const document = { tasks: await readTasks() };
         if (!isCurrent()) return;
         const byId = new Map(document.tasks.map(task => [task.id, task]));
+        for (const [id, update] of runningUpdates) {
+          const task=byId.get(id);
+          if (task?.status==="running" && (update.updatedAtMs ?? 0)>task.updatedAtMs) byId.set(id,{...task,...update});
+          else runningUpdates.delete(id);
+        }
         for (const task of recoveryTasks.values()) byId.set(task.id, task);
         tasks.value = [...byId.values()];
         tasksLoaded.value = true;
@@ -96,6 +102,7 @@ function resetForRestore(): void {
   pendingRead = null;
   refreshQueued = false;
   recoveryTasks.clear();
+  runningUpdates.clear();
   recoveryTaskSignaled.value = false;
   tasks.value = [];
   tasksLoaded.value = false;
@@ -117,11 +124,13 @@ export function initializeTaskStore(): Promise<void> {
     else unlisteners.push(unlisten);
   }
   initialization = (async () => {
-    await retain<{ kind: string; resource: ResourceDescriptor }>("resource-updated", payload => {
+    await retain<{ kind: string; resource: MutationAck }>("resource-updated", payload => {
       if (payload.kind === "tasks") void refreshTasks().catch(reportError);
     });
-    await retain<{ taskId: string; resource: ResourceDescriptor; task?: Partial<AppTask> }>("task-updated", payload => {
+    await retain<{ taskId: string; resource: MutationAck; task?: Partial<AppTask> }>("task-updated", payload => {
       const summary = payload.task;
+      if (summary?.status==="running") runningUpdates.set(payload.taskId,summary);
+      else runningUpdates.delete(payload.taskId);
       const index = tasks.value.findIndex(task => task.id === payload.taskId);
       const current = tasks.value[index];
       // Progress changes no request fields. Lifecycle transitions reload the list.

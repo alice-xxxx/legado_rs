@@ -1,12 +1,7 @@
 //! 维护搜索历史的读取、去重和清理。
-//! JSON-backed search history for user initiated book searches.
-//!
-//! The WebView consumes this processed document as a normal resource. It holds
-//! user query text and usage metadata only; source definitions and search rules
-//! stay in Rust's private source store and are never copied here.
+//! Search history is updated by Rust in normalized tables and queried by Vue.
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::resources::{ResourceRef, ResourceStore};
 
@@ -52,14 +47,11 @@ pub fn resource_ref(store: &ResourceStore) -> Result<ResourceRef, String> {
 
 /// Read the typed document, creating the default JSON resource on first use.
 pub async fn load(store: &ResourceStore) -> Result<SearchHistoryDocument, String> {
-    let reference = crate::reading_tools::history_resource(store).await?;
-    let value = store
-        .read_json_ref(&reference)
-        .await
-        .map_err(|error| error.to_string())?;
-    let history = crate::reading_tools::parse_history(&value)?;
-    validate_typed_document(&history.search)?;
-    Ok(history.search)
+    let db=store.database().clone();
+    let value=tokio::task::spawn_blocking(move ||db.read_search_history()).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+    let document:SearchHistoryDocument=serde_json::from_value(value).map_err(|e|e.to_string())?;
+    validate_typed_document(&document)?;
+    Ok(document)
 }
 
 /// Record a user initiated search exactly once per `search_id` within the
@@ -77,48 +69,15 @@ pub async fn record_search(
     let normalized_query = normalize_query(&query);
     let reference = resource_ref(store)?;
 
-    store
-        .update_json_ref_or_default(&reference, empty_history_document(), move |current| {
-            let mut history = crate::reading_tools::parse_history(&current)?;
-            {
-                let document = &mut history.search;
-                validate_typed_document(document)?;
-                if !document.processed_search_ids.iter().any(|processed| processed == &search_id) {
-                    document.processed_search_ids.push(search_id);
-                    if document.processed_search_ids.len() > MAX_PROCESSED_SEARCH_IDS {
-                        let discard = document.processed_search_ids.len() - MAX_PROCESSED_SEARCH_IDS;
-                        document.processed_search_ids.drain(0..discard);
-                    }
-                    if let Some(entry) = document.entries.iter_mut().find(|entry| entry.normalized_query == normalized_query) {
-                        entry.query = query;
-                        entry.usage = entry.usage.saturating_add(1);
-                        entry.last_use_time_ms = entry.last_use_time_ms.max(now_ms);
-                        entry.first_use_time_ms = entry.first_use_time_ms.min(now_ms);
-                    } else {
-                        document.entries.push(SearchHistoryEntry {
-                            query, normalized_query, usage: 1,
-                            first_use_time_ms: now_ms, last_use_time_ms: now_ms,
-                        });
-                    }
-                    sort_by_recency(&mut document.entries);
-                    document.entries.truncate(MAX_HISTORY_ENTRIES);
-                }
-            }
-            serde_json::to_value(history).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    let db=store.database().clone();
+    tokio::task::spawn_blocking(move ||db.record_search(search_id,query,normalized_query,now_ms))
+        .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
 
     Ok(reference)
 }
 
 pub fn validate_search_history(document: &SearchHistoryDocument) -> Result<(), String> {
     validate_typed_document(document)
-}
-
-fn empty_history_document() -> Value {
-    serde_json::to_value(crate::reading_tools::HistoryDocument::default())
-        .expect("default history document is serializable")
 }
 
 fn validate_typed_document(document: &SearchHistoryDocument) -> Result<(), String> {
@@ -188,14 +147,4 @@ fn validate_search_id(search_id: &str) -> Result<String, String> {
         return Err("Search ID is empty or invalid".into());
     }
     Ok(search_id.to_owned())
-}
-
-fn sort_by_recency(entries: &mut [SearchHistoryEntry]) {
-    entries.sort_by(|left, right| {
-        right
-            .last_use_time_ms
-            .cmp(&left.last_use_time_ms)
-            .then_with(|| right.usage.cmp(&left.usage))
-            .then_with(|| left.normalized_query.cmp(&right.normalized_query))
-    });
 }

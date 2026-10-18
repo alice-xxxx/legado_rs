@@ -1,5 +1,5 @@
 import { command } from "./ipc";
-import type { ResourceDescriptor, BookMetadataUpdate, BookCoverPickerResponse, ResetBookProgressResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, RefreshBookInfoResponse, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
+import type { BookIdentity, BookMetadataUpdate, BookCoverPickerResponse, ResetBookProgressResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, RefreshBookInfoResponse, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
 
 export type LocalImportFormat = "txt" | "epub" | "cbz" | "pdf";
 export const importBookFromPicker = (options: LocalBookImportOptions = {}, format?: LocalImportFormat) =>
@@ -21,20 +21,20 @@ export const cancelPendingPdfImport = (importToken: string) =>
   command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
 
 export const prepareSearchResultBook = (resultId: string, requestRevision?: number) =>
-  command<{ book: ResourceDescriptor }>("prepare_search_result_book", { resultId, requestRevision });
+  command<{ book: BookIdentity }>("prepare_search_result_book", { resultId, requestRevision });
 
 export const cancelBookPreparation = (requestRevision: number) =>
   command<void>("cancel_book_preparation", { requestRevision });
 
 export const prepareAlternativeBook = (bookId: string, alternativeIndex: number, sourceId: string) =>
-  command<{ book: ResourceDescriptor }>("prepare_alternative_book", { bookId, alternativeIndex, sourceId });
+  command<{ book: BookIdentity }>("prepare_alternative_book", { bookId, alternativeIndex, sourceId });
 
 export const prepareBookFromUrl = (url: string, read: boolean) =>
-  command<{ book: ResourceDescriptor; inShelf: boolean }>("prepare_book_from_url", { url, read });
+  command<{ book: BookIdentity; inShelf: boolean }>("prepare_book_from_url", { url, read });
 
 
 export const saveBook = (book: BookMetadataUpdate, requestId: number) =>
-  command<{ requestId: number; resource: ResourceDescriptor }>("save_book", { book, requestId });
+  command<{ requestId: number; resource: BookIdentity }>("save_book", { book, requestId });
 
 export const refreshBookInfo = (bookId: string) =>
   command<RefreshBookInfoResponse>("refresh_book_info", { bookId });

@@ -276,7 +276,7 @@ impl ApplicationService {
                 registry.records[position].result = Some(result);
             }
             registry.records[position].updated_at_ms = now_ms();
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(None, &[&registry.records[position]]).await {
                 registry.records[position] = previous;
                 if let (Some(search_id), Some(document)) = (search_id, previous_search_document) {
                     registry.search_documents.insert(search_id, document);
@@ -299,6 +299,13 @@ impl ApplicationService {
             self.clear_search_task_claim(task_id).await;
         }
         self.notify_task(&task).await;
+        if task.kind == "bookSourceCandidates" {
+            let notifier = self.search_notifiers.write().ok().and_then(|mut channels| channels.remove(task_id));
+            if let Some(notifier) = notifier {
+                notifier(json!({"taskId":task.id,"status":task.status,"complete":true,"incremental":true,
+                    "results":[],"errors":[],"completedSources":task.completed,"totalSources":task.total,"error":task.error}));
+            }
+        }
         Ok(())
     }
 
@@ -537,25 +544,23 @@ impl ApplicationService {
         if already_running && task.kind == "search" {
             self.publish_search_task_state(&task, "running", None).await?;
         }
-        // Capture definitions/revisions once. Only commit checks a source revision;
-        // admitting each request does not need another lock or lookup.
+        // Use the selected definitions for this round. Source edits take effect
+        // when the user starts another search, not while results are arriving.
         let exhausted = if task.kind == "search" {
             self.read_search_task_state(&task).await?["exhaustedSourceIds"].as_array()
                 .into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect::<HashSet<_>>()
         } else { HashSet::new() };
         let slots = {
             let _operation = self.operation_read().await;
-            let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
             let by_id = records.iter().map(|source| (source.id.as_str(), source)).collect::<HashMap<_, _>>();
-            let mut revisions = self.source_revisions.lock().await;
             let mut slots = Vec::new();
             for id in task.source_ids.as_ref().ok_or("Search task source list is incomplete")?.iter().skip(task.completed) {
                 let source = by_id.get(id.as_str()).copied().filter(|source| source.enabled
                     && !crate::source_metadata::is_rss_source_metadata(&source.source)
                     && task.source_type.as_deref().is_none_or(|kind| crate::source_metadata::matches_search_type(&source.source, kind)));
                 let snapshot = match source {
-                    Some(source) if !exhausted.contains(id) => Some((source.clone(), *revisions.entry(id.clone()).or_default())),
+                    Some(source) if !exhausted.contains(id) => Some(source.clone()),
                     _ => None,
                 };
                 slots.push((id.clone(), snapshot));
@@ -596,7 +601,7 @@ impl ApplicationService {
                 running.push(async move {
                     let _cancel_on_drop = token.clone().drop_guard();
                     let _operation = operation_gate.read_owned().await;
-                    let response = if let Some((source, _)) = source.as_ref() {
+                    let response = if let Some(source) = source.as_ref() {
                         let mut request = engine_request("search", &source.source, Some(keyword), Some(page as i32), None, None, None);
                         request.cancellation = Some(token.clone());
                         tokio::select! {
@@ -610,7 +615,7 @@ impl ApplicationService {
                                     .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()))
                             } => result,
                         }
-                    } else { Err("Search source changed, was removed, or is no longer enabled".into()) };
+                    } else { Err("Search source is unavailable or is not enabled".into()) };
                     (id, source, response)
                 });
             }
@@ -640,8 +645,8 @@ impl ApplicationService {
             let _operation = self.operation_gate.clone().read_owned().await;
             if !self.task_worker_is_current(task_id, signal).await { return Ok(None); }
             let publish = last_result_publication.is_none_or(|last| last.elapsed() >= SEARCH_PUBLICATION_INTERVAL);
-            if let Some((source, revision)) = source {
-                self.append_search_source(&task, &source, revision, response, publish).await?;
+            if let Some(source) = source {
+                self.append_search_source(&task, &source, response, publish).await?;
             } else {
                 let errors = if exhausted.contains(&id) { Vec::new() } else {
                     vec![json!({"sourceId": id, "message": response.err().unwrap_or_default()})]
@@ -676,7 +681,6 @@ impl ApplicationService {
         &self,
         task: &AppTask,
         source: &SourceRecord,
-        source_revision: u64,
         response: Result<Value, String>,
         publish_search_snapshot: bool,
     ) -> Result<(), String> {
@@ -684,16 +688,10 @@ impl ApplicationService {
             .search_id
             .as_deref()
             .ok_or_else(|| "Search task has no search resource".to_owned())?;
-        let _sources = self.sources_lock.lock().await;
-        let source_is_current = self.source_revision(&source.id).await? == source_revision;
-        let response = if source_is_current {
-            response.and_then(|value| {
-                if value.get("books").and_then(Value::as_array).is_some() { Ok(value) }
-                else { Err("Source engine returned an invalid search result".into()) }
-            })
-        } else {
-            Err("Source changed while search was running; search again".to_owned())
-        };
+        let response = response.and_then(|value| {
+            if value.get("books").and_then(Value::as_array).is_some() { Ok(value) }
+            else { Err("Source engine returned an invalid search result".into()) }
+        });
         let mut results = Vec::new();
         let mut errors = Vec::new();
         let mut has_next_page = None;
@@ -710,7 +708,6 @@ impl ApplicationService {
                     .and_then(Value::as_array)
                     .map(Vec::as_slice)
                     .unwrap_or_default();
-                let source_fingerprint = source_definition_fingerprint(&source.source)?;
                 let invalid_book_count = books.iter().filter(|book| !book.is_object()).count();
                 if invalid_book_count > 0 {
                     errors.push(json!({
@@ -734,8 +731,6 @@ impl ApplicationService {
                     let mut private_result = json!({
                         "searchId": search_id,
                         "sourceId": source.id,
-                        "sourceRevision": source_revision,
-                        "sourceDefinitionFingerprint": source_fingerprint,
                         "book": book.clone(),
                     });
                     let mut projected = project_search_result(&result_id, source, &book);
@@ -744,16 +739,11 @@ impl ApplicationService {
                         private_result["replacementContext"] = json!({
                             "targetBookId": context["targetBookId"],
                             "originalSourceId": context["originalSourceId"],
-                            "originalSourcePresent": context["originalSourcePresent"],
-                            "originalSourceFingerprint": context["originalSourceFingerprint"],
-                            "originalSourceRevision": context["originalSourceRevision"],
-                            "catalogFingerprint": context["catalogFingerprint"],
                             "catalogGeneration": context["catalogGeneration"],
                             "bookInstanceId": context["bookInstanceId"],
                             "createdAtMs": context["createdAtMs"],
                             "expiresAtMs": context["expiresAtMs"],
                             "searchId": search_id,
-                            "candidateSourceFingerprint": source_fingerprint,
                             "requiresIdentityConfirmation": requires_confirmation,
                         });
                     }
@@ -852,26 +842,15 @@ impl ApplicationService {
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
 
-        // Capture a coherent source/catalog snapshot while following the
-        // global lock order (source metadata, then book). The source engine
-        // call deliberately happens after both locks are released.
+        // Capture the book once; source edits do not invalidate this request.
         let (source, engine_book, old_raw, old_chapters, catalog_generation) = {
-            let _sources_lock = self.sources_lock.lock().await;
-            let source_id = {
-                let private = self.read_internal_json(&private_path).await?;
-                private["sourceId"]
-                    .as_str()
-                    .ok_or_else(|| "Private book is missing sourceId".to_owned())?
-                    .to_owned()
-            };
+            let _book_lock = self.book_lock(book_id).await;
+            let private = self.read_internal_json(&private_path).await?;
+            let source_id = private["sourceId"].as_str()
+                .ok_or_else(|| "Private book is missing sourceId".to_owned())?;
             let source = self
                 .lookup_source(&source_id).await?
                 .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
-            let _book_lock = self.book_lock(book_id).await;
-            let private = self.read_internal_json(&private_path).await?;
-            if private["sourceId"].as_str() != Some(source.id.as_str()) {
-                return Err("Book source changed while refreshing its catalog".to_owned());
-            }
             let engine_book = private
                 .get("book")
                 .cloned()
@@ -927,17 +906,8 @@ impl ApplicationService {
             .cloned()
             .ok_or_else(|| "Source engine returned an invalid chapter list".to_owned())?;
 
-        // Reacquire locks in the same order and reject stale responses. A
-        // delete or another refresh may finish while the source engine runs;
-        // neither result is allowed to recreate or overwrite newer data.
+        // Keep a catalog refresh from overwriting a newer catalog or deleted book.
         let result = {
-            let _sources_lock = self.sources_lock.lock().await;
-            let current_source = self
-                .lookup_source(&source.id).await?
-                .ok_or_else(|| "Book source was removed while refreshing its catalog".to_owned())?;
-            if current_source.source != source.source {
-                return Err("Book source changed while refreshing its catalog".to_owned());
-            }
             let _book_lock = self.book_lock(book_id).await;
             let current_private = self
                 .read_internal_json(&private_path)
@@ -957,7 +927,8 @@ impl ApplicationService {
                 .get("catalogGeneration")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
-            if current_raw != old_raw || current_catalog_generation != catalog_generation {
+            if current_catalog_generation != catalog_generation
+                || (catalog_generation.is_none() && current_raw != old_raw) {
                 return Err(
                     "A newer chapter catalog was committed; discard this stale refresh".into(),
                 );
@@ -1356,7 +1327,7 @@ mod search_task_tests {
     }
 
     #[tokio::test]
-    async fn search_rejects_result_from_edited_then_reverted_source() {
+    async fn source_edits_do_not_block_or_discard_search_results() {
         let directory = tempfile::tempdir().unwrap();
         let executor = Arc::new(StreamingExecutor { release: tokio::sync::Notify::new(), started: 0.into() });
         let service = ApplicationService::open_with_executor(directory.path(), executor.clone()).await.unwrap();
@@ -1367,18 +1338,29 @@ mod search_task_tests {
         tokio::time::timeout(Duration::from_secs(2), async {
             while executor.started.load(Ordering::SeqCst) == 0 { tokio::task::yield_now().await; }
         }).await.unwrap();
-        {
-            let _sources = service.sources_lock.lock().await;
-            let mut edited = original.clone();
-            edited.source["searchUrl"] = json!("https://fixture/changed");
-            service.write_sources(&[edited]).await.unwrap();
-            service.write_sources(&[original]).await.unwrap();
-        }
+        let mut edited = original;
+        edited.source["searchUrl"] = json!("https://fixture/changed");
+        edited.source["bookSourceName"] = json!("edited");
+        service.write_sources(&[edited]).await.unwrap();
+        // A source editor may still own its guard while this search finishes.
+        let sources_guard = service.sources_lock.lock().await;
         executor.release.notify_one();
         assert_eq!(wait_for_terminal(&service, id).await.status, "completed");
         let document = service.get_search_task_results(id).await.unwrap();
-        assert!(document["results"].as_array().unwrap().is_empty());
-        assert!(document["errors"][0]["message"].as_str().unwrap().contains("Source changed"));
+        assert_eq!(document["results"].as_array().unwrap().len(), 1);
+        assert_eq!(document["results"][0]["title"], "slow");
+        assert_eq!(document["errors"], json!([]));
+        let registry = service.tasks.lock().await;
+        for cache in registry.search_result_documents.values() {
+            assert!(cache.get("sourceRevision").is_none());
+            assert!(cache.get("sourceDefinitionFingerprint").is_none());
+        }
+        drop(registry);
+        drop(sources_guard);
+        let next = service.start_search("text", &[], "fixture", 1, false, None).await.unwrap();
+        let next_id = next["taskId"].as_str().unwrap();
+        assert_eq!(wait_for_terminal(&service, next_id).await.status, "completed");
+        assert_eq!(service.get_search_task_results(next_id).await.unwrap()["results"][0]["title"], "edited");
     }
 
     struct CapacityExecutor {

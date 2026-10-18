@@ -774,7 +774,7 @@ impl ApplicationService {
         let _config = self.webdav_backup_config_gate.lock().await;
         let previous_background = self.store.read_json_ref(&settings_ref).await.map_err(|e|e.to_string())?["reader"]
             .get("backgroundImageSrc").and_then(Value::as_str).map(str::to_owned);
-        self.store
+        let saved=self.store
             .update_json_ref(&settings_ref, move |current| {
                 // This value is maintained by successful picker exports. Never
                 // accept a stale or client-provided copy from reader settings.
@@ -791,7 +791,7 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
         self.cleanup_unreferenced_reader_background_asset(previous_background, background.as_deref()).await;
         crate::source_http::set_network_timeout_seconds(source_http_timeout_seconds);
-        Ok(self.resource_descriptor(&settings_ref))
+        Ok(saved)
     }
 }
 

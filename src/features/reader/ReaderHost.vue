@@ -8,7 +8,6 @@ import type {
   AppTask,
   BookResource } from "../../api/types";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { sources } from "../sources/sourcesStore";
 import { startChapterDownload } from "../../api/tasks";
 import { notify, errorText } from "../../app/notifications";
 import { tasks, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
@@ -47,10 +46,6 @@ function reusedCatalogTaskNotice(task: AppTask): string {
     : task.status === "queued" ? "排队中" : task.status === "cancelling" ? "正在取消"
       : task.status === "pausing" ? "正在暂停" : task.status === "recoveryRequired" ? "需要恢复" : "正在运行";
   return `已有全书章节缓存任务（${status}），已复用当前任务。`;
-}
-
-function sourceName(id: string): string {
-  return sources.value.find((source) => source.id === id)?.name ?? id;
 }
 
 async function showShelfBehindReader(book: BookResource): Promise<void> {
@@ -198,6 +193,7 @@ function onGlobalKeydown(event: KeyboardEvent): void {
       return;
     }
   }
+  if (bookSourceSwitch.bookSourceSwitchOpen || readerFeatures.readerDirectoryOpen.value) return;
   if (readerFeatures.shouldIgnoreReaderKeydown(event, document)) return;
   if (readerFeatures.readingMediaChapter.value && event.key !== "Escape") {
     if (event.key === " " || event.key === "ArrowLeft" || event.key === "ArrowRight") {
@@ -296,7 +292,6 @@ onBeforeUnmount(() => {
   void disposeNativeAudio().catch(error => console.debug("Native audio disposal failed:", error));
 });
 
-const bookSourceCandidates = computed(() => bookSourceSwitch.bookSourceEligibleSources);
 const readerVisible = readerFeatures.readerVisible;
 let fullscreenUpdate = Promise.resolve();
 const nativeFullscreen = isTauri() && (/iPhone|iPad|iPod/.test(navigator.userAgent)
@@ -326,8 +321,6 @@ onBeforeUnmount(() => {
     :reader-features="readerFeatures"
     :close-reader="closeReaderForNavigation"
     :book-source-switch="bookSourceSwitch"
-    :book-source-candidates="bookSourceCandidates"
-    :source-name="sourceName"
     :shelf-batch-recovery-required="shelfBatchRecoveryRequired"
   />
 </template>

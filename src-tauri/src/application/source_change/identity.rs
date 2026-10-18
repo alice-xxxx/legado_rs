@@ -12,7 +12,6 @@ pub(in crate::application) fn chapter_id_for_generation(
         stable_hash(&format!("{book_id}\0{generation}\0{stable_url}"))
     )
 }
-
 pub(in crate::application) fn normalize_identity(value: &str) -> String {
     value
         .chars()
@@ -43,12 +42,4 @@ pub(in crate::application) fn candidate_identity_match(
         return None;
     }
     Some(expected_author.trim().is_empty() || candidate_author.trim().is_empty())
-}
-
-pub(in crate::application) fn source_definition_fingerprint(
-    source: &Value,
-) -> Result<String, String> {
-    let bytes = serde_json::to_vec(source)
-        .map_err(|error| format!("Cannot fingerprint source definition: {error}"))?;
-    Ok(sha256_hex(&bytes))
 }

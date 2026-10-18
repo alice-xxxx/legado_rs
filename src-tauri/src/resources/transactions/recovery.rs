@@ -59,8 +59,10 @@ pub(super) fn recover_database_cleanup(root: &Path) -> Result<(), TransactionErr
         apply_post_commit_deletes(root, std::slice::from_ref(&path)).map_err(|error| {
             TransactionError::recovery_required(error.to_string(), CommitState::Committed)
         })?;
-        connection
-            .execute("DELETE FROM pending_cleanup WHERE path=?1", [path])
+        db.transaction(move |connection| {
+            connection.execute("DELETE FROM pending_cleanup WHERE path=?1", [path])?;
+            Ok(())
+        })
             .map_err(|error| {
                 TransactionError::recovery_required(error.to_string(), CommitState::Committed)
             })?;

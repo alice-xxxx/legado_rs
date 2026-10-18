@@ -47,11 +47,17 @@ async fn import(service: &ApplicationService, file: &Path) -> Value {
         .import_local_book(file, LocalImportOptions::default())
         .await
         .unwrap();
-    let result = reqwest::get(response["book"]["src"].as_str().unwrap())
-        .await
-        .unwrap();
-    assert!(result.status().is_success());
-    serde_json::from_slice(&result.bytes().await.unwrap()).unwrap()
+    imported_book(service,&response)
+}
+
+fn imported_book(service:&ApplicationService,response:&Value)->Value {
+    let id=response["book"]["bookId"].as_str().unwrap();
+    let reference=service.resource_store().book_ref(id).unwrap();
+    let stored=service.resource_store().read_raw_document(&reference).unwrap();
+    let kind=service.resource_store().book_type(id).unwrap();
+    let mut view=crate::resources::content::public_book_view(&stored,&kind).unwrap();
+    service.resource_server().materialize_json(&mut view).unwrap();
+    view
 }
 
 async fn chapter(book: &Value, index: usize) -> String {
@@ -408,17 +414,9 @@ async fn encrypted_pdf_can_retry_password_without_caching_password_or_partial_bo
         .retry_pending_pdf_import(token, "user-fixture".into())
         .await
         .unwrap();
-    let book: Value = serde_json::from_slice(
-        &reqwest::get(response["book"]["src"].as_str().unwrap())
-            .await
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap(),
-    )
-    .unwrap();
+    let book=imported_book(&service,&response);
     assert_eq!(book["chapterCount"], 2);
-    let reference = crate::resources::ResourceRef::new(response["book"]["resourceId"].as_str().unwrap()).unwrap();
+    let reference = service.resource_store().book_ref(response["book"]["bookId"].as_str().unwrap()).unwrap();
     let raw = service.resource_store().read_raw_document(&reference).unwrap().to_string();
     assert!(!raw.contains("user-fixture") && !raw.contains("owner-fixture"));
     assert!(service

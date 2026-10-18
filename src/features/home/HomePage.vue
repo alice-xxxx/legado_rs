@@ -5,7 +5,7 @@ defineOptions({ name: "HomePage" });
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { listDiscoveryBooks } from "../../api/discovery";
-import { readResource } from "../../api/resources";
+
 import { bookContentType } from "../../api/bookContentType";
 import { sources } from "../sources/sourcesStore";
 import { settings as sharedSettings } from "../settings/settingsStore";
@@ -114,7 +114,8 @@ async function loadSection(sectionId: string, sourceId: string, categoryId: stri
     && belongsToCurrentConfig();
   try {
     const response = await listDiscoveryBooks(sourceId, categoryId, 1);
-    const resource = await readResource<SearchResource>(response.resource);
+    const resource = response.search;
+    if (!resource) throw new Error("Discovery results missing");
     if (!isCurrent()) return;
     sectionResources.value = { ...sectionResources.value, [sectionId]: resource };
   } catch (error) {

@@ -2,6 +2,10 @@
 
 pub mod application;
 pub(crate) mod database;
+mod storage_owner;
+mod configuration;
+#[cfg(any(feature="desktop",feature="mobile-runtime"))]
+mod readonly_sql;
 mod http_client;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
@@ -170,6 +174,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_source_engine::init())
+        .plugin(tauri_plugin_sql::Builder::default().build())
         .setup(move |app| {
             #[cfg(target_os = "android")]
             http_client::init_android_tls().map_err(|error| {
@@ -213,6 +218,9 @@ pub fn run() {
                 application::ApplicationService::open_with_executor(data_dir, executor),
             )
             .map_err(std::io::Error::other)?;
+            tauri::async_runtime::block_on(crate::readonly_sql::open(
+                app.handle(), &service.resource_store().database().file_path(),
+            )).map_err(std::io::Error::other)?;
             let book_app = app.handle().clone();
             service.set_book_notifier(std::sync::Arc::new(move |payload| {
                 let _ = book_app.emit("book-updated", payload);
@@ -291,7 +299,6 @@ pub fn run() {
         application::get_search_task_results,
         application::release_search_results,
         application::search_book_source_candidates,
-        application::tasks_resource,
         application::clear_finished_tasks,
         application::retry_task,
         application::start_book_download,
@@ -313,8 +320,6 @@ pub fn run() {
         application::discard_external_file,
         application::import_protected_pdf,
         application::cancel_pending_pdf_import,
-        application::get_book,
-        application::get_book_preview,
         application::save_book,
         application::refresh_book_info,
         application::pick_book_cover,
@@ -329,7 +334,7 @@ pub fn run() {
         application::set_rss_filter,
         application::set_rss_article_state,
         application::unsubscribe_rss,
-        application::save_history,
+        application::mutate_history,
         application::save_shelf,
         application::save_configuration_rule,
         application::prepare_configuration_import,

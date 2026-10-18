@@ -227,7 +227,7 @@ impl ApplicationService {
                         "Task retry is unsupported because the source-candidate request has no page".into(),
                     );
                 }
-                self.search_book_source_candidates_unlocked(book_id, source_ids, Some(keyword), task.page)
+                self.search_book_source_candidates_unlocked(book_id, source_ids, Some(keyword), task.page, None)
                     .await
             }
             kind => Err(format!("Task retry is unsupported for kind '{kind}'")),

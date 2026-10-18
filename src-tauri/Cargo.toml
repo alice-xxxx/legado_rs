@@ -28,6 +28,8 @@ desktop = [
     "dep:tauri-plugin-native-audio",
     "dep:tauri-plugin-tts",
     "dep:tauri-plugin-single-instance",
+    "dep:tauri-plugin-sql",
+    "dep:sqlx",
     "tauri-plugin-single-instance/deep-link",
     "tauri/wry",
     "tauri/compression",
@@ -37,6 +39,8 @@ desktop = [
     "tauri/dbus",
 ]
 mobile-runtime = [
+    "dep:tauri-plugin-sql",
+    "dep:sqlx",
     "dep:tauri-build",
     "dep:tauri",
     "dep:tauri-plugin-opener",
@@ -60,7 +64,9 @@ tauri-plugin-fs = { version = "2", default-features = false, optional = true }
 tauri-plugin-source-engine = { path = "plugins/source-engine", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.40.2", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled"] }
+tauri-plugin-sql = { version = "=2.3.1", features = ["sqlite"], optional = true }
+sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
 base64 = "0.23"
 reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stream", "gzip", "brotli", "deflate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "io-util", "sync", "time"] }

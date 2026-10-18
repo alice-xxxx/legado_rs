@@ -5,9 +5,9 @@ import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles, prepareBookFromUrl } from "../../api/books";
-import { type BookResource, type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule, type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
+import { type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule, type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
 import { prepareDeepLinkImport } from "../../api/settings";
-import { readResource } from "../../api/resources";
+import { readBook } from "../../api/database";
 import { mutateSources as mutateSource } from "../sources/sourcesStore";
 import { replacementRuleStore, txtTocRuleStore, httpTtsStore } from "../settings/configurationStores";
 import { requestBookDetailOpen, discardBookDetailOpenRequest } from "../books/bookDetailOpenRequest";
@@ -210,7 +210,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
       if (pending.kind === "read" || pending.kind === "addToBookshelf") {
         const response = await prepareBookFromUrl(pending.url, pending.kind === "read");
         if (!isCurrent()) return;
-        const book = await readResource<BookResource>(response.book);
+        const book = await readBook(response.book.bookId);
         if (!isCurrent()) return;
         if (pending.kind === "read" && response.inShelf) {
           await router.push({ name: routeNames.shelf });

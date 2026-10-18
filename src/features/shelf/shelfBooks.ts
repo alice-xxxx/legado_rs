@@ -10,7 +10,6 @@ export const shelfBooks = computed<ShelfResource>(() => {
       contentType: item.type, coverSrc: item.cover ? contentUrl(item.type, item.id, item.cover) : undefined,
       chapterCount: item.total ?? 0, latestChapter: item.latest, updatedAt: item.updatedAt ?? item.readAt,
       progress: item.readAt ? { chapterIndex: Math.max(0, (item.read ?? 1) - 1), updatedAtMs: item.readAt * 1000 } : undefined,
-      bookSrc: contentUrl(item.type, item.id),
       groups: (contentLibrary.value.groups ?? []).filter(group => group.id.includes(item.id)).map(group => group.name),
     })),
   };

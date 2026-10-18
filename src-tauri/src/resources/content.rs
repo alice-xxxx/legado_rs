@@ -1,4 +1,4 @@
-//! One complete content document per cache directory. Runtime views are not files.
+//! Content identities, engine boundary conversion and file descriptors.
 use super::{ResourceError, ResourceRef};
 use serde_json::{json, Map, Value};
 use std::path::{Path, PathBuf};
@@ -495,6 +495,7 @@ pub(crate) fn encode_book(
     Ok(Value::Object(document))
 }
 
+#[cfg(test)]
 pub(crate) fn public_book_view(document: &Value, kind: &str) -> Result<Value, ResourceError> {
     let mut view = book_view(document, kind)?;
     if let Some(values) = view.as_object_mut() {
@@ -504,6 +505,7 @@ pub(crate) fn public_book_view(document: &Value, kind: &str) -> Result<Value, Re
     Ok(view)
 }
 
+#[cfg(test)]
 pub(crate) fn strip_private(value: &mut Value) {
     match value {
         Value::Object(values) => {

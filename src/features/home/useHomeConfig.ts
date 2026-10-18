@@ -1,9 +1,8 @@
 import { computed, ref, type ComputedRef } from "vue";
 import { listDiscoveryCategories } from "../../api/discovery";
-import { readResource } from "../../api/resources";
+import { readCategories } from "../../api/database";
 import { settings as sharedSettings } from "../settings/settingsStore";
 import type {
-  DiscoveryCategoriesResource,
   DiscoveryCategory,
   SourceMetadata,
 } from "../../api/types";
@@ -48,8 +47,8 @@ export function useHomeConfig(options: HomeConfigOptions) {
 
     const request = (async () => {
       try {
-        const response = await listDiscoveryCategories(sourceId);
-        const document = await readResource<DiscoveryCategoriesResource>(response.resource);
+        await listDiscoveryCategories(sourceId);
+        const document = await readCategories(sourceId);
         if (!isCurrent() || !isEnabledSource(sourceId)) return;
         homeEditorCategories.value = {
           ...homeEditorCategories.value,

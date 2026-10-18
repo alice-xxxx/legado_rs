@@ -87,6 +87,12 @@ impl ResourceStore {
         &self.inner.database
     }
 
+    pub(crate) async fn save_chapter_view(&self,book_id:&str,chapter_id:&str,chapter:&Value)->Result<(),ResourceError>{
+        let (database,book_id,chapter_id,chapter)=(self.database().clone(),book_id.to_owned(),chapter_id.to_owned(),chapter.clone());
+        tokio::task::spawn_blocking(move ||database.save_chapter_view(&book_id,&chapter_id,&chapter))
+            .await.map_err(|e|ResourceError::new(e.to_string()))?
+    }
+
     pub fn root(&self) -> &Path {
         &self.inner.root
     }
@@ -232,8 +238,7 @@ impl ResourceStore {
                         }
                     }
                 }
-                self.database().transaction(|tx| {
-                    tx.execute("DELETE FROM documents WHERE path=?1", [&old_path])?;
+                self.database().transaction(move |tx| {
                     crate::database::write(tx, &new_path, &document)?;
                     Ok(())
                 })?;
@@ -509,12 +514,7 @@ impl ResourceStore {
         if !super::content::is_content_document(reference.path()) {
             return Ok(());
         }
-        let (kind, id, _) = super::content::content_path(reference.path()).expect("content path");
-        let (_, preview) = crate::database::book_preview(tx, id)?;
-        tx.execute(
-            "UPDATE records SET value=?1 WHERE path=?2 AND field=?3 AND item_id=?4 AND value!=?1",
-            rusqlite::params![preview.to_string(), super::content::LIBRARY_FILE, kind, id],
-        )?;
+        let _ = tx; // Shelf previews are joins over books and progress, never stored copies.
         Ok(())
     }
 
@@ -528,15 +528,10 @@ impl ResourceStore {
         let store = self.clone();
         let reference = self.canonical_reference(reference)?;
         tokio::task::spawn_blocking(move || {
-            let value = store.database().transaction(|tx| {
-                match crate::database::read(tx, reference.path())? {
-                    Some(value) => Ok(value),
-                    None => {
-                        crate::database::write(tx, reference.path(), &default)?;
-                        Ok(default)
-                    }
-                }
-            })?;
+            let value = match store.database().read(reference.path())? {
+                Some(value) => value,
+                None => { store.database().write(reference.path(), &default)?; default }
+            };
             store.document_view(&reference, value)
         })
         .await
@@ -567,11 +562,19 @@ impl ResourceStore {
         if reference.path() != "sources.json" {
             validate_embedded_refs(value)?;
         }
+        if crate::configuration::is_file(reference.path()) {
+            let database=self.database().clone();
+            let path=reference.path().to_owned();
+            let value=value.clone();
+            return tokio::task::spawn_blocking(move ||database.write(&path,&value))
+                .await.map_err(|e|ResourceError::new(e.to_string()))?;
+        }
         let store = self.clone();
         let reference = self.canonical_reference(reference)?;
         let value = value.clone();
         tokio::task::spawn_blocking(move || {
-            store.database().transaction(|tx| {
+            let database = store.database().clone();
+            database.transaction(move |tx| {
                 let encoded = if reference.path() == super::content::LIBRARY_FILE {
                     super::content::encode_library(&value, tx)?
                 } else {
@@ -627,10 +630,22 @@ impl ResourceStore {
                 "JSON update requires a local .json resource",
             ));
         }
+        if crate::configuration::is_file(reference.path()) {
+            let root = self.root().to_owned();
+            let path = reference.path().to_owned();
+            return tokio::task::spawn_blocking(move || {
+                crate::configuration::update(&root,&path,default.unwrap_or(Value::Null),move |value| {
+                    let value=update(value).map_err(ResourceError::new)?;
+                    validate_embedded_refs(&value)?;
+                    Ok(value)
+                })
+            }).await.map_err(|e|ResourceError::new(e.to_string()))?;
+        }
         let store = self.clone();
         let reference = self.canonical_reference(reference)?;
         tokio::task::spawn_blocking(move || {
-            store.database().transaction(|tx| {
+            let database = store.database().clone();
+            database.transaction(move |tx| {
                 let current = crate::database::read(tx, reference.path())?
                     .unwrap_or_else(|| default.unwrap_or(Value::Null));
                 let current = store.document_view(&reference, current)?;
@@ -662,7 +677,10 @@ impl ResourceStore {
     }
 
     pub async fn write_shelf(&self, shelf: &ShelfDocument) -> Result<(), ResourceError> {
-        self.write_serializable(&self.shelf_ref(), shelf).await
+        let database=self.database().clone();
+        let shelf=shelf.clone();
+        tokio::task::spawn_blocking(move ||database.save_library_positions(shelf))
+            .await.map_err(|e|ResourceError::new(e.to_string()))?
     }
 
     pub async fn write_settings(&self, settings: &SettingsDocument) -> Result<(), ResourceError> {
@@ -689,7 +707,8 @@ impl ResourceStore {
         let view = view.clone();
         let state = state.clone();
         tokio::task::spawn_blocking(move || {
-            store.database().transaction(|tx| {
+            let database = store.database().clone();
+            database.transaction(move |tx| {
                 let encoded = store.encode_document(&reference, &view, Some(&state))?;
                 crate::database::write(tx, reference.path(), &encoded)?;
                 store.refresh_database_preview(tx, &reference, &encoded)

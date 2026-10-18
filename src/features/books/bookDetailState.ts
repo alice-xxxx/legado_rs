@@ -1,16 +1,15 @@
 import { nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { saveBook } from "../../api/books";
-import { command } from "../../api/ipc";
-import { applyLibraryProgress, clearLibraryProgress, contentUrl, libraryType, refreshContentLibrary } from "./contentLibraryState";
-import { readResource } from "../../api/resources";
-import type { AppBootstrap, BookPreview, BookResource, ResourceDescriptor } from "../../api/types";
+import { applyLibraryProgress, clearLibraryProgress, libraryType, refreshContentLibrary } from "./contentLibraryState";
+import { readBook as queryBook, readBookPreview } from "../../api/database";
+import type { AppBootstrap, BookPreview, BookResource, BookIdentity } from "../../api/types";
 
 export const openedBook = ref<BookResource | null>(null);
 export const openedBookFromShelf = ref(false);
 export const bookPreviews = ref<Record<string, BookPreview>>({});
-type BookReference = string | ResourceDescriptor;
-type BookUpdatedEvent = { requestId: number; resource: ResourceDescriptor };
+type BookReference = string | BookIdentity;
+type BookUpdatedEvent = { requestId: number; resource: BookIdentity };
 let requestId = 0;
 let stopWatch: WatchStopHandle = () => {};
 const previewLoads = new Map<string, Promise<void>>();
@@ -19,17 +18,15 @@ const latestProgress = new Map<string, NonNullable<BookResource["progress"]>>();
 
 function referenceId(reference: BookReference): string {
   if (typeof reference === "string") return reference;
-  const id = /^(?:resource:\/\/)?cache\/(?:text|html|image|audio|video|pdf)\/([^/]+)\/\1\.json$/.exec(reference.resourceId)?.[1];
-  if (!id) throw new Error("书籍资源地址无效。");
+  const id = reference.bookId;
+  if (!id) throw new Error("书籍 ID 无效。");
   return id;
 }
 
-// All book.json reads stay here; callers receive shared state, never a raw document.
+// Opened books and previews share one state layer over the read-only database.
 async function readBook(reference: BookReference): Promise<BookResource> {
   const id = referenceId(reference);
-  const resource = typeof reference === "string"
-    ? await command<ResourceDescriptor>("get_book", { bookId: id }) : reference;
-  const book = await readResource<BookResource>(resource);
+  const book = await queryBook(id);
   if (book.id !== id) throw new Error("读取的书籍与缓存 ID 不匹配。");
   const progress = latestProgress.get(id);
   if (progress && (progress.updatedAtMs ?? 0) > (book.progress?.updatedAtMs ?? 0)) book.progress = progress;
@@ -46,7 +43,6 @@ function previewOf(book: BookResource): BookPreview {
       chapterId: book.progress.chapterId, chapterIndex: book.progress.chapterIndex,
       offset: book.progress.offset, updatedAtMs: book.progress.updatedAtMs,
     } : undefined,
-    bookSrc: contentUrl(book.contentType ?? "text", book.id),
   };
 }
 
@@ -62,7 +58,7 @@ export async function loadBookPreview(reference: BookReference): Promise<BookPre
       let pending = previewLoads.get(id);
       if (!pending) {
         const current = bookPreviews.value;
-        pending = command<BookPreview>("get_book_preview", { bookId: id }).then(book => {
+        pending = readBookPreview(id).then(book => {
           const progress = latestProgress.get(id);
           if (progress && (progress.updatedAtMs ?? 0) > (book.progress?.updatedAtMs ?? 0)) book.progress = progress;
           if (current === bookPreviews.value && !current[id]) current[id] = book;
@@ -104,7 +100,7 @@ async function updateBook(reference: BookReference, eventRequestId = 0): Promise
   updates.set(id, token);
   try {
     if (openedBook.value?.id !== id) {
-      const preview = await command<BookPreview>("get_book_preview", { bookId: id });
+      const preview = await readBookPreview(id);
       const progress = latestProgress.get(id);
       if (progress && (progress.updatedAtMs ?? 0) > (preview.progress?.updatedAtMs ?? 0)) preview.progress = progress;
       if (current === bookPreviews.value && updates.get(id) === token && current[id]) current[id] = preview;
@@ -122,7 +118,7 @@ async function updateBook(reference: BookReference, eventRequestId = 0): Promise
   } finally { if (updates.get(id) === token) updates.delete(id); }
 }
 
-export async function initializeBookStore(_descriptor: ResourceDescriptor): Promise<void> {
+export async function initializeBookStore(): Promise<void> {
   await listen<{ bookId: string; progress: NonNullable<BookResource["progress"]>; read: number }>("reading-progress-updated", ({ payload }) => {
     const { bookId, progress, read } = payload;
     if ((latestProgress.get(bookId)?.updatedAtMs ?? 0) > (progress.updatedAtMs ?? 0)) return;

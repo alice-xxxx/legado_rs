@@ -362,7 +362,7 @@ impl ApplicationService {
         Ok(staged)
     }
 
-    pub async fn restore_webdav_backup(&self) -> Result<Value, String> {
+    pub async fn restore_webdav_backup(&self, close_readers: impl std::future::Future<Output=()>) -> Result<Value, String> {
         // Hold a read admission only while retrieving the remote file. Drop it
         // before calling restore_backup, which acquires the exclusive gate.
         let staged = match async {
@@ -378,6 +378,7 @@ impl ApplicationService {
                 ));
             }
         };
+        close_readers.await;
         let mut bootstrap = match self.restore_backup(&staged.path).await {
             Ok(bootstrap) => bootstrap,
             Err(error) => return Ok(restore_error_response(error)),
@@ -426,7 +427,7 @@ impl ApplicationService {
         let _operation = self.operation_read().await;
         let settings_ref = self.store.settings_ref();
         let timestamp = now_ms();
-        self.store
+        let settings=self.store
             .update_json_ref(&settings_ref, move |mut settings| {
                 if !settings.is_object() {
                     return Err("Settings must be a JSON object".to_owned());
@@ -436,7 +437,7 @@ impl ApplicationService {
             })
             .await
             .map_err(|error| error.to_string())?;
-        Ok(self.resource_descriptor(&settings_ref))
+        Ok(settings)
     }
 
     pub(crate) async fn restore_backup(
@@ -661,7 +662,7 @@ impl ApplicationService {
                 changed.push(task.clone());
             }
             if !changed.is_empty() {
-                if let Err(error) = self.persist_tasks_locked(&registry).await {
+                if let Err(error) = self.persist_task_changes(None, &changed.iter().collect::<Vec<_>>()).await {
                     registry.records = previous;
                     return Err(error);
                 }

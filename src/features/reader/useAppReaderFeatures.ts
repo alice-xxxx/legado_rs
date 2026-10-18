@@ -80,7 +80,6 @@ let readerChapterLoading!: ReturnType<typeof useReaderChapterLoading>;
 let readerChapterWindow!: ReturnType<typeof useReaderChapterWindow>;
 const readerControlsMode = ref<ReaderControlsMode>("settings");
 const readerDirectoryOpen = ref(false);
-const readerDirectoryQuery = ref("");
 const readerMenuOpen = ref(false);
 const readerFindQuery = ref("");
 const readerFindMatches = ref<HTMLElement[]>([]);
@@ -529,7 +528,6 @@ function setReaderMediaElement(element: unknown): void {
 }
 
 function openReaderDirectory(): void {
-  readerDirectoryQuery.value = "";
   readerDirectoryOpen.value = true;
   readerControlsOpen.value = false;
   readerMenuOpen.value = true;
@@ -582,7 +580,7 @@ return {
   ...readerBookmarksAndHistory, ...readerMediaBinding, ...readerNavigationActions, ...readerDisplay,
   readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom, readingPdfInitialPassword,
   readingContentType, readingImagePage, readingMediaChapter, readingVideoChapter, readerViewport, readerPageIndex, readerPageCount,
-  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerDirectoryQuery, readerMenuOpen,
+  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen,
   readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty, progressSaveState,
   readerBookDownloadBusy, readerChapterError,
   readerMediaError, readerMediaRetrying, readerMediaPlaying, readerMediaTimeMs, readerMediaDurationMs,

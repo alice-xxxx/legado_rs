@@ -23,11 +23,6 @@ impl ApplicationService {
             .find(|chapter| chapter["id"].as_str() == Some(chapter_id))
             .ok_or("Downloaded chapter no longer exists")?
             .clone();
-        let source_revision = if let Some(source) = before["sourceId"].as_str() {
-            Some(self.source_revision(source).await?)
-        } else {
-            None
-        };
         let kind = before["contentType"].as_str().unwrap_or("text");
         let mut markup = None;
         let mut roots = Vec::new();
@@ -266,12 +261,6 @@ impl ApplicationService {
         files.retain(|file| !roots.contains(file.as_str()));
         if !files.is_empty() {
             next_chapter["files"] = json!(files);
-        }
-        let _sources = self.sources_lock.lock().await;
-        if let Some(source) = before["sourceId"].as_str() {
-            if Some(self.source_revision(source).await?) != source_revision {
-                return Err("Source changed during download".into());
-            }
         }
         let _book = self.book_lock(book_id).await;
         if signal.borrow().cancelled || signal.borrow().paused {

@@ -366,10 +366,6 @@ pub(crate) async fn list_standard_feed_articles(
         cards.push(card);
     }
     record_article_resources(service, &source.id, article_resources).await?;
-    let search_ref = service
-        .resource_store()
-        .discovery_ref(&format!("rss-{}", uuid::Uuid::new_v4().simple()))
-        .map_err(|error| error.to_string())?;
     let card_count = cards.len();
     let public_results = json!({
         "schemaVersion": crate::models::CURRENT_SCHEMA_VERSION,
@@ -379,12 +375,6 @@ pub(crate) async fn list_standard_feed_articles(
         "errors": [],
         "complete": true,
     });
-    service
-        .resource_store()
-        .write_json_ref(&search_ref, &public_results)
-        .await
-        .map_err(|error| error.to_string())?;
-    let descriptor = service.resource_descriptor(&search_ref);
     result["sourceId"] = json!(source.id);
     result["categoryId"] = json!(category.category_id);
     result["page"] = json!(page);
@@ -393,7 +383,7 @@ pub(crate) async fn list_standard_feed_articles(
     result["totalCount"] = json!(total_count);
     result["filter"] = json!(filter);
     result["filtered"] = json!(filter != "all");
-    result["resource"] = descriptor;
+    result["search"] = public_results;
     Ok(result)
 }
 

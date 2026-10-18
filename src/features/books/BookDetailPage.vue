@@ -9,7 +9,6 @@ import type { AppBootstrap, BookResource, SearchBookResult, SearchResultSource }
 import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
-import { useVirtualList } from "../../ui/useVirtualList";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookDisplayMetadataEditor from "./BookDisplayMetadataEditor.vue";
 import { useBookDetailActions } from "./useBookDetailActions";
@@ -17,7 +16,9 @@ import { useBookMetadataActions } from "./useBookMetadataActions";
 import { hasReadingProgress, readingProgressPercent } from "./readingProgress";
 import { getReaderSession } from "../reader/readerSession";
 import { getBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
-import BookSourceSwitchSheet from "../sources/BookSourceSwitchSheet.vue";
+import BookSourceSwitchView from "../sources/BookSourceSwitchView.vue";
+import BookSourcesPanel from "../sources/BookSourcesPanel.vue";
+import BookCatalogPanel from "./BookCatalogPanel.vue";
 import { consumeBookDetailOpenRequest, returnFromBookDetail } from "./bookDetailOpenRequest";
 import { useBookDetailSession } from "./useBookDetailSession";
 import { clearOpenedBook, openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
@@ -27,7 +28,6 @@ import { getFrontendRestoreRevision, lockShelfBatchRecovery, shelfBatchRecoveryM
 
 type BookTaskKind = "refreshChapters" | "checkNewChapters";
 type BookTaskAction = "download" | "refresh" | "check";
-const sourceName = (id: string): string => sources.value.find((source) => source.id === id)?.name ?? id;
 function progressTime(milliseconds = 0): string {
   const seconds = Math.floor(Math.max(0, milliseconds) / 1000);
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
@@ -255,22 +255,7 @@ const catalogCheckBusy = computed(() => openedBook.value
   ? isBookTaskBusy(openedBook.value.id, "checkNewChapters") : false);
 const bookDetailTab = ref<"catalog" | "info" | "sources">("catalog");
 const bookDetailMenuOpen = ref(false);
-const catalogQuery = ref("");
-const catalogDescending = ref(false);
-const catalogSearchOpen = ref(false);
 const bookDetailContentRef = ref<HTMLElement | null>(null);
-const filteredCatalogChapters = computed(() => {
-  const query = catalogQuery.value.trim().toLocaleLowerCase();
-  const chapters = openedBook.value?.chapters ?? [];
-  const filtered = query
-    ? chapters.filter((chapter) => `${chapter.index + 1} ${chapter.title}`.toLocaleLowerCase().includes(query))
-    : chapters;
-  // Sorting is a view preference. Never mutate the Rust-owned chapter order.
-  return catalogDescending.value ? filtered.slice().reverse() : filtered;
-});
-const catalogWindow = useVirtualList(filteredCatalogChapters, bookDetailContentRef, 56);
-const { range: catalogRange, visibleItems: visibleCatalogChapters } = catalogWindow;
-watch([catalogQuery, catalogDescending], () => { void catalogWindow.reset(); });
 function selectBookDetailTab(tab: "catalog" | "info" | "sources"): void {
   bookDetailTab.value = tab;
   bookDetailMenuOpen.value = false;
@@ -278,18 +263,9 @@ function selectBookDetailTab(tab: "catalog" | "info" | "sources"): void {
     if (bookDetailContentRef.value) bookDetailContentRef.value.scrollTop = 0;
   });
 }
-async function locateCurrentCatalogChapter(): Promise<void> {
-  const chapterIndex = openedBook.value?.progress?.chapterIndex;
-  if (chapterIndex == null) return;
-  catalogQuery.value = "";
-  await nextTick();
-  catalogWindow.scrollToIndex(filteredCatalogChapters.value.findIndex(chapter => chapter.index === chapterIndex));
-}
 watch(() => searchResultDetails.value, (details) => {
   bookDetailTab.value = details?.initialTab ?? "catalog";
   bookDetailMenuOpen.value = false;
-  catalogQuery.value = "";
-  catalogSearchOpen.value = false;
 }, { immediate: true });
 watch(() => readerVisible.value, (visible) => {
   if (visible) bookDetailMenuOpen.value = false;
@@ -408,24 +384,35 @@ async function clearOpenedBookChapterCache(): Promise<void> {
     if (generation === bookCacheActionGeneration) bookChapterCacheClearBusy.value = false;
   }
 }
-function openBookSourceSwitch(chapterTarget?: { id: string; title: string }): void {
+async function ensureInlineBookSources(): Promise<boolean> {
   const book = openedBook.value;
-  if (book) void bookSourceSwitch.openBookSourceSwitchForBook(book, chapterTarget);
+  if (!book || recoveryRequired.value || bookSourceSwitch.bookSourceSwitchBusy) return false;
+  if (bookSourceSwitch.bookSourceSwitchOpen && bookSourceSwitch.bookSourceSwitchBook?.id === book.id) {
+    bookSourceSwitch.bookSourceSwitchInline = true;
+  } else {
+    await bookSourceSwitch.openBookSourceSwitchForBook(book, undefined, true);
+  }
+  return !disposed && !closing && openedBook.value?.id === book.id && bookSourceSwitch.bookSourceSwitchOpen;
+}
+async function openBookSourceSwitch(chapterTarget?: { id: string; title: string }): Promise<void> {
+  const book = openedBook.value;
+  if (!book) return;
+  selectBookDetailTab("sources");
+  await bookSourceSwitch.openBookSourceSwitchForBook(book, chapterTarget, true);
 }
 async function searchMoreBookSources(): Promise<void> {
-  const book = openedBook.value;
-  if (!book || recoveryRequired.value || bookSourceSwitch.bookSourceSwitchBusy) return;
-  await bookSourceSwitch.openBookSourceSwitchForBook(book);
-  if (disposed || closing || openedBook.value?.id !== book.id || !bookSourceSwitch.bookSourceSwitchOpen) return;
-  await bookSourceSwitch.startBookSourceCandidateSearch();
+  if (await ensureInlineBookSources()) await bookSourceSwitch.startBookSourceCandidateSearch();
 }
+watch([bookDetailTab, () => openedBook.value?.id, () => bookSourceSwitch.bookSourceSwitchBusy, bookPanelBusy, readerVisible], async ([tab, , busy, loading, reading]) => {
+  if (tab !== "sources" || busy || loading || reading || openedBook.value?.canChangeSource !== true) return;
+  if (!await ensureInlineBookSources()) return;
+  if (!bookSourceSwitch.bookSourceCandidateResults.length && !bookSourceSwitch.bookSourceCandidateTaskId && !bookSourceSwitch.bookSourceSearchBusy) {
+    await bookSourceSwitch.startBookSourceCandidateSearch();
+  }
+});
 async function chooseCachedBookSource(candidate: SearchBookResult): Promise<void> {
-  const book = openedBook.value;
-  if (!book || recoveryRequired.value || bookSourceSwitch.bookSourceSwitchBusy) return;
-  await bookSourceSwitch.openBookSourceSwitchForBook(book);
-  if (disposed || closing || openedBook.value?.id !== book.id || !bookSourceSwitch.bookSourceSwitchOpen) return;
-  bookSourceSwitch.selectBookSourceCandidate(candidate);
-  bookSourceSwitch.bookSourceSwitchConfirmOpen = true;
+  if (!await ensureInlineBookSources()) return;
+  await bookSourceSwitch.chooseBookSourceCandidate(candidate);
 }
 async function chooseSearchResultSource(candidate: SearchResultSource): Promise<void> {
   if (openedBook.value && !bookPanelBusy.value) {
@@ -519,43 +506,13 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
         <main ref="bookDetailContentRef" class="book-detail-content"
           :class="{ 'book-detail-content--catalog': bookDetailTab === 'catalog' }"
           @click="bookDetailMenuOpen = false">
-          <section v-if="bookDetailTab === 'sources' && currentSearchResultDetails.result"
-            class="detail-sources-page">
-            <section class="detail-source-block">
-              <h2>当前来源</h2>
-              <article class="detail-source-current">
-                <span class="detail-source-glyph"><PrototypeIcon name="source"/></span>
-                <div><strong>{{ openedBook?.sourceName || currentSearchResultDetails.result.sourceName }}</strong></div>
-                <button v-if="canRefreshOpenedBookInfo" type="button" class="button secondary small"
-                  :disabled="bookInfoRefreshBusy || recoveryRequired" @click="bookDetailActions.refreshOpenedBookInfo()">
-                  {{ bookInfoRefreshBusy ? '刷新中…' : '刷新信息' }}
-                </button>
-              </article>
-            </section>
-            <section class="detail-source-block detail-alternates">
-              <div class="detail-alternates-heading"><h2>可更换源</h2></div>
-              <p v-if="bookPanelBusy" class="detail-loading-notice" role="status">正在加载 {{ currentSearchResultDetails.result.sourceName }}，可以直接选择其他来源。</p>
-              <p v-if="currentSearchResultDetails.error" class="detail-source-partial">{{ currentSearchResultDetails.error }}
-                <button type="button" class="text-button" @click="retryBookDetails">重试</button>
-              </p>
-              <div class="detail-alternates-list">
-                <article v-for="candidate in searchDetailSourceCandidates" :key="candidate.resultId" class="detail-alternate-row">
-                  <div><strong>{{ candidate.sourceName }}</strong>
-                    <span>{{ candidate.title }}{{ candidate.author ? ' · ' + candidate.author : '' }}</span>
-                    <small v-if="candidate.latestChapter">最新：{{ candidate.latestChapter }}</small>
-                  </div>
-                  <span v-if="candidate.sourceId === (openedBook?.sourceId || currentSearchResultDetails.result.sourceId)" class="detail-source-current-badge">
-                    {{ bookPanelBusy ? '加载中…' : '当前' }}
-                  </span>
-                  <button v-else type="button" :disabled="recoveryRequired || bookSourceSwitch.bookSourceSwitchBusy" @click="chooseSearchResultSource(candidate)">换源</button>
-                </article>
-              </div>
-              <p v-if="searchDetailSourceCandidates.length < 2" class="detail-alternates-empty">其他来源的搜索结果到达后会显示在这里。</p>
-              <button v-if="openedBook" type="button" class="button secondary small"
-                :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired || !bookSourceSwitch.bookSourceEligibleSources.length"
-                @click="searchMoreBookSources()">搜索更多来源</button>
-            </section>
-          </section>
+          <BookSourcesPanel v-if="bookDetailTab === 'sources' && currentSearchResultDetails.result"
+            :book="openedBook || currentSearchResultDetails.result" :candidates="searchDetailSourceCandidates" :session="bookSourceSwitch"
+            :loading="bookPanelBusy" :locked="recoveryRequired" :error="currentSearchResultDetails.error"
+            :can-refresh="canRefreshOpenedBookInfo" :refresh-busy="bookInfoRefreshBusy"
+            :can-check="!!searchResultDetailsShelfBook && !!openedBook" :check-busy="catalogCheckBusy"
+            @select="chooseSearchResultSource" @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo"
+            @check="enqueueCurrentBookTask('check')" @retry="retryBookDetails" />
           <section v-else-if="!openedBook && currentSearchResultDetails.result && bookDetailTab === 'info'" class="book-info-view">
             <div class="detail-hero">
               <img v-if="currentSearchResultDetails.result.coverSrc" :src="currentSearchResultDetails.result.coverSrc" decoding="async"/>
@@ -584,128 +541,15 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
             <button v-else-if="currentSearchResultDetails.bookId" class="button secondary small" @click="retryBookDetails">重试</button>
           </div>
           <template v-else-if="openedBook">
-            <section v-if="bookDetailTab === 'catalog'" class="book-catalog-view">
-              <div class="prototype-catalog-tools">
-                <label class="catalog-search">
-                  <PrototypeIcon name="search"/>
-                  <input v-model="catalogQuery"
-                    :placeholder="openedBook.mediaType === 'video' ? '搜索剧集' : openedBook.mediaType === 'audio' ? '搜索节目' : '搜索章节'"/>
-                  <button v-if="catalogQuery" type="button"
-                    @click="catalogQuery = ''"><PrototypeIcon name="close"/></button>
-                </label>
-                <div class="catalog-tools-actions">
-                  <button type="button" class="button secondary small"
-                    :disabled="!hasReadingProgress(openedBook.progress)"
-                    @click="locateCurrentCatalogChapter"><PrototypeIcon name="tune"/> <span>定位当前</span></button>
-                  <button type="button" class="button secondary small"
-                    @click="catalogDescending = !catalogDescending">
-                    <PrototypeIcon name="filter"/><span>排序</span>
-                  </button>
-                  <button type="button" class="button secondary small"
-                    :disabled="!searchResultDetailsShelfBook || openedBook.canChangeSource !== true || !openedBook.sourceId || recoveryRequired"
-                    :title="openedBook.mediaType === 'video' ? '缓存全部剧集' : openedBook.mediaType === 'audio' ? '缓存全部节目' : '缓存全部章节'"
-                    @click="enqueueCurrentBookTask('download')"><PrototypeIcon name="download"/><span>缓存全部</span></button>
-                </div>
-              </div>
-              <div :ref="catalogWindow.list" class="catalog-list">
-                <div aria-hidden="true" :style="{ height: `${catalogRange.top}px` }"></div>
-                <article v-for="chapter in visibleCatalogChapters" :key="chapter.id"
-                  class="catalog-row-wrap"
-                  :class="{ current: hasReadingProgress(openedBook.progress) && chapter.index === openedBook.progress?.chapterIndex }">
-                  <button :data-chapter-index="chapter.index" type="button"
-                    class="catalog-row"
-                    :disabled="searchResultDetailsReadingBusy || recoveryRequired"
-                    @click="detailSession.startReading(chapter.index)">
-                    <span class="catalog-chapter-main">
-                      <strong>{{ chapter.title }}</strong>
-                    </span>
-                    <span v-if="hasReadingProgress(openedBook.progress) && chapter.index === openedBook.progress?.chapterIndex"
-                      class="catalog-current-label">当前</span>
-                    <span v-if="!chapter.resource" class="catalog-uncached"
-                      :title="openedBook.canChangeSource === true ? '正文尚未准备，打开时由内容引擎读取' : '内容尚未准备'"
-><PrototypeIcon name="cloud"/></span>
-                    <span v-else class="catalog-cache-space"></span>
-                  </button>
-                  <button v-if="searchResultDetailsShelfBook && openedBook.canChangeSource === true && !isMediaReaderBook(openedBook)"
-                    type="button" class="catalog-replace-action"
-title="更换章节来源"
-                    :disabled="recoveryRequired"
-                    @click="openBookSourceSwitch({ id: chapter.id, title: chapter.title })">
-                    <PrototypeIcon name="source-switch"/>
-                  </button>
-                </article>
-                <div aria-hidden="true" :style="{ height: `${catalogRange.bottom}px` }"></div>
-                <div v-if="!openedBook.chapters?.length" class="catalog-empty">暂无可显示的目录。</div>
-                <div v-else-if="!filteredCatalogChapters.length" class="catalog-empty">
-                  没有匹配的内容。<button type="button" class="text-button"
-                    @click="catalogQuery = ''; catalogSearchOpen = false">清空搜索</button>
-                </div>
-              </div>
-            </section>
-
-            <section v-else-if="bookDetailTab === 'sources'" class="detail-sources-page"
->
-              <section class="detail-source-block">
-                <h2>当前来源</h2>
-                <article class="detail-source-current">
-                  <span class="detail-source-glyph"><PrototypeIcon name="source"/></span>
-                  <div>
-                    <strong>{{ openedBook.sourceName || '本地内容' }}</strong>
-                    <small v-if="openedBook.sourceGroup">{{ openedBook.sourceGroup }}</small>
-                    <small v-if="openedBook.sourceId && sources.some(source => source.id === openedBook?.sourceId)">
-                      {{ sources.find(source => source.id === openedBook?.sourceId)?.enabled ? '已启用' : '已停用' }} · 本机已导入
-                    </small>
-                    <small v-else-if="openedBook.sourceId">当前来源尚未在本机导入或已被移除</small>
-                    <small v-else>本地文件，不需要网络来源</small>
-                  </div>
-                  <button v-if="canRefreshOpenedBookInfo" type="button" class="button secondary small"
-                    :disabled="bookInfoRefreshBusy || recoveryRequired"
-                    @click="bookDetailActions.refreshOpenedBookInfo()">
-                    {{ bookInfoRefreshBusy ? '刷新中…' : '刷新信息' }}
-                  </button>
-                </article>
-              </section>
-              <section v-if="openedBook.canChangeSource === true" class="detail-source-block detail-alternates">
-                <div class="detail-alternates-heading">
-                  <h2>可更换源</h2>
-                  <button type="button"
-                    :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired || !bookSourceSwitch.bookSourceEligibleSources.length"
-                    @click="searchMoreBookSources()">
-                    <PrototypeIcon name="search"/><span>搜索更多</span>
-                  </button>
-                </div>
-                <div v-if="bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateResults.length"
-                  class="detail-alternates-list">
-                  <article v-for="candidate in bookSourceSwitch.bookSourceCandidateResults" :key="candidate.resultId"
-                    class="detail-alternate-row">
-                    <div>
-                      <strong>{{ candidate.sourceName }}</strong>
-                      <span>{{ candidate.title }}{{ candidate.author ? ' · ' + candidate.author : ' · 作者未提供' }}</span>
-                      <small v-if="candidate.requiresIdentityConfirmation">作者未验证，更换前必须确认身份</small>
-                      <small v-else-if="candidate.latestChapter">最新：{{ candidate.latestChapter }}</small>
-                    </div>
-                    <button v-if="candidate.sourceId !== openedBook.sourceId" type="button"
-                      :disabled="bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
-                      @click="chooseCachedBookSource(candidate)">
-                      换源
-                    </button>
-                    <span v-else class="detail-source-current-badge">当前</span>
-                  </article>
-                </div>
-                <div v-else class="detail-alternates-empty">
-                  暂无缓存的其他源，可点击「搜索更多」查找。
-                </div>
-                <p v-if="bookSourceSwitch.bookSourceSwitchBook?.id === openedBook.id && bookSourceSwitch.bookSourceCandidateErrors.length"
-                  class="detail-source-partial">
-                  部分源搜索失败（{{ bookSourceSwitch.bookSourceCandidateErrors.length }} 个），可在候选搜索页面查看错误。
-                </p>
-                <button v-if="searchResultDetailsShelfBook" type="button"
-                  class="detail-source-check" :disabled="catalogCheckBusy || recoveryRequired"
-                  @click="enqueueCurrentBookTask('check')">
-                  {{ catalogCheckBusy ? '检查更新中…' : '检查内容更新' }}
-                </button>
-              </section>
-            </section>
+            <BookCatalogPanel v-if="bookDetailTab === 'catalog'" :key="openedBook.id" :book="openedBook"
+              :busy="searchResultDetailsReadingBusy" :locked="recoveryRequired"
+              :can-download="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true && !!openedBook.sourceId"
+              :can-replace="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true && !isMediaReaderBook(openedBook)"
+              @select="detailSession.startReading" @download="enqueueCurrentBookTask('download')" @replace="openBookSourceSwitch" />
+            <BookSourcesPanel v-else-if="bookDetailTab === 'sources'" :book="openedBook" :candidates="bookSourceSwitch.bookSourceCandidateResults" :session="bookSourceSwitch"
+              :locked="recoveryRequired" :can-refresh="canRefreshOpenedBookInfo" :refresh-busy="bookInfoRefreshBusy"
+              :can-check="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true" :check-busy="catalogCheckBusy"
+              @select="chooseCachedBookSource" @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo" @check="enqueueCurrentBookTask('check')" />
 
             <section v-else class="book-info-view">
               <div class="detail-hero">
@@ -864,12 +708,7 @@ loading="lazy" decoding="async"/>
       </article>
     </section>
 
-    <BookSourceSwitchSheet
-      :book-source-switch="bookSourceSwitch"
-      :book-source-candidates="bookSourceSwitch.bookSourceEligibleSources"
-      :source-name="sourceName"
-      :shelf-batch-recovery-required="recoveryRequired"
-    />
+    <BookSourceSwitchView v-if="!readerVisible" :session="bookSourceSwitch" :locked="recoveryRequired" />
 
 </template>
 
@@ -1012,15 +851,6 @@ loading="lazy" decoding="async"/>
   color: var(--app-text);
   background: var(--app-background);
   overscroll-behavior: contain;
-}
-
-.detail-sources-page {
-  display: grid;
-  gap: 18px;
-}
-
-.book-catalog-view {
-  display: block;
 }
 
 .book-info-view {
@@ -1195,31 +1025,20 @@ loading="lazy" decoding="async"/>
   white-space: nowrap;
 }
 
-.detail-source-block {
-  display: grid;
-  gap: 10px;
-  padding: 16px;
-  border: 1px solid var(--app-line);
-  border-radius: 14px;
-  background: var(--app-surface);
-}
-
 .detail-section {
   display: grid;
   gap: 8px;
   margin-top: 28px;
 }
 
-.detail-section header,
-.detail-alternates-heading {
+.detail-section header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.detail-section h3,
-.detail-source-block h2 {
+.detail-section h3 {
   margin: 0;
   font-size: var(--ui-font-body);
 }
@@ -1233,157 +1052,6 @@ loading="lazy" decoding="async"/>
   overflow-wrap: anywhere;
 }
 
-.prototype-catalog-tools {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: grid;
-  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 12px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--app-line);
-  background: var(--app-background);
-}
-
-.catalog-search {
-  display: flex;
-  min-height: 36px;
-  align-items: center;
-  gap: 7px;
-  padding: 0 9px;
-  border: 1px solid var(--app-line);
-  border-radius: 10px;
-  color: var(--app-muted);
-  background: var(--app-surface);
-}
-
-.catalog-search input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  outline: 0;
-  color: var(--app-text);
-  background: transparent;
-  font-size: var(--ui-font-body);
-}
-
-.catalog-search button {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  flex: none;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--app-muted);
-  cursor: pointer;
-}
-
-.catalog-tools-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-}
-
-.catalog-tools-actions .button {
-  min-height: 34px;
-  flex: 1;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 8px;
-  color: var(--app-muted);
-  background: var(--app-panel-soft);
-  font-size: var(--ui-font-body);
-}
-
-.catalog-list {
-  margin: 0 13px;
-}
-
-.catalog-row-wrap {
-  height: 56px;
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
-  gap: 4px;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.catalog-row {
-  display: grid;
-  min-width: 0;
-  min-height: 52px;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  padding: 0 4px;
-  border: 0;
-  border-radius: 0;
-  color: var(--app-text);
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-}
-
-.catalog-row-wrap.current .catalog-row {
-  background: var(--app-accent-soft);
-}
-
-.catalog-row-wrap.current::before {
-  position: absolute;
-  top: 12px;
-  bottom: 12px;
-  left: 0;
-  width: 2px;
-  border-radius: 2px;
-  background: var(--app-accent);
-  content: "";
-}
-
-.catalog-chapter-main {
-  min-width: 0;
-}
-
-.catalog-chapter-main strong {
-  display: block;
-  overflow: hidden;
-  font-size: var(--ui-font-caption);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.catalog-current-label {
-  color: var(--app-accent-ink);
-  font-size: var(--ui-font-body);
-  white-space: nowrap;
-}
-
-.catalog-uncached {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  place-items: center;
-  color: var(--app-muted);
-}
-
-.catalog-uncached .icon {
-  width: 15px;
-  height: 15px;
-}
-
-.catalog-replace-action {
-  display: grid;
-  width: 30px;
-  height: 30px;
-  place-items: center;
-  border-radius: 8px;
-  color: var(--app-muted);
-  background: transparent;
-  cursor: pointer;
-}
-
 .catalog-empty {
   display: grid;
   min-height: 150px;
@@ -1392,132 +1060,6 @@ loading="lazy" decoding="async"/>
   gap: 12px;
   color: var(--app-muted);
   text-align: center;
-}
-
-.detail-sources-page {
-  align-content: start;
-  gap: 0;
-  max-width: 850px;
-  margin: 0 auto;
-}
-
-.detail-source-current,
-.detail-alternate-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
-}
-
-.detail-source-current > div,
-.detail-alternate-row > div {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
-}
-
-.detail-source-current small,
-.detail-alternate-row span,
-.detail-alternate-row small,
-.detail-alternates-empty,
-.detail-source-partial {
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-}
-
-.detail-source-block {
-  gap: 10px;
-  margin-top: 22px;
-  padding: 18px 0 0;
-  border: 0;
-  border-top: 1px solid var(--app-line);
-  border-radius: 0;
-  background: transparent;
-}
-
-.detail-source-block:first-child {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
-}
-
-.detail-source-current {
-  min-height: 82px;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid var(--app-line);
-  border-radius: 14px;
-  background: var(--app-surface);
-}
-
-.detail-source-current strong {
-  font-size: var(--ui-font-caption);
-}
-
-.detail-source-glyph {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  border-radius: 13px;
-  color: var(--app-accent);
-  background: var(--app-accent-soft);
-}
-
-.detail-alternates-heading > button,
-.detail-alternate-row > button,
-.detail-source-check {
-  display: inline-flex;
-  min-height: 34px;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 0 10px;
-  border: 1px solid var(--app-line);
-  border-radius: 9px;
-  color: var(--app-accent-ink);
-  background: var(--app-surface);
-  cursor: pointer;
-}
-
-.detail-alternates-list {
-  display: grid;
-  border-top: 1px solid var(--app-line);
-}
-
-.detail-alternate-row {
-  min-width: 0;
-  min-height: 58px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.detail-alternate-row strong {
-  font-size: var(--ui-font-caption);
-}
-
-.detail-alternate-row > button {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--app-panel-soft);
-  font-size: var(--ui-font-body);
-}
-
-.detail-source-current-badge {
-  color: var(--app-success);
-}
-
-.detail-alternates-empty {
-  padding: 12px 0;
-  line-height: 1.5;
-}
-
-.detail-source-partial {
-  margin: 0;
-  color: var(--app-danger);
 }
 
 .catalog-empty .button {
@@ -1605,21 +1147,10 @@ loading="lazy" decoding="async"/>
     padding: 10px 12px 9px;
     box-shadow: 0 5px 12px rgb(32 34 42 / 4%);
   }
-
-  .catalog-tools-actions {
-    justify-content: flex-start;
-  }
-
-  .catalog-row-wrap {
+.catalog-row-wrap {
     grid-template-columns: minmax(0, 1fr) 34px;
   }
-
-  .catalog-row {
-    min-height: 55px;
-    padding: 0 2px;
-  }
-
-  .book-detail-menu {
+.book-detail-menu {
     position: fixed;
     right: 10px;
     bottom: calc(10px + var(--safe-bottom));
@@ -1666,10 +1197,6 @@ loading="lazy" decoding="async"/>
 
   .catalog-row {
     grid-template-columns: minmax(0, 1fr) auto;
-  }
-
-  .catalog-row .catalog-cache-space {
-    display: none;
   }
 }
 

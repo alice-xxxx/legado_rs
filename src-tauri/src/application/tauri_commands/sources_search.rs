@@ -365,11 +365,7 @@ pub async fn start_search(
     let notifier = std::sync::Arc::new(move |batch| { let _ = on_results.send(batch); });
     let result = service.start_search(&source_type, &source_ids, &keyword, page.unwrap_or(1),
         precision_search.unwrap_or(true), Some(notifier)).await?;
-    let history = service.history_resource().await?;
-    let _ = app.emit(
-        "history-updated",
-        json!({ "requestId": 0, "resource": history }),
-    );
+    let _=app.emit("history-updated",json!({"requestId":0,"part":"search"}));
     Ok(result)
 }
 
@@ -379,10 +375,13 @@ pub async fn search_book_source_candidates(
     source_ids: Vec<String>,
     keyword: Option<String>,
     page: Option<u32>,
+    on_results: tauri::ipc::Channel<Value>,
     service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
+    let notifier = std::sync::Arc::new(move |batch| { let _ = on_results.send(batch); });
     service
-        .search_book_source_candidates(&book_id, &source_ids, keyword.as_deref(), page.unwrap_or(1))
+        .search_book_source_candidates(&book_id, &source_ids, keyword.as_deref(), page.unwrap_or(1),
+            Some(notifier))
         .await.map(super::tasks::task_resource_response)
 }
 

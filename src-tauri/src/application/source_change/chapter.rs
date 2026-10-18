@@ -81,87 +81,33 @@ impl ApplicationService {
             return Err("Replacement candidate is not part of a completed search".into());
         }
         }
-        if candidate["sourceRevision"].as_u64().is_none()
-            || candidate["sourceDefinitionFingerprint"]
-                .as_str()
-                .is_none_or(str::is_empty)
-        {
-            return Err("Replacement candidate has invalid source metadata".into());
-        }
-        let candidate_source_revision = candidate["sourceRevision"].as_u64().unwrap_or_default();
-        let candidate_source_fingerprint = candidate["sourceDefinitionFingerprint"]
-            .as_str()
-            .unwrap_or_default()
-            .to_owned();
-        if context["candidateSourceFingerprint"].as_str()
-            != Some(candidate_source_fingerprint.as_str())
-        {
-            return Err("Replacement candidate source binding is invalid".into());
-        }
-
         let book_ref = self
             .store
             .book_ref(book_id)
             .map_err(|error| error.to_string())?;
-        // Acquire the per-chapter lock before source/book locks. Chapter
+        // Acquire the per-chapter lock before book locks. Chapter
         // preparation uses the same order, so an in-flight download cannot
         // overwrite this replacement after it commits.
         let _chapter = self.chapter_lock(book_id, chapter_id).await;
         let (
             original_source_id,
-            original_source_definition,
-            original_source_revision,
             replacement_source,
             old_chapter_raw,
             old_chapter_title,
             old_book_title,
             old_author,
-            catalog_fingerprint,
             catalog_generation,
             book_instance_id,
         ) = {
-            let _sources = self.sources_lock.lock().await;
             let sources = self.read_sources().await?;
             let original_source_id = context["originalSourceId"]
                 .as_str()
                 .ok_or_else(|| "Replacement candidate has no original source binding".to_owned())?
                 .to_owned();
-            let original_source_present = context["originalSourcePresent"]
-                .as_bool()
-                .ok_or_else(|| "Replacement candidate has no source-presence binding".to_owned())?;
             let original_source = sources.iter().find(|source| source.id == original_source_id);
-            if original_source_present != original_source.is_some() {
-                return Err(
-                    "Current book source availability changed after the search; search again".into(),
-                );
-            }
             let original_source_definition = original_source
                 .map(|source| source.source.clone())
                 .unwrap_or(Value::Null);
-            match (
-                original_source_present,
-                original_source,
-                context["originalSourceFingerprint"].as_str(),
-            ) {
-                (true, Some(source), Some(expected))
-                    if source_definition_fingerprint(&source.source)? == expected => {}
-                (true, _, _) => {
-                    return Err("Current book source changed after the search; search again".into());
-                }
-                (false, None, None) => {}
-                (false, _, _) => {
-                    return Err(
-                        "Current book source availability changed after the search; search again"
-                            .into(),
-                    );
-                }
-            }
-            let original_source_revision = self.source_revision(&original_source_id).await?;
-            if original_source_revision
-                != context["originalSourceRevision"].as_u64().unwrap_or_default()
-            {
-                return Err("Current book source changed after the search; search again".into());
-            }
             let replacement_source = sources
                 .iter()
                 .find(|source| source.id == replacement_source_id)
@@ -180,13 +126,6 @@ impl ApplicationService {
             if original_source_id == replacement_source.id {
                 return Err("Choose a different source for this chapter".into());
             }
-            if source_definition_fingerprint(&replacement_source.source)?
-                != candidate_source_fingerprint
-                || self.source_revision(&replacement_source_id).await? != candidate_source_revision
-            {
-                return Err("Replacement source changed after the search; search again".into());
-            }
-
             let _book = self.book_lock(book_id).await;
             let old_private = self
                 .read_internal_json(self.book_engine_path(book_id)?)
@@ -207,13 +146,7 @@ impl ApplicationService {
                     "Single-chapter replacement is not supported for audio or video books".into(),
                 );
             }
-            let actual_fingerprint = book_source_fingerprint(
-                &original_source_id,
-                &original_source_definition,
-                &old_private,
-                &old_book,
-            )?;
-            if actual_fingerprint != context["catalogFingerprint"].as_str().unwrap_or_default()
+            if old_private.get("sourceId").and_then(Value::as_str) != Some(original_source_id.as_str())
                 || old_private
                     .get("catalogGeneration")
                     .cloned()
@@ -261,10 +194,6 @@ impl ApplicationService {
                 .ok_or_else(|| "Chapter title is unavailable for source matching".to_owned())?
                 .to_owned();
             let old_chapter_raw = raw_chapters[index].clone();
-            let catalog_fingerprint = context["catalogFingerprint"]
-                .as_str()
-                .unwrap_or_default()
-                .to_owned();
             let catalog_generation = old_private
                 .get("catalogGeneration")
                 .cloned()
@@ -276,14 +205,11 @@ impl ApplicationService {
                 .to_owned();
             (
                 original_source_id,
-                original_source_definition,
-                original_source_revision,
                 replacement_source,
                 old_chapter_raw,
                 old_chapter_title,
                 old_book_title,
                 old_author,
-                catalog_fingerprint,
                 catalog_generation,
                 book_instance_id,
             )
@@ -408,36 +334,6 @@ impl ApplicationService {
             (Some(reference), document, "text")
         };
 
-        let _sources = self.sources_lock.lock().await;
-        let latest_sources = self.read_sources().await?;
-        let latest_original = latest_sources
-            .iter()
-            .find(|source| source.id == original_source_id);
-        let original_presence_unchanged =
-            latest_original.is_some() == context["originalSourcePresent"].as_bool().unwrap_or(false);
-        let original_definition_unchanged = match (
-            context["originalSourcePresent"].as_bool().unwrap_or(false),
-            latest_original,
-        ) {
-            (true, Some(source)) => source.source == original_source_definition,
-            (false, None) => true,
-            _ => false,
-        };
-        let latest_replacement = latest_sources
-            .iter()
-            .find(|source| source.id == replacement_source.id)
-            .ok_or_else(|| "Replacement source was removed during chapter replacement".to_owned())?;
-        if !original_presence_unchanged
-            || !original_definition_unchanged
-            || self.source_revision(&original_source_id).await? != original_source_revision
-            || latest_replacement.source != replacement_source.source
-            || !latest_replacement.enabled
-            || crate::source_metadata::is_rss_source_metadata(&latest_replacement.source)
-            || self.source_revision(&replacement_source_id).await? != candidate_source_revision
-        {
-            return Err("A source changed during chapter replacement; search again".into());
-        }
-
         let _book = self.book_lock(book_id).await;
         let writer_guard = self
             .store
@@ -462,12 +358,6 @@ impl ApplicationService {
                 .cloned()
                 .unwrap_or(Value::Null)
                 != catalog_generation
-            || book_source_fingerprint(
-                &original_source_id,
-                &original_source_definition,
-                &latest_private,
-                &latest_book,
-            )? != catalog_fingerprint
         {
             return Err("Book source or catalog changed during chapter replacement; search again".into());
         }

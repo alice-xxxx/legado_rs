@@ -123,7 +123,7 @@ async fn database_storage_workload() {
     eprintln!("PERF progress_5000_chapters_30_saves json_ms={} sqlite_ms={} json_document_bytes={}",old_time.as_millis(),started.elapsed().as_millis(),bytes.len());
     // A database trigger rejects even an unchanged chapter UPDATE. These
     // workloads must operate exclusively on progress, metadata and media rows.
-    service.store.database().connect().unwrap().execute_batch("CREATE TRIGGER no_chapter_updates BEFORE UPDATE ON records WHEN old.field='chapters' BEGIN SELECT RAISE(ABORT,'chapter rewrite'); END;").unwrap();
+    service.store.database().transaction(|tx|{tx.execute_batch("CREATE TRIGGER no_chapter_updates BEFORE UPDATE ON chapters BEGIN SELECT RAISE(ABORT,'chapter rewrite'); END;")?;Ok(())}).unwrap();
     let started = Instant::now();
     for index in 0..100 {
         service.set_alternatives("perf-book", vec![json!({"sourceId": format!("source-{index}"), "engineurl": format!("https://fixture/{index}"), "engine": {"name": "Fixture"}})]).await.unwrap();

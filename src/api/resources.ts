@@ -12,12 +12,6 @@ async function readResponse<T>(src: string, decode: (response: Response) => Prom
   }
 }
 
-export async function readResource<T>(resource: ResourceDescriptor | string, signal?: AbortSignal): Promise<T> {
-  const src = typeof resource === "string" ? resource : resource.src;
-  if (!src) throw new Error("资源暂时不可用。");
-  return readResponse(src, response => response.json() as Promise<T>, signal);
-}
-
 async function readTextFromSrc(src: string, signal?: AbortSignal): Promise<string> {
   if (!src) throw new Error("章节内容暂时不可用。");
   return readResponse(src, response => response.text(), signal);

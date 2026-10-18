@@ -28,7 +28,7 @@ impl ApplicationService {
             let mut registry = self.tasks.lock().await;
             registry.records.push(task.clone());
             registry.signals.insert(task.id.clone(), sender);
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(Some(&task), &[]).await {
                 registry.signals.remove(&task.id);
                 registry.records.pop();
                 return Err(error);
@@ -76,7 +76,7 @@ impl ApplicationService {
             }
             registry.records.push(task.clone());
             registry.signals.insert(task.id.clone(), sender);
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(Some(&task), &[]).await {
                 registry.signals.remove(&task.id);
                 registry.records.pop();
                 registry.search_documents.remove(&search_id);
@@ -156,7 +156,7 @@ impl ApplicationService {
             registry.records.push(task.clone());
             registry.signals.insert(task.id.clone(), sender);
             registry.active_search_task_id = Some(task.id.clone());
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(Some(&task), &previous_to_notify.iter().chain(candidates_to_notify.iter()).collect::<Vec<_>>()).await {
                 registry.signals.remove(&task.id);
                 registry.records.pop();
                 registry.active_search_task_id = previous_id.clone();
@@ -277,7 +277,7 @@ impl ApplicationService {
 
             registry.active_search_task_id = Some(task_id.to_owned());
             if previous_changed {
-                if let Err(error) = self.persist_tasks_locked(&registry).await {
+                if let Err(error) = self.persist_task_changes(None, &previous_to_notify.iter().collect::<Vec<_>>()).await {
                     registry.active_search_task_id = previous_id.clone();
                     if let Some((position, backup)) = previous_backup {
                         registry.records[position] = backup;
@@ -345,7 +345,7 @@ impl ApplicationService {
         let (sender, receiver) = tokio::sync::watch::channel(TaskSignal::default());
         registry.records.push(task.clone());
         registry.signals.insert(task.id.clone(), sender);
-        if let Err(error) = self.persist_tasks_locked(&registry).await {
+        if let Err(error) = self.persist_task_changes(Some(&task), &[]).await {
             registry.signals.remove(&task.id);
             registry.records.pop();
             return Err(error);
@@ -423,7 +423,7 @@ impl ApplicationService {
         let (sender, receiver) = tokio::sync::watch::channel(TaskSignal::default());
         registry.records.push(task.clone());
         registry.signals.insert(task.id.clone(), sender);
-        if let Err(error) = self.persist_tasks_locked(&registry).await {
+        if let Err(error) = self.persist_task_changes(Some(&task), &[]).await {
             registry.signals.remove(&task.id);
             registry.records.pop();
             return Err(error);
@@ -433,11 +433,20 @@ impl ApplicationService {
         Ok((task, Some(receiver), false))
     }
 
-    pub(in crate::application) async fn persist_tasks_locked(
+    pub(in crate::application) async fn persist_task_changes(
         &self,
-        registry: &TaskRegistry,
+        created: Option<&AppTask>,
+        changed: &[&AppTask],
     ) -> Result<(), String> {
-        self.persist_task_records_locked(&registry.records).await
+        let created = created.map(|task| task_records_document(std::slice::from_ref(task))["tasks"][0].clone());
+        let states = changed.iter().map(|task| json!({
+            "id":task.id,"status":task.status,"completed":task.completed,"total":task.total,
+            "error":task.error,"updatedAtMs":task.updated_at_ms,
+            "result":if matches!(task.kind.as_str(),"search"|"bookSourceCandidates") {None} else {task.result.as_ref()}
+        })).collect();
+        let database = self.store.database().clone();
+        tokio::task::spawn_blocking(move || database.save_task_changes(created, states))
+            .await.map_err(|error|error.to_string())?.map_err(|error|error.to_string())
     }
 
     pub(super) async fn persist_task_records_locked(
@@ -624,7 +633,7 @@ impl ApplicationService {
             let previous = registry.records[position].clone();
             update(&mut registry.records[position]);
             registry.records[position].updated_at_ms = now_ms();
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(None, &[&registry.records[position]]).await {
                 registry.records[position] = previous;
                 return Err(error);
             }

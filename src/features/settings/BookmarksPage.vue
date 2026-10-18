@@ -137,7 +137,7 @@ async function deleteSelectedBookmarks(): Promise<void> {
       const bookmark = bookmarks.value.find((entry) => entry.id === id);
       if (!bookmark) continue;
       try {
-        removeHistoryBookmark(bookmark.bookId, id);
+        await removeHistoryBookmark(bookmark.bookId, id);
       } catch (error) {
         failedIds.push(id);
         bookmarkDeleteError.value = errorText(error);
@@ -254,11 +254,11 @@ onMounted(async () => {
   await loadPageData();
 });
 
-watch(() => JSON.stringify(appHistory.value.bookmarks), () => {
+watch(() => appHistory.value.bookmarks, () => {
   void refreshBookmarkRecords().catch((error: unknown) => {
     if (!disposed) bookmarkResourceError.value = errorText(error);
   });
-});
+}, { deep: true });
 
 onBeforeUnmount(() => {
   disposed = true;

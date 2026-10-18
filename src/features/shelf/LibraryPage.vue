@@ -47,8 +47,8 @@ function errorText(error: unknown): string {
 }
 
 async function continueReading(bookId: string): Promise<void> {
-  const bookSrc = shelf.value.books.find((entry) => entry.id === bookId)?.bookSrc;
-  if (!bookSrc) {
+  const exists = shelf.value.books.some(entry => entry.id === bookId);
+  if (!exists) {
     notify("书籍文件暂时不可用。", "error");
     return;
   }

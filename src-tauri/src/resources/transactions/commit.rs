@@ -61,27 +61,22 @@ impl<'guard> FileTransaction<'guard> {
                 }
             }
         }
-        db.transaction(|tx| {
+        let root = self.root.clone();
+        db.transaction(move |tx| {
             for replacement in &self.replacements {
                 let path = replacement.target.relative_path();
                 if !path.ends_with(".json") { continue; }
                 if let Some(bytes) = &replacement.bytes {
                     let document: serde_json::Value = serde_json::from_slice(bytes).map_err(|e|crate::resources::ResourceError::new(e.to_string()))?;
                     crate::database::write(tx, &path, &document)?;
-                    if crate::resources::content::is_content_document(&path) {
-                        let (kind,id,_) = crate::resources::content::content_path(&path).expect("content path");
-                        let (_,preview) = crate::database::book_preview(tx,id)?;
-                        tx.execute("UPDATE records SET value=?1 WHERE path=?2 AND field=?3 AND item_id=?4 AND value!=?1",
-                            rusqlite::params![preview.to_string(),crate::resources::content::LIBRARY_FILE,kind,id])?;
-                    }
-                } else { tx.execute("DELETE FROM documents WHERE path=?1",[path])?; }
+                } else { crate::database::delete(tx,&path)?; }
             }
             for path in &self.post_commit_deletes {
                 tx.execute("INSERT OR IGNORE INTO pending_cleanup(path) VALUES(?1)",[path])?;
             }
             Ok(())
         }).map_err(|error|TransactionError::new(error.to_string()))?;
-        super::recovery::recover_database_cleanup(&self.root)
+        super::recovery::recover_database_cleanup(&root)
     }
 }
 

@@ -421,7 +421,7 @@ function saveRule(): void {
 
 function toggleRule(rule: TxtTocRule, enable: boolean): void {
   if (busy.value) return;
-  rule.enable = enable;
+  txtTocRuleStore.update({ ...rule, enable });
 }
 function moveRule(ruleId: string, direction: -1 | 1): void {
   if (busy.value) return;
@@ -431,7 +431,9 @@ function moveRule(ruleId: string, direction: -1 | 1): void {
   if (index < 0 || targetIndex < 0 || targetIndex >= reordered.length) return;
   [reordered[index], reordered[targetIndex]] = [reordered[targetIndex], reordered[index]];
   errorMessage.value = "";
-  reordered.forEach((rule, index) => { rule.serialNumber = index; });
+  reordered.forEach((rule, index) => {
+    if (rule.serialNumber !== index) txtTocRuleStore.update({ ...rule, serialNumber: index });
+  });
 }
 
 function requestDelete(rule: TxtTocRule): void {

@@ -3,8 +3,8 @@
 //! 服务实现按书籍、书源、阅读状态和资源处理等职责拆分到子模块中。
 //!
 //! Rust owns source definition persistence and validation. The management UI
-//! reads the complete JSON from an AppBootstrap resource; display pages consume
-//! processed resource JSON/HTML, and only KMP executes source rules.
+//! reads business tables through a read-only SQLite pool. File resources serve
+//! chapter bodies and media; only KMP executes source rules.
 
 use std::io::{Cursor, Read};
 use std::{
@@ -68,7 +68,7 @@ mod source_change;
 mod source_executor;
 mod source_helpers;
 mod source_management;
-pub(crate) use source_management::{source_list_document, validate_source_records};
+pub(crate) use source_management::validate_source_records;
 mod source_search;
 mod state;
 
@@ -82,7 +82,6 @@ mod tauri_commands;
 mod tts;
 
 // 子模块通过父模块门面共享必要的业务辅助函数。
-use book_catalog::*;
 use book_display::*;
 use chapter_resources::*;
 use general::*;
@@ -90,6 +89,7 @@ use source_change::*;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub use source_executor::TauriSourceExecutor;
 use source_helpers::*;
+pub(crate) use source_helpers::metadata as source_metadata_rows;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub use tauri_commands::*;
 
@@ -274,7 +274,7 @@ pub(crate) struct SourceRecord {
     pub(crate) source: Value,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceMetadata {
     pub id: String,
@@ -292,7 +292,7 @@ pub struct SourceMetadata {
     pub user_agent_override: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceCapabilities {
     pub search: bool,

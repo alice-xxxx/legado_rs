@@ -1,5 +1,5 @@
 import { command } from "./ipc";
-import type { ResourceDescriptor, ReaderBackgroundPickerResponse, HttpTtsAudioResult, HttpTtsStreamStart, HttpTtsStreamStatus, AppSettingsResource } from "./types";
+import type { ReaderBackgroundPickerResponse, HttpTtsAudioResult, HttpTtsStreamStart, HttpTtsStreamStatus, AppSettingsResource } from "./types";
 
 export type { TxtTocRule, TxtTocRulesDocument } from "./types";
 export type ConfigurationImportSource = { kind: "local" } | { kind: "url"; url: string } | { kind: "text"; text: string };
@@ -13,7 +13,7 @@ export async function prepareDeepLinkImport(kind: ConfigurationImportKind | "aut
 
 export interface SaveSettingsResponse {
   requestId: number;
-  resource: ResourceDescriptor;
+  resource: AppSettingsResource;
 }
 
 export const pickReaderBackgroundImage = () =>

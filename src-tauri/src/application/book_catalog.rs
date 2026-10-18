@@ -47,17 +47,21 @@ mod detail_tests {
             });
             service.write_sources(&records).await.unwrap();
             for source in &records {
-                let cache = json!({"sourceId": source.id, "sourceRevision": service.source_revision(&source.id).await.unwrap(),
-                    "sourceDefinitionFingerprint": source_definition_fingerprint(&source.source).unwrap(),
+                let cache = json!({"sourceId": source.id,
                     "book": {"name": "Fixture", "author": "Author", "bookUrl": format!("https://fixture/{}/book", source.id)}});
                 service.tasks.lock().await.search_result_documents.insert(format!("result-{}", source.id), cache);
             }
             let worker = service.clone();
             let slow = tokio::spawn(async move { worker.prepare_search_result_book_with_revision("result-slow", Some(10)).await });
             tokio::time::timeout(Duration::from_secs(2), executor.entered.notified()).await.unwrap();
+            let mut edited = records.to_vec();
+            edited[1].source["ruleSearch"] = json!({"name": "changed"});
+            service.write_sources(&edited).await.unwrap();
+            let sources_guard = service.sources_lock.lock().await;
             let fast = tokio::time::timeout(Duration::from_secs(2), service.prepare_search_result_book_with_revision("result-fast", Some(11)))
                 .await.unwrap().unwrap();
-            assert!(fast["book"]["resourceId"].as_str().unwrap().contains("cache-"));
+            drop(sources_guard);
+            assert!(fast["book"]["bookId"].as_str().unwrap().contains("cache-"));
             assert!(tokio::time::timeout(Duration::from_secs(1), slow).await.unwrap().unwrap().unwrap_err().contains("cancelled"));
             assert!(executor.cancellation.lock().unwrap().as_ref().unwrap().is_cancelled());
             // Out-of-order cancellation must not cancel a newer request, and a
@@ -66,8 +70,9 @@ mod detail_tests {
             assert_eq!(service.detail_preparation.lock().unwrap().0, 11);
             service.cancel_book_preparation(12);
             assert!(service.prepare_search_result_book_with_revision("result-fast", Some(12)).await.unwrap_err().contains("superseded"));
-            let path = fast["book"]["resourceId"].as_str().unwrap().trim_start_matches("resource://");
-            let (_, id, _) = crate::resources::content::content_path(path).unwrap();
+            let id = fast["book"]["bookId"].as_str().unwrap();
+            let reference=service.store.book_ref(id).unwrap();
+            let path=reference.path();
             service.save_progress(id, json!({"chapterIndex": 0, "offset": 17, "updatedAtMs": 100})).await.unwrap();
             let before = service.store.database().read(path).unwrap().unwrap();
             let calls = executor.calls.load(std::sync::atomic::Ordering::SeqCst);
@@ -77,13 +82,22 @@ mod detail_tests {
             for field in ["progress", "bookInstanceId", "catalogGeneration", "chapters"] {
                 assert_eq!(after[field], before[field], "Reopening must preserve {field}");
             }
+            service.store.update_json_ref(&service.store.book_ref(id).unwrap(), |mut book| {
+                book["title"] = json!("Saved title");
+                Ok(book)
+            }).await.unwrap();
+            let before_read = service.store.database().read(path).unwrap().unwrap();
+            let sources_guard = service.sources_lock.lock().await;
+            tokio::time::timeout(Duration::from_secs(1), service.get_book(id)).await.unwrap().unwrap();
+            assert_eq!(service.store.database().read(path).unwrap().unwrap(), before_read,
+                "Opening cached details must not rewrite stored metadata or scan sources");
+            drop(sources_guard);
         }
     }
 }
 
 impl ApplicationService {
     pub(super) async fn saved_alternative_candidate(&self, book_id: &str, index: usize, expected_source: Option<&str>) -> Result<Value, String> {
-        let _sources = self.sources_lock.lock().await;
         let records = self.read_sources().await?;
         let _book = self.book_lock(book_id).await;
         let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
@@ -92,26 +106,17 @@ impl ApplicationService {
         let alternative = book["alternatives"].as_array().and_then(|items| items.get(index)).ok_or("Saved alternative no longer exists")?;
         let source_id = alternative["sourceId"].as_str().ok_or("Saved alternative has no source")?;
         if Some(source_id) != expected_source { return Err("Alternative list changed; choose the source again".into()); }
-        let source = records.iter().find(|source| source.id == source_id && source.enabled).ok_or("Alternative source is unavailable")?;
-        let fingerprint = source_definition_fingerprint(&source.source)?;
-        if alternative["sourceDefinitionFingerprint"].as_str() != Some(fingerprint.as_str()) { return Err("Alternative source changed; search again".into()); }
+        if !records.iter().any(|source| source.id == source_id && source.enabled) { return Err("Alternative source is unavailable".into()); }
         let original_id = private["sourceId"].as_str().ok_or("Content has no source")?;
-        let original = records.iter().find(|source| source.id == original_id);
-        let original_definition = original.map(|source| source.source.clone()).unwrap_or(Value::Null);
         let mut engine = alternative["engine"].clone();
         engine["bookUrl"] = alternative["engineurl"].clone();
         let identity = json!({"targetTitle": text_at(&private["book"], &["name", "title"]).unwrap_or_default(),
             "targetAuthor": text_at(&private["book"], &["author"]).unwrap_or_default()});
         let confirmation = candidate_identity_match(&identity, &engine).ok_or("Alternative content identity differs")?;
-        Ok(json!({"sourceId": source_id, "book": engine, "sourceRevision": self.source_revision(source_id).await?,
-            "sourceDefinitionFingerprint": fingerprint,
+        Ok(json!({"sourceId": source_id, "book": engine,
             "replacementContext": {"targetBookId": book_id, "originalSourceId": original_id,
-                "originalSourcePresent": original.is_some(),
-                "originalSourceFingerprint": original.map(|source| source_definition_fingerprint(&source.source)).transpose()?,
-                "originalSourceRevision": self.source_revision(original_id).await?,
-                "catalogFingerprint": book_source_fingerprint(original_id, &original_definition, &private, &book)?,
                 "catalogGeneration": private["catalogGeneration"], "bookInstanceId": private["bookInstanceId"],
-                "candidateSourceFingerprint": fingerprint, "requiresIdentityConfirmation": confirmation,
+                "requiresIdentityConfirmation": confirmation,
                 "expiresAtMs": now_ms().saturating_add(BOOK_SOURCE_CANDIDATE_TTL_MS)}}))
     }
 
@@ -161,7 +166,6 @@ impl ApplicationService {
             }
         }
         let cache = {
-            let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
             let candidates = records
                 .iter()
@@ -192,8 +196,7 @@ impl ApplicationService {
             }
             .ok_or_else(|| "未找到匹配书源".to_owned())?;
             json!({
-                "sourceId": source.id, "sourceRevision": self.source_revision(&source.id).await?,
-                "sourceDefinitionFingerprint": source_definition_fingerprint(&source.source)?,
+                "sourceId": source.id,
                 "book": { "bookUrl": book_url, "origin": text_at(&source.source, &["bookSourceUrl"]), "originName": source.name },
             })
         };
@@ -229,9 +232,7 @@ impl ApplicationService {
         let cache = self.read_search_result_cache(result_id).await?;
         let selected = self.materialize_source_book_cancellable(result_id, cache, token.clone()).await?;
         if token.is_cancelled() { return Err("Book preparation cancelled".into()); }
-        let reference = selected["book"]["resourceId"].as_str().ok_or_else(|| "Prepared content has no reference".to_owned())?;
-        let (_, book_id, _) = crate::resources::content::content_path(reference.trim_start_matches("resource://"))
-            .ok_or_else(|| "Invalid prepared content reference".to_owned())?;
+        let book_id = selected["book"]["bookId"].as_str().ok_or_else(|| "Prepared content has no book ID".to_owned())?;
         let alternatives = {
             let registry = self.tasks.lock().await;
             registry.search_documents.values().filter_map(|document| document["results"].as_array()).flatten()
@@ -252,16 +253,10 @@ impl ApplicationService {
         let alternative = current["alternatives"].as_array().and_then(|items| items.get(index)).cloned()
             .ok_or_else(|| "Alternative source changed; reopen the source list".to_owned())?;
         if alternative["sourceId"] != expected_source_id { return Err("Alternative source changed; reopen the source list".into()); }
-        let source = self.find_source(expected_source_id).await?;
-        let fingerprint = source_definition_fingerprint(&source.source)?;
-        if alternative["sourceDefinitionFingerprint"].as_str().is_some_and(|saved| saved != fingerprint) {
-            return Err("Alternative source rules changed; search for sources again".into());
-        }
         let mut engine_book = alternative["engine"].clone();
         if !engine_book.is_object() { return Err("Alternative is missing source execution parameters".into()); }
         engine_book["bookUrl"] = alternative["engineurl"].clone();
-        let cache = json!({"sourceId": expected_source_id, "sourceRevision": self.source_revision(expected_source_id).await?,
-            "sourceDefinitionFingerprint": fingerprint, "book": engine_book});
+        let cache = json!({"sourceId": expected_source_id, "book": engine_book});
         self.materialize_source_book("alternative", cache).await
     }
 
@@ -278,15 +273,6 @@ impl ApplicationService {
             .and_then(Value::as_str)
             .ok_or_else(|| "Search result has no source ID".to_owned())?
             .to_owned();
-        let expected_revision = cache
-            .get("sourceRevision")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| "Search result is stale; search again".to_owned())?;
-        let expected_source_fingerprint = cache
-            .get("sourceDefinitionFingerprint")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Search result is stale; search again".to_owned())?
-            .to_owned();
         let raw_book = cache
             .get("book")
             .cloned()
@@ -296,24 +282,11 @@ impl ApplicationService {
         }
         let url = text_at(&raw_book, &["bookUrl", "url", "origin"])
             .unwrap_or_else(|| result_id.to_owned());
-        let source_kind = crate::source_metadata::content_type(&self.find_source(&source_id).await?.source);
+        let source = self.find_source(&source_id).await?;
+        if !source.enabled { return Err("Search result source is disabled".into()); }
+        let source_kind = crate::source_metadata::content_type(&source.source);
         let book_id = format!("cache-{:016x}", stable_hash(&format!("{source_id}\0{source_kind}\0{url}")));
-        let (source, source_revision, initial_state) = {
-            let _sources = self.sources_lock.lock().await;
-            let source = self
-                .lookup_source(&source_id).await?
-                .ok_or_else(|| "Search result source was removed; search again".to_owned())?;
-            if !source.enabled {
-                return Err(
-                    "Search result source is disabled; search again after enabling it".into(),
-                );
-            }
-            let source_revision = self.source_revision(&source_id).await?;
-            if source_revision != expected_revision
-                || source_definition_fingerprint(&source.source)? != expected_source_fingerprint
-            {
-                return Err("Search result source changed; search again".into());
-            }
+        let initial_state = {
             let _book = self.book_lock(&book_id).await;
             let state = self.read_add_book_snapshot(&book_id).await?;
             if let Some(state) = state.as_ref() {
@@ -322,7 +295,7 @@ impl ApplicationService {
                     return Err("A different book already uses this catalog identity".into());
                 }
             }
-            (source, source_revision, state)
+            state
         };
         if initial_state.is_none() {
             self.store.bind_book_type(&book_id, crate::source_metadata::content_type(&source.source)).await.map_err(|error| error.to_string())?;
@@ -394,24 +367,7 @@ impl ApplicationService {
         )
         .map_err(|error| format!("Cannot add book with invalid chapter catalog: {error}"))?;
 
-        // The source and book locks are intentionally reacquired only after
-        // both KMP calls have completed. Revisions include source deletion and
-        // re-import tombstones, even when the same ID and JSON definition return.
-        let _sources = self.sources_lock.lock().await;
         if token.is_cancelled() { return Err("Book preparation cancelled".into()); }
-        let current_source = self
-            .lookup_source(&source_id).await?
-            .ok_or_else(|| "Search result source was removed during book lookup".to_owned())?;
-        if !current_source.enabled {
-            return Err("Search result source was disabled during book lookup".into());
-        }
-        let current_revision = self.source_revision(&source_id).await?;
-        if current_revision != source_revision
-            || current_source.source != source.source
-            || source_definition_fingerprint(&current_source.source)? != expected_source_fingerprint
-        {
-            return Err("Search result source changed during book lookup; search again".into());
-        }
         let _book = self.book_lock(&book_id).await;
         let latest_state = self.read_add_book_snapshot(&book_id).await?;
         if !add_book_catalog_unchanged(initial_state.as_ref(), latest_state.as_ref()) {
@@ -628,90 +584,17 @@ impl ApplicationService {
         Ok(Some(AddBookSnapshot { public, private }))
     }
 
-    pub async fn get_book_preview(&self, book_id: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        validate_id(book_id,"bookId")?;
-        let database=self.store.database().clone();
-        let id=book_id.to_owned();
-        let mut preview=tokio::task::spawn_blocking(move ||database.preview(&id))
-            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
-        let reference=self.store.book_ref(book_id).map_err(|e|e.to_string())?;
-        preview["bookSrc"]=json!(self.server.url_for(&reference));
-        self.server.materialize_json(&mut preview).map_err(|e|e.to_string())?;
-        Ok(preview)
-    }
-
     pub async fn get_book(&self, book_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;
-        let reference = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let _sources = self.sources_lock.lock().await;
-        let sources = self.read_sources().await?;
-        let _book = self.book_lock(book_id).await;
-        let mut book = self
-            .store
-            .read_json_ref(&reference)
-            .await
-            .map_err(|error| error.to_string())?;
-        let original_book = book.clone();
-        let private = self
-            .read_internal_json(self.book_engine_path(book_id)?)
-            .await
-            .ok();
-        let can_change_source = private.as_ref().is_some_and(can_change_source_from_private);
-        if let Some(private) = private.as_ref() {
-            if let (Some(source_id), Some(engine_book)) = (
-                private.get("sourceId").and_then(Value::as_str),
-                private.get("book").filter(|value| value.is_object()),
-            ) {
-                let source = sources.iter().find(|source| source.id == source_id);
-                let fallback_source = SourceRecord {
-                    id: source_id.to_owned(),
-                    name: book
-                        .get("sourceName")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                        .to_owned(),
-                    group: book
-                        .get("sourceGroup")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    enabled: false,
-                    source: Value::Null,
-                };
-                let metadata = crate::book_metadata::project_book_metadata(
-                    engine_book,
-                    source.unwrap_or(&fallback_source),
-                );
-                apply_cached_book_metadata(&mut book, &metadata, source.is_some())?;
-                if let Some(source) = source {
-                    set_optional_public_field(
-                        &mut book,
-                        "mediaType",
-                        crate::source_metadata::media_type(&source.source)
-                            .map(|media_type| json!(media_type)),
-                    );
-                }
-            }
-        }
-        if book.get("canChangeSource").and_then(Value::as_bool) != Some(can_change_source) {
-            book["canChangeSource"] = json!(can_change_source);
-        }
-        if book != original_book {
-            self.store
-                .write_json_ref(&reference, &book)
-                .await
-                .map_err(|error| error.to_string())?;
+        let reference = self.store.book_ref(book_id).map_err(|error| error.to_string())?;
+        if !self.store.regular_file_exists(&reference).await.map_err(|error| error.to_string())? {
+            return Err("Book is no longer available".into());
         }
         Ok(self.resource_descriptor(&reference))
     }
 
-    /// Refresh a book's processed details through the configured source
-    /// engine. Source and book locks are held only while capturing and
-    /// validating snapshots; the KMP/network call runs without either lock.
+    /// Refresh a book's processed details without holding its guard over network work.
     pub async fn refresh_book_info(&self, book_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         validate_id(book_id, "bookId")?;
@@ -723,17 +606,16 @@ impl ApplicationService {
 
         let (
             source,
-            source_revision,
             book_instance_id,
             catalog_generation,
             engine_book,
             raw_chapters,
             public_latest_chapter,
         ) = {
-            let _sources = self.sources_lock.lock().await;
             let sources = self.read_sources().await?;
-            let first_private = self.read_internal_json(&private_path).await?;
-            let source_id = first_private
+            let _book = self.book_lock(book_id).await;
+            let private = self.read_internal_json(&private_path).await?;
+            let source_id = private
                 .get("sourceId")
                 .and_then(Value::as_str)
                 .filter(|source_id| !source_id.trim().is_empty())
@@ -745,16 +627,6 @@ impl ApplicationService {
                 .ok_or_else(|| format!("Book source '{source_id}' is no longer imported"))?;
             if !source.enabled {
                 return Err("Book source is disabled; enable it before refreshing details".into());
-            }
-            let source_revision = self.source_revision(&source.id).await?;
-
-            let _book = self.book_lock(book_id).await;
-            let private = self
-                .read_internal_json(&private_path)
-                .await
-                .map_err(|_| format!("Book '{book_id}' was removed"))?;
-            if private.get("sourceId").and_then(Value::as_str) != Some(source.id.as_str()) {
-                return Err("Book source changed before metadata refresh; retry".into());
             }
             if !can_change_source_from_private(&private) {
                 return Err("This book has no refreshable online source metadata".into());
@@ -789,7 +661,6 @@ impl ApplicationService {
             }
             (
                 source,
-                source_revision,
                 book_instance_id,
                 catalog_generation,
                 engine_book,
@@ -887,19 +758,6 @@ impl ApplicationService {
         }
         let mut refreshed_engine_book = Value::Object(refreshed_fields);
 
-        let _sources = self.sources_lock.lock().await;
-        let current_source = self
-            .lookup_source(&source.id).await?
-            .ok_or_else(|| "Book source was removed during metadata refresh".to_owned())?;
-        if !current_source.enabled {
-            return Err("Book source was disabled during metadata refresh".into());
-        }
-        if self.source_revision(&source.id).await? != source_revision
-            || current_source.source != source.source
-        {
-            return Err("Book source changed during metadata refresh; refresh again".into());
-        }
-
         let _book = self.book_lock(book_id).await;
         let writer_guard = self
             .store
@@ -928,10 +786,10 @@ impl ApplicationService {
         if old_book.get("id").and_then(Value::as_str) != Some(book_id) {
             return Err("Book resource ID does not match its catalog path".into());
         }
-        let catalog_changed_while_refreshing = old_private
+        let catalog_changed_while_refreshing = (catalog_generation.is_null() && old_private
             .get("chapters")
             .and_then(Value::as_array)
-            .is_none_or(|chapters| chapters != &raw_chapters)
+            .is_none_or(|chapters| chapters != &raw_chapters))
             || old_book.get("latestChapter").cloned() != public_latest_chapter;
         if catalog_changed_while_refreshing {
             if let Some(refreshed_fields) = refreshed_engine_book.as_object_mut() {
@@ -941,7 +799,7 @@ impl ApplicationService {
             }
         }
         let display_metadata =
-            crate::book_metadata::project_book_metadata(&refreshed_engine_book, &current_source);
+            crate::book_metadata::project_book_metadata(&refreshed_engine_book, &source);
 
         let mut next_private = old_private.clone();
         next_private["book"] = refreshed_engine_book;
@@ -1046,74 +904,6 @@ fn add_book_catalog_unchanged(
     }
 }
 
-pub(super) fn book_source_fingerprint(
-    source_id: &str,
-    source_definition: &Value,
-    private: &Value,
-    book: &Value,
-) -> Result<String, String> {
-    let chapters = book
-        .get("chapters")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Book chapter directory is missing".to_owned())?
-        .iter()
-        .map(|chapter| {
-            json!({
-                "id": chapter.get("id"),
-                "title": chapter.get("title"),
-                "index": chapter.get("index"),
-            })
-        })
-        .collect::<Vec<_>>();
-    let identity = json!({
-        "sourceId": source_id,
-        "sourceDefinition": source_definition,
-        "bookInstanceId": private.get("bookInstanceId"),
-        "catalogGeneration": private.get("catalogGeneration"),
-        "engineBook": private.get("book"),
-        "rawChapters": private.get("chapters"),
-        "chapters": chapters,
-    });
-    let bytes = serde_json::to_vec(&identity)
-        .map_err(|error| format!("Cannot fingerprint book catalog: {error}"))?;
-    Ok(sha256_hex(&bytes))
-}
-
-pub(super) fn apply_cached_book_metadata(
-    book: &mut Value,
-    metadata: &crate::book_metadata::ProcessedBookMetadata,
-    source_is_imported: bool,
-) -> Result<(), String> {
-    crate::book_display_metadata::update_base(book, metadata)?;
-    if let Some(content_type) = metadata.content_type.as_deref() {
-        book["contentType"] = json!(content_type);
-        set_optional_public_field(book, "mediaType",
-            matches!(content_type, "audio" | "video").then(|| json!(content_type)));
-    }
-    if let Some(kind) = metadata.kind.as_deref() {
-        book["kind"] = json!(kind);
-    }
-    if let Some(word_count) = metadata.word_count.as_deref() {
-        book["wordCount"] = json!(word_count);
-    }
-    if !metadata.source_id.is_empty() {
-        book["sourceId"] = json!(metadata.source_id.as_str());
-    }
-    if !metadata.source_name.is_empty() {
-        book["sourceName"] = json!(metadata.source_name.as_str());
-    }
-    if source_is_imported {
-        set_optional_public_field(
-            book,
-            "sourceGroup",
-            metadata.source_group.as_deref().map(|group| json!(group)),
-        );
-    } else if let Some(group) = metadata.source_group.as_deref() {
-        book["sourceGroup"] = json!(group);
-    }
-    Ok(())
-}
-
 pub(super) fn apply_refreshed_book_metadata(
     book: &mut Value,
     metadata: &crate::book_metadata::ProcessedBookMetadata,
@@ -1152,8 +942,7 @@ pub(super) fn alternative_from_search(leaf: &Value, cache: &Value) -> Value {
     let engine_url = text_at(&engine, &["bookUrl", "url"]).unwrap_or_default();
     if let Some(engine) = engine.as_object_mut() { engine.remove("bookUrl"); engine.remove("url"); }
     let mut alternative = json!({"sourceId": leaf["sourceId"], "sourceName": leaf["sourceName"],
-        "title": leaf["title"], "engineurl": engine_url, "engine": engine,
-        "sourceDefinitionFingerprint": cache["sourceDefinitionFingerprint"]});
+        "title": leaf["title"], "engineurl": engine_url, "engine": engine});
     for (from, to) in [("author", "author"), ("coverSrc", "cover"), ("latestChapter", "latest")] {
         if let Some(value) = leaf.get(from).filter(|value| !value.is_null()) { alternative[to] = value.clone(); }
     }

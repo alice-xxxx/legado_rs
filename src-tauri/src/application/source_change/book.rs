@@ -14,7 +14,6 @@ impl ApplicationService {
         if book_id == source_book_id {
             return Err("Choose a different cached book".into());
         }
-        let _sources = self.sources_lock.lock().await;
         let sources = self.read_sources().await?;
         let mut ids = [book_id, source_book_id];
         ids.sort();
@@ -68,8 +67,7 @@ impl ApplicationService {
         if let Some(raw) = old_engine.as_object_mut() { raw.remove("bookUrl"); raw.remove("url"); }
         alternatives.push(json!({"sourceId": old_private["sourceId"], "sourceName": old_book["sourceName"],
             "title": old_book["title"], "author": old_book["author"], "cover": old_book["coverSrc"],
-            "latest": old_book["latestChapter"], "engineurl": old_url, "engine": old_engine,
-            "sourceDefinitionFingerprint": source_definition_fingerprint(old_definition)?}));
+            "latest": old_book["latestChapter"], "engineurl": old_url, "engine": old_engine}));
         let mut seen = HashSet::new();
         alternatives.retain(|item| {
             let key = (item["sourceId"].as_str().unwrap_or_default().to_owned(), item["engineurl"].as_str().unwrap_or_default().to_owned());

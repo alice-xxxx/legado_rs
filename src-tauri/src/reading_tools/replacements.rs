@@ -62,12 +62,8 @@ pub struct DisplayReplacementRuleInput {
 
 pub async fn replacement_rules_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
     let reference = replacements_ref();
-    store
-        .update_json_ref_or_default(&reference, empty_replacement_document(), |mut value| {
-            replacement_document(&mut value)
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    let value=store.read_json_ref(&reference).await.map_err(|e|e.to_string())?;
+    validate_replacement_document(&value)?;
     Ok(reference)
 }
 
@@ -180,16 +176,6 @@ pub fn validate_replacement_document(value: &Value) -> Result<(), String> {
         })?;
     }
     Ok(())
-}
-
-fn replacement_document(value: &mut Value) -> Result<Value, String> {
-    validate_replacement_document(value)?;
-    Ok(value.clone())
-}
-
-fn empty_replacement_document() -> Value {
-    serde_json::to_value(ReplacementRuleDocument::default())
-        .expect("replacement defaults serialize")
 }
 
 fn replacements_ref() -> ResourceRef {

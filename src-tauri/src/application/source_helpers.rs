@@ -452,7 +452,7 @@ pub(super) async fn resolve_import_json(
     serde_json::to_string(&value).map_err(|error| error.to_string())
 }
 
-pub(super) fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
+pub(crate) fn metadata(records: &[SourceRecord]) -> Vec<SourceMetadata> {
     records
         .iter()
         .map(|record| SourceMetadata {

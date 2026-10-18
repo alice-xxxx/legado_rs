@@ -8,6 +8,7 @@ import type { useSourceManagementActions } from "./useSourceManagementActions";
 export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   ReturnType<typeof useBookSourceSwitch>,
   | "bookSourceSwitchOpen"
+  | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceIdentityConfirmResultId"
@@ -32,7 +33,9 @@ export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   | "openBookSourceSwitchForBook"
   | "closeBookSourceSwitch"
   | "startBookSourceCandidateSearch"
+  | "stopBookSourceCandidateSearch"
   | "selectBookSourceCandidate"
+  | "chooseBookSourceCandidate"
   | "replaceCurrentChapterFromCandidate"
   | "confirmBookSourceChange"
 >>;

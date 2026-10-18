@@ -15,7 +15,7 @@ impl ApplicationService {
         if changed {
             registry.records[position].status = if registry.signals.contains_key(task_id) { "cancelling" } else { "cancelled" }.into();
             registry.records[position].updated_at_ms = now_ms();
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(None, &[&registry.records[position]]).await {
                 registry.records[position] = previous;
                 return Err(error);
             }
@@ -65,7 +65,6 @@ impl ApplicationService {
         }
         let page = page.max(1);
         let selected = {
-            let _sources = self.sources_lock.lock().await;
             let all_sources = self.read_sources().await?;
             let mut selected = Vec::new();
             for source in all_sources.iter().filter(|source| {
@@ -73,23 +72,22 @@ impl ApplicationService {
                     && !crate::source_metadata::is_rss_source_metadata(&source.source)
                     && (source_ids.is_empty() || source_ids.contains(&source.id))
             }) {
-                let revision = self.source_revision(&source.id).await?;
-                selected.push((source.clone(), revision));
+                selected.push(source.clone());
             }
             selected
         };
         if selected.is_empty() {
             return Err("No enabled book sources are selected".into());
         }
-        let selected_type = crate::source_metadata::content_type(&selected[0].0.source);
-        if selected.iter().any(|(source, _)| !crate::source_metadata::matches_search_type(&source.source, selected_type)) {
+        let selected_type = crate::source_metadata::content_type(&selected[0].source);
+        if selected.iter().any(|source| !crate::source_metadata::matches_search_type(&source.source, selected_type)) {
             return Err("Search must use enabled sources of one selected content type".into());
         }
         let search_id = format!("debug-search-{}", uuid::Uuid::new_v4().simple());
 
         let mut source_results = Vec::new();
         let mut errors = Vec::new();
-        for (source, source_revision) in &selected {
+        for source in &selected {
             let response = self
                 .executor
                 .execute(engine_request(
@@ -110,7 +108,7 @@ impl ApplicationService {
                         .cloned()
                         .unwrap_or_default();
                     for book in books {
-                        source_results.push((source.clone(), book, *source_revision));
+                        source_results.push((source.clone(), book));
                     }
                 }
                 Err(error) => errors.push(
@@ -118,33 +116,11 @@ impl ApplicationService {
                 ),
             }
         }
-        let _sources = self.sources_lock.lock().await;
-        let current_sources = self.read_sources().await?;
-        let mut publishable_results = Vec::with_capacity(source_results.len());
-        for (source, book, source_revision) in source_results {
-            let current_source = current_sources
-                .iter()
-                .find(|current| current.id == source.id);
-            let current_revision = self.source_revision(&source.id).await?;
-            if current_source.is_some_and(|current| {
-                current.enabled
-                    && current.source == source.source
-                    && current_revision == source_revision
-            }) {
-                publishable_results.push((source, book, source_revision));
-            } else {
-                errors.push(json!({
-                    "sourceId": source.id,
-                    "sourceName": source.name,
-                    "message": "Source changed while search was running; search again",
-                }));
-            }
-        }
         self.store_processed_results_with_search_id(
             &search_id,
             keyword,
             page,
-            publishable_results,
+            source_results,
             errors,
         )
         .await
@@ -160,9 +136,10 @@ impl ApplicationService {
         source_ids: &[String],
         keyword: Option<&str>,
         page: u32,
+        on_results: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        self.search_book_source_candidates_unlocked(book_id, source_ids, keyword, page)
+        self.search_book_source_candidates_unlocked(book_id, source_ids, keyword, page, on_results)
             .await
     }
 
@@ -172,13 +149,11 @@ impl ApplicationService {
         source_ids: &[String],
         keyword: Option<&str>,
         page: u32,
+        on_results: Option<Arc<dyn Fn(Value) + Send + Sync>>,
     ) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
 
         let (selected, context, effective_keyword, use_cached_candidates) = {
-            // Keep the same lock order used by catalog commits. No source or
-            // book lock is held while the executor searches the network.
-            let _sources = self.sources_lock.lock().await;
             let records = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
             let private_path = self.book_engine_path(book_id)?;
@@ -238,12 +213,6 @@ impl ApplicationService {
             if normalize_identity(&effective_keyword).is_empty() {
                 return Err("A title or search keyword is required to find another source".into());
             }
-            let fingerprint = book_source_fingerprint(
-                &original_source_id,
-                &original_source_definition,
-                &private,
-                &book,
-            )?;
             let selected = records
                 .iter()
                 .filter(|source| {
@@ -265,12 +234,6 @@ impl ApplicationService {
                 "targetBookId": book_id,
                 "sourceType": crate::source_metadata::book_content_type(&book, &original_source_definition),
                 "originalSourceId": original_source_id,
-                "originalSourcePresent": original_source.is_some(),
-                "originalSourceFingerprint": original_source
-                    .map(|source| source_definition_fingerprint(&source.source))
-                    .transpose()?,
-                "originalSourceRevision": self.source_revision(&original_source_id).await?,
-                "catalogFingerprint": fingerprint,
                 "catalogGeneration": private.get("catalogGeneration").cloned().unwrap_or(Value::Null),
                 "bookInstanceId": private["bookInstanceId"],
                 "targetTitle": canonical_title,
@@ -341,8 +304,13 @@ impl ApplicationService {
             updated_at_ms: now,
         };
         let receiver = self
-            .create_candidate_search_task(task, initial_document, context, reused_results)
+            .create_candidate_search_task(task, initial_document.clone(), context, reused_results)
             .await?;
+        if let Some(notifier) = on_results {
+            self.search_notifiers.write().map_err(|_| "Search channel registry stopped")?
+                .insert(task_id.clone(), notifier.clone());
+            notifier(public_search_view(initial_document));
+        }
         self.spawn_task_worker(task_id.clone(), receiver);
         Ok(json!({
             "bookId": book_id,
@@ -405,34 +373,18 @@ impl ApplicationService {
                 .collect::<Vec<_>>()
         };
 
-        let _sources = self.sources_lock.lock().await;
-        let current_sources = self.read_sources().await?;
         let mut reused = Vec::new();
         let mut remaining = Vec::new();
-        for selected_source in selected {
-            let Some(current_source) = current_sources.iter().find(|source| {
-                source.id == selected_source.id
-                    && source.enabled
-                    && source.source == selected_source.source
-            }) else {
-                remaining.push(selected_source.clone());
-                continue;
-            };
-            let source_revision = self.source_revision(&current_source.id).await?;
-            let current_fingerprint = source_definition_fingerprint(&current_source.source)?;
+        for source in selected {
             let reusable = candidates.iter().filter(|(variant, cache)| {
-                variant.get("sourceId").and_then(Value::as_str) == Some(current_source.id.as_str())
-                    && cache.get("sourceId").and_then(Value::as_str) == Some(current_source.id.as_str())
-                    && cache.get("sourceRevision").and_then(Value::as_u64) == Some(source_revision)
-                    && cache.get("sourceDefinitionFingerprint").and_then(Value::as_str)
-                        == Some(current_fingerprint.as_str())
+                variant.get("sourceId").and_then(Value::as_str) == Some(source.id.as_str())
+                    && cache.get("sourceId").and_then(Value::as_str) == Some(source.id.as_str())
                     && cache.get("book").is_some_and(|book| candidate_identity_match(context, book).is_some())
             }).collect::<Vec<_>>();
             if reusable.is_empty() {
-                remaining.push(selected_source.clone());
+                remaining.push(source.clone());
                 continue;
             }
-            let fingerprint = source_definition_fingerprint(&current_source.source)?;
             let mut reused_for_source = false;
             for (_, cached) in reusable {
                 let raw_book = cached["book"].clone();
@@ -440,36 +392,29 @@ impl ApplicationService {
                     continue;
                 };
                 let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
-                let mut leaf = project_search_result(&result_id, current_source, &raw_book);
+                let mut leaf = project_search_result(&result_id, source, &raw_book);
                 leaf.requires_identity_confirmation = Some(requires_confirmation);
                 let candidate_context = json!({
                     "targetBookId": context["targetBookId"],
                     "originalSourceId": context["originalSourceId"],
-                    "originalSourcePresent": context["originalSourcePresent"],
-                    "originalSourceFingerprint": context["originalSourceFingerprint"],
-                    "originalSourceRevision": context["originalSourceRevision"],
-                    "catalogFingerprint": context["catalogFingerprint"],
                     "catalogGeneration": context["catalogGeneration"],
                     "bookInstanceId": context["bookInstanceId"],
                     "createdAtMs": context["createdAtMs"],
                     "expiresAtMs": context["expiresAtMs"],
                     "searchId": replacement_search_id,
-                    "candidateSourceFingerprint": fingerprint,
                     "requiresIdentityConfirmation": requires_confirmation,
                 });
                 reused.push((leaf, json!({
                     "searchId": replacement_search_id,
                     "originSearchId": cached["searchId"],
-                    "sourceId": current_source.id,
-                    "sourceRevision": source_revision,
-                    "sourceDefinitionFingerprint": fingerprint,
+                    "sourceId": source.id,
                     "book": raw_book,
                     "replacementContext": candidate_context,
                 })));
                 reused_for_source = true;
             }
             if !reused_for_source {
-                remaining.push(selected_source.clone());
+                remaining.push(source.clone());
             }
         }
         Ok((reused, remaining))
@@ -482,27 +427,11 @@ impl ApplicationService {
         errors: Vec<Value>,
     ) -> Result<Value, String> {
         let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
-        let versioned_results = {
-            let current_sources = self.read_sources().await?;
-            let mut versioned = Vec::with_capacity(source_results.len());
-            for (source, book) in source_results {
-                let current_source = current_sources
-                    .iter()
-                    .find(|current| current.id == source.id)
-                    .ok_or_else(|| format!("Source '{}' was removed during search", source.id))?;
-                if current_source.source != source.source {
-                    return Err("Source changed during search; run the search again".into());
-                }
-                let revision = self.source_revision(&source.id).await?;
-                versioned.push((source, book, revision));
-            }
-            versioned
-        };
         self.store_processed_results_with_search_id(
             &search_id,
             keyword,
             page,
-            versioned_results,
+            source_results,
             errors,
         )
         .await
@@ -513,20 +442,18 @@ impl ApplicationService {
         search_id: &str,
         keyword: &str,
         page: u32,
-        source_results: Vec<(SourceRecord, Value, u64)>,
+        source_results: Vec<(SourceRecord, Value)>,
         errors: Vec<Value>,
     ) -> Result<Value, String> {
         let mut public_results = Vec::with_capacity(source_results.len());
         let mut private_results = Vec::with_capacity(source_results.len());
         let mut result_indexes = SearchResultGroupIndexes::default();
-        for (source, book, source_revision) in source_results {
+        for (source, book) in source_results {
             let result_id = format!("result-{}", uuid::Uuid::new_v4().simple());
             let leaf = project_search_result(&result_id, &source, &book);
             let cache = json!({
                 "searchId": search_id,
                 "sourceId": source.id,
-                "sourceRevision": source_revision,
-                "sourceDefinitionFingerprint": source_definition_fingerprint(&source.source)?,
                 "book": book
             });
             if merge_search_result(&mut public_results, &mut result_indexes, leaf)? {
@@ -782,18 +709,29 @@ impl ApplicationService {
         }
         let target = document.get_mut("results").and_then(Value::as_array_mut)
             .ok_or_else(|| "Candidate search has no results array".to_owned())?;
+        let mut added = Vec::with_capacity(results.len());
         for (result, cache) in results {
             let result_id = result.result_id.clone();
             search_result_documents.insert(result_id, cache);
-            target.push(serde_json::to_value(result)
-                .map_err(|error| format!("Cannot encode candidate result: {error}"))?);
+            let result = serde_json::to_value(result)
+                .map_err(|error| format!("Cannot encode candidate result: {error}"))?;
+            target.push(result.clone());
+            added.push(result);
         }
         document.get_mut("errors").and_then(Value::as_array_mut)
             .ok_or_else(|| "Candidate search has no errors array".to_owned())?
-            .extend(errors);
+            .extend(errors.iter().cloned());
         document["status"] = json!("running");
         document["completedSources"] = json!(task.completed.saturating_add(1));
         document["totalSources"] = json!(task.total);
+        drop(registry);
+        let notifier = self.search_notifiers.read().ok().and_then(|channels| channels.get(&task.id).cloned());
+        if let Some(notifier) = notifier {
+            notifier(public_search_view(json!({
+                "taskId":task.id,"status":"running","complete":false,"incremental":true,
+                "results":added,"errors":errors,"completedSources":task.completed.saturating_add(1),"totalSources":task.total,
+            })));
+        }
         Ok(())
     }
 
@@ -882,25 +820,6 @@ impl ApplicationService {
                 );
             }
         };
-        let expected_revision = match cache.get("sourceRevision").and_then(Value::as_u64) {
-            Some(revision) => revision,
-            None => {
-                return Ok(
-                    json!({ "ok": false, "stage": "result", "error": "Search result is stale; search again" }),
-                );
-            }
-        };
-        let expected_fingerprint = match cache
-            .get("sourceDefinitionFingerprint")
-            .and_then(Value::as_str)
-        {
-            Some(fingerprint) if !fingerprint.is_empty() => fingerprint.to_owned(),
-            _ => {
-                return Ok(
-                    json!({ "ok": false, "stage": "result", "error": "Search result is stale; search again" }),
-                );
-            }
-        };
         let raw_book = match cache.get("book").filter(|book| book.is_object()) {
             Some(book) => book.clone(),
             None => {
@@ -909,37 +828,10 @@ impl ApplicationService {
                 );
             }
         };
-        let (source, source_revision) = {
-            let _sources = self.sources_lock.lock().await;
-            let source = match self.read_sources().await {
-                Ok(sources) => sources.iter().find(|source| source.id == source_id).cloned(),
-                Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
-            };
-            let Some(source) = source else {
-                return Ok(
-                    json!({ "ok": false, "stage": "source", "error": "Search result source was removed; search again" }),
-                );
-            };
-            if !source.enabled {
-                return Ok(
-                    json!({ "ok": false, "stage": "source", "error": "Search result source is disabled; enable it and search again" }),
-                );
-            }
-            let revision = match self.source_revision(&source_id).await {
-                Ok(revision) => revision,
-                Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
-            };
-            if revision != expected_revision
-                || source_definition_fingerprint(&source.source)
-                    .ok()
-                    .as_deref()
-                    != Some(expected_fingerprint.as_str())
-            {
-                return Ok(
-                    json!({ "ok": false, "stage": "source", "error": "Search result source changed; search again" }),
-                );
-            }
-            (source, revision)
+        let source = match self.find_source(&source_id).await {
+            Ok(source) if source.enabled => source,
+            Ok(_) => return Ok(json!({ "ok": false, "stage": "source", "error": "Search result source is disabled" })),
+            Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
         };
 
         let info = match self
@@ -1008,30 +900,6 @@ impl ApplicationService {
         ) {
             return Ok(json!({ "ok": false, "stage": "catalog", "error": error }));
         }
-        {
-            let _sources = self.sources_lock.lock().await;
-            let current_source = match self.read_sources().await {
-                Ok(sources) => sources.iter().find(|candidate| candidate.id == source_id).cloned(),
-                Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
-            };
-            let source_is_current = match current_source.as_ref() {
-                Some(current) if current.enabled && current.source == source.source => {
-                    match self.source_revision(&source_id).await {
-                        Ok(revision) => revision == source_revision,
-                        Err(error) => {
-                            return Ok(json!({ "ok": false, "stage": "source", "error": error }));
-                        }
-                    }
-                }
-                _ => false,
-            };
-            if !source_is_current {
-                return Ok(
-                    json!({ "ok": false, "stage": "source", "error": "Search result source changed during book lookup; search again" }),
-                );
-            }
-        }
-
         let metadata = crate::book_metadata::project_book_metadata(&engine_book, &source);
         let chapters = raw_chapters
             .iter()
@@ -1096,27 +964,6 @@ impl ApplicationService {
                 );
             }
 
-            let _sources = self.sources_lock.lock().await;
-            let current_source = match self.read_sources().await {
-                Ok(sources) => sources.iter().find(|candidate| candidate.id == source_id).cloned(),
-                Err(error) => return Ok(json!({ "ok": false, "stage": "source", "error": error })),
-            };
-            let source_is_current = match current_source.as_ref() {
-                Some(current) if current.enabled && current.source == source.source => {
-                    match self.source_revision(&source_id).await {
-                        Ok(revision) => revision == source_revision,
-                        Err(error) => {
-                            return Ok(json!({ "ok": false, "stage": "source", "error": error }));
-                        }
-                    }
-                }
-                _ => false,
-            };
-            if !source_is_current {
-                return Ok(
-                    json!({ "ok": false, "stage": "source", "error": "Search result source changed during chapter preview; search again" }),
-                );
-            }
             let preview_id = uuid::Uuid::new_v4().simple().to_string();
             let content = crate::source_metadata::normalize_chapter_content(&source.source, &content);
             let chapter_ref = if crate::source_metadata::is_comic_source_metadata(&source.source) || looks_like_html(&content) {
@@ -1204,6 +1051,37 @@ pub(super) fn public_search_view(mut value: Value) -> Value {
 #[cfg(test)]
 mod search_stream_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn candidate_search_publishes_each_result_before_the_remaining_sources_finish() {
+        let directory = tempfile::tempdir().unwrap();
+        let service = ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor)).await.unwrap();
+        let mut task: AppTask = serde_json::from_value(json!({
+            "id":"candidate-stream","kind":"bookSourceCandidates","status":"running","keyword":"fixture",
+            "searchId":"replace-stream","total":2,"sourceIds":["one","two"],"createdAtMs":1,"updatedAtMs":1,
+        })).unwrap();
+        let _lease = service.create_candidate_search_task(task.clone(), empty_search_task_document(&task), json!({}), Vec::new()).await.unwrap();
+        let batches = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let captured = batches.clone();
+        service.search_notifiers.write().unwrap().insert(task.id.clone(), Arc::new(move |batch| captured.lock().unwrap().push(batch)));
+        service.append_candidate_search_results(&task, vec![leaf("early","one","fixture","author")], Vec::new()).await.unwrap();
+        {
+            let batches = batches.lock().unwrap();
+            assert_eq!(batches.len(), 1);
+            assert_eq!(batches[0]["results"][0]["resultId"], "early");
+            assert_eq!(batches[0]["complete"], false);
+            assert_eq!(batches[0]["completedSources"], 1);
+            assert_eq!(batches[0]["totalSources"], 2);
+        }
+        assert!(service.tasks.lock().await.search_result_documents.contains_key("early"));
+        task.completed = 1;
+        service.append_candidate_search_results(&task, Vec::new(), vec![json!({"sourceId":"two","message":"unavailable"})]).await.unwrap();
+        let batches = batches.lock().unwrap();
+        assert_eq!(batches.len(), 2);
+        assert!(batches[1]["results"].as_array().unwrap().is_empty());
+        assert_eq!(batches[1]["errors"].as_array().unwrap().len(), 1);
+        assert_eq!(batches[1]["complete"], false);
+    }
 
     struct UnusedExecutor;
     impl SourceExecutor for UnusedExecutor {

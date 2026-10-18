@@ -1,13 +1,13 @@
 import { replaceLibraryContent, libraryType } from "../books/contentLibraryState";
-import { computed, ref, type Ref } from "vue";
+import { computed, ref, shallowRef, type Ref } from "vue";
 import { cancelTask } from "../../api/tasks";
 import { tasks } from "../tasks/tasksStore";
 import { bookSourceCandidates } from "./sourcesStore";
 import { shelfBatchRecoveryRequired, shelfBatchRecoveryTitle, shelfBatchRecoveryMessage } from "../../app/recoveryState";
-import { changeBookSource, changeChapterSource, searchBookSourceCandidates, getSearchTaskResults } from "../../api/search";
+import { changeBookSource, changeChapterSource, searchBookSourceCandidates } from "../../api/search";
 import { prepareSearchResultBook, prepareAlternativeBook } from "../../api/books";
 import { bookContentType } from "../../api/bookContentType";
-import { type AppTask, type BookResource, type BookSourceMutationResponse, type SearchBookResult } from "../../api/types";
+import { type AppTask, type BookSourceCandidateBatch, type BookResource, type BookSourceMutationResponse, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
 import { loadBookPreview, clearOpenedBook, switchOpenedBook, openedBook } from "../books/bookDetailState";
 
@@ -43,6 +43,7 @@ export function useBookSourceSwitch({
   getRestoreRevision,
 }: BookSourceSwitchDependencies) {
   const bookSourceSwitchOpen = ref(false);
+  const bookSourceSwitchInline = ref(false);
   const bookSourceSwitchBusy = ref(false);
   const chapterSourceBusyResultId = ref<string | null>(null);
   const chapterSourceIdentityConfirmResultId = ref<string | null>(null);
@@ -65,15 +66,18 @@ export function useBookSourceSwitch({
   const bookSourceChapterTargetId = ref<string | null>(null);
   const bookSourceChapterTargetTitle = ref<string | null>(null);
   const bookSourceCandidateTaskId = ref<string | null>(null);
-  const searchedCandidates = ref<SearchBookResult[]>([]);
-  const showCachedSources = ref(false);
-  const bookSourceCandidateResults = computed<SearchBookResult[]>(() => !bookSourceSwitchOpen.value || showCachedSources.value
-    ? (bookSourceSwitchBook.value?.alternatives ?? []).map((candidate, index) => ({
-        resultId: `alternative-${index}`, alternativeIndex: index,
-        sourceId: candidate.sourceId, sourceName: candidate.sourceName,
-        title: candidate.title, author: candidate.author, coverSrc: candidate.cover,
-        latestChapter: candidate.latest, requiresIdentityConfirmation: !candidate.author,
-      })) : searchedCandidates.value);
+  const searchedCandidates = shallowRef<SearchBookResult[]>([]);
+  const bookSourceCandidateResults = computed<SearchBookResult[]>(() => {
+    const cached = (bookSourceSwitchBook.value?.alternatives ?? []).map((candidate, index) => ({
+      resultId: `alternative-${index}`, alternativeIndex: index,
+      sourceId: candidate.sourceId, sourceName: candidate.sourceName,
+      title: candidate.title, author: candidate.author, coverSrc: candidate.cover,
+      latestChapter: candidate.latest, requiresIdentityConfirmation: !candidate.author,
+    }));
+    if (!bookSourceSwitchOpen.value) return cached;
+    const liveSources = new Set(searchedCandidates.value.map(candidate => candidate.sourceId));
+    return [...cached.filter(candidate => !liveSources.has(candidate.sourceId)), ...searchedCandidates.value];
+  });
   const bookSourceCandidateErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
   const selectedBookSourceCandidate = ref<SearchBookResult | null>(null);
   const bookSourceIdentityConfirmationNeeded = ref(false);
@@ -81,7 +85,7 @@ export function useBookSourceSwitch({
   const bookSourceChangeError = ref("");
   const bookSourceSearchStatus = ref("");
   const bookSourceSearchKeyword = ref("");
-  const bookSourceCandidateTaskStates = new Set<string>();
+  let finishedStreamTaskId: string | null = null;
   let bookSourceSearchGeneration = 0;
   const currentRestore = (revision: number) => revision === getRestoreRevision();
 
@@ -108,10 +112,13 @@ export function useBookSourceSwitch({
     const restoreRevision = getRestoreRevision();
     const book = fromReader ? readingBook.value : openedBook.value;
     await openBookSourceSwitchFor(book, fromReader, chapterTarget, restoreRevision);
+    if (fromReader && currentRestore(restoreRevision) && bookSourceSwitchOpen.value && !bookSourceCandidateResults.value.length && !bookSourceSearchBusy.value) {
+      await startBookSourceCandidateSearch();
+    }
   }
 
-  async function openBookSourceSwitchForBook(book: BookResource, chapterTarget?: { id: string; title: string }): Promise<void> {
-    await openBookSourceSwitchFor(book, false, chapterTarget, getRestoreRevision());
+  async function openBookSourceSwitchForBook(book: BookResource, chapterTarget?: { id: string; title: string }, inline = false): Promise<void> {
+    await openBookSourceSwitchFor(book, false, chapterTarget, getRestoreRevision(), inline);
   }
 
   async function openBookSourceSwitchFor(
@@ -119,8 +126,14 @@ export function useBookSourceSwitch({
     fromReader: boolean,
     chapterTarget: { id: string; title: string } | undefined,
     restoreRevision: number,
+    inline = false,
   ): Promise<void> {
     if (!book || book.canChangeSource !== true || bookSourceSwitchBusy.value || candidateRetryBusy.value) return;
+    if (bookSourceSwitchOpen.value && bookSourceSwitchBookId.value === book.id
+      && bookSourceSwitchFromReader.value === fromReader && bookSourceChapterTargetId.value === (chapterTarget?.id ?? null)) {
+      bookSourceSwitchInline.value = inline;
+      return;
+    }
     if (fromReader) {
       readerControlsOpen.value = false;
       await saveCurrentProgress();
@@ -130,6 +143,7 @@ export function useBookSourceSwitch({
         return;
       }
     }
+    closeBookSourceSwitch();
     bookSourceSearchGeneration += 1;
     bookSourceSwitchBookId.value = book.id;
     bookSourceSwitchFromReader.value = fromReader;
@@ -149,11 +163,12 @@ export function useBookSourceSwitch({
     bookSourceSearchBusy.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceSwitchOpen.value = true;
+    bookSourceSwitchInline.value = inline;
+    finishedStreamTaskId = null;
     if (chapterTarget) {
       await startBookSourceCandidateSearch();
     } else {
       const generation = bookSourceSearchGeneration;
-      showCachedSources.value = true;
 
       if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration) return;
       bookSourceSearchStatus.value = bookSourceCandidateResults.value.length ? "已缓存的可换来源" : "尚无可换来源，点击刷新搜索。";
@@ -168,6 +183,7 @@ export function useBookSourceSwitch({
     bookSourceSearchGeneration += 1;
     bookSourceCandidateTaskId.value = null;
     bookSourceSwitchOpen.value = false;
+    bookSourceSwitchInline.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceChapterTargetId.value = null;
     bookSourceChapterTargetTitle.value = null;
@@ -194,7 +210,8 @@ export function useBookSourceSwitch({
     bookSourceSwitchError.value = "";
     chapterSourceError.value = "";
     chapterSourceIdentityConfirmResultId.value = null;
-    showCachedSources.value = false;
+    finishedStreamTaskId = null;
+    bookSourceCandidateTaskId.value = null;
     bookSourceSearchStatus.value = "正在搜索其他源…";
     searchedCandidates.value = [];
     bookSourceCandidateErrors.value = [];
@@ -203,7 +220,8 @@ export function useBookSourceSwitch({
     bookSourceSearchBusy.value = true;
     try {
       const manualKeyword = bookSourceSearchKeyword.value.trim();
-      const response = await searchBookSourceCandidates(book.id, sourceIds, manualKeyword || undefined, 1);
+      const response = await searchBookSourceCandidates(book.id, sourceIds, manualKeyword || undefined, 1,
+        batch => applyCandidateBatch(batch, generation, restoreRevision));
       if (!currentRestore(restoreRevision)) return;
       const taskId = response.taskId ?? response.task?.id;
       if (!taskId) throw new Error("候选搜索没有返回有效任务编号。");
@@ -223,47 +241,54 @@ export function useBookSourceSwitch({
     }
   }
 
+  function applyCandidateBatch(batch: BookSourceCandidateBatch, generation: number, restoreRevision: number): void {
+    if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value) return;
+    if (!batch.taskId || (bookSourceCandidateTaskId.value && bookSourceCandidateTaskId.value !== batch.taskId)) return;
+    bookSourceCandidateTaskId.value = batch.taskId;
+    if (!batch.incremental) {
+      searchedCandidates.value = batch.results ?? [];
+      bookSourceCandidateErrors.value = batch.errors ?? [];
+    } else {
+      if (batch.results?.length) searchedCandidates.value = [...searchedCandidates.value, ...batch.results];
+      if (batch.errors?.length) bookSourceCandidateErrors.value = [...bookSourceCandidateErrors.value, ...batch.errors];
+    }
+    bookSourceSearchBusy.value = !batch.complete;
+    if (batch.complete) {
+      finishedStreamTaskId = batch.taskId;
+      bookSourceSearchStatus.value = batch.status === "cancelled" ? "已停止搜索"
+        : batch.status === "failed" ? "搜索未能完成" : `找到 ${bookSourceCandidateResults.value.length} 个可用源`;
+      if (batch.error) bookSourceSwitchError.value = batch.error;
+    } else {
+      bookSourceSearchStatus.value = `正在搜索其他源（${batch.completedSources ?? 0} / ${batch.totalSources ?? 0}）`;
+    }
+  }
+
+  async function stopBookSourceCandidateSearch(): Promise<void> {
+    const taskId = bookSourceCandidateTaskId.value;
+    if (taskId) {
+      try { await cancelTask(taskId); }
+      catch (error) { bookSourceSwitchError.value = errorText(error); }
+    } else {
+      // Admission may still be pending; its eventual response will cancel itself.
+      bookSourceSearchGeneration += 1;
+      bookSourceSearchBusy.value = false;
+      bookSourceSearchStatus.value = "已停止搜索";
+    }
+  }
+
   async function syncBookSourceCandidateTask(taskSummary?: Partial<AppTask>): Promise<void> {
     const taskId = bookSourceCandidateTaskId.value;
-    if (!taskId) return;
-    const generation = bookSourceSearchGeneration;
-    const restoreRevision = getRestoreRevision();
-    const task = tasks.value.find((entry) => entry.id === taskId)
-      ?? (taskSummary?.id === taskId ? taskSummary as AppTask : undefined);
-    if (!task || task.id !== taskId || task.kind !== "bookSourceCandidates") return;
-    if (["queued", "running", "pausing", "paused", "cancelling"].includes(task.status)) {
-      bookSourceSearchBusy.value = task.status !== "paused";
-      bookSourceSearchStatus.value = task.status === "paused"
-        ? "候选搜索已暂停"
-        : `正在搜索其他源${task.total ? `（${task.completed} / ${task.total}）` : "…"}`;
-      return;
-    }
-    if (!["completed", "failed", "cancelled", "interrupted", "recoveryRequired"].includes(task.status)) return;
-    const stateKey = `${task.id}:${task.status}`;
-    if (bookSourceCandidateTaskStates.has(stateKey)) return;
-    bookSourceCandidateTaskStates.add(stateKey);
-    bookSourceSearchBusy.value = false;
-    if (task.status !== "completed") {
-      bookSourceSearchStatus.value = task.status === "recoveryRequired"
-        ? "候选搜索状态待恢复"
-        : task.status === "cancelled" ? "候选搜索已取消" : "候选搜索未能完成";
-      bookSourceSwitchError.value = task.status === "recoveryRequired"
-        ? "候选搜索异常退出，任务状态未能完整保存。请重启应用检查后再重新搜索。"
-        : task.error ?? (task.status === "cancelled" ? "搜索已取消。" : "请重新搜索候选源。");
-      return;
-    }
-    // 任务完成状态与这一不可变结果版本由 Rust 一起提交。
-    try {
-      const resource = await getSearchTaskResults(taskId);
-      if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
-      searchedCandidates.value = Array.isArray(resource.results) ? resource.results : [];
-      bookSourceCandidateErrors.value = Array.isArray(resource.errors) ? resource.errors : [];
-      bookSourceSearchStatus.value = resource.complete === false ? "候选结果尚未完整" : `找到 ${bookSourceCandidateResults.value.length} 个可用源`;
-      if (resource.complete === false) bookSourceSwitchError.value = "候选结果尚未准备完整，请重新搜索。";
-    } catch (error) {
-      if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration || !bookSourceSwitchOpen.value || bookSourceCandidateTaskId.value !== taskId) return;
-      bookSourceSearchStatus.value = "候选资源读取失败";
-      bookSourceSwitchError.value = errorText(error);
+    if (!taskId || taskId === finishedStreamTaskId) return;
+    const task = taskSummary?.id === taskId ? taskSummary : tasks.value.find(entry => entry.id === taskId);
+    if (!task || task.kind !== "bookSourceCandidates") return;
+    // Results arrive on the channel. Task events only handle pause/failure recovery.
+    if (task.status === "paused") {
+      bookSourceSearchBusy.value = false;
+      bookSourceSearchStatus.value = "候选搜索已暂停";
+    } else if (["failed", "interrupted", "recoveryRequired"].includes(task.status ?? "")) {
+      bookSourceSearchBusy.value = false;
+      bookSourceSearchStatus.value = "候选搜索未能完成";
+      bookSourceSwitchError.value = task.error || "候选搜索异常退出，请重新搜索。";
     }
   }
 
@@ -275,11 +300,22 @@ export function useBookSourceSwitch({
     chapterSourceError.value = "";
   }
 
+  async function chooseBookSourceCandidate(candidate: SearchBookResult): Promise<void> {
+    if (shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value) return;
+    selectBookSourceCandidate(candidate);
+    if (bookSourceNeedsIdentityConfirmation.value) {
+      bookSourceSwitchConfirmOpen.value = true;
+      return;
+    }
+    await confirmBookSourceChange();
+    if (bookSourceNeedsIdentityConfirmation.value) bookSourceSwitchConfirmOpen.value = true;
+  }
+
   async function replaceCurrentChapterFromCandidate(candidate: SearchBookResult, confirmMissingAuthor = false): Promise<void> {
     const book = bookSourceSwitchBook.value;
     const chapter = bookSourceCurrentChapter.value;
     const restoreRevision = getRestoreRevision();
-    if (!book || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value || bookSourceSearchBusy.value) return;
+    if (!book || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value) return;
     if (!chapter) {
       const message = bookSourceChapterTargetId.value
         ? `所选章节《${bookSourceChapterTargetTitle.value ?? ""}》已不在当前目录中，请关闭窗口并重新选择章节。`
@@ -421,10 +457,7 @@ export function useBookSourceSwitch({
     }
 
     // Rust 已提交整书换源；先关闭确认框，避免资源读取暂时失败导致重复提交。
-    bookSourceSwitchOpen.value = false;
-    bookSourceSwitchConfirmOpen.value = false;
-    bookSourceCandidateTaskId.value = null;
-    selectedBookSourceCandidate.value = null;
+    closeBookSourceSwitch();
     bookSourceIdentityConfirmationNeeded.value = false;
     try {
       if (openedBook.value?.id === book.id) {
@@ -463,8 +496,9 @@ export function useBookSourceSwitch({
     // Reset without calling closeBookSourceSwitch: cancelling by an ID from
     // the old library could cancel an unrelated restored task with that ID.
     bookSourceSearchGeneration += 1;
-    bookSourceCandidateTaskStates.clear();
+    finishedStreamTaskId = null;
     bookSourceSwitchOpen.value = false;
+    bookSourceSwitchInline.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceSwitchBusy.value = false;
     chapterSourceBusyResultId.value = null;
@@ -490,6 +524,7 @@ export function useBookSourceSwitch({
   return {
     resetForRestore,
     bookSourceSwitchOpen,
+    bookSourceSwitchInline,
     bookSourceSwitchBusy,
     chapterSourceBusyResultId,
     chapterSourceIdentityConfirmResultId,
@@ -515,8 +550,10 @@ export function useBookSourceSwitch({
     openBookSourceSwitchForBook,
     closeBookSourceSwitch,
     startBookSourceCandidateSearch,
+    stopBookSourceCandidateSearch,
     syncBookSourceCandidateTask,
     selectBookSourceCandidate,
+    chooseBookSourceCandidate,
     replaceCurrentChapterFromCandidate,
     confirmBookSourceChange,
   };

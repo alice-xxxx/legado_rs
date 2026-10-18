@@ -420,89 +420,8 @@ async fn get_resource(
         Err(_) => return empty_response(StatusCode::NOT_FOUND),
     };
 
-    if reference.path() == "source-list.json" {
-        let canonical = match ResourceRef::new("resource://sources.json") {
-            Ok(reference) => reference,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        let records = match state
-            .store
-            .read_json_ref_or_default(&canonical, serde_json::json!([]))
-            .await
-        {
-            Ok(records) => records,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        let document = match crate::application::source_list_document(records) {
-            Ok(document) => document,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        let bytes = match serde_json::to_vec(&document) {
-            Ok(bytes) => bytes,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        return byte_response(bytes, "application/json; charset=utf-8", &headers);
-    }
-
-    // Serve one definition on demand; complete source definitions never enter
-    // the shared list resource or a second set of persistent files.
-    if let Some(source_id) = reference
-        .path()
-        .strip_prefix("sources/")
-        .and_then(|name| name.strip_suffix(".json"))
-    {
-        let db = state.store.database().clone();
-        let source_id_owned = source_id.to_owned();
-        let source = match tokio::task::spawn_blocking(move || -> Result<Option<Value>,ResourceError> {
-            let connection = db.connect()?;
-            use rusqlite::OptionalExtension;
-            let text: Option<String> = connection.query_row("SELECT value FROM records WHERE path='sources.json' AND field='' AND item_id=?1",[source_id_owned],|row|row.get(0)).optional()?;
-            text.map(|text|serde_json::from_str(&text).map_err(|e|ResourceError::new(e.to_string()))).transpose()
-        }).await {
-            Ok(Ok(Some(source))) => source,
-            _ => return empty_response(StatusCode::NOT_FOUND)
-        };
-        let definition_json = match serde_json::to_string_pretty(&source["source"]) {
-            Ok(json) => json,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        let bytes = match serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1, "id": source_id, "definitionJson": definition_json,
-        })) {
-            Ok(bytes) => bytes,
-            Err(_) => return empty_response(StatusCode::INTERNAL_SERVER_ERROR),
-        };
-        return byte_response(bytes, "application/json; charset=utf-8", &headers);
-    }
-
-    // The canonical file remains backend-owned.
-    if reference.path() == "sources.json" {
-        return empty_response(StatusCode::NOT_FOUND);
-    }
-
     if reference.path().ends_with(".json") {
-        let store = state.store.clone();
-        let base_url = state.base_url.clone();
-        let bytes = match tokio::task::spawn_blocking(move || -> Result<Vec<u8>, ResourceError> {
-            let canonical = store.canonical_reference(&reference)?;
-            let mut json = store
-                .database()
-                .read(canonical.path())?
-                .ok_or_else(|| ResourceError::new("Resource does not exist"))?;
-            if super::content::is_content_document(canonical.path()) {
-                let (kind, _, _) =
-                    super::content::content_path(canonical.path()).expect("content path");
-                json = super::content::public_book_view(&json, kind)?;
-            }
-            materialize_json(&mut json, &base_url)?;
-            serde_json::to_vec(&json).map_err(|e| ResourceError::new(e.to_string()))
-        })
-        .await
-        {
-            Ok(Ok(bytes)) => bytes,
-            _ => return empty_response(StatusCode::NOT_FOUND),
-        };
-        return byte_response(bytes, "application/json; charset=utf-8", &headers);
+        return empty_response(StatusCode::NOT_FOUND);
     }
 
     if check_path_no_symlink(state.store.root(), &path, false).is_err() {
@@ -891,14 +810,12 @@ mod tests {
             .start_http("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
-        let url = server.url_for(&settings);
+        let url = server.url_for(&chapter);
         let chapter_url = server.url_for(&chapter);
         let client = client();
         let original = client.get(&url).send().await.unwrap().text().await.unwrap();
-        assert_eq!(
-            serde_json::from_str::<Value>(&original).unwrap()["chapter"]["src"],
-            chapter_url
-        );
+        assert_eq!(original,"chapter text");
+        assert_eq!(client.get(server.url_for(&settings)).send().await.unwrap().status(),StatusCode::NOT_FOUND);
 
         for _ in 0..3 {
             // Simulate loss of the listening socket, with the app/service and
@@ -906,7 +823,7 @@ mod tests {
             server.listener.send_modify(|listener| *listener = None);
             assert!(client.get(&url).send().await.is_err());
             server.resume_http().unwrap();
-            assert_eq!(server.url_for(&settings), url);
+            assert_eq!(server.url_for(&chapter), url);
             let response = client.get(&url).send().await.unwrap();
             assert_eq!(response.headers()[ACCESS_CONTROL_ALLOW_ORIGIN], "*");
             assert_eq!(response.text().await.unwrap(), original);

@@ -31,17 +31,6 @@ export interface SourceMetadata {
   userAgentOverride?: string | null;
 }
 
-export interface SourceDefinitionResource {
-  schemaVersion: number;
-  id: string;
-  definitionJson: string;
-}
-
-export interface SourceListResource {
-  schemaVersion: number;
-  sources: SourceMetadata[];
-}
-
 export interface SourceLoginField {
   name: string;
   label: string;
@@ -217,7 +206,7 @@ export interface BookResource {
 export type BookPreview = Pick<BookResource,
   "id" | "title" | "author" | "coverSrc" | "kind" | "contentType" | "mediaType" | "chapterCount" |
   "latestChapter" | "progress" | "canChangeSource" | "sourceId" | "sourceName"
-> & { bookSrc: string };
+>;
 
 /** Partial save payload: only the book ID and fields editable in the details UI. */
 export interface BookMetadataUpdate {
@@ -261,7 +250,7 @@ export interface ShelfResource {
   sort?: ShelfSortKey;
   sortOrder?: ShelfSortOrder;
   groups?: string[];
-  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { bookSrc: string; groups?: string[]; updatedAt?: number }>;
+  books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { groups?: string[]; updatedAt?: number }>;
 }
 
 export type ResetBookProgressResponse =
@@ -269,7 +258,7 @@ export type ResetBookProgressResponse =
       commitState: "committed";
       recoveryRequired: boolean;
       warning: string | null;
-      book: ResourceDescriptor;
+      book: BookIdentity;
     }
   | {
       commitState: "notCommitted" | "indeterminate";
@@ -284,7 +273,7 @@ export type ClearBookChapterCacheResponse =
       recoveryRequired: boolean;
       warning: string | null;
       clearedCount: number;
-      book: ResourceDescriptor;
+      book: BookIdentity;
     }
   | {
       commitState: "notCommitted";
@@ -405,6 +394,10 @@ export interface SearchResource {
 export type SearchBatch = Pick<SearchResource,
   "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"
 > & { incremental: true; incrementalErrors?: boolean; resultOrder: string[] };
+
+export type BookSourceCandidateBatch = Pick<SearchResource,
+  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "incremental"
+>;
 
 export interface SearchHistoryEntry {
   query: string;
@@ -542,10 +535,10 @@ export type SourceMutation =
 export type SourceMutationResponse =
   | {
       saved: boolean;
-      resource?: ResourceDescriptor;
+      resource?: MutationAck;
       cleanupPending?: boolean;
       cleanupWarning?: string;
-      rssState?: ResourceDescriptor;
+      rssState?: MutationAck;
     }
   | SourceLoginResult
   | SourceWebLoginResult
@@ -563,14 +556,11 @@ export interface AppSettingsResource {
   lastBackupAtMs?: number | null;
 }
 
+export interface MutationAck { updated: true; }
+export interface BookIdentity { bookId: string; }
 export interface AppBootstrap {
-  shelf: ResourceDescriptor;
-  settings: ResourceDescriptor;
-  httpTtsConfigs: ResourceDescriptor;
-  txtTocRules: ResourceDescriptor;
-  replacementRules: ResourceDescriptor;
-  history: ResourceDescriptor;
-  sources: ResourceDescriptor;
+  assetBaseUrl: string;
+  settings: AppSettingsResource;
 }
 
 export interface SearchResponse {
@@ -607,7 +597,7 @@ export type ChangeChapterSourceResponse =
       recoveryRequired: boolean;
       warning: string | null;
       error?: string;
-      book: ResourceDescriptor;
+      book: BookIdentity;
       chapterId: string;
     }
   | {
@@ -620,7 +610,7 @@ export type ChangeChapterSourceResponse =
     };
 
 export interface BookSourceMutationResponse {
-  book: ResourceDescriptor;
+  book: BookIdentity;
   progress: ReadingProgress;
 }
 
@@ -628,8 +618,8 @@ export interface LocalBookImportResponse {
   cancelled?: boolean;
   passwordRequired?: boolean;
   importToken?: string;
-  book?: ResourceDescriptor;
-  shelf?: ResourceDescriptor;
+  book?: BookIdentity;
+  shelf?: MutationAck;
 }
 
 export interface LocalBookImportOptions {
@@ -663,7 +653,7 @@ export interface AppTask {
   error?: string;
   result?: {
     /** 换源候选任务完成后发布的不可变结果版本。 */
-    resource?: ResourceDescriptor;
+    resource?: MutationAck;
     bookResourceId?: string;
     addedCount?: number;
     movedProgress?: boolean;
@@ -685,14 +675,14 @@ export interface TasksResource {
 export interface TaskResponse {
   taskId?: string;
   task: AppTask;
-  resource: ResourceDescriptor;
+  resource: MutationAck;
   reused?: boolean;
 }
 
 export interface ClearFinishedTasksResponse {
   removedCount: number;
   inUseCount: number;
-  resource: ResourceDescriptor;
+  resource: MutationAck;
 }
 
 export interface DiscoveryCategory {
@@ -709,6 +699,7 @@ export interface DiscoveryCategoriesResource {
 }
 
 export interface DiscoveryResponse {
+  search?: SearchResource;
   sourceId: string;
   categoryId?: string;
   categoryCount?: number;
@@ -716,7 +707,7 @@ export interface DiscoveryResponse {
   hasNextPage?: boolean;
   bookCount?: number;
   errors?: Array<{ sourceId?: string; message: string }>;
-  resource: ResourceDescriptor;
+  resource: MutationAck;
 }
 
 export interface BackupResponse {
@@ -724,7 +715,7 @@ export interface BackupResponse {
   backup?: boolean;
   created?: boolean;
   warning?: string;
-  settings?: ResourceDescriptor;
+  settings?: AppSettingsResource;
   restored?: boolean;
   bootstrap?: AppBootstrap;
 }
@@ -741,7 +732,7 @@ export interface WebDavBackupConfig {
 
 export interface WebDavBackupUploadResponse {
   uploaded: boolean;
-  settings?: ResourceDescriptor;
+  settings?: AppSettingsResource;
   warning?: string;
 }
 

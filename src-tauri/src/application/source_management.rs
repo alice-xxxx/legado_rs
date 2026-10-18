@@ -55,12 +55,6 @@ pub(crate) fn validate_source_records(records: &[SourceRecord]) -> Result<(), St
     Ok(())
 }
 
-pub(crate) fn source_list_document(document: Value) -> Result<Value, String> {
-    let records: Vec<SourceRecord> = serde_json::from_value(document)
-        .map_err(|error| format!("Cannot decode saved source definitions: {error}"))?;
-    validate_source_records(&records)?;
-    Ok(json!({ "schemaVersion": 1, "sources": metadata(&records) }))
-}
 
 impl ApplicationService {
     pub async fn get_source_login_state(&self, source_id: &str) -> Result<Value, String> {
@@ -548,38 +542,35 @@ impl ApplicationService {
 
     pub(super) async fn write_sources(&self, sources: &[SourceRecord]) -> Result<bool, String> {
         let previous = self.read_sources().await?;
-        if previous.as_slice() == sources { return Ok(false); }
-        let list_changed = json!(metadata(&previous)) != json!(metadata(sources));
         let previous_by_id = previous
             .iter()
             .map(|record| (record.id.as_str(), record))
             .collect::<HashMap<_, _>>();
-        let next_by_id = sources
-            .iter()
-            .map(|record| (record.id.as_str(), record))
-            .collect::<HashMap<_, _>>();
-        let changed = previous_by_id
+        let next_ids = sources.iter().map(|source| source.id.as_str()).collect::<HashSet<_>>();
+        let mut changed = previous_by_id
             .keys()
-            .chain(next_by_id.keys())
             .copied()
-            .collect::<HashSet<_>>();
+            .filter(|id| !next_ids.contains(id))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
         let previous_positions=previous.iter().enumerate().map(|(index,source)|(source.id.as_str(),index)).collect::<HashMap<_,_>>();
         let changes=sources.iter().enumerate().filter_map(|(index,source)| {
             let edited=previous_by_id.get(source.id.as_str()).copied()!=Some(source);
+            if edited { changed.push(source.id.clone()); }
             if edited || previous_positions.get(source.id.as_str()).copied()!=Some(index) {
                 Some((index,source.id.clone(),edited.then(||serde_json::to_value(source).expect("serializable source"))))
             } else { None }
         }).collect::<Vec<_>>();
+        if changes.is_empty() && changed.is_empty() { return Ok(false); }
+        let list_changed = metadata(&previous) != metadata(sources);
         let ids=sources.iter().map(|source|source.id.clone()).collect::<Vec<_>>();
         let db=self.store.database().clone();
         tokio::task::spawn_blocking(move ||db.sync_sources(&changes,&ids)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         {
             let mut revisions = self.source_revisions.lock().await;
             for source_id in changed {
-                if previous_by_id.get(source_id) != next_by_id.get(source_id) {
-                    let revision = revisions.entry(source_id.to_owned()).or_default();
-                    *revision = revision.saturating_add(1);
-                }
+                let revision = revisions.entry(source_id).or_default();
+                *revision = revision.saturating_add(1);
             }
         }
         *self.source_catalog.lock().await = Some(Arc::new(SourceCatalog::new(sources.to_vec())));
@@ -621,56 +612,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn source_resources_are_lightweight_and_definitions_load_individually() {
-        let directory = tempfile::tempdir().unwrap();
-        let service = ApplicationService::open_with_executor(
-            directory.path(), Arc::new(UnusedExecutor),
-        ).await.unwrap();
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        async fn read_json(response: reqwest::Response) -> Value {
-            let bytes = response.error_for_status().unwrap().bytes().await.unwrap();
-            serde_json::from_slice(&bytes).unwrap()
-        }
-        let list_ref = service.store.source_list_ref().unwrap();
-        let list_url = service.resource_server().url_for(&list_ref);
-        let empty = read_json(client.get(&list_url).send().await.unwrap()).await;
-        assert_eq!(empty["sources"], json!([]));
-
-        let mut source = SourceRecord {
-            id: "source-test".into(), name: "Test".into(), group: None, enabled: true,
-            source: json!({
-                "bookSourceName": "Test", "bookSourceUrl": "https://example.invalid",
-                "enabled": true, "lastUpdateTime": 9_007_199_254_740_993_u64,
-                "ruleSearch": { "name": "original", "bookList": "x".repeat(100_000) },
-            }),
-        };
+    async fn source_tables_separate_metadata_from_rules_and_http_has_no_business_json() {
+        let directory=tempfile::tempdir().unwrap();
+        let service=ApplicationService::open_with_executor(directory.path(),Arc::new(UnusedExecutor)).await.unwrap();
+        let mut source=SourceRecord{id:"source-test".into(),name:"Test".into(),group:None,enabled:true,
+            source:json!({"bookSourceName":"Test","bookSourceUrl":"https://example.invalid","ruleSearch":{"bookList":"x".repeat(100000)},"lastUpdateTime":9007199254740993_u64})};
         assert!(service.write_sources(&[source.clone()]).await.unwrap());
-        let summary = read_json(client.get(&list_url).send().await.unwrap()).await;
-        assert_eq!(summary["sources"][0]["id"], source.id);
-        assert!(summary["sources"][0].get("definitionJson").is_none());
-        assert!(serde_json::to_vec(&summary).unwrap().len() < 1024);
-
-        let definition_ref = ResourceRef::new("resource://sources/source-test.json").unwrap();
-        let definition_url = service.resource_server().url_for(&definition_ref);
-        let definition = read_json(client.get(&definition_url).send().await.unwrap()).await;
-        let original: Value = serde_json::from_str(definition["definitionJson"].as_str().unwrap()).unwrap();
-        assert_eq!(original["lastUpdateTime"].as_u64(), Some(9_007_199_254_740_993));
-        assert_eq!(original, source.source);
-
-        source.source["ruleSearch"]["name"] = json!("edited");
+        let connection=service.store.database().connect().unwrap();
+        let metadata:String=connection.query_row("SELECT json_object('id',id,'name',name,'enabled',enabled) FROM sources",[],|r|r.get(0)).unwrap();
+        assert!(metadata.len()<1024);
+        let raw:String=connection.query_row("SELECT definition_json FROM sources WHERE id='source-test'",[],|r|r.get(0)).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&raw).unwrap(),source.source);
+        source.source["ruleSearch"]["bookList"]=json!("edited");
         assert!(!service.write_sources(&[source.clone()]).await.unwrap());
-        let edited = read_json(client.get(&definition_url).send().await.unwrap()).await;
-        assert!(edited["definitionJson"].as_str().unwrap().contains("edited"));
-        source.group = Some("Group".into());
-        source.source["bookSourceGroup"] = json!("Group");
-        assert!(service.write_sources(&[source.clone()]).await.unwrap());
-        assert!(!service.write_sources(&[source]).await.unwrap());
-        assert!(!directory.path().join("source-list.json").exists());
-        assert!(!directory.path().join("sources").exists());
-        let canonical = ResourceRef::new("resource://sources.json").unwrap();
-        assert_eq!(client.get(service.resource_server().url_for(&canonical)).send().await.unwrap().status(), 404);
+        let raw:String=connection.query_row("SELECT definition_json FROM sources",[],|r|r.get(0)).unwrap();assert!(raw.contains("edited"));
+        for path in ["sources.json","source-list.json","sources/source-test.json"] {
+            let reference=ResourceRef::new(format!("resource://{path}")).unwrap();
+            assert_eq!(reqwest::get(service.server.url_for(&reference)).await.unwrap().status(),404);
+        }
         assert!(service.write_sources(&[]).await.unwrap());
-        assert_eq!(client.get(&definition_url).send().await.unwrap().status(), 404);
+        assert_eq!(connection.query_row("SELECT count(*) FROM sources",[],|r|r.get::<_,i64>(0)).unwrap(),0);
     }
 
     #[tokio::test]

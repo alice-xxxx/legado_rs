@@ -20,7 +20,6 @@ impl ApplicationService {
         let (
             source_id,
             source_definition,
-            source_revision,
             engine_book,
             chapter_raw,
             next_chapter_url,
@@ -29,7 +28,6 @@ impl ApplicationService {
             book_instance_id,
             catalog_generation,
         ) = {
-            let _sources = self.sources_lock.lock().await;
             let sources = self.read_sources().await?;
             let _book = self.book_lock(book_id).await;
             let private = self
@@ -83,7 +81,6 @@ impl ApplicationService {
             (
                 source_id.clone(),
                 source.source.clone(),
-                self.source_revision(&source_id).await?,
                 engine_book,
                 chapter_raw,
                 next_chapter_url,
@@ -141,16 +138,6 @@ impl ApplicationService {
                 .map_err(|error| error.to_string())?;
             (Some(reference), document, "text")
         };
-
-        let _sources = self.sources_lock.lock().await;
-        let current_source = self
-            .lookup_source(&source_id).await?
-            .ok_or_else(|| "Book source was removed while refreshing the chapter".to_owned())?;
-        if current_source.source != source_definition
-            || self.source_revision(&source_id).await? != source_revision
-        {
-            return Err("Book source changed while refreshing the chapter; the existing cache was preserved".into());
-        }
 
         let _book = self.book_lock(book_id).await;
         let writer_guard = self

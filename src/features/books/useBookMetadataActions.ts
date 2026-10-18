@@ -1,6 +1,6 @@
 import { removeLibraryContent } from "./contentLibraryState";
 import type { Ref } from "vue";
-import { type BookDisplayMetadataPatch, type ResourceDescriptor } from "../../api/types";
+import { type BookDisplayMetadataPatch, type BookIdentity } from "../../api/types";
 import { openedBook, refreshOpenedBook as refreshBookResource } from "./bookDetailState";
 
 type PendingBookRemoval = { id: string; title: string };
@@ -48,7 +48,7 @@ export function useBookMetadataActions(options: BookMetadataActionsOptions) {
     editorBookId.value = null;
   }
 
-  async function refreshOpenedBook(descriptor?: ResourceDescriptor): Promise<void> {
+  async function refreshOpenedBook(descriptor?: BookIdentity): Promise<void> {
     const id = openedBook.value?.id;
     if (!id && !descriptor) return;
     const restoreRevision = getRestoreRevision();

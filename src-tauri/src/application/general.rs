@@ -3,6 +3,38 @@
 use super::*;
 
 impl ApplicationService {
+    pub async fn mutate_history(&self,kind:&str,payload:Value)->Result<(),String>{
+        let _operation=self.operation_read().await;
+        let database=self.store.database().clone();
+        match kind {
+            "saveBookmark"=>{
+                let book_id=payload["bookId"].as_str().ok_or("Missing bookmark book ID")?.to_owned();
+                validate_id(&book_id,"bookId")?;
+                let bookmark:crate::reading_tools::Bookmark=serde_json::from_value(payload["bookmark"].clone()).map_err(|e|e.to_string())?;
+                validate_id(&bookmark.id,"bookmarkId")?;validate_id(&bookmark.chapter_id,"chapterId")?;
+                if bookmark.note.len()>16384{return Err("Bookmark note is too long".into());}
+                let value=serde_json::to_value(bookmark).map_err(|e|e.to_string())?;
+                tokio::task::spawn_blocking(move ||database.save_bookmark(book_id,value)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+            }
+            "removeBookmark"=>{
+                let book_id=payload["bookId"].as_str().ok_or("Missing bookmark book ID")?.to_owned();
+                let id=payload["bookmarkId"].as_str().ok_or("Missing bookmark ID")?.to_owned();
+                validate_id(&book_id,"bookId")?;validate_id(&id,"bookmarkId")?;
+                tokio::task::spawn_blocking(move ||database.remove_bookmark(book_id,id)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+            }
+            "recordSession"=>{
+                let session:crate::reading_tools::ReadingSession=serde_json::from_value(payload).map_err(|e|e.to_string())?;
+                validate_id(&session.book_id,"bookId")?;validate_id(&session.session_id,"sessionId")?;
+                if session.ended_at_ms==0 || session.duration_ms==0 || session.duration_ms>session.ended_at_ms || session.ended_at_ms>i64::MAX as u64 || !(-840..=840).contains(&session.utc_offset_minutes){return Err("Invalid reading session".into());}
+                tokio::task::spawn_blocking(move ||database.record_session(session)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+            }
+            "removeSearch"|"clearSearch"=>{
+                let query=if kind=="removeSearch"{Some(payload["query"].as_str().ok_or("Missing search query")?.to_owned())}else{None};
+                tokio::task::spawn_blocking(move ||database.remove_search_history(query)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
+            }
+            _=>Err("Unknown history operation".into()),
+        }
+    }
     /// Return the RSS read/favorite/filter state resource.
     pub async fn get_rss_state(&self) -> Result<Value, String> {
         let _operation = self.operation_read().await;
@@ -184,21 +216,9 @@ impl ApplicationService {
         crate::source_http::set_network_timeout_seconds(configured_source_http_timeout_seconds(
             Some(&settings),
         ));
-        let history = crate::reading_tools::history_resource(&self.store).await?;
-        let replacement_rules =
-            crate::reading_tools::replacement_rules_resource(&self.store).await?;
         crate::local_books::txt_toc_rules::read_document(&self.store).await?;
-        let txt_toc_rules = crate::local_books::txt_toc_rules::resource_ref(&self.store)?;
-        let sources = self.store.source_list_ref().map_err(|error| error.to_string())?;
-        Ok(json!({
-            "shelf": self.resource_descriptor(&self.store.shelf_ref()),
-            "settings": self.resource_descriptor(&self.store.settings_ref()),
-            "httpTtsConfigs": self.resource_descriptor(&self.store.http_tts_configs_ref()),
-            "sources": self.resource_descriptor(&sources),
-            "txtTocRules": self.resource_descriptor(&txt_toc_rules),
-            "replacementRules": self.resource_descriptor(&replacement_rules),
-            "history": self.resource_descriptor(&history),
-        }))
+        let base=self.server.url_for(&self.store.settings_ref());
+        Ok(json!({"settings":settings,"assetBaseUrl":base.trim_end_matches("settings.json")}))
     }
 
     pub async fn history_resource(&self) -> Result<Value, String> {
@@ -219,39 +239,28 @@ impl ApplicationService {
             "httpTtsConfigs" => (self.store.http_tts_configs_ref(), "configs"),
             _ => return Err("Unknown configuration kind".into()),
         };
-        let kind = kind.to_owned();
-        let rule_id = rule_id.to_owned();
-        self.store.update_json_ref(&reference, move |mut document| {
-            let rules = document.get_mut(field).and_then(Value::as_array_mut)
-                .ok_or_else(|| "Configuration must contain a rule array".to_owned())?;
-            let index = rules.iter().position(|entry| entry.get("id").and_then(Value::as_str) == Some(rule_id.as_str()));
-            match (index, rule.is_null()) {
-                (Some(index), true) => { rules.remove(index); }
-                (Some(index), false) => rules[index] = rule,
-                (None, false) => rules.push(rule),
-                (None, true) => {}
-            }
-            match kind.as_str() {
-                "replacementRules" => crate::reading_tools::validate_replacement_document(&document)?,
-                "txtTocRules" => {
-                    let rules = serde_json::from_value(document.clone()).map_err(|error| error.to_string())?;
-                    crate::local_books::txt_toc_rules::validate_document(&rules)?;
-                }
-                "httpTtsConfigs" => crate::http_tts_config::validate_document(&document)?,
-                _ => unreachable!(),
-            }
-            Ok(document)
-        }).await.map_err(|error| error.to_string())?;
+        let document=json!({"schemaVersion":1,field:if rule.is_null(){json!([])}else{json!([rule.clone()])}});
+        match kind {
+            "replacementRules"=>crate::reading_tools::validate_replacement_document(&document)?,
+            "txtTocRules"=>{
+                let typed=serde_json::from_value::<crate::local_books::txt_toc_rules::TxtTocRulesDocument>(document.clone()).map_err(|e|e.to_string())?;
+                crate::local_books::txt_toc_rules::validate_document(&typed)?;
+            },
+            "httpTtsConfigs"=>crate::http_tts_config::validate_document(&document)?,
+            _=>unreachable!(),
+        }
+        let (database,kind,rule_id)=(self.store.database().clone(),kind.to_owned(),rule_id.to_owned());
+        tokio::task::spawn_blocking(move ||database.save_rule(&kind,&rule_id,&rule))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
         Ok(self.resource_descriptor(&reference))
     }
 
     pub async fn save_shelf(&self, mut shelf: Value) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        let library = if shelf.get("books").is_none() {
-            crate::resources::content::validate_library(&shelf).map_err(|error| error.to_string())?;
-            Some(shelf.clone())
-        } else { None };
-        if shelf.get("books").is_none() { shelf = crate::resources::content::library_positions(&shelf); }
+        if shelf.get("books").is_none() {
+            crate::resources::content::validate_library(&shelf).map_err(|e|e.to_string())?;
+            shelf=crate::resources::content::library_positions(&shelf);
+        }
         crate::reading_tools::normalize_shelf_groups(&mut shelf)?;
         if let Some(sort) = shelf.get("sort") {
             serde_json::from_value::<crate::reading_tools::ShelfSortKey>(sort.clone())
@@ -270,26 +279,15 @@ impl ApplicationService {
             if !seen.insert(&book.id) {
                 return Err("Shelf contains duplicate book IDs".into());
             }
-            let reference = self.store.book_ref(&book.id).map_err(|error| error.to_string())?;
-            if !self.store.regular_file_exists(&reference).await.map_err(|e|e.to_string())? { return Err("Library content is not cached".into()); }
         }
-        let reference = self.store.shelf_ref();
-        let document = library.unwrap_or(serde_json::to_value(shelf).map_err(|error| error.to_string())?);
-        self.store.write_json_ref(&reference, &document)
-            .await.map_err(|error| error.to_string())?;
+        let database=self.store.database().clone();
+        tokio::task::spawn_blocking(move ||database.save_library_positions(shelf))
+            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
+        let reference=self.store.shelf_ref();
         Ok(self.resource_descriptor(&reference))
     }
 
-    pub async fn save_history(&self, history: Value) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let history = crate::reading_tools::normalize_history_document(&history)?;
-        let resource = self.store.history_ref();
-        self.store
-            .write_json_ref(&resource, &history)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(self.resource_descriptor(&resource))
-    }
+
 
 }
 

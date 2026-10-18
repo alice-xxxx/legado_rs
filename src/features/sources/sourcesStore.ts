@@ -1,9 +1,9 @@
 import { computed, shallowRef } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { mutateSource as mutateSourceCommand } from "../../api/sources";
-import { readResource } from "../../api/resources";
+import { readSources, readSourceDefinition } from "../../api/database";
 import { removeSourceJsonValue, setSourceJsonValue } from "./sourceJsonEdits";
-import type { AppBootstrap, ResourceDescriptor, SourceDefinitionResource, SourceListResource, SourceMetadata, SourceMutation, SourceMutationResponse } from "../../api/types";
+import type { AppBootstrap, SourceMetadata, SourceMutation, SourceMutationResponse } from "../../api/types";
 
 export const sources = shallowRef<SourceMetadata[]>([]);
 export const enabledSources = computed(() => sources.value.filter(source => source.enabled));
@@ -37,43 +37,36 @@ function applySourceMetadataChanges(
   return result;
 }
 
-type SourceListUpdatedEvent = { requestId: number; resource: ResourceDescriptor };
-let root: ResourceDescriptor;
+type SourceListUpdatedEvent = { requestId: number };
 let readRevision = 0;
 let requestId = 0;
 // A mutation completes after its list notification has been applied. Full
 // definitions stay in the caller's editor draft, never in this shared store.
 const pendingUpdates = new Map<number, { resolve: () => void; reject: (error: unknown) => void }>();
 
-async function updateSources(resource: ResourceDescriptor): Promise<void> {
+async function updateSources(): Promise<void> {
   const revision = ++readRevision;
-  root = resource;
-  const document = await readResource<SourceListResource>(resource);
+  const document = { schemaVersion: 1, sources: await readSources() };
   if (document.schemaVersion !== 1 || !Array.isArray(document.sources)) throw new Error("源列表格式无效。");
   if (revision === readRevision) sources.value = document.sources;
 }
 
-export async function loadSources(resource: ResourceDescriptor): Promise<void> {
+export async function loadSources(): Promise<void> {
   await listen<SourceListUpdatedEvent>("sources-updated", ({ payload }) => {
-    void updateSources(payload.resource).then(
+    void updateSources().then(
       () => pendingUpdates.get(payload.requestId)?.resolve(),
       error => { pendingUpdates.get(payload.requestId)?.reject(error); console.error(error); },
     );
   });
-  await listen<AppBootstrap>("app-state-updated", ({ payload }) => {
-    void updateSources(payload.sources).catch(console.error);
+  await listen<AppBootstrap>("app-state-updated", () => {
+    void updateSources().catch(console.error);
   });
-  await updateSources(resource);
+  await updateSources();
 }
 
 export async function readSourceDefinitionJson(sourceId: string): Promise<string> {
   if (!sources.value.some(source => source.id === sourceId)) throw new Error("源已不存在。");
-  const url = new URL(`sources/${encodeURIComponent(sourceId)}.json`, root.src).href;
-  const document = await readResource<SourceDefinitionResource>(url);
-  if (document.schemaVersion !== 1 || document.id !== sourceId || typeof document.definitionJson !== "string") {
-    throw new Error("源定义格式无效。");
-  }
-  return document.definitionJson;
+  return readSourceDefinition(sourceId);
 }
 
 export async function mutateSources(mutation: SourceMutation): Promise<SourceMutationResponse> {

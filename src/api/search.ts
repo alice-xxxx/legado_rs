@@ -1,7 +1,7 @@
 import { command } from "./ipc";
 import { Channel } from "@tauri-apps/api/core";
 import { taskCommand } from "./tasks";
-import type { SearchResponse, SearchResource, SearchBatch, SearchType, SourceDebugResponse, ChangeChapterSourceResponse, BookSourceMutationResponse } from "./types";
+import type { SearchResponse, SearchResource, SearchBatch, SearchType, BookSourceCandidateBatch, SourceDebugResponse, ChangeChapterSourceResponse, BookSourceMutationResponse } from "./types";
 
 export const searchBooks = (sourceIds: string[], keyword: string, page = 1) =>
   command<SearchResponse>("search_books", { sourceIds, keyword, page });
@@ -22,13 +22,18 @@ export function startSearch(sourceType: SearchType, sourceIds: string[], keyword
   return command<{ taskId: string }>("start_search", { sourceType, sourceIds, keyword, page, precisionSearch, onResults: channel });
 }
 
-export const searchBookSourceCandidates = (bookId: string, sourceIds: string[], keyword?: string, page = 1) =>
-  taskCommand("search_book_source_candidates", {
+export function searchBookSourceCandidates(bookId: string, sourceIds: string[], keyword?: string, page = 1,
+  onResults?: (batch: BookSourceCandidateBatch) => void) {
+  const channel = new Channel<BookSourceCandidateBatch>();
+  channel.onmessage = batch => onResults?.(batch);
+  return taskCommand("search_book_source_candidates", {
     bookId,
     sourceIds,
     ...(keyword === undefined ? {} : { keyword }),
     page,
+    onResults: channel,
   });
+}
 
 export const changeBookSource = (bookId: string, sourceBookId: string, confirmMissingAuthor = false) =>
   command<BookSourceMutationResponse>("change_book_source", { bookId, sourceBookId, confirmMissingAuthor });

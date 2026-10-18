@@ -109,7 +109,7 @@ impl ApplicationService {
                     candidates_to_notify.push(registry.records[position].clone());
                 }
             }
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(None, &std::iter::once(&registry.records[position]).chain(candidates_to_notify.iter()).collect::<Vec<_>>()).await {
                 registry.records[position] = previous;
                 for (position, backup) in candidate_backups {
                     registry.records[position] = backup;
@@ -167,7 +167,7 @@ impl ApplicationService {
                             _ => record.status.clone(),
                         };
                         record.updated_at_ms = now_ms();
-                        if let Err(recovery_error) = self.persist_tasks_locked(&registry).await {
+                        if let Err(recovery_error) = self.persist_task_changes(None, &[&registry.records[position]]).await {
                             registry.records[position] = previous;
                             return Err(format!(
                                 "Cannot claim resumed search: {error}; failed to persist interrupted task: {recovery_error}"
@@ -243,7 +243,7 @@ impl ApplicationService {
                 _ => unreachable!(),
             }
             task.updated_at_ms = now_ms();
-            if let Err(error) = self.persist_tasks_locked(&registry).await {
+            if let Err(error) = self.persist_task_changes(None, &[&registry.records[position]]).await {
                 registry.records[position] = previous;
                 return Err(error);
             }

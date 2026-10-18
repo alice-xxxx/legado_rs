@@ -74,8 +74,10 @@ fn execute_sql(
         };
         return Ok(SourceStorageResponse { value });
     }
-    let mut clear_scopes = Vec::new();
-    db.transaction(|tx| {
+    let is_cookies=request.namespace == "cookies";
+    let clear_all=request.operation == "clear";
+    let clear_scopes = db.transaction(move |tx| {
+        let mut clear_scopes = Vec::new();
         let error = crate::resources::ResourceError::new;
         match request.operation.as_str() {
             "put" => {
@@ -103,10 +105,10 @@ fn execute_sql(
             }
             operation => return Err(error(format!("Unsupported source storage operation: {operation}")))
         }
-        Ok(())
+        Ok(clear_scopes)
     }).map_err(|e|e.to_string())?;
-    if request.namespace == "cookies" {
-        if request.operation == "clear" {
+    if is_cookies {
+        if clear_all {
             crate::source_http::clear_all_cookie_jars()?;
         } else {
             for scope in clear_scopes {
@@ -180,9 +182,7 @@ mod tests {
                 .unwrap(),
             12
         );
-        connection
-            .execute("UPDATE source_kv SET expires_at_ms=1 WHERE key='key-0'", [])
-            .unwrap();
+        db.transaction(|tx|{tx.execute("UPDATE source_kv SET expires_at_ms=1 WHERE key='key-0'", [])?;Ok(())}).unwrap();
         assert!(
             execute_source_storage_request(request("get", "key-0", None), directory.path())
                 .await
@@ -231,7 +231,7 @@ mod tests {
                 .is_some()
         );
         let db = crate::database::Database::at(directory.path());
-        db.connect().unwrap().execute_batch("CREATE TRIGGER fail_put BEFORE INSERT ON source_kv WHEN new.key='uncommitted' BEGIN SELECT RAISE(ABORT,'failure'); END;").unwrap();
+        db.transaction(|tx|{tx.execute_batch("CREATE TRIGGER fail_put BEFORE INSERT ON source_kv WHEN new.key='uncommitted' BEGIN SELECT RAISE(ABORT,'failure'); END;")?;Ok(())}).unwrap();
         assert!(execute_source_storage_request(
             request("put", "uncommitted", Some("value")),
             directory.path()

@@ -77,19 +77,6 @@ pub async fn change_chapter_source(
 }
 
 #[tauri::command]
-pub async fn get_book_preview(book_id: String, service: State<'_, ApplicationService>) -> Result<Value,String> {
-    service.get_book_preview(&book_id).await
-}
-
-#[tauri::command]
-pub async fn get_book(
-    book_id: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    service.get_book(&book_id).await
-}
-
-#[tauri::command]
 pub async fn save_book(
     app: tauri::AppHandle,
     book: Value,

@@ -4,6 +4,7 @@ import type { BookSourceSwitchContract } from "./sourceContext";
 export type BookSourceSwitchSession = Pick<
   BookSourceSwitchContract,
   | "bookSourceSwitchOpen"
+  | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceIdentityConfirmResultId"
@@ -28,7 +29,9 @@ export type BookSourceSwitchSession = Pick<
   | "openBookSourceSwitchForBook"
   | "closeBookSourceSwitch"
   | "startBookSourceCandidateSearch"
+  | "stopBookSourceCandidateSearch"
   | "selectBookSourceCandidate"
+  | "chooseBookSourceCandidate"
   | "replaceCurrentChapterFromCandidate"
   | "confirmBookSourceChange"
 >;
