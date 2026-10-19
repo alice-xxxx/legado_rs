@@ -83,13 +83,19 @@ export async function loadBookPreviews(ids: string[]): Promise<void> {
 function watchBook(): void {
   stopWatch = watch(() => openedBook.value?.displayOverrides, displayOverrides => {
     if (!openedBook.value) return;
+    const id = ++requestId;
+    const bookId = openedBook.value.id;
     void saveBook({
       id: openedBook.value.id,
       displayOverrides: {
         title: displayOverrides?.title, author: displayOverrides?.author,
         intro: displayOverrides?.intro, coverSrc: displayOverrides?.coverSrc,
       },
-    }, ++requestId).catch(console.error);
+    }).then(async () => {
+      if (id !== requestId) return;
+      await updateBook(bookId, id);
+      if (libraryType(bookId)) await refreshContentLibrary();
+    }).catch(console.error);
   }, { deep: true });
 }
 
@@ -147,6 +153,11 @@ export async function initializeBookStore(): Promise<void> {
 }
 
 export const refreshOpenedBook = (reference: BookReference) => updateBook(reference);
+
+export function clearBookProgress(id: string): void {
+  latestProgress.delete(id);
+  clearLibraryProgress(id);
+}
 
 export function replaceOpenedBook(book: BookResource | null): void {
   requestId++; stopWatch(); openedBook.value = book; watchBook();

@@ -16,7 +16,6 @@ const TASK: &[Field] = &[
     ("from_index", "fromIndex", Integer),
     ("total", "total", Integer),
     ("completed", "completed", Integer),
-    ("check_only", "checkOnly", Bool),
     ("search_id", "searchId", Text),
     ("result_json", "result", Json),
     ("error", "error", Text),
@@ -64,6 +63,7 @@ pub(super) fn write(db: &Connection, value: &Value) -> Result<(), ResourceError>
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn insert(db: &Connection, task: &Value) -> Result<(), ResourceError> {
     let mut row = task.clone();
     row["_position"] = json!(db.query_row(
@@ -87,6 +87,7 @@ pub(super) fn insert(db: &Connection, task: &Value) -> Result<(), ResourceError>
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn update_states(db: &Connection, states: &[Value]) -> Result<(), ResourceError> {
     let mut update = db.prepare_cached("UPDATE tasks SET status=?2,completed=?3,total=?4,error=?5,result_json=?6,updated_at_ms=?7 WHERE id=?1")?;
     for state in states {

@@ -1,8 +1,8 @@
 import { type Ref } from "vue";
 import { emit } from "@tauri-apps/api/event";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { getSourceLoginForm, getSourceLoginState } from "../../api/sources";
-import { sources, mutateSources as mutateSource } from "./sourcesStore";
+import { getSourceLoginForm, getSourceLoginState, loginSource, runSourceLoginAction, clearSourceLoginState, startSourceLoginWeb, finishSourceLoginWeb, cancelSourceLoginWeb } from "../../api/sources";
+import { sources } from "./sourcesStore";
 import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {
@@ -120,8 +120,8 @@ export function useSourceLoginActions({
     try {
       const credentials = Object.assign(Object.create(null), sourceLoginCredentials.value) as Record<string, string>;
       const result = actionId === undefined
-        ? await mutateSource({ kind: "login", sourceId: source.id, credentials })
-        : await mutateSource({ kind: "runLoginAction", sourceId: source.id, actionId, credentials });
+        ? await loginSource(source.id, credentials)
+        : await runSourceLoginAction(source.id, actionId, credentials);
       if (!isCurrentSourceLogin(source.id, generation)) return;
       if (!("status" in result)) throw new Error("Source login returned an invalid response");
       if (result.status === "failed") sourceLoginFormError.value = result.message + ("detail" in result && result.detail ? `\n${result.detail}` : "");
@@ -187,10 +187,7 @@ export function useSourceLoginActions({
     sourceLoginBusy.value = true;
     sourceLoginError.value = "";
     try {
-      const result = await mutateSource({
-        kind: "clearLoginState",
-        sourceId: source.id,
-      });
+      const result = await clearSourceLoginState(source.id);
       if (!("cleared" in result)) throw new Error("Source login state returned an invalid response");
       if (!result.cleared) throw new Error("没有收到登录状态清除完成结果。");
       if (!isCurrentSourceLogin(source.id, generation)) return;
@@ -221,18 +218,11 @@ export function useSourceLoginActions({
     sourceLoginFeedback.value = "";
     sourceLoginFormError.value = "";
     try {
-      const result = await mutateSource({
-        kind: "startLoginWeb",
-        sourceId: source.id,
-      });
+      const result = await startSourceLoginWeb(source.id);
       if (!("sessionId" in result)) throw new Error("Source web login returned no session ID");
       if (!isCurrentSourceLogin(source.id, generation)) {
         // 界面已切换时，关闭迟到创建的浏览器会话，避免留下孤立登录窗口。
-        void mutateSource({
-          kind: "cancelLoginWeb",
-          sourceId: source.id,
-          sessionId: result.sessionId,
-        }).catch(() => undefined);
+        void cancelSourceLoginWeb(source.id, result.sessionId).catch(() => undefined);
         return;
       }
       sourceLoginWebSessionId.value = result.sessionId;
@@ -251,11 +241,7 @@ export function useSourceLoginActions({
     sourceLoginBusy.value = true;
     sourceLoginFormError.value = "";
     try {
-      const result = await mutateSource({
-        kind: "finishLoginWeb",
-        sourceId: source.id,
-        sessionId,
-      });
+      const result = await finishSourceLoginWeb(source.id, sessionId);
       if (!("importedCount" in result)) throw new Error("Source web login returned an invalid response");
       if (!isCurrentSourceLogin(source.id, generation)) return;
       sourceLoginWebSessionId.value = "";
@@ -277,11 +263,7 @@ export function useSourceLoginActions({
     const sessionId = sourceLoginWebSessionId.value;
     sourceLoginWebSessionId.value = "";
     if (source && sessionId) {
-      void mutateSource({
-        kind: "cancelLoginWeb",
-        sourceId: source.id,
-        sessionId,
-      }).catch(() => undefined);
+      void cancelSourceLoginWeb(source.id, sessionId).catch(() => undefined);
     }
   }
 

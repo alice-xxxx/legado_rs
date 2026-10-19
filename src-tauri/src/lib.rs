@@ -1,12 +1,12 @@
 //! Rust 后端入口：公开业务模块并启动跨平台 Tauri 宿主。
 
 pub mod application;
-pub(crate) mod database;
-mod storage_owner;
 mod configuration;
-#[cfg(any(feature="desktop",feature="mobile-runtime"))]
-mod readonly_sql;
+pub(crate) mod database;
 mod http_client;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+mod readonly_sql;
+mod storage_owner;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
@@ -71,8 +71,7 @@ async fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bo
     {
         use tauri_plugin_source_engine::SourceEngineExt;
         // UIKit callbacks must be able to run while the command awaits Swift.
-        app
-            .source_engine()
+        app.source_engine()
             .set_reader_fullscreen(hidden)
             .await
             .map_err(|error| error.to_string())
@@ -126,9 +125,9 @@ async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub fn run() {
-    use tauri::{Emitter, Manager};
     #[cfg(debug_assertions)]
     use tauri::Listener;
+    use tauri::{Emitter, Manager};
 
     #[cfg(all(
         feature = "desktop",
@@ -218,21 +217,14 @@ pub fn run() {
                 application::ApplicationService::open_with_executor(data_dir, executor),
             )
             .map_err(std::io::Error::other)?;
+            let service = {
+                let mut service = service;
+                service.set_source_engine_app(app.handle().clone());
+                service
+            };
             tauri::async_runtime::block_on(crate::readonly_sql::open(
                 app.handle(), &service.resource_store().database().file_path(),
             )).map_err(std::io::Error::other)?;
-            let book_app = app.handle().clone();
-            service.set_book_notifier(std::sync::Arc::new(move |payload| {
-                let _ = book_app.emit("book-updated", payload);
-            }));
-            let task_app = app.handle().clone();
-            service.set_task_notifier(std::sync::Arc::new(move |payload| {
-                let _ = task_app.emit("task-updated", payload);
-            }));
-            let task_recovery_app = app.handle().clone();
-            service.set_task_recovery_notifier(std::sync::Arc::new(move |payload| {
-                let _ = task_recovery_app.emit("task-recovery-required", payload);
-            }));
             let background_service = service.clone();
             let backup_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -292,51 +284,34 @@ pub fn run() {
         application::release_http_tts_stream,
         application::get_source_login_state,
         application::get_source_login_form,
-        application::mutate_source,
-        application::search_books,
-        application::debug_search_result,
-        application::start_search,
-        application::get_search_task_results,
+        application::login_source,
+        application::run_source_login_action,
+        application::clear_source_login_state,
+        application::start_source_login_web,
+        application::finish_source_login_web,
+        application::cancel_source_login_web,
+        application::search,
+        application::stop_search,
+        application::more_information,
+        application::cancel_more_information,
+        application::main_text,
+        application::cancel_main_text,
         application::release_search_results,
-        application::search_book_source_candidates,
-        application::clear_finished_tasks,
-        application::retry_task,
-        application::start_book_download,
-        application::start_chapter_download,
-        application::refresh_chapters,
-        application::check_new_chapters,
-        application::pause_task,
-        application::resume_task,
-        application::cancel_task,
-        application::prepare_search_result_book,
-        application::cancel_book_preparation,
-        application::prepare_alternative_book,
-            application::prepare_book_from_url,
-        application::change_book_source,
-        application::change_chapter_source,
+        database::fe_db::fe_db,
         application::import_book_from_picker,
         application::list_pending_external_files,
         application::import_external_file,
         application::discard_external_file,
         application::import_protected_pdf,
         application::cancel_pending_pdf_import,
-        application::save_book,
-        application::refresh_book_info,
         application::pick_book_cover,
         application::pick_reader_background_image,
         application::discard_book_cover_asset,
         application::notify_reading,
-        application::reset_book_progress,
         application::clear_book_chapter_cache,
         application::get_chapter_cache_usage,
         application::save_settings,
         application::get_rss_state,
-        application::set_rss_filter,
-        application::set_rss_article_state,
-        application::unsubscribe_rss,
-        application::mutate_history,
-        application::save_shelf,
-        application::save_configuration_rule,
         application::prepare_configuration_import,
         application::create_backup_from_picker,
         application::restore_backup_from_picker,
@@ -345,7 +320,6 @@ pub fn run() {
         application::list_discovery_categories,
         application::list_discovery_books,
         application::list_discovery_favorites,
-        application::set_discovery_favorite,
         application::list_rss_categories,
         application::list_rss_articles,
         application::open_rss_article,
@@ -366,12 +340,7 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(move |_app, event| {
-            if let tauri::RunEvent::WindowEvent {
-                label,
-                event,
-                ..
-            } = &event
-            {
+            if let tauri::RunEvent::WindowEvent { label, event, .. } = &event {
                 #[cfg(any(target_os = "android", target_os = "ios"))]
                 let resume_resources = matches!(event, tauri::WindowEvent::Resumed);
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -494,15 +463,11 @@ fn queue_external_file<R: tauri::Runtime>(
         use tauri::Emitter;
         use tauri_plugin_dialog::{DialogExt, FilePath};
 
-        let queued = match application::stage_external_file(
-            &app,
-            FilePath::Path(selected_path),
-        )
-        .await
-        {
-            Ok(file) => registry.enqueue_picker_file(file),
-            Err(error) => Err(error),
-        };
+        let queued =
+            match application::stage_external_file(&app, FilePath::Path(selected_path)).await {
+                Ok(file) => registry.enqueue_picker_file(file),
+                Err(error) => Err(error),
+            };
         match queued {
             Ok(Some(file)) => {
                 application::schedule_pending_external_file_cleanup(

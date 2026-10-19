@@ -10,7 +10,7 @@ import type { AppBootstrap, SourceMetadata, SourceLoginForm } from "../../api/ty
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources, enabledSources, bookSourceCandidates } from "./sourcesStore";
-import { tasks as taskList, tasksLoaded as taskListLoaded, tasksError, ensureTasksLoaded } from "../tasks/tasksStore";
+import { searchBusy } from "../discovery/searchState";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -31,8 +31,6 @@ const sourceImportBusy = ref(false);
 const sourceImportOpen = ref(false);
 const sourceImportUrl = ref("");
 const recoveryRequired = shelfBatchRecoveryRequired;
-const searchBusy = computed(() => !taskListLoaded.value || !!tasksError.value || taskList.value.some(task => task.kind === "search"
-  && ["queued", "running", "pausing", "cancelling"].includes(task.status)));
 const searchResultBatchBusy = ref(false);
 let restoreFrontendRevision = 0;
 let unlisteners: UnlistenFn[] = [];
@@ -107,7 +105,7 @@ function sourceName(id: string): string {
   return sources.value.find(source => source.id === id)?.name ?? id;
 }
 
-function reportTaskRefreshError(error: unknown): void {
+function reportSourceLoadError(error: unknown): void {
   if (!pageDisposed) notify(`浠诲姟鐘舵€佸埛鏂板け璐ワ細${errorText(error)}`, "error");
 }
 
@@ -152,7 +150,6 @@ async function handleAppStateUpdated(): Promise<void> {
   leaveEditorRoute();
   sourceDebugActions.closeSourceDebug();
   sourceLoginActions.closeSourceLogin();
-  await ensureTasksLoaded();
   if (pageDisposed || restoreRevision !== restoreFrontendRevision) return;
   selectedSourceIds.value = bookSourceCandidates.value.map(source => source.id);
 }
@@ -160,19 +157,15 @@ async function handleAppStateUpdated(): Promise<void> {
 onMounted(async () => {
   try {
     const unlistenAppState = await listen<AppBootstrap>("app-state-updated", () => {
-      void handleAppStateUpdated().catch(reportTaskRefreshError);
+      void handleAppStateUpdated().catch(reportSourceLoadError);
     });
     if (pageDisposed) unlistenAppState();
     else unlisteners.push(unlistenAppState);
   } catch (error) {
-    reportTaskRefreshError(error);
+    reportSourceLoadError(error);
   }
   if (pageDisposed) return;
-  await Promise.all([
-    ensureTasksLoaded().catch(error => {
-      if (!pageDisposed) notify(`浠诲姟鐘舵€佽鍙栧け璐ワ細${errorText(error)}`, "error");
-    }),
-  ]);
+
 });
 
 onBeforeUnmount(() => {

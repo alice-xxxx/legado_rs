@@ -74,7 +74,7 @@ pub(crate) fn cancel_source_login_web(source_id: &str, session_id: &str) -> Resu
     desktop_browser::cancel_web_login(source_id, session_id)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SourceEngineRequest {
     /// Rust-only execution lease; never part of the source-rule wire format.

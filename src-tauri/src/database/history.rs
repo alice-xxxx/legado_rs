@@ -90,36 +90,6 @@ pub(super) fn record_search(
     Ok(())
 }
 
-pub(super) fn save_bookmark(
-    db: &Connection,
-    book_id: &str,
-    bookmark: &Value,
-) -> Result<(), ResourceError> {
-    let id = text(bookmark, "id")?;
-    let previous: Option<(String, i64)> = db
-        .query_row(
-            "SELECT book_id,position FROM bookmarks WHERE id=?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    if previous.as_ref().is_some_and(|(book, _)| book != book_id) {
-        return Err(ResourceError::new("Bookmark belongs to another book"));
-    }
-    let position = match previous {
-        Some((_, position)) => position,
-        None => db.query_row(
-            "SELECT coalesce(max(position)+1,0) FROM bookmarks WHERE book_id=?1",
-            [book_id],
-            |r| r.get::<_, i64>(0),
-        )?,
-    };
-    let mut value = bookmark.clone();
-    value["_bookId"] = json!(book_id);
-    value["_position"] = json!(position);
-    rows::upsert(db, "bookmarks", BOOKMARK, &["id"], &value)
-}
-
 pub(super) fn record_session(
     db: &Connection,
     session: &crate::reading_tools::ReadingSession,

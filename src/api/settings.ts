@@ -23,7 +23,7 @@ export const saveSettings = (settings: AppSettingsResource, requestId: number) =
   command<SaveSettingsResponse>("save_settings", { settings, requestId });
 
 export async function prepareConfigurationImport<T>(
-  kind: "replacementRules" | "txtTocRules" | "httpTtsConfigs", source: ConfigurationImportSource,
+  kind: ConfigurationImportKind, source: ConfigurationImportSource,
 ): Promise<T | null> {
   const result = await command<{ cancelled: true } | { document: T }>(
     "prepare_configuration_import", { kind, source },

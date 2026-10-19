@@ -476,9 +476,9 @@ impl ApplicationService {
                     Some(format!("无法读取并保留本机 WebDAV 备份设置：{error}")),
                 ),
             };
-        self.cancel_active_tasks()
-            .await
-            .map_err(crate::resource_transactions::TransactionError::new)?;
+        let _ = self.information_cancel.send(None);
+        let _ = self.text_cancel.send(None);
+        self.clear_searches().await;
         let _exclusive = self.operation_gate.clone().write_owned().await;
         if let Err(error) = crate::backup::restore_backup(&self.store, archive).await {
             if error.recovery_required_flag() {
@@ -513,7 +513,7 @@ impl ApplicationService {
                     crate::resource_transactions::CommitState::Committed,
                 )
             })?;
-        self.reload_tasks_after_restore().await.map_err(|error| {
+        task_history::retire_task_history(&self.store).await.map_err(|error| {
             admission.release_on_drop = false;
             crate::resource_transactions::TransactionError::recovery_required(
                 format!("Restored data is active, but task history could not be reloaded: {error}"),
@@ -539,158 +539,4 @@ impl ApplicationService {
         Ok(bootstrap)
     }
 
-    async fn reload_tasks_after_restore(&self) -> Result<(), String> {
-        let reference = self
-            .store
-            .document_ref("tasks")
-            .map_err(|error| error.to_string())?;
-        let document = if self.store.regular_file_exists(&reference).await
-            .map_err(|error| format!("Cannot inspect restored task history: {error}"))?
-        {
-            self.store.read_json_ref(&reference).await
-                .map_err(|error| format!("Cannot read restored task history: {error}"))?
-        } else {
-            // A backup may not contain optional task history. Missing is
-            // different from corrupt: never overwrite a damaged history
-            // with an empty record set and silently claim restore succeeded.
-            json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": [] })
-        };
-        let restored_tasks = document.get("tasks").cloned()
-            .ok_or_else(|| "Restored task history is missing its tasks array".to_owned())?;
-        let mut records = serde_json::from_value::<Vec<AppTask>>(restored_tasks)
-            .map_err(|error| format!("Cannot load restored task history: {error}"))?;
-        for task in &mut records {
-            if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") {
-                // Search display versions are not included in backups.
-                task.result = None;
-            }
-            // A persisted user stop request remains effective after process loss.
-            let recovered_status = match task.status.as_str() {
-                "cancelling" => Some("cancelled"),
-                "pausing" => Some("paused"),
-                "queued" | "running" => Some("interrupted"),
-                _ => None,
-            };
-            if let Some(status) = recovered_status {
-                task.status = status.to_owned();
-                task.updated_at_ms = now_ms();
-            }
-            if task.kind == "bookSourceCandidates"
-                && !matches!(
-                    task.status.as_str(),
-                    "completed" | "failed" | "cancelled" | "recoveryRequired"
-                )
-            {
-                task.status = "failed".into();
-                task.error = Some(
-                    "Candidate search results are session-only and cannot resume after restore; retry the search.".into(),
-                );
-                task.updated_at_ms = now_ms();
-            }
-            if task.kind == "search"
-                && !matches!(task.status.as_str(), "completed" | "failed" | "cancelled" | "recoveryRequired")
-            {
-                // Discovery results are session memory. Preserve pause intent,
-                // but restart resumable work from the first source.
-                if !matches!(task.status.as_str(), "paused" | "interrupted") {
-                    task.status = "interrupted".into();
-                }
-                task.completed = 0;
-                task.error = None;
-                task.updated_at_ms = now_ms();
-            }
-        }
-        self.store
-            .write_json_ref(
-                &reference,
-                &json!({
-                    "schemaVersion": CURRENT_SCHEMA_VERSION,
-                    "tasks": records,
-                }),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut registry = self.tasks.lock().await;
-        registry.records = records;
-        registry.signals.clear();
-        registry.search_documents = registry
-            .records
-            .iter()
-            .filter(|task| {
-                task.kind == "search" && matches!(task.status.as_str(), "paused" | "interrupted")
-            })
-            .filter_map(|task| {
-                task.search_id
-                    .as_ref()
-                    .map(|search_id| (search_id.clone(), empty_search_task_document(task)))
-            })
-            .collect();
-        registry.search_result_documents.clear();
-        registry.search_replacement_contexts.clear();
-        registry.search_book_group_roots.clear();
-        // Restored tasks have no running workers. Search publication
-        // ownership never survives a backup restore.
-        registry.active_search_task_id = None;
-        registry.search_group_indexes.clear();
-        registry.dirty_search_results.clear();
-        registry.search_results_need_sort = false;
-        registry.published_search_error_count = 0;
-        Ok(())
-    }
-
-    async fn cancel_active_tasks(&self) -> Result<(), String> {
-        let changed = {
-            let mut registry = self.tasks.lock().await;
-            // Reject recovery-needed history before touching any records.
-            // This state cannot safely be turned into a normal cancellation.
-            if registry.records.iter().any(|task| task.status == "recoveryRequired") {
-                return Err("A task requires crash recovery before restoring a backup".into());
-            }
-            let previous = registry.records.clone();
-            let signals = registry.signals.clone();
-            let mut changed = Vec::new();
-            for task in &mut registry.records {
-                if matches!(task.status.as_str(), "completed" | "failed" | "cancelled") {
-                    continue;
-                }
-                task.status = if signals.contains_key(&task.id) {
-                    "cancelling".into()
-                } else {
-                    "cancelled".into()
-                };
-                task.updated_at_ms = now_ms();
-                changed.push(task.clone());
-            }
-            if !changed.is_empty() {
-                if let Err(error) = self.persist_task_changes(None, &changed.iter().collect::<Vec<_>>()).await {
-                    registry.records = previous;
-                    return Err(error);
-                }
-                // Never signal a running task until its new stop state is
-                // durably committed. A failed restore admission leaves the
-                // in-memory and on-disk records unchanged.
-                for task in &changed {
-                    if let Some(sender) = signals.get(&task.id) {
-                        sender.send_modify(|signal| signal.cancelled = true);
-                    }
-                }
-            }
-            changed
-        };
-        for task in &changed {
-            self.notify_task(task).await;
-        }
-        tokio::time::timeout(Duration::from_secs(30), async {
-            loop {
-                if self.tasks.lock().await.signals.is_empty() {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-        })
-        .await
-        .map_err(|_| {
-            "Timed out waiting for active tasks to stop; backup restore was not applied".to_owned()
-        })
-    }
 }

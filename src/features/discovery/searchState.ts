@@ -1,46 +1,44 @@
 import { computed, ref, shallowRef, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { startSearch, stopSearch, releaseSearchResults } from "../../api/search";
+import { search, stopSearch, releaseSearchResults } from "../../api/search";
 import router, { routeNames } from "../../router";
-import type { AppBootstrap, SearchBookResult, SearchBatch, SearchType } from "../../api/types";
+import type { AppBootstrap, SearchBookResult, SearchResultSource, SearchUpdate, SearchPrecision, SearchType } from "../../api/types";
 import { bookSourceCandidates } from "../sources/sourcesStore";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
+import { presentSearchResults } from "./searchPresentation";
 
 export const searchType = ref<SearchType>("text");
 export const selectedSourceIds = ref<string[]>([]);
 export const searchKeyword = ref("");
-export const precisionSearch = ref(true);
+export const precisionSearch = ref<SearchPrecision>("precise");
 export const searchPage = ref(1);
 export const searchBusy = ref(false);
 export const searchHasMore = ref(false);
 export const searchComplete = ref(false);
 export const searchProgress = ref("");
 export const searchResults = shallowRef<SearchBookResult[]>([]);
-export const searchResponseErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
-export const searchResourceErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
+export const searchErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
 export const searchWasRun = ref(false);
-export const activeSearchTaskId = ref<string | null>(null);
 export const activeSearchCancellationPending = ref(false);
 export const searchSources = computed(() => bookSourceCandidates.value.filter(source =>
   source.searchType === searchType.value));
 
-let retainedTaskId: string | null = null;
-let generation = 0;
 interface SearchRun {
-  generation: number;
-  taskId: string | null;
+  searchId: string | null;
   stopRequested: boolean;
   finished: boolean;
+  results: SearchResultSource[];
+  completedSources: number;
   stopPromise?: Promise<void>;
 }
 let currentRun: SearchRun | null = null;
-// Serialize command admission so a late start cannot replace a newer search in Rust.
-let startQueue: Promise<void> = Promise.resolve();
+// 翻页沿用已收到的结果，关闭或重新搜索时统一释放原始数据。
+const retainedSearchIds = new Set<string>();
 let initialization: Promise<void> | null = null;
 let unlisten: UnlistenFn | null = null;
 let removeRouteHook: (() => void) | null = null;
-let displayedQuery: { type: SearchType; keyword: string; sourceIds: string[]; precision: boolean } | null = null;
+let displayedQuery: { keyword: string; sourceIds: string[]; precision: SearchPrecision; nextSourceIds: string[] } | null = null;
 let previousType: SearchType | null = null;
 let previousIds: string[] = [];
 
@@ -91,66 +89,51 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function applyBatch(batch: SearchBatch, run: SearchRun): void {
-  if (currentRun !== run || generation !== run.generation || run.finished) return;
-  if (run.taskId && batch.taskId !== run.taskId) return;
-  if (batch.taskId) {
-    run.taskId = batch.taskId;
-    activeSearchTaskId.value = batch.taskId;
-    retainedTaskId = batch.taskId;
-  }
-  const status = batch.status ?? (batch.complete ? "completed" : "running");
-  const terminal = Boolean(batch.complete || ["completed", "failed", "cancelled"].includes(status));
-  if (run.stopRequested && !terminal) {
-    void sendStopRequest(run);
+function applyBatch(batch: SearchUpdate, run: SearchRun): void {
+  if (currentRun !== run) {
+    void releaseSearchResults(batch.searchId).catch(console.error);
     return;
   }
-  const results = Array.isArray(batch.results) ? batch.results : [];
-  if (batch.incremental && results.length) {
-    const merged = new Map(searchResults.value.map(result => [result.resultId, result]));
-    for (const result of results) merged.set(result.resultId, result);
-    searchResults.value = batch.resultOrder.map(id => merged.get(id))
-      .filter((result): result is SearchBookResult => result !== undefined);
-  } else if (!batch.incremental) searchResults.value = results;
-  if (!batch.incrementalErrors) searchResourceErrors.value = batch.errors ?? [];
-  else if (batch.errors?.length) searchResourceErrors.value = [...searchResourceErrors.value, ...batch.errors];
-  searchHasMore.value = status === "completed" && batch.hasMore === true && !run.stopRequested;
-  searchComplete.value = status === "completed" && !run.stopRequested;
-  searchBusy.value = status === "queued" || status === "running";
-  searchProgress.value = searchBusy.value
-    ? `正在搜索（${batch.completedSources ?? 0}/${batch.totalSources ?? 0}）…`
-    : status === "completed" ? "搜索完成"
-    : status === "cancelled" ? "搜索已取消。"
-    : status === "paused" ? "搜索已暂停。" : "搜索失败。";
-  if (batch.error) searchResponseErrors.value = [{ message: batch.error }];
-  if (terminal) {
-    run.finished = true;
-    activeSearchTaskId.value = null;
-    activeSearchCancellationPending.value = false;
+  if (run.finished) return;
+  if (run.searchId && batch.searchId !== run.searchId) return;
+  run.searchId = batch.searchId;
+  retainedSearchIds.add(batch.searchId);
+  if (run.stopRequested) { void cancelActiveSearch(); return; }
+  run.results.push(...batch.results);
+  if (batch.sourceId) {
+    run.completedSources++;
+    if (batch.hasMore) displayedQuery?.nextSourceIds.push(batch.sourceId);
   }
+  searchResults.value = presentSearchResults(run.results, displayedQuery!.keyword);
+  if (batch.error) searchErrors.value.push({ sourceId: batch.sourceId, message: batch.error });
+  searchProgress.value = `已找到 ${searchResults.value.length} 本，搜索中（${run.completedSources}/${displayedQuery!.sourceIds.length}）…`;
 }
 
 export async function runSearch(page?: number): Promise<void> {
   if (shelfBatchRecoveryRequired.value) return;
-  const type = page === undefined ? searchType.value : displayedQuery?.type ?? searchType.value;
   const keyword = (page === undefined ? searchKeyword.value : displayedQuery?.keyword ?? searchKeyword.value).trim();
   const precision = page === undefined ? precisionSearch.value : displayedQuery?.precision ?? precisionSearch.value;
   const eligible = new Set(searchSources.value.map(source => source.id));
-  const sourceIds = (page === undefined ? selectedSourceIds.value : displayedQuery?.sourceIds ?? selectedSourceIds.value)
+  const sourceIds = (page === undefined ? selectedSourceIds.value : displayedQuery?.nextSourceIds ?? selectedSourceIds.value)
     .filter(id => eligible.has(id));
   if (!keyword || !sourceIds.length) {
     notify(!keyword ? "先输入书名、作者或关键词。" : "请至少选择一个当前类型的已启用源。", "error");
     return;
   }
-  const requestGeneration = ++generation;
-  const run: SearchRun = { generation: requestGeneration, taskId: null, stopRequested: false, finished: false };
+  const previousRun = currentRun;
+  if (previousRun && !previousRun.finished) await cancelActiveSearch();
+  if (currentRun !== previousRun) return;
+  if (page === undefined) {
+    for (const id of retainedSearchIds) void releaseSearchResults(id).catch(console.error);
+    retainedSearchIds.clear();
+  }
+  const run: SearchRun = { searchId: null, stopRequested: false, finished: false,
+    results: page === undefined ? [] : currentRun?.results.slice() ?? [], completedSources: 0 };
   currentRun = run;
   const nextPage = Math.max(1, page ?? 1);
-  displayedQuery = { type, keyword, sourceIds, precision };
+  displayedQuery = { keyword, sourceIds, precision, nextSourceIds: [] };
   if (nextPage === 1) searchResults.value = [];
-  searchResponseErrors.value = [];
-  searchResourceErrors.value = [];
-  activeSearchTaskId.value = null;
+  searchErrors.value = [];
   activeSearchCancellationPending.value = false;
   searchWasRun.value = true;
   searchBusy.value = true;
@@ -158,89 +141,63 @@ export async function runSearch(page?: number): Promise<void> {
   searchComplete.value = false;
   searchPage.value = nextPage;
   searchProgress.value = "正在启动搜索…";
-  const admission = startQueue.then(async () => {
+  try {
     await initializeSearchState();
     if (currentRun !== run || run.stopRequested) {
-      if (currentRun === run) {
-        run.finished = true;
-        searchBusy.value = false;
-        activeSearchCancellationPending.value = false;
-        searchProgress.value = "搜索已停止。";
-      }
+      if (currentRun === run) searchProgress.value = "搜索已取消。";
       return;
     }
-    const response = await startSearch(type, sourceIds, keyword, nextPage, precision,
-      batch => applyBatch(batch, run));
-    run.taskId = response.taskId;
-    if (currentRun !== run) { await releaseSearchResults(response.taskId); return; }
-    retainedTaskId = response.taskId;
-    if (run.stopRequested) await sendStopRequest(run);
-    else if (!run.finished) activeSearchTaskId.value = response.taskId;
-  });
-  startQueue = admission.catch(() => {});
-  try {
-    await admission;
+    const id = await search(sourceIds, keyword, nextPage, precision, batch => applyBatch(batch, run));
+    if (currentRun !== run) { await releaseSearchResults(id); return; }
+    searchHasMore.value = !run.stopRequested && displayedQuery.nextSourceIds.length > 0;
+    searchComplete.value = !run.stopRequested;
+    searchProgress.value = run.stopRequested ? "搜索已取消。" : "搜索完成";
   } catch (error) {
     if (currentRun !== run) return;
-    run.finished = true;
-    searchBusy.value = false;
-    activeSearchTaskId.value = null;
-    activeSearchCancellationPending.value = false;
-    searchProgress.value = "搜索启动失败。";
+    searchProgress.value = "搜索失败。";
     notify(errorText(error), "error");
+  } finally {
+    run.finished = true;
+    if (currentRun === run) {
+      searchBusy.value = false;
+      activeSearchCancellationPending.value = false;
+    }
   }
 }
 
-function sendStopRequest(run: SearchRun): Promise<void> {
-  if (!run.taskId || run.finished) return Promise.resolve();
-  if (run.stopPromise) return run.stopPromise;
-  run.stopPromise = stopSearch(run.taskId).then(() => {
-    if (currentRun !== run || run.finished) return;
-    run.finished = true;
-    searchBusy.value = false;
-    activeSearchCancellationPending.value = false;
-    activeSearchTaskId.value = null;
-    searchProgress.value = "搜索已停止。";
-  }).catch(error => {
-    if (currentRun !== run || run.finished) return;
-    run.stopRequested = false;
-    run.stopPromise = undefined;
-    activeSearchCancellationPending.value = false;
-    searchBusy.value = true;
-    notify(`停止搜索失败：${errorText(error)}`, "error");
-  });
-  return run.stopPromise;
-}
-
-export function cancelActiveSearch(): Promise<void> {
+export async function cancelActiveSearch(): Promise<void> {
   const run = currentRun;
-  if (!run || run.finished) return Promise.resolve();
+  if (!run || run.finished) return;
   run.stopRequested = true;
   searchComplete.value = false;
   searchHasMore.value = false;
   activeSearchCancellationPending.value = true;
   searchProgress.value = "正在停止搜索…";
-  // The first IPC batch or start response will stop a task whose ID is not yet known.
-  return sendStopRequest(run);
+  // 编号未到达时，首次通知会再次调用；等待 search 返回后结束忙碌状态。
+  if (!run.searchId || run.stopPromise) return run.stopPromise;
+  run.stopPromise = stopSearch(run.searchId).catch(error => {
+    if (currentRun !== run || run.finished) return;
+    run.stopRequested = false;
+    run.stopPromise = undefined;
+    activeSearchCancellationPending.value = false;
+    notify(`停止搜索失败：${errorText(error)}`, "error");
+  });
+  return run.stopPromise;
 }
 
 export function resetSearch(): void {
-  const taskId = activeSearchTaskId.value ?? retainedTaskId;
-  retainedTaskId = null;
   currentRun = null;
   searchComplete.value = false;
-  if (taskId) void releaseSearchResults(taskId).catch(console.error);
-  generation++;
+  for (const id of retainedSearchIds) void releaseSearchResults(id).catch(console.error);
+  retainedSearchIds.clear();
   displayedQuery = null;
-  activeSearchTaskId.value = null;
   activeSearchCancellationPending.value = false;
   searchBusy.value = false;
   searchHasMore.value = false;
   searchWasRun.value = false;
   searchProgress.value = "";
   searchResults.value = [];
-  searchResponseErrors.value = [];
-  searchResourceErrors.value = [];
+  searchErrors.value = [];
   searchPage.value = 1;
 }
 

@@ -1,5 +1,7 @@
 import { command } from "./ipc";
-import type { BookIdentity, BookMetadataUpdate, BookCoverPickerResponse, ResetBookProgressResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, RefreshBookInfoResponse, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
+import { modifyDatabase, type DatabaseChange } from "./feDb";
+import { storedAssetUrl } from "./database";
+import type { BookMetadataUpdate, ChapterResource, BookCoverPickerResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
 
 export type LocalImportFormat = "txt" | "epub" | "cbz" | "pdf";
 export const importBookFromPicker = (options: LocalBookImportOptions = {}, format?: LocalImportFormat) =>
@@ -20,24 +22,24 @@ export const importProtectedPdf = (importToken: string, password: string) =>
 export const cancelPendingPdfImport = (importToken: string) =>
   command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
 
-export const prepareSearchResultBook = (resultId: string, requestRevision?: number) =>
-  command<{ book: BookIdentity }>("prepare_search_result_book", { resultId, requestRevision });
+export const saveBook = (book: BookMetadataUpdate) => modifyDatabase([{
+  action: "update", table: "books", filter: { id: book.id }, values: {
+    title_override: book.displayOverrides?.title?.trim() || null, author_override: book.displayOverrides?.author?.trim() || null,
+    intro_override: book.displayOverrides?.intro?.trim() || null,
+    cover_override: book.displayOverrides?.coverSrc ? storedAssetUrl(book.displayOverrides.coverSrc) : null,
+  },
+}]);
 
-export const cancelBookPreparation = (requestRevision: number) =>
-  command<void>("cancel_book_preparation", { requestRevision });
-
-export const prepareAlternativeBook = (bookId: string, alternativeIndex: number, sourceId: string) =>
-  command<{ book: BookIdentity }>("prepare_alternative_book", { bookId, alternativeIndex, sourceId });
-
-export const prepareBookFromUrl = (url: string, read: boolean) =>
-  command<{ book: BookIdentity; inShelf: boolean }>("prepare_book_from_url", { url, read });
-
-
-export const saveBook = (book: BookMetadataUpdate, requestId: number) =>
-  command<{ requestId: number; resource: BookIdentity }>("save_book", { book, requestId });
-
-export const refreshBookInfo = (bookId: string) =>
-  command<RefreshBookInfoResponse>("refresh_book_info", { bookId });
+/** 只保存 Vue 选择的章节缓存地址，不请求正文。 */
+export const saveChapter = (bookId: string, chapter: ChapterResource) => {
+  const filter = { book_id: bookId, chapter_id: chapter.id };
+  // 保留章节身份和引擎字段，只替换 Vue 选定的缓存地址。
+  const changes: DatabaseChange[] = [{ action: "update", table: "chapters", filter: { book_id: bookId, id: chapter.id },
+    values: { resource_url: chapter.resource?.resourceId ?? null } }, { action: "delete", table: "chapter_pages", filter }];
+  for (const [position, page] of (chapter.pages ?? []).entries()) changes.push({ action: "insert", table: "chapter_pages",
+    values: { ...filter, position, id: page.id, url: storedAssetUrl(page.url ?? page.src) } });
+  return modifyDatabase(changes);
+};
 
 export const pickBookCover = (bookId: string) =>
   command<BookCoverPickerResponse>("pick_book_cover", { bookId });
@@ -46,7 +48,7 @@ export const discardBookCoverAsset = (bookId: string, assetId: string) =>
   command<{ removed: boolean; inUse: boolean }>("discard_book_cover_asset", { bookId, assetId });
 
 export const resetBookProgress = (bookId: string) =>
-  command<ResetBookProgressResponse>("reset_book_progress", { bookId });
+  modifyDatabase([{ action: "delete", table: "reading_progress", filter: { book_id: bookId } }]);
 
 export const clearBookChapterCache = (bookId: string) =>
   command<ClearBookChapterCacheResponse>("clear_book_chapter_cache", { bookId });

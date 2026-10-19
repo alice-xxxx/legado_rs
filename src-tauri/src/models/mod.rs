@@ -323,16 +323,6 @@ pub enum BookMediaType {
     Video,
 }
 
-impl BookMediaType {
-    pub(crate) fn from_source_value(value: &str) -> Option<Self> {
-        match value {
-            "audio" => Some(Self::Audio),
-            "video" => Some(Self::Video),
-            _ => None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookDocument {

@@ -360,10 +360,8 @@ mod content;
 mod core;
 #[path = "tauri_commands/reader_shelf.rs"]
 mod reader_shelf;
-#[path = "tauri_commands/sources_search.rs"]
-mod sources_search;
-#[path = "tauri_commands/tasks.rs"]
-mod tasks;
+#[path = "tauri_commands/source_login.rs"]
+mod source_login;
 #[path = "tauri_commands/tts.rs"]
 mod tts;
 
@@ -373,6 +371,5 @@ pub use books::*;
 pub use content::*;
 pub use core::*;
 pub use reader_shelf::*;
-pub use sources_search::*;
-pub use tasks::*;
+pub use source_login::*;
 pub use tts::*;

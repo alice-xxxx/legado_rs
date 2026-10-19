@@ -3,38 +3,6 @@
 use super::*;
 
 impl ApplicationService {
-    pub async fn mutate_history(&self,kind:&str,payload:Value)->Result<(),String>{
-        let _operation=self.operation_read().await;
-        let database=self.store.database().clone();
-        match kind {
-            "saveBookmark"=>{
-                let book_id=payload["bookId"].as_str().ok_or("Missing bookmark book ID")?.to_owned();
-                validate_id(&book_id,"bookId")?;
-                let bookmark:crate::reading_tools::Bookmark=serde_json::from_value(payload["bookmark"].clone()).map_err(|e|e.to_string())?;
-                validate_id(&bookmark.id,"bookmarkId")?;validate_id(&bookmark.chapter_id,"chapterId")?;
-                if bookmark.note.len()>16384{return Err("Bookmark note is too long".into());}
-                let value=serde_json::to_value(bookmark).map_err(|e|e.to_string())?;
-                tokio::task::spawn_blocking(move ||database.save_bookmark(book_id,value)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
-            }
-            "removeBookmark"=>{
-                let book_id=payload["bookId"].as_str().ok_or("Missing bookmark book ID")?.to_owned();
-                let id=payload["bookmarkId"].as_str().ok_or("Missing bookmark ID")?.to_owned();
-                validate_id(&book_id,"bookId")?;validate_id(&id,"bookmarkId")?;
-                tokio::task::spawn_blocking(move ||database.remove_bookmark(book_id,id)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
-            }
-            "recordSession"=>{
-                let session:crate::reading_tools::ReadingSession=serde_json::from_value(payload).map_err(|e|e.to_string())?;
-                validate_id(&session.book_id,"bookId")?;validate_id(&session.session_id,"sessionId")?;
-                if session.ended_at_ms==0 || session.duration_ms==0 || session.duration_ms>session.ended_at_ms || session.ended_at_ms>i64::MAX as u64 || !(-840..=840).contains(&session.utc_offset_minutes){return Err("Invalid reading session".into());}
-                tokio::task::spawn_blocking(move ||database.record_session(session)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
-            }
-            "removeSearch"|"clearSearch"=>{
-                let query=if kind=="removeSearch"{Some(payload["query"].as_str().ok_or("Missing search query")?.to_owned())}else{None};
-                tokio::task::spawn_blocking(move ||database.remove_search_history(query)).await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())
-            }
-            _=>Err("Unknown history operation".into()),
-        }
-    }
     /// Return the RSS read/favorite/filter state resource.
     pub async fn get_rss_state(&self) -> Result<Value, String> {
         let _operation = self.operation_read().await;
@@ -77,45 +45,6 @@ impl ApplicationService {
             "title": title,
             "provider": provider,
             "sourceUrl": source_url,
-            "resource": self.resource_descriptor(&resource),
-        }))
-    }
-
-    pub async fn set_rss_filter(&self, source_id: &str, filter: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let resource = crate::rss::set_subscription_filter(self, source_id, filter).await?;
-        Ok(self.resource_descriptor(&resource))
-    }
-
-    pub async fn set_rss_article_state(
-        &self,
-        source_id: &str,
-        article_id: &str,
-        is_read: Option<bool>,
-        is_favorite: Option<bool>,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let resource =
-            crate::rss::set_article_state(self, source_id, article_id, is_read, is_favorite)
-                .await?;
-        Ok(self.resource_descriptor(&resource))
-    }
-
-    /// Remove an RSS subscription and its private category mapping, cached
-    /// article HTML, and read/favorite/filter state under one restore guard.
-    pub async fn unsubscribe_rss(&self, source_id: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let _sources = self.sources_lock.lock().await;
-        let source = self.source_record(source_id).await?;
-        if !crate::rss::is_rss_source(&source.source) {
-            return Err("Selected source is not an RSS subscription".to_owned());
-        }
-        let resource = crate::rss::remove_subscription_data(self, source_id).await?;
-        let mut records = self.read_sources().await?.as_ref().clone();
-        records.retain(|source| source.id != source_id);
-        let list_changed = self.write_sources(&records).await?;
-        Ok(json!({
-            "listChanged": list_changed,
             "resource": self.resource_descriptor(&resource),
         }))
     }
@@ -187,7 +116,8 @@ impl ApplicationService {
                         return Err("书源缺少来源地址".into());
                     }
                 }
-                json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "sources": sources })
+                // 源定义按文本交给 Vue 选择和提交，避免 JS 舍入其中的 64 位整数。
+                json!({ "sources": sources.into_iter().map(|source| source.to_string()).collect::<Vec<_>>() })
             }
             "replacementRules" => crate::reading_tools::parse_replacement_import(source_json)?,
             "txtTocRules" => serde_json::to_value(crate::local_books::txt_toc_rules::parse_import(
@@ -225,34 +155,6 @@ impl ApplicationService {
         let _operation = self.operation_read().await;
         let resource = crate::reading_tools::history_resource(&self.store).await?;
         Ok(self.resource_descriptor(&resource))
-    }
-
-    pub async fn save_configuration_rule(&self, kind: &str, rule_id: &str, rule: Value) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        validate_id(rule_id, "ruleId")?;
-        if !rule.is_null() && rule.get("id").and_then(Value::as_str) != Some(rule_id) {
-            return Err("Rule ID does not match its payload".into());
-        }
-        let (reference, field) = match kind {
-            "replacementRules" => (self.store.document_ref("replacement-rules").map_err(|error| error.to_string())?, "rules"),
-            "txtTocRules" => (self.store.document_ref("txt-toc-rules").map_err(|error| error.to_string())?, "rules"),
-            "httpTtsConfigs" => (self.store.http_tts_configs_ref(), "configs"),
-            _ => return Err("Unknown configuration kind".into()),
-        };
-        let document=json!({"schemaVersion":1,field:if rule.is_null(){json!([])}else{json!([rule.clone()])}});
-        match kind {
-            "replacementRules"=>crate::reading_tools::validate_replacement_document(&document)?,
-            "txtTocRules"=>{
-                let typed=serde_json::from_value::<crate::local_books::txt_toc_rules::TxtTocRulesDocument>(document.clone()).map_err(|e|e.to_string())?;
-                crate::local_books::txt_toc_rules::validate_document(&typed)?;
-            },
-            "httpTtsConfigs"=>crate::http_tts_config::validate_document(&document)?,
-            _=>unreachable!(),
-        }
-        let (database,kind,rule_id)=(self.store.database().clone(),kind.to_owned(),rule_id.to_owned());
-        tokio::task::spawn_blocking(move ||database.save_rule(&kind,&rule_id,&rule))
-            .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?;
-        Ok(self.resource_descriptor(&reference))
     }
 
     pub async fn save_shelf(&self, mut shelf: Value) -> Result<Value, String> {
@@ -540,7 +442,7 @@ pub(super) fn validate_id(id: &str, field: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn stable_hash(text: &str) -> u64 {
+pub(crate) fn stable_hash(text: &str) -> u64 {
     text.as_bytes()
         .iter()
         .fold(0xcbf29ce484222325u64, |hash, byte| {

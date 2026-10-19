@@ -180,16 +180,8 @@ impl ResourceServer {
         Ok(reference)
     }
 
-    /// Validate a media mapping before committing any sibling resolution
-    /// choices. This keeps one malformed optional source from preventing the
-    /// chapter's other playable choices from being registered.
-    pub(crate) fn validate_media_mapping(
-        &self,
-        opaque_id: &str,
-        upstream_url: &str,
-        private_headers: &[(String, String)],
-    ) -> Result<ResourceRef, ResourceError> {
-        MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)
+    pub(crate) async fn contains_media(&self, id: &str) -> bool {
+        self.media_proxy.contains(id).await
     }
 
     pub async fn unregister_media(

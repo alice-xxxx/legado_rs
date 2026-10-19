@@ -1,6 +1,10 @@
+import { mainText } from "../../api/mainText";
 import { ref, type Ref } from "vue";
-import { type ResourceDescriptor, type SearchBookResult, type SearchResource, type SourceDebugResponse, type SourceMetadata } from "../../api/types";
-import { clearSourceDebugPreview, debugSearchResult, searchBooks } from "../../api/search";
+import { type ResourceDescriptor, type SearchBookResult, type BookResource, type SourceMetadata } from "../../api/types";
+import { search, releaseSearchResults } from "../../api/search";
+import { presentSearchResults } from "../discovery/searchPresentation";
+import { moreInformation } from "../../api/moreInformation";
+import { readMoreInformation } from "../../api/database";
 import { readTextResource } from "../../api/resources";
 import { sources, readSourceDefinitionJson } from "./sourcesStore";
 import { readSourceEditorDraft } from "./sourceEditorDraft";
@@ -32,36 +36,28 @@ export function useSourceDebugActions({
   const sourceDebugSearched = ref(false);
   const sourceDebugErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
   const sourceDebugSelectedResult = ref<SearchBookResult | null>(null);
-  const sourceDebugBook = ref<SourceDebugResponse["book"] | null>(null);
+  const sourceDebugBook = ref<BookResource | null>(null);
   const sourceDebugChapters = ref<Array<{ index: number; title: string }>>([]);
   const sourceDebugChapterResource = ref<ResourceDescriptor | null>(null);
   const sourceDebugChapterText = ref("");
   const sourceDebugSelectedChapterIndex = ref<number | null>(null);
-  const sourceDebugStage = ref<SourceDebugResponse["stage"] | null>(null);
+  const sourceDebugStage = ref<"result" | "source" | "detail" | "catalog" | "chapter" | null>(null);
   const sourceDebugError = ref("");
   const sourceDebugKeyword = ref("");
   const sourceDebugKeywordLoading = ref(false);
   const sourceDebugBusy = ref(false);
+  let information: ReturnType<typeof moreInformation> | null = null;
+  let text: ReturnType<typeof mainText> | null = null;
   let sourceDebugGeneration = 0;
+  let searchId: string | null = null;
 
   function isCurrentSourceDebug(generation: number, sourceId: string): boolean {
     return sourceDebugGeneration === generation && sourceDebugTarget.value?.id === sourceId;
   }
 
-  async function cleanupSourceDebugPreview(resourceId: string | undefined): Promise<void> {
-    if (!resourceId) return;
-    try {
-      await clearSourceDebugPreview(resourceId);
-    } catch {
-      // 清理失败不能覆盖搜索或正文预览的实际结果。
-    }
-  }
-
   function releaseSourceDebugPreview(): void {
-    const resourceId = sourceDebugChapterResource.value?.resourceId;
     sourceDebugChapterResource.value = null;
     sourceDebugChapterText.value = "";
-    if (resourceId) void cleanupSourceDebugPreview(resourceId);
   }
 
   function resetSourceDebugInspection(): void {
@@ -115,6 +111,10 @@ export function useSourceDebugActions({
   }
 
   function closeSourceDebug(): void {
+    void text?.cancel().catch(console.error);
+    if (sourceDebugBusy.value) void information?.cancel().catch(console.error);
+    if (searchId) void releaseSearchResults(searchId).catch(console.error);
+    searchId = null;
     sourceDebugGeneration += 1;
     sourceDebugBusy.value = false;
     releaseSourceDebugPreview();
@@ -156,20 +156,29 @@ export function useSourceDebugActions({
     sourceDebugErrors.value = [];
     resetSourceDebugInspection();
     try {
-      const response = await searchBooks([currentSource.id], keyword, 1);
-      if (!isCurrentSourceDebug(generation, currentSource.id)) return;
-      sourceDebugStage.value = "catalog";
-      const resource: SearchResource = response.search;
-      if (!isCurrentSourceDebug(generation, currentSource.id)) return;
-      sourceDebugResults.value = Array.isArray(resource.results) ? resource.results : [];
-      sourceDebugErrors.value = Array.isArray(resource.errors) ? resource.errors : response.errors;
-      sourceDebugSearched.value = true;
+      if (searchId) void releaseSearchResults(searchId).catch(console.error);
+      const id = await search([currentSource.id], keyword, 1, "none", update => {
+        if (!isCurrentSourceDebug(generation, currentSource.id)) {
+          void releaseSearchResults(update.searchId).catch(console.error);
+          return;
+        }
+        searchId = update.searchId;
+        sourceDebugResults.value = presentSearchResults(update.results, keyword);
+        if (update.error) sourceDebugErrors.value.push({ sourceId: update.sourceId, message: update.error });
+        sourceDebugSearched.value = true;
+
+      });
+      if (!isCurrentSourceDebug(generation, currentSource.id)) {
+        await releaseSearchResults(id);
+        return;
+      }
+      searchId = id;
+      sourceDebugBusy.value = false;
       sourceDebugStage.value = null;
     } catch (error) {
       if (!isCurrentSourceDebug(generation, currentSource.id)) return;
       sourceDebugStage.value = sourceDebugResults.value.length ? "catalog" : "result";
       sourceDebugError.value = errorText(error);
-    } finally {
       if (isCurrentSourceDebug(generation, currentSource.id)) sourceDebugBusy.value = false;
     }
   }
@@ -187,15 +196,13 @@ export function useSourceDebugActions({
     sourceDebugChapters.value = [];
     sourceDebugSelectedChapterIndex.value = null;
     try {
-      const response = await debugSearchResult(result.resultId);
+      information = moreInformation(result.sourceId, result.bookUrl);
+      await information;
       if (!isCurrentSourceDebug(generation, source.id)) return;
-      if (!response.ok) {
-        sourceDebugStage.value = response.stage ?? "detail";
-        sourceDebugError.value = response.error ?? "无法读取书籍详情。";
-        return;
-      }
-      sourceDebugBook.value = response.book ?? null;
-      sourceDebugChapters.value = response.chapters ?? [];
+      const book = await readMoreInformation(result.sourceId, result.bookUrl);
+      if (!isCurrentSourceDebug(generation, source.id)) return;
+      sourceDebugBook.value = book;
+      sourceDebugChapters.value = book.chapters;
       sourceDebugStage.value = "catalog";
     } catch (error) {
       if (!isCurrentSourceDebug(generation, source.id)) return;
@@ -217,23 +224,21 @@ export function useSourceDebugActions({
     sourceDebugError.value = "";
     sourceDebugSelectedChapterIndex.value = chapter.index;
     try {
-      const response = await debugSearchResult(result.resultId, chapter.index);
-      if (!isCurrentSourceDebug(generation, source.id)) {
-        if (response.chapterResource) await cleanupSourceDebugPreview(response.chapterResource.resourceId);
-        return;
-      }
-      if (!response.ok) {
-        sourceDebugStage.value = response.stage ?? "chapter";
-        sourceDebugError.value = response.error ?? "无法读取章节正文。";
-        return;
-      }
-      const chapterResource = response.chapterResource ?? null;
+      const saved = sourceDebugBook.value;
+      if (!saved) return;
+      const target = saved.chapters[chapter.index];
+      if (!target) return;
+      text = mainText(saved.id, target.id);
+      await text;
+      if (!isCurrentSourceDebug(generation, source.id)) return;
+      const book = await readMoreInformation(result.sourceId, result.bookUrl);
+      if (!isCurrentSourceDebug(generation, source.id)) return;
+      const chapterResource = book.chapters[chapter.index]?.resource ?? null;
       sourceDebugChapterResource.value = chapterResource;
       sourceDebugChapterText.value = "";
       if (chapterResource) {
         const body = await readTextResource(chapterResource);
         if (!isCurrentSourceDebug(generation, source.id)) {
-          await cleanupSourceDebugPreview(chapterResource.resourceId);
           return;
         }
         sourceDebugChapterText.value = chapterResource.format === "html"
@@ -242,8 +247,7 @@ export function useSourceDebugActions({
       sourceDebugStage.value = "chapter";
     } catch (error) {
       if (!isCurrentSourceDebug(generation, source.id)) return;
-      // Failed JSON decoding must not leave an empty/stale preview on screen.
-      // The backend owns the temporary file; request its disposal as well.
+      // 读取失败时清空本地预览，已保存的章节仍由统一缓存管理。
       releaseSourceDebugPreview();
       sourceDebugStage.value = "chapter";
       sourceDebugError.value = errorText(error);

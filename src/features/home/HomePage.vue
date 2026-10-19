@@ -123,7 +123,6 @@ async function loadSection(sectionId: string, sourceId: string, categoryId: stri
     sectionResources.value = {
       ...sectionResources.value,
       [sectionId]: {
-        schemaVersion: 1,
         keyword: "",
         page: 1,
         results: [],

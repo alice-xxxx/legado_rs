@@ -1,9 +1,10 @@
 import { computed, shallowRef } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { mutateSource as mutateSourceCommand } from "../../api/sources";
+import { modifyDatabase } from "../../api/feDb";
+import { prepareConfigurationImport, type ConfigurationImportSource } from "../../api/settings";
 import { readSources, readSourceDefinition } from "../../api/database";
 import { removeSourceJsonValue, setSourceJsonValue } from "./sourceJsonEdits";
-import type { AppBootstrap, SourceMetadata, SourceMutation, SourceMutationResponse } from "../../api/types";
+import type { AppBootstrap, SourceMetadata } from "../../api/types";
 
 export const sources = shallowRef<SourceMetadata[]>([]);
 export const enabledSources = computed(() => sources.value.filter(source => source.enabled));
@@ -37,27 +38,16 @@ function applySourceMetadataChanges(
   return result;
 }
 
-type SourceListUpdatedEvent = { requestId: number };
 let readRevision = 0;
-let requestId = 0;
-// A mutation completes after its list notification has been applied. Full
-// definitions stay in the caller's editor draft, never in this shared store.
-const pendingUpdates = new Map<number, { resolve: () => void; reject: (error: unknown) => void }>();
 
 async function updateSources(): Promise<void> {
   const revision = ++readRevision;
-  const document = { schemaVersion: 1, sources: await readSources() };
-  if (document.schemaVersion !== 1 || !Array.isArray(document.sources)) throw new Error("源列表格式无效。");
-  if (revision === readRevision) sources.value = document.sources;
+  const next = await readSources();
+  if (revision === readRevision) sources.value = next;
 }
 
 export async function loadSources(): Promise<void> {
-  await listen<SourceListUpdatedEvent>("sources-updated", ({ payload }) => {
-    void updateSources().then(
-      () => pendingUpdates.get(payload.requestId)?.resolve(),
-      error => { pendingUpdates.get(payload.requestId)?.reject(error); console.error(error); },
-    );
-  });
+  await listen("sources-updated", () => { void updateSources().catch(console.error); });
   await listen<AppBootstrap>("app-state-updated", () => {
     void updateSources().catch(console.error);
   });
@@ -69,22 +59,27 @@ export async function readSourceDefinitionJson(sourceId: string): Promise<string
   return readSourceDefinition(sourceId);
 }
 
-export async function mutateSources(mutation: SourceMutation): Promise<SourceMutationResponse> {
-  const id = ++requestId;
-  const updated = new Promise<void>((resolve, reject) => pendingUpdates.set(id, { resolve, reject }));
-  // An event read can fail before the command response reaches the WebView.
-  void updated.catch(() => {});
-  try {
-    const result = await mutateSourceCommand(mutation, id);
-    if ("resource" in result && result.resource) await updated;
-    return result;
-  } finally {
-    pendingUpdates.delete(id);
-  }
+export async function importSourceDefinitions(definitions: string[]): Promise<void> {
+  await modifyDatabase(definitions.map(json => ({ action: "upsert", table: "sources", keys: ["id"], values: { definition_json: json } })))
+    .finally(updateSources);
 }
 
-export const saveSourceDefinition = (id: string | null, json: string) =>
-  mutateSources({ kind: "save", id, json });
+export async function saveSourceDefinition(id: string | null, json: string): Promise<void> {
+  // 原始 JSON 按文本传递，避免 Vue 解析后改写源内的 64 位整数。
+  await modifyDatabase([{ action: "upsert", table: "sources", keys: ["id"], values: { ...(id ? { id } : {}), definition_json: json } }])
+    .finally(updateSources);
+}
+
+export async function importSourceDefinitionsFrom(source: ConfigurationImportSource): Promise<boolean> {
+  const document = await prepareConfigurationImport<{ sources: string[] }>("sources", source);
+  if (!document) return false;
+  await importSourceDefinitions(document.sources);
+  return true;
+}
+
+export async function removeSources(sourceIds: string[]): Promise<void> {
+  await modifyDatabase([{ action: "delete", table: "sources", filter: { id: sourceIds } }]).finally(updateSources);
+}
 
 export async function exportSourceDefinitions(sourceIds: string[]): Promise<string> {
   const definitions: string[] = [];

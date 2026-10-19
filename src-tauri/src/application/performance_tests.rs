@@ -52,39 +52,19 @@ async fn application_hot_path_workload() {
     let batches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let bytes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let delivered = Arc::new(std::sync::Mutex::new(HashSet::<String>::new()));
-    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let output_batches = batches.clone();
     let output_bytes = bytes.clone();
     let output_delivered = delivered.clone();
-    let output_completed = completed.clone();
     let selected = records.iter().take(150).map(|source| source.id.clone()).collect::<Vec<_>>();
     let started = Instant::now();
-    let response = service.start_search("text", &selected, "fixture", 1, false, Some(Arc::new(move |batch| {
+    service.search(&selected, "fixture", 1, SearchPrecision::None, Arc::new(move |batch| {
         output_batches.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         output_bytes.fetch_add(serde_json::to_vec(&batch).unwrap().len(), std::sync::atomic::Ordering::Relaxed);
         for result in batch["results"].as_array().into_iter().flatten() {
             output_delivered.lock().unwrap().insert(result["resultId"].as_str().unwrap().to_owned());
         }
-        if batch["complete"] == true { output_completed.store(true, std::sync::atomic::Ordering::Release); }
-    }))).await.unwrap();
-    let task_id = response["taskId"].as_str().unwrap();
-    tokio::time::timeout(Duration::from_secs(120), async {
-        loop {
-            let status = {
-                let registry = service.tasks.lock().await;
-                registry.records.iter().find(|task| task.id == task_id).unwrap().status.clone()
-            };
-            // The task record commits before the final IPC flush. Measure and
-            // validate delivery too, so batching cannot hide missing results.
-            if status == "completed" && completed.load(std::sync::atomic::Ordering::Acquire) { break; }
-            assert!(!matches!(status.as_str(), "failed" | "recoveryRequired"));
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }).await.unwrap();
+    })).await.unwrap();
     let elapsed = started.elapsed();
-    let result = service.get_search_task_results(task_id).await.unwrap();
-    assert_eq!(result["results"].as_array().unwrap().len(), 1500);
-    assert_eq!(result["errors"], json!([]));
     assert_eq!(delivered.lock().unwrap().len(), 1500);
     eprintln!("PERF search_150_sources_1500_books_ms={} batches={} ipc_bytes={}", elapsed.as_millis(),
         batches.load(std::sync::atomic::Ordering::Relaxed), bytes.load(std::sync::atomic::Ordering::Relaxed));
@@ -126,7 +106,10 @@ async fn database_storage_workload() {
     service.store.database().transaction(|tx|{tx.execute_batch("CREATE TRIGGER no_chapter_updates BEFORE UPDATE ON chapters BEGIN SELECT RAISE(ABORT,'chapter rewrite'); END;")?;Ok(())}).unwrap();
     let started = Instant::now();
     for index in 0..100 {
-        service.set_alternatives("perf-book", vec![json!({"sourceId": format!("source-{index}"), "engineurl": format!("https://fixture/{index}"), "engine": {"name": "Fixture"}})]).await.unwrap();
+        service.store.database().modify(vec![crate::database::Change::Upsert {
+            table: "alternative_sources".into(), keys: vec!["book_id".into(), "source_id".into(), "engine_url".into()],
+            values: json!({"book_id":"perf-book","source_id":format!("source-{index}"),"engine_url":format!("https://fixture/{index}"),"position":index,"engine_json":{"name":"Fixture"}}).as_object().unwrap().clone(),
+        }]).unwrap();
     }
     eprintln!("PERF alternatives_5000_chapters_100_sources_ms={}", started.elapsed().as_millis());
     let started=Instant::now();
@@ -136,7 +119,7 @@ async fn database_storage_workload() {
     eprintln!("PERF media_5000_chapters_100_registrations_sqlite_ms={}",started.elapsed().as_millis());
     let started=Instant::now();
     service.save_book(json!({"id":"perf-book","displayOverrides":{"title":"Edited"}})).await.unwrap();
-    service.reset_book_progress("perf-book").await.unwrap();
+    service.store.database().modify(vec![crate::database::Change::Delete { table: "reading_progress".into(), filter: json!({"book_id":"perf-book"}).as_object().unwrap().clone() }]).unwrap();
     service.save_shelf(json!({"schemaVersion":1,"books":[{"id":"perf-book","groups":[]}],"groups":[]})).await.unwrap();
     eprintln!("PERF metadata_reset_shelf_5000_chapters_sqlite_ms={}",started.elapsed().as_millis());
     let raw=service.store.database().read(path).unwrap().unwrap();

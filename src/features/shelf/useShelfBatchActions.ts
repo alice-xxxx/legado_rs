@@ -1,21 +1,18 @@
+import { moreInformation } from "../../api/moreInformation";
+import { mainText } from "../../api/mainText";
+import { readBook } from "../../api/database";
 import { computed, ref, watch, type ComputedRef, type Ref } from "vue";
-import { removeLibraryContent, setContentGroups } from "../books/contentLibraryState";
+import { removeLibraryContent, setContentGroups, refreshContentLibrary } from "../books/contentLibraryState";
 import { shelfBooks as shelf } from "./shelfBooks";
-import { tasks, refreshTasks } from "../tasks/tasksStore";
-import type { AppTask, ShelfResource, TaskResponse } from "../../api/types";
+import type { ShelfResource } from "../../api/types";
 
 type ShelfBook = ShelfResource["books"][number];
 type ShelfBatchRemovalTarget = Pick<ShelfBook, "id" | "title" | "author">;
 
-export interface ShelfBatchTaskResult {
-  operation: "catalog" | "download";
-  started: Array<{ id: string; title: string; taskId: string }>;
-  skippedLocal: Array<{ id: string; title: string }>;
-  skippedActive: Array<{ id: string; title: string }>;
-  failed: { id: string; title: string; outcome: "notStarted" | "unknown"; message: string } | null;
-  notStarted: Array<{ id: string; title: string }>;
-  taskListWarnings: Array<{ id: string; title: string; message: string }>;
-  blockedByRecovery: boolean;
+export interface ShelfCacheResult {
+  completed: Array<{ id: string; title: string }>;
+  failed: Array<{ id: string; title: string; message: string }>;
+  skipped: number;
 }
 
 interface ShelfBatchActionsOptions {
@@ -26,16 +23,11 @@ interface ShelfBatchActionsOptions {
   recoveryMessage: Ref<string>;
   isShelfScreen: () => boolean;
   getRestoreRevision: () => number;
-  refreshChapters: (bookId: string) => Promise<TaskResponse>;
-  startBookDownload: (bookId: string) => Promise<TaskResponse>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
 
-/**
- * 管理书架多选、批量任务、批量分组和批量移除。
- * 任务结果不确定或后端要求恢复时会设置应用共用的恢复锁，阻止重复提交。
- */
+/** 管理书架多选、正文缓存、批量分组和移除。 */
 export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
   const {
     visibleBooks,
@@ -43,8 +35,6 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     recoveryRequired,
     isShelfScreen,
     getRestoreRevision,
-    refreshChapters,
-    startBookDownload,
     notify,
     errorText,
   } = options;
@@ -53,7 +43,7 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
   const selectedBookIds = ref<string[]>([]);
   const batchBusy = ref(false);
   const batchError = ref("");
-  const taskResult = ref<ShelfBatchTaskResult | null>(null);
+  const cacheResult = ref<ShelfCacheResult | null>(null);
   const groupsOpen = ref(false);
   const groupBookIds = ref<string[]>([]);
   const groupDraft = ref<string[]>([]);
@@ -119,136 +109,65 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     batchError.value = "";
   }
 
-  async function startSelectedTasks(operation: "catalog" | "download"): Promise<void> {
-    const restoreRevision = getRestoreRevision();
-    const isCurrent = () => restoreRevision === getRestoreRevision();
-    const selected = selectedVisibleBooks.value.map((book) => ({ id: book.id, title: book.title }));
-    if (!selectionMode.value || !selected.length || batchBusy.value) return;
-    if (selected.length > 256) {
-      batchError.value = "一次最多批量处理 256 本书，请减少选择。";
-      return;
-    }
-
-    const skippedLocal = selected.filter((book) => book.id.startsWith("local-"));
-    const targets = selected.filter((book) => !book.id.startsWith("local-"));
-    const taskKind = operation === "catalog" ? "refreshChapters" : "chapterDownload";
-    const taskLabel = operation === "catalog" ? "目录更新" : "章节下载";
-    const activeTaskBookIds = new Set(tasks.value.filter((task) => task.kind === taskKind
-      && ["queued", "running", "pausing", "paused", "cancelling", "recoveryRequired"].includes(task.status))
-      .map((task) => task.bookId)
-      .filter((bookId): bookId is string => Boolean(bookId)));
-    const skippedActive = targets.filter((book) => activeTaskBookIds.has(book.id));
-    const booksToStart = targets.filter((book) => !activeTaskBookIds.has(book.id));
-    const started: Array<{ id: string; title: string; taskId: string }> = [];
-    const notStarted: Array<{ id: string; title: string }> = [];
-    const taskListWarnings: Array<{ id: string; title: string; message: string }> = [];
-    let failed: ShelfBatchTaskResult["failed"] = null;
-    let blockedByRecovery = recoveryRequired.value;
-
-    if (blockedByRecovery) {
-      notStarted.push(...booksToStart);
-    } else if (targets.length) {
-      batchBusy.value = true;
-      taskResult.value = null;
-      batchError.value = "";
-      try {
-        for (let index = 0; index < booksToStart.length; index += 1) {
-          const book = booksToStart[index];
-          if (!isCurrent()) return;
-          if (recoveryRequired.value) {
-            blockedByRecovery = true;
-            notStarted.push(...booksToStart.slice(index));
-            break;
-          }
-
-          const activeTask = tasks.value.find((task) => task.bookId === book.id
-            && task.kind === taskKind
-            && ["queued", "running", "pausing", "paused", "cancelling", "recoveryRequired"].includes(task.status));
-          if (activeTask) {
-            skippedActive.push(book);
-            continue;
-          }
-
-          const knownTaskIds = new Set(tasks.value.map((task) => task.id));
-          const requestStartedAtMs = Date.now();
-          try {
-            const response = operation === "catalog"
-              ? await refreshChapters(book.id)
-              : await startBookDownload(book.id);
-            if (!isCurrent()) return;
-            const task = response.task;
-            if (task.kind !== taskKind || task.bookId !== book.id) {
-              throw new Error(`返回的任务与所选书籍不匹配，无法确认${taskLabel}状态。`);
-            }
-
-            started.push({ id: book.id, title: book.title, taskId: task.id });
-          } catch (error) {
-            if (!isCurrent()) return;
-            let taskListRefreshed = false;
-            let reconciledTask: AppTask | undefined;
-            try {
-              await refreshTasks();
-              if (!isCurrent()) return;
-              taskListRefreshed = true;
-              reconciledTask = tasks.value.find((task) => !knownTaskIds.has(task.id)
-                && task.bookId === book.id
-                && task.kind === taskKind
-                && task.createdAtMs >= requestStartedAtMs - 1000);
-            } catch {
-              // 任务列表未能确认请求是否已经到达 Rust。
-            }
-
-            if (reconciledTask) {
-              started.push({ id: book.id, title: book.title, taskId: reconciledTask.id });
-              taskListWarnings.push({
-                id: book.id,
-                title: book.title,
-                message: `命令没有返回成功，但任务列表确认任务已创建：${errorText(error)}`,
-              });
-            } else {
-              failed = {
-                id: book.id,
-                title: book.title,
-                outcome: taskListRefreshed ? "notStarted" : "unknown",
-                message: taskListRefreshed
-                  ? errorText(error)
-                  : `无法确认是否已创建任务；请先确认任务状态，避免重复提交。${errorText(error)}`,
-              };
-            }
-            notStarted.push(...booksToStart.slice(index + 1));
-            break;
-          }
+  /** 每章直接调用统一正文接口，完整缓存资源，不创建下载任务。 */
+  async function cacheSelectedBooks(): Promise<void> {
+    const selected = [...selectedVisibleBooks.value];
+    if (!selectionMode.value || !selected.length || selected.length > 256 || batchBusy.value || recoveryRequired.value) return;
+    const revision = getRestoreRevision();
+    const result: ShelfCacheResult = { completed: [], failed: [], skipped: 0 };
+    batchBusy.value = true;
+    batchError.value = "";
+    cacheResult.value = result;
+    try {
+      await Promise.all(selected.map(async target => {
+        try {
+          const book = await readBook(target.id);
+          if (revision !== getRestoreRevision()) return;
+          if (!book.sourceId) { result.skipped++; return; }
+          const chapters = await Promise.allSettled(book.chapters.filter(chapter => !chapter.volume)
+            .map(chapter => mainText(book.id, chapter.id, true)));
+          if (revision !== getRestoreRevision()) return;
+          const failed = chapters.find(chapter => chapter.status === "rejected");
+          if (failed?.status === "rejected") throw failed.reason;
+          result.completed.push(target);
+        } catch (error) {
+          if (revision === getRestoreRevision()) result.failed.push({ ...target, message: errorText(error) });
+        } finally {
+          if (revision === getRestoreRevision()) cacheResult.value = { ...result };
         }
-      } finally {
-        batchBusy.value = false;
-      }
+      }));
+      if (revision === getRestoreRevision()) notify(`缓存完成 ${result.completed.length} 本，失败 ${result.failed.length} 本，本地书跳过 ${result.skipped} 本。`, result.failed.length ? "error" : "success");
+    } finally {
+      batchBusy.value = false;
     }
+  }
 
-    if (!isCurrent()) return;
-    if (recoveryRequired.value) blockedByRecovery = true;
-    taskResult.value = {
-      operation,
-      started,
-      skippedLocal,
-      skippedActive,
-      failed,
-      notStarted,
-      taskListWarnings,
-      blockedByRecovery,
-    };
-
-    if (blockedByRecovery) {
-      notify(`恢复尚未完成：已启动 ${started.length} 本，后续 ${notStarted.length} 本未启动。请重启应用后再继续。`, "error");
-    } else if (failed?.outcome === "unknown") {
-      notify(`${taskLabel}任务提交状态未确认。已启动 ${started.length} 本，后续 ${notStarted.length} 本未启动；请先确认任务状态，避免重复提交。`, "error");
-    } else if (failed) {
-      notify(`批量${taskLabel}已停止：已启动 ${started.length} 本，当前书籍未启动，后续 ${notStarted.length} 本未启动。`, "error");
-    } else if (!started.length) {
-      notify(`没有新建任务：本地书跳过 ${skippedLocal.length} 本，已有任务跳过 ${skippedActive.length} 本。`, skippedActive.length ? "error" : "success");
-    } else if (taskListWarnings.length) {
-      notify(`已为 ${started.length} 本书创建${taskLabel}任务，但任务列表刷新有提示；请查看每本书的处理结果。`, "error");
-    } else {
-      notify(`已为 ${started.length} 本书创建独立的${taskLabel}任务；本地书跳过 ${skippedLocal.length} 本，已有任务跳过 ${skippedActive.length} 本。`);
+  /** 批量刷新直接并发调用统一详情接口，不创建后台任务。 */
+  async function refreshSelectedInformation(): Promise<void> {
+    const selected = [...selectedVisibleBooks.value];
+    if (!selectionMode.value || !selected.length || selected.length > 256 || batchBusy.value || recoveryRequired.value) return;
+    const revision = getRestoreRevision();
+    batchBusy.value = true;
+    batchError.value = "";
+    cacheResult.value = null;
+    let updated = 0, skipped = 0;
+    try {
+      const results = await Promise.allSettled(selected.map(async target => {
+        const book = await readBook(target.id);
+        if (revision !== getRestoreRevision()) return;
+        if (!book.sourceId || !book.bookUrl) { skipped++; return; }
+        await moreInformation(book.sourceId, book.bookUrl);
+        if (revision !== getRestoreRevision()) return;
+        updated++;
+        await refreshContentLibrary();
+      }));
+      if (revision !== getRestoreRevision()) return;
+      const errors = results.flatMap((result, index) => result.status === "rejected"
+        ? [`《${selected[index].title}》：${errorText(result.reason)}`] : []);
+      batchError.value = errors.join("；");
+      notify(`已更新 ${updated} 本，无书源跳过 ${skipped} 本，失败 ${errors.length} 本。`, errors.length ? "error" : "success");
+    } finally {
+      batchBusy.value = false;
     }
   }
 
@@ -341,7 +260,7 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     allVisibleBooksSelected,
     batchBusy,
     batchError,
-    taskResult,
+    cacheResult,
     groupsOpen,
     groupBookIds,
     groupDraft,
@@ -354,7 +273,8 @@ export function useShelfBatchActions(options: ShelfBatchActionsOptions) {
     toggleBookSelection,
     selectVisibleBooks,
     clearVisibleBookSelection,
-    startSelectedTasks,
+    cacheSelectedBooks,
+    refreshSelectedInformation,
     openRemovalConfirm,
     cancelRemoval,
     submitRemoval,

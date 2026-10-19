@@ -79,22 +79,6 @@ pub(crate) fn engine_book_type(source: &Value) -> u64 {
     }
 }
 
-pub(crate) fn book_content_type<'a>(book: &'a Value, source: &Value) -> &'a str {
-    if source.is_object() {
-        return content_type(source);
-    }
-    book.get("contentType")
-        .and_then(Value::as_str)
-        .map(|kind| if kind == "html" { "text" } else { kind })
-        .filter(|kind| matches!(*kind, "text" | "html" | "image" | "audio" | "video" | "pdf"))
-        .or_else(|| {
-            book.get("mediaType")
-                .and_then(Value::as_str)
-                .filter(|kind| matches!(*kind, "audio" | "video"))
-        })
-        .unwrap_or("text")
-}
-
 /// Image rules may return a newline-separated or JSON URL list instead of HTML.
 /// Only image sources interpret those values as image addresses.
 pub(crate) fn normalize_chapter_content(source: &Value, content: &str) -> String {

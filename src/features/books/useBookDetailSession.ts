@@ -1,6 +1,8 @@
+import { readMoreInformation } from "../../api/database";
+import { modifyDatabase } from "../../api/feDb";
 import { addLibraryContent } from "./contentLibraryState";
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
-import { cancelBookPreparation, prepareSearchResultBook } from "../../api/books";
+import { moreInformation } from "../../api/moreInformation";
 import type { BookResource, SearchBookResult, SearchResultSource } from "../../api/types";
 import { searchResults } from "../discovery/searchState";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
@@ -15,7 +17,6 @@ export interface BookDetailSessionState {
   error: string;
 }
 type ActiveBookDetailSession = UnwrapNestedRefs<BookDetailSessionState>;
-let preparationRevision = Date.now();
 
 export interface BookDetailSessionDependencies {
   /** Shared busy state lets other book actions keep their existing exclusion guards. */
@@ -33,8 +34,8 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   const searchResultDetails = shallowRef<ActiveBookDetailSession | null>(null);
   const { bookPanelBusy } = dependencies;
   const searchResultDetailsReadingBusy = ref(false);
+  let information: ReturnType<typeof moreInformation> | null = null;
   let generation = 0;
-  let activePreparation: number | null = null;
   const sourceGroup = shallowRef<SearchBookResult | null>(null);
   const searchResultSources = computed(() => {
     const original = sourceGroup.value;
@@ -43,12 +44,6 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       || group.sources?.some(source => source.resultId === original.resultId)) ?? original;
     return current.sources?.length ? current.sources : [current];
   });
-  function cancelPreparation(): void {
-    if (activePreparation === null) return;
-    const revision = activePreparation;
-    activePreparation = null;
-    void cancelBookPreparation(revision).catch(error => console.error("Cancel book preparation failed", error));
-  }
   const searchResultDetailsShelfBook = computed(() => {
     const bookId = openedBook.value?.id;
     return bookId ? shelf.value.books.find((book) => book.id === bookId) ?? null : null;
@@ -72,7 +67,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     restoreRevision: number;
     details: ActiveBookDetailSession;
   } {
-    cancelPreparation();
+    if (bookPanelBusy.value) void information?.cancel().catch(console.error);
     generation += 1;
     const currentGeneration = generation;
     const restoreRevision = dependencies.getRestoreRevision();
@@ -99,12 +94,25 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       initialTab,
       error: "",
     });
-    const revision = preparationRevision = Math.max(preparationRevision + 1, Date.now());
-    activePreparation = revision;
     try {
-      const response = await prepareSearchResultBook(result.resultId, revision);
+      information = moreInformation(result.sourceId, result.bookUrl);
+      await information;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
-      const book = await switchOpenedBook(response.book);
+      const saved = await readMoreInformation(result.sourceId, result.bookUrl);
+      // 可换来源的合并和顺序由 Vue 决定，保存仍走统一写库入口。
+      const positions = new Map((saved.alternatives ?? []).map((source, index) => [JSON.stringify([source.sourceId, source.bookUrl]), index]));
+      await modifyDatabase(searchResultSources.value.filter(source => source.sourceId !== saved.sourceId).map(source => {
+        const key = JSON.stringify([source.sourceId, source.bookUrl]);
+        if (!positions.has(key)) positions.set(key, positions.size);
+        return { action: "upsert", table: "alternative_sources", keys: ["book_id", "source_id", "engine_url"], values: {
+          book_id: saved.id, source_id: source.sourceId, engine_url: source.bookUrl, position: positions.get(key),
+          source_name: source.sourceName, title: source.title, author: source.author ?? null,
+          cover: source.coverSrc ?? null, latest: source.latestChapter ?? null,
+          ...(source.engine ? { engine_json: source.engine } : {}),
+        } };
+      }));
+      if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+      const book = await switchOpenedBook(saved.id);
       if (!book) return;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       request.details.bookId = book.id;
@@ -113,7 +121,6 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
         request.details.error = dependencies.errorText(error);
       }
     } finally {
-      if (activePreparation === revision) activePreparation = null;
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) bookPanelBusy.value = false;
     }
   }
@@ -137,7 +144,14 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       if (fromShelf && !shelf.value.books.some((entry) => entry.id === bookId)) {
         throw new Error("\u4e66\u7c4d\u6587\u4ef6\u6682\u65f6\u4e0d\u53ef\u7528\u3002");
       }
-      const book = await switchOpenedBook(bookId);
+      let book = await switchOpenedBook(bookId);
+      if (book?.sourceId && book.bookUrl) {
+        information = moreInformation(book.sourceId, book.bookUrl);
+        await information;
+        if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+        const saved = await readMoreInformation(book.sourceId, book.bookUrl);
+        book = await switchOpenedBook(saved.id);
+      }
       if (!book) return;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
     } catch (error) {
@@ -195,8 +209,8 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
   }
 
   function clear(options: { preserveOpenedBook?: boolean } = {}): void {
-    cancelPreparation();
     sourceGroup.value = null;
+    void information?.cancel().catch(console.error);
     generation += 1;
     bookPanelBusy.value = false;
     searchResultDetailsReadingBusy.value = false;

@@ -18,9 +18,6 @@ pub struct CatalogRefreshPlan {
     pub chapters: Vec<ChapterDescriptor>,
     pub latest_chapter: Option<String>,
     pub progress: ProgressSummary,
-    pub added_count: usize,
-    pub matched_count: usize,
-    pub progress_relocated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -168,8 +165,6 @@ pub fn reconcile_catalog(
         });
     }
 
-    let matched_count = new_to_old.iter().filter(|old| old.is_some()).count();
-    let added_count = chapters.len().saturating_sub(matched_count);
     let latest_chapter = chapters.last().map(|chapter| chapter.title.clone());
     let progress = reconcile_progress(
         current_progress,
@@ -178,16 +173,11 @@ pub fn reconcile_catalog(
         &old_to_new,
         refreshed_at_ms,
     );
-    let progress_relocated = progress.chapter_index != current_progress.chapter_index
-        || progress.chapter_id != current_progress.chapter_id;
 
     Ok(CatalogRefreshPlan {
         chapters,
         latest_chapter,
         progress,
-        added_count,
-        matched_count,
-        progress_relocated,
     })
 }
 

@@ -223,6 +223,10 @@ impl MediaProxyRegistry {
         ))
     }
 
+    pub(super) async fn contains(&self, id: &str) -> bool {
+        self.entries.read().await.targets.contains_key(id)
+    }
+
     pub(super) async fn unregister(&self, opaque_id: &str) {
         let mut entries = self.entries.write().await;
         entries.targets.remove(opaque_id);

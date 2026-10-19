@@ -1,6 +1,6 @@
-//! 章节列表准备和正文资源缓存。
-
+//! 正文的文本、图片和媒体资源转换。
 use super::*;
+use std::collections::VecDeque;
 
 struct VideoMediaCandidate {
     source_index: usize,
@@ -9,154 +9,281 @@ struct VideoMediaCandidate {
     headers: Option<HashMap<String, String>>,
 }
 
-struct PreparedVideoMediaOption {
-    source_index: usize,
-    label: String,
-    url: Option<String>,
-    headers: Vec<(String, String)>,
-    media_format: Option<&'static str>,
-    unavailable_reason: Option<&'static str>,
-}
-
-enum PreparedChapterMedia {
-    Audio {
-        url: String,
-        headers: Vec<(String, String)>,
-        media_format: &'static str,
-    },
-    Video {
-        options: Vec<PreparedVideoMediaOption>,
-        selected_index: usize,
-    },
-}
-
-/// Book-owned typed payloads must stay inside the book's chapter namespace.
-/// Never accept another book's resource merely because ResourceRef is valid.
-pub(super) fn scoped_chapter_cache_ref(book_id: &str, raw: &str) -> Result<ResourceRef, String> {
-    let reference = ResourceRef::new(raw).map_err(|error| error.to_string())?;
-    let owned = crate::resources::content::content_path(reference.path())
-        .is_some_and(|(_, owner, name)| owner == book_id && name != format!("{owner}.json"));
-    let proxy = reference.path().starts_with("media/");
-    if !reference.is_local() || !(owned || proxy) {
-        return Err("Chapter resource does not belong to the requested content".to_owned());
-    }
-    Ok(reference)
-}
-
 impl ApplicationService {
-    pub(super) async fn indexed_chapter_ready(&self, book: &Value, index: usize) -> Result<bool, String> {
-        let chapter = &book["chapters"][index];
-        let kind = book["contentType"].as_str().unwrap_or("text");
-        let mut addresses = Vec::new();
-        if kind == "image" {
-            let Some(pages) = chapter["pages"].as_array().filter(|pages| !pages.is_empty()) else { return Ok(false); };
-            for page in pages { if let Some(src) = page["src"].as_str() { addresses.push(src); } else { return Ok(false); } }
-        } else if matches!(kind, "audio" | "video") {
-            let Some(src) = chapter["media"]["src"].as_str() else { return Ok(false); };
-            addresses.push(src);
-        } else if kind == "pdf" {
-            let Some(src) = chapter["pdfPage"]["src"].as_str() else { return Ok(false); };
-            addresses.push(src);
-        } else {
-            let Some(src) = chapter["resource"]["resourceId"].as_str() else { return Ok(false); };
-            let reference = scoped_chapter_cache_ref(book["id"].as_str().unwrap_or_default(), src)?;
-            return Ok(self.cached_chapter_format(&reference).await?.is_some());
+    /// 只转换正文资源，不改动书籍业务记录。
+    pub(super) async fn chapter_content(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        request: &SourceEngineRequest,
+        response: Value,
+        mut chapter: Value,
+    ) -> Result<Value, String> {
+        if let Some(error) = response["__sourceEngineError"].as_str() {
+            return Err(error.into());
         }
-        for address in addresses {
-            let reference = ResourceRef::new(address).map_err(|error| error.to_string())?;
-            if let Some(id) = reference.path().strip_prefix("media/") {
-                if !book["media"][id].is_object() { return Ok(false); }
-            } else if reference.is_local() && !self.store.regular_file_exists(&reference).await.map_err(|error| error.to_string())? {
-                return Ok(false);
+        let content = response
+            .as_str()
+            .ok_or("Source engine returned non-text chapter content")?;
+        let content = crate::source_metadata::normalize_chapter_content(&request.source, content);
+        if content.trim().is_empty() {
+            return Err("Source engine returned empty chapter content; no cache was written".into());
+        }
+        let base = request
+            .chapter
+            .as_ref()
+            .and_then(|chapter| text_at(chapter, &["url", "chapterUrl"]))
+            .or_else(|| {
+                request
+                    .book
+                    .as_ref()
+                    .and_then(|book| text_at(book, &["bookUrl", "url"]))
+            });
+        // 刷新只替换缓存字段，章节身份和阅读进度仍由目录管理。
+        for key in [
+            "resource", "url", "pages", "sources", "protocol", "media", "files",
+        ] {
+            chapter.as_object_mut().unwrap().remove(key);
+        }
+        let media_type = crate::source_metadata::media_type(&request.source);
+        let (reference, format) = match media_type.as_deref() {
+            Some(kind @ ("audio" | "video")) => {
+                let (candidates, default) = if kind == "video" {
+                    video_media_candidates(&content)?
+                } else {
+                    (
+                        vec![VideoMediaCandidate {
+                            source_index: 0,
+                            label: String::new(),
+                            url: Some(content.trim().into()),
+                            headers: None,
+                        }],
+                        0,
+                    )
+                };
+                let mut sources = Vec::with_capacity(candidates.len());
+                for candidate in candidates {
+                    let mut media = request.clone();
+                    media.media_url = candidate.url;
+                    media.media_headers = candidate.headers;
+                    let resolved = if media.media_url.is_some() {
+                        self.resolve_chapter_media(book_id, chapter_id, candidate.source_index, media)
+                            .await
+                    } else {
+                        Err(VIDEO_ADDRESS_UNAVAILABLE.into())
+                    };
+                    let (media_ref, protocol, unavailable_reason) = match resolved {
+                        Ok((reference, protocol)) => (Some(reference), Some(protocol), None),
+                        Err(error) if kind == "audio" => return Err(error),
+                        Err(_) => (None, None, Some(VIDEO_RESOLUTION_UNAVAILABLE)),
+                    };
+                    sources.push(ChapterVideoSource {
+                        label: candidate.label,
+                        media_ref,
+                        media_format: protocol,
+                        unavailable_reason,
+                        selected: candidate.source_index == default,
+                    });
+                }
+                // 默认清晰度不可用时选择第一个可用地址。
+                let selected = sources
+                    .iter()
+                    .position(|source| source.selected && source.media_ref.is_some())
+                    .or_else(|| sources.iter().position(|source| source.media_ref.is_some()))
+                    .ok_or("Video source has no playable HTTP media resolution")?;
+                for (index, source) in sources.iter_mut().enumerate() {
+                    source.selected = index == selected;
+                }
+                let reference = sources[selected].media_ref.as_ref().unwrap();
+                let protocol = sources[selected].media_format.unwrap();
+                let (_, document) = self
+                    .store
+                    .chapter_media_document(
+                        book_id,
+                        chapter_id,
+                        reference,
+                        kind,
+                        protocol,
+                        if kind == "video" { &sources } else { &[] },
+                    )
+                    .map_err(|error| error.to_string())?;
+                chapter["protocol"] = json!(protocol);
+                if kind == "video" {
+                    chapter["sources"] = document["sources"].clone();
+                }
+                (reference.clone(), kind)
             }
-        }
-        Ok(true)
+            _ if crate::source_metadata::is_comic_source_metadata(&request.source) => {
+                chapter["pages"] = self
+                    .source_image_pages(book_id, chapter_id, request, &content, base.as_deref())
+                    .await?;
+                return Ok(chapter);
+            }
+            _ if looks_like_html(&content) => {
+                let (reference, document) = self
+                    .source_rich_text_document(book_id, chapter_id, request, &content, base.as_deref())
+                    .await?;
+                self.store
+                    .write_json_ref(&reference, &document)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                (reference, "richText")
+            }
+            _ => (
+                self.store
+                    .write_chapter_text(book_id, chapter_id, &content)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                "text",
+            ),
+        };
+        chapter["resource"] = json!(crate::models::ChapterResourceDescriptor::for_chapter(
+            &reference, format
+        ));
+        Ok(chapter)
     }
 
+    /// 音频、视频和正文图片共用解析与登记，避免先准备再重复登记。
+    async fn resolve_chapter_media(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        variant: usize,
+        mut request: SourceEngineRequest,
+    ) -> Result<(ResourceRef, &'static str), String> {
+        request.operation = "resolveMedia".into();
+        let resolved = self.executor.execute(request).await?;
+        let (url, headers) = resolved_media_result(&resolved)?;
+        if !is_direct_http_media_url(&url) {
+            return Err("Unsupported media URL".into());
+        }
+        let protocol = if is_hls_media_url(&url) {
+            MEDIA_FORMAT_HLS
+        } else {
+            MEDIA_FORMAT_DIRECT
+        };
+        let id = chapter_media_variant_id(book_id, chapter_id, variant, &url, &headers);
+        let reference = self
+            .server
+            .register_media_with_id(book_id, &id, &url, &headers)
+            .await
+            .map_err(|error| error.to_string())?;
+        Ok((reference, protocol))
+    }
     pub(super) async fn source_image_pages(
-        &self, book_id: &str, chapter_id: &str, source: &Value, engine_book: &Value,
-        chapter: &Value, content: &str, base_url: Option<&str>,
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        context: &SourceEngineRequest,
+        content: &str,
+        base_url: Option<&str>,
     ) -> Result<Value, String> {
         let images = regex::Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#)
             .map_err(|error| error.to_string())?;
-        let mut addresses = images.captures_iter(content).map(|capture| capture[1].to_owned()).collect::<Vec<_>>();
+        let mut addresses = images
+            .captures_iter(content)
+            .map(|capture| capture[1].to_owned())
+            .collect::<Vec<_>>();
         if addresses.is_empty() {
-            addresses = content.lines().map(str::trim).filter(|line| !line.is_empty()).map(str::to_owned).collect();
+            addresses = content
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned)
+                .collect();
         }
         let mut pages = Vec::new();
         for (index, address) in addresses.into_iter().enumerate() {
-            let address = quick_xml::escape::unescape(&address).map_err(|error| error.to_string())?.into_owned();
+            let address = quick_xml::escape::unescape(&address)
+                .map_err(|error| error.to_string())?
+                .into_owned();
             if address.starts_with("resource://media/") {
                 let reference = ResourceRef::new(&address).map_err(|error| error.to_string())?;
-                let owner = self.store.read_raw_document(&self.store.book_ref(book_id).map_err(|error| error.to_string())?).map_err(|error| error.to_string())?;
-                let opaque_id = reference.path().strip_prefix("media/").ok_or("Invalid image proxy")?;
-                if !owner["media"][opaque_id].is_object() { return Err("Image proxy does not belong to this content".into()); }
+                let owner = self
+                    .store
+                    .read_raw_document(&self.store.book_ref(book_id).map_err(|error| error.to_string())?)
+                    .map_err(|error| error.to_string())?;
+                let opaque_id = reference
+                    .path()
+                    .strip_prefix("media/")
+                    .ok_or("Invalid image proxy")?;
+                if !owner["media"][opaque_id].is_object() {
+                    return Err("Image proxy does not belong to this content".into());
+                }
                 pages.push(json!({"id": format!("{}-p{}", chapter_id, index + 1), "url": address}));
                 continue;
             }
-            let address = if is_direct_http_media_url(&address) { address } else {
-                let base = base_url.and_then(|url| reqwest::Url::parse(url).ok())
+            let address = if is_direct_http_media_url(&address) {
+                address
+            } else {
+                let base = base_url
+                    .and_then(|url| reqwest::Url::parse(url).ok())
                     .ok_or_else(|| "Image chapter has no valid base URL".to_owned())?;
-                base.join(&address).map_err(|error| error.to_string())?.to_string()
+                base.join(&address)
+                    .map_err(|error| error.to_string())?
+                    .to_string()
             };
-            if !is_direct_http_media_url(&address) { return Err("Image chapter contains an unsupported image URL".into()); }
-            let mut request = engine_request("resolveMedia", source, None, None,
-                Some(engine_book.clone()), Some(chapter.clone()), None);
+            if !is_direct_http_media_url(&address) {
+                return Err("Image chapter contains an unsupported image URL".into());
+            }
+            let mut request = context.clone();
             request.media_url = Some(address);
-            let result = self.executor.execute(request).await?;
-            let (url, headers) = resolved_media_result(&result)?;
-            let media_id = chapter_media_id(book_id, chapter_id, &url, &headers);
-            let reference = self.server.register_media_with_id(book_id, &media_id, &url, &headers)
-                .await.map_err(|error| error.to_string())?;
+            let (reference, _) = self
+                .resolve_chapter_media(book_id, chapter_id, 0, request)
+                .await?;
             pages.push(json!({"id": format!("{}-p{}", chapter_id, index + 1), "url": reference.as_str()}));
         }
-        if pages.is_empty() { return Err("Image chapter contains no images".into()); }
+        if pages.is_empty() {
+            return Err("Image chapter contains no images".into());
+        }
         Ok(json!(pages))
     }
 
-    /// Resolve image requests through KMP and keep source headers inside Rust,
-    /// just as audio/video requests do. Published markup uses opaque proxy refs.
+    /// 图片经书源规则解析，私有请求头留在 Rust。
     pub(super) async fn source_rich_text_document(
         &self,
         book_id: &str,
         chapter_id: &str,
-        source: &Value,
-        engine_book: &Value,
-        chapter: &Value,
+        context: &SourceEngineRequest,
         content: &str,
         base_url: Option<&str>,
     ) -> Result<(ResourceRef, Value), String> {
         if self.store.book_type(book_id).map_err(|e| e.to_string())? != "image" {
-            self.store.bind_book_type(book_id, "html").await.map_err(|e| e.to_string())?;
+            self.store
+                .bind_book_type(book_id, "html")
+                .await
+                .map_err(|e| e.to_string())?;
         }
-        let (_, mut document) = self.store.online_chapter_rich_text_document(
-            book_id, chapter_id, content, base_url,
-        ).map_err(|error| error.to_string())?;
-        let markup = document["markup"].as_str().unwrap_or_default();
-        // Ammonia has already parsed HTML and emitted canonical quoted attributes.
-        let images = regex::Regex::new(r#"(?i)<img\b[^>]*\ssrc="([^"]*)""#)
+        let (_, mut document) = self
+            .store
+            .online_chapter_rich_text_document(book_id, chapter_id, content, base_url)
             .map_err(|error| error.to_string())?;
+        let markup = document["markup"].as_str().unwrap_or_default();
+        // HTML 已经过清理，图片属性使用标准双引号。
+        let images =
+            regex::Regex::new(r#"(?i)<img\b[^>]*\ssrc="([^"]*)""#).map_err(|error| error.to_string())?;
         let mut output = String::with_capacity(markup.len());
         let mut cursor = 0;
         let mut resolved_images = HashMap::<String, ResourceRef>::new();
-        let addresses = images.captures_iter(markup)
+        let addresses = images
+            .captures_iter(markup)
             .map(|image| image.get(1).expect("image address capture"))
             .collect::<Vec<_>>();
         for address in addresses {
             let input = quick_xml::escape::unescape(address.as_str())
-                .map_err(|error| error.to_string())?.into_owned();
-            if !is_direct_http_media_url(&input) { continue; }
+                .map_err(|error| error.to_string())?
+                .into_owned();
+            if !is_direct_http_media_url(&input) {
+                continue;
+            }
             let reference = if let Some(reference) = resolved_images.get(&input) {
                 reference.clone()
             } else {
-                let mut request = engine_request("resolveMedia", source, None, None,
-                    Some(engine_book.clone()), Some(chapter.clone()), None);
+                let mut request = context.clone();
                 request.media_url = Some(input.clone());
-                let resolved = self.executor.execute(request).await?;
-                let (url, headers) = resolved_media_result(&resolved)?;
-                let image_id = chapter_media_id(book_id, chapter_id, &url, &headers);
-                let reference = self.server.register_media_with_id(book_id, &image_id, &url, &headers)
-                    .await.map_err(|error| error.to_string())?;
+                let (reference, _) = self
+                    .resolve_chapter_media(book_id, chapter_id, 0, request)
+                    .await?;
                 resolved_images.insert(input, reference.clone());
                 reference
             };
@@ -166,701 +293,15 @@ impl ApplicationService {
         }
         output.push_str(&markup[cursor..]);
         document["markup"] = json!(output);
-        let reference = self.store.chapter_version_ref(book_id, chapter_id, &document)
+        let reference = self
+            .store
+            .chapter_version_ref(book_id, chapter_id, &document)
             .map_err(|error| error.to_string())?;
         Ok((reference, document))
     }
-
-    /// Return the actual semantic format of a reusable chapter cache entry.
-    ///
-    /// The public book document must never infer content semantics from a JSON
-    /// filename: text, rich text, media and PDF page descriptors are all JSON.
-    /// Invalid or truncated cache files are treated as a cache miss so Rust can
-    /// rebuild them instead of making the WebView diagnose storage failures.
-    pub(super) async fn cached_chapter_format(
-        &self,
-        reference: &ResourceRef,
-    ) -> Result<Option<&'static str>, String> {
-        if !reference.is_local()
-            || !self
-                .store
-                .regular_file_exists(reference)
-                .await
-                .map_err(|error| error.to_string())?
-        {
-            return Ok(None);
-        }
-
-        let format = if reference.path().ends_with(".txt") { Some("text") }
-            else if reference.path().ends_with(".html") { Some("richText") }
-            else if reference.path().ends_with(".pdf") { Some("pdf") }
-            else { None };
-        Ok(format)
-    }
-
-    pub async fn prepare_chapters(
-        &self,
-        book_id: &str,
-        from_index: usize,
-        count: usize,
-    ) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        self.prepare_chapters_unlocked(book_id, from_index, count)
-            .await
-    }
-
-    pub(super) async fn prepare_chapters_unlocked(
-        &self,
-        book_id: &str,
-        from_index: usize,
-        count: usize,
-    ) -> Result<Value, String> {
-        validate_id(book_id, "bookId")?;
-        let count = count.clamp(1, 50);
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let (target_chapter_ids, local_book) = {
-            let _book_lock = self.book_lock(book_id).await;
-            let public_book = self
-                .store
-                .read_json_ref(&book_ref)
-                .await
-                .map_err(|error| error.to_string())?;
-            let descriptors = public_book
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
-            let end = from_index.saturating_add(count).min(descriptors.len());
-            let target_chapter_ids = descriptors
-                .iter()
-                .skip(from_index.min(end))
-                .take(end.saturating_sub(from_index.min(end)))
-                .map(|chapter| {
-                    chapter["id"]
-                        .as_str()
-                        .filter(|id| !id.is_empty())
-                        .map(str::to_owned)
-                        .ok_or_else(|| "Chapter ID missing".to_owned())
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let local_book = public_book
-                .get("sourceId")
-                .and_then(Value::as_str)
-                .is_none();
-            (target_chapter_ids, local_book)
-        };
-
-        if local_book {
-            let _book_lock = self.book_lock(book_id).await;
-            let public_book = self
-                .store
-                .read_json_ref(&book_ref)
-                .await
-                .map_err(|error| error.to_string())?;
-            let descriptors = public_book
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
-            for chapter_id in &target_chapter_ids {
-                let chapter = descriptors
-                    .iter()
-                    .find(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
-                    .ok_or_else(|| "Book catalog changed while checking local content".to_owned())?;
-                let src = chapter
-                    .get("resource")
-                    .and_then(|resource| resource.get("resourceId"))
-                    .and_then(Value::as_str)
-                    .filter(|src| !src.is_empty())
-                    .ok_or_else(|| "Local chapter resource is missing; re-import the original file".to_owned())?;
-                let reference = scoped_chapter_cache_ref(book_id, src)?;
-                if self.cached_chapter_format(&reference).await?.is_none() {
-                    return Err(
-                        "Local chapter resource is missing or invalid; re-import the original file"
-                            .into(),
-                    );
-                }
-            }
-            return Ok(json!({
-                "book": self.resource_descriptor(&book_ref),
-                "prepared": 0,
-                "changed": false,
-                "bookId": book_id,
-                "fromIndex": from_index
-            }));
-        }
-
-        self.prepare_chapter_ids_unlocked(book_id, from_index, target_chapter_ids)
-            .await
-    }
-
-    pub(super) async fn prepare_chapter_ids_unlocked(
-        &self,
-        book_id: &str,
-        from_index: usize,
-        target_chapter_ids: Vec<String>,
-    ) -> Result<Value, String> {
-        validate_id(book_id, "bookId")?;
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let (source_id, engine_book, target_chapter_ids) = {
-            let _book_lock = self.book_lock(book_id).await;
-            let private = self
-                .read_internal_json(self.book_engine_path(book_id)?)
-                .await?;
-            let source_id = private["sourceId"]
-                .as_str()
-                .ok_or_else(|| "Book source ID is missing".to_owned())?
-                .to_owned();
-            let engine_book = private
-                .get("book")
-                .cloned()
-                .ok_or_else(|| "Book engine data is missing".to_owned())?;
-            let public_book = self
-                .store
-                .read_json_ref(&book_ref)
-                .await
-                .map_err(|error| error.to_string())?;
-            let raw_chapters = private
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
-            let descriptors = public_book
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
-            if raw_chapters.len() != descriptors.len() {
-                return Err(
-                    "Book chapter directory is out of sync; refresh it before reading".into(),
-                );
-            }
-            let mut unique_ids = HashSet::with_capacity(target_chapter_ids.len());
-            for chapter_id in &target_chapter_ids {
-                if !unique_ids.insert(chapter_id) {
-                    return Err("Chapter request contains duplicate chapter IDs".to_owned());
-                }
-                if !descriptors
-                    .iter()
-                    .any(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
-                {
-                    return Err(
-                        "Book catalog changed before the requested chapter could be prepared"
-                            .into(),
-                    );
-                }
-            }
-            (source_id, engine_book, target_chapter_ids)
-        };
-        let mut prepared = 0usize;
-        let mut changed = false;
-        for chapter_id in target_chapter_ids {
-            // Requests for the same uncached chapter share this lock. It stays
-            // held over the source call while the book lock remains available
-            // to progress saves and unrelated chapter cache commits.
-            let _chapter_lock = self.chapter_lock(book_id, &chapter_id).await;
-            let source = self.find_source(&source_id).await?;
-            let comic_source = crate::source_metadata::is_comic_source_metadata(&source.source);
-            let (raw_chapter, next_chapter_url, already_ready) = {
-                let _book_lock = self.book_lock(book_id).await;
-                let private = self
-                    .read_internal_json(self.book_engine_path(book_id)?)
-                    .await?;
-                if private["sourceId"].as_str() != Some(source_id.as_str()) {
-                    return Err("Book source changed while preparing a chapter".to_owned());
-                }
-                if private.get("book") != Some(&engine_book) {
-                    return Err("Book metadata changed while preparing a chapter".to_owned());
-                }
-                let mut public_book = self
-                    .store
-                    .read_json_ref(&book_ref)
-                    .await
-                    .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
-                let content_type = crate::source_metadata::content_type(&source.source);
-                let cached_type = self.store.book_type(book_id).map_err(|error| error.to_string())?;
-                if cached_type != content_type && !(cached_type == "html" && content_type == "text") {
-                    return Err("Source content type changed; open a new search result before preparing more chapters".into());
-                }
-                if public_book["contentType"].as_str() != Some(content_type)
-                    || public_book["mediaType"].as_str() != crate::source_metadata::media_type(&source.source) {
-                    public_book["contentType"] = json!(content_type);
-                    set_optional_public_field(&mut public_book, "mediaType",
-                        crate::source_metadata::media_type(&source.source).map(|kind| json!(kind)));
-                    self.store.write_json_ref(&book_ref, &public_book).await
-                        .map_err(|error| error.to_string())?;
-                    changed = true;
-                }
-                let index = public_book
-                    .get("chapters")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| "Book chapter directory is missing".to_owned())?
-                    .iter()
-                    .position(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
-                    .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
-                let raw_chapters = private
-                    .get("chapters")
-                    .and_then(Value::as_array)
-                    .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
-                if public_book["chapters"][index]["volume"] == true { continue; }
-                let raw_chapter = raw_chapters
-                    .get(index)
-                    .cloned()
-                    .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
-                let next_chapter_url = raw_chapters
-                    .get(index + 1)
-                    .and_then(|chapter| text_at(chapter, &["url", "chapterUrl"]));
-                let declared_ref = public_book["chapters"][index]
-                    .get("resource")
-                    .and_then(|resource| resource.get("resourceId"))
-                    .and_then(Value::as_str)
-                    .filter(|src| !src.is_empty())
-                    .map(|src| scoped_chapter_cache_ref(book_id, src))
-                    .transpose()?;
-                if (comic_source || crate::source_metadata::media_type(&source.source).is_some()) && self.indexed_chapter_ready(&public_book, index).await? {
-                    prepared += 1;
-                    continue;
-                }
-                if comic_source {
-                    if let Some(reference) = declared_ref.as_ref() {
-                        if let Some(format) = self.cached_chapter_format(reference).await? {
-                            if matches!(format, "text" | "richText") {
-                                let cached = self.store.read_json_ref(reference).await.map_err(|error| error.to_string())?;
-                                let body = cached["text"].as_str().or_else(|| cached["markup"].as_str()).unwrap_or_default();
-                                let body = crate::source_metadata::normalize_chapter_content(&source.source, body);
-                                let base = text_at(&raw_chapter, &["url", "chapterUrl"]);
-                                let pages = self.source_image_pages(book_id, &chapter_id, &source.source, &engine_book, &raw_chapter, &body, base.as_deref()).await?;
-                                let chapter = &mut public_book["chapters"][index];
-                                chapter["pages"] = pages;
-                                if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
-                                self.store.save_chapter_view(book_id, &chapter_id, &public_book["chapters"][index]).await.map_err(|error| error.to_string())?;
-                                prepared += 1; changed = true;
-                                continue;
-                            }
-                        }
-                    }
-                }
-                let mut ready_ref = None;
-                if let Some(mut reference) = declared_ref {
-                    // A file's existence cannot establish that its typed payload is
-                    // readable. Reuse only a resource validated by Rust, and repair
-                    // obsolete descriptor semantics from the actual payload.
-                    if let Some(mut content_format) = self.cached_chapter_format(&reference).await?
-                        .filter(|format| matches!(*format, "text" | "richText")) {
-                        // Older versions stored <img> lists as plain text. Repair
-                        // from the existing cache, without requesting the source again.
-                        if content_format == "text" {
-                            let cached = self.store.read_json_ref(&reference).await
-                                .map_err(|error| error.to_string())?;
-                            let text = cached["text"].as_str().unwrap_or_default();
-                            let text = crate::source_metadata::normalize_chapter_content(&source.source, text);
-                            let text = text.as_str();
-                            if !comic_source && looks_like_html(text) {
-                                let base = text_at(&raw_chapter, &["url", "chapterUrl"])
-                                    .or_else(|| text_at(&engine_book, &["bookUrl", "url"]));
-                                let (updated_ref, document) = self.source_rich_text_document(
-                                    book_id, &chapter_id, &source.source, &engine_book, &raw_chapter,
-                                    text, base.as_deref(),
-                                ).await?;
-                                self.store.write_json_ref(&updated_ref, &document).await
-                                    .map_err(|error| error.to_string())?;
-                                reference = updated_ref;
-                                content_format = "richText";
-                            }
-                        }
-                        let expected_descriptor = serde_json::to_value(
-                            crate::models::ChapterResourceDescriptor::for_chapter(
-                                &reference,
-                                content_format,
-                            ),
-                        )
-                        .map_err(|error| format!(
-                            "Cannot encode recovered chapter resource descriptor: {error}"
-                        ))?;
-                        if public_book["chapters"][index].get("resource")
-                            != Some(&expected_descriptor)
-                        {
-                            changed = true;
-                            public_book["chapters"][index]["resource"] = expected_descriptor;
-                            self.store
-                                .save_chapter_view(book_id, &chapter_id, &public_book["chapters"][index])
-                                .await
-                                .map_err(|error| error.to_string())?;
-                        }
-                        ready_ref = Some(reference);
-                    }
-                }
-                (raw_chapter, next_chapter_url, ready_ref.is_some())
-            };
-
-            // Source type is authoritative; genre labels and stale book JSON
-            // must not select the text reader for comics or streamed media.
-            let media_type = crate::source_metadata::media_type(&source.source);
-            if already_ready && media_type.is_none() {
-                continue;
-            }
-
-            let content = self
-                .executor
-                .execute(engine_request(
-                    if crate::rss::is_legacy_rss_source(&source.source) {
-                        "rssContent"
-                    } else {
-                        "content"
-                    },
-                    &source.source,
-                    None,
-                    None,
-                    Some(engine_book.clone()),
-                    Some(raw_chapter.clone()),
-                    next_chapter_url.clone(),
-                ))
-                .await?;
-            let content = content
-                .as_str()
-                .ok_or_else(|| "Source engine returned non-text chapter content".to_owned())?;
-            let content = crate::source_metadata::normalize_chapter_content(&source.source, content);
-            let content = content.as_str();
-            if content.trim().is_empty() {
-                return Err(
-                    "Source engine returned empty chapter content; no cache was written".to_owned(),
-                );
-            }
-            let content_base_url = text_at(&raw_chapter, &["url", "chapterUrl"])
-                .or_else(|| text_at(&engine_book, &["bookUrl", "url"]));
-            let non_media_content_format =
-                if looks_like_html(content) { "richText" } else { "text" };
-            let media_request = if let Some(media_type) = media_type.as_deref() {
-                if media_type == "video" {
-                    let (candidates, default_index) = video_media_candidates(content)?;
-                    let mut options = Vec::with_capacity(candidates.len());
-                    for candidate in candidates {
-                        let source_index = candidate.source_index;
-                        let label = candidate.label;
-                        let Some(media_input) = candidate.url.as_deref() else {
-                            options.push(PreparedVideoMediaOption {
-                                source_index,
-                                label,
-                                url: None,
-                                headers: Vec::new(),
-                                media_format: None,
-                                unavailable_reason: Some(VIDEO_ADDRESS_UNAVAILABLE),
-                            });
-                            continue;
-                        };
-                        let mut request = engine_request(
-                            "resolveMedia",
-                            &source.source,
-                            None,
-                            None,
-                            Some(engine_book.clone()),
-                            Some(raw_chapter.clone()),
-                            next_chapter_url.clone(),
-                        );
-                        request.media_url = Some(media_input.to_owned());
-                        request.media_headers = candidate.headers;
-                        let resolved = self.executor.execute(request).await;
-                        let (url, headers, media_format, unavailable_reason) = match resolved
-                            .ok()
-                            .and_then(|resolved| resolved_media_result(&resolved).ok())
-                        {
-                            Some((url, headers)) if is_hls_media_url(&url) => {
-                                let media_id =
-                                    chapter_media_variant_id(book_id, &chapter_id, source_index, &url, &headers);
-                                if self
-                                    .server
-                                    .validate_media_mapping(&media_id, &url, &headers)
-                                    .is_ok()
-                                {
-                                    (Some(url), headers, Some(MEDIA_FORMAT_HLS), None)
-                                } else {
-                                    (None, Vec::new(), None, Some(VIDEO_RESOLUTION_UNAVAILABLE))
-                                }
-                            }
-                            Some((url, headers)) if is_direct_http_media_url(&url) => {
-                                let media_id =
-                                    chapter_media_variant_id(book_id, &chapter_id, source_index, &url, &headers);
-                                if self
-                                    .server
-                                    .validate_media_mapping(&media_id, &url, &headers)
-                                    .is_ok()
-                                {
-                                    (Some(url), headers, Some(MEDIA_FORMAT_DIRECT), None)
-                                } else {
-                                    (None, Vec::new(), None, Some(VIDEO_RESOLUTION_UNAVAILABLE))
-                                }
-                            }
-                            Some(_) => (None, Vec::new(), None, Some(VIDEO_ADDRESS_UNAVAILABLE)),
-                            None => (None, Vec::new(), None, Some(VIDEO_RESOLUTION_UNAVAILABLE)),
-                        };
-                        options.push(PreparedVideoMediaOption {
-                            source_index,
-                            label,
-                            url,
-                            headers,
-                            media_format,
-                            unavailable_reason,
-                        });
-                    }
-                    let selected_index = options
-                        .iter()
-                        .position(|option| {
-                            option.source_index == default_index && option.url.is_some()
-                        })
-                        .or_else(|| options.iter().position(|option| option.url.is_some()))
-                        .ok_or_else(|| {
-                            "Video source has no playable HTTP media resolution".to_owned()
-                        })?;
-                    Some(PreparedChapterMedia::Video {
-                        options,
-                        selected_index,
-                    })
-                } else {
-                    let mut request = engine_request(
-                        "resolveMedia",
-                        &source.source,
-                        None,
-                        None,
-                        Some(engine_book.clone()),
-                        Some(raw_chapter.clone()),
-                        next_chapter_url.clone(),
-                    );
-                    request.media_url = Some(content.trim().to_owned());
-                    let resolved = self.executor.execute(request).await?;
-                    let (url, headers) = resolved_media_result(&resolved)?;
-                    let media_format = if is_hls_media_url(&url) {
-                        MEDIA_FORMAT_HLS
-                    } else {
-                        MEDIA_FORMAT_DIRECT
-                    };
-                    Some(PreparedChapterMedia::Audio {
-                        url,
-                        headers,
-                        media_format,
-                    })
-                }
-            } else {
-                None
-            };
-            let image_pages = if comic_source {
-                Some(self.source_image_pages(book_id, &chapter_id, &source.source, &engine_book,
-                    &raw_chapter, content, content_base_url.as_deref()).await?)
-            } else { None };
-            let _book_lock = self.book_lock(book_id).await;
-            let current_private = self
-                .read_internal_json(self.book_engine_path(book_id)?)
-                .await
-                .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
-            if current_private["sourceId"].as_str() != Some(source_id.as_str()) {
-                return Err("Book source changed while preparing a chapter".to_owned());
-            }
-            if current_private.get("book") != Some(&engine_book) {
-                return Err("Book metadata changed while preparing a chapter".to_owned());
-            }
-            let mut current_book = self
-                .store
-                .read_json_ref(&book_ref)
-                .await
-                .map_err(|_| "Book was removed while preparing a chapter".to_owned())?;
-            let descriptors = current_book
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book chapter directory is missing".to_owned())?;
-            let index = descriptors
-                .iter()
-                .position(|chapter| chapter["id"].as_str() == Some(chapter_id.as_str()))
-                .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
-            let current_raw_chapters = current_private
-                .get("chapters")
-                .and_then(Value::as_array)
-                .ok_or_else(|| "Book source chapter data is missing".to_owned())?;
-            let current_raw = current_raw_chapters
-                .get(index)
-                .ok_or_else(|| "Book catalog changed while preparing a chapter".to_owned())?;
-            if current_raw != &raw_chapter {
-                return Err("Book catalog changed while preparing a chapter".to_owned());
-            }
-
-            if let Some(pages) = image_pages {
-                let chapter = &mut current_book["chapters"][index];
-                chapter["pages"] = pages;
-                if let Some(values) = chapter.as_object_mut() { values.remove("resource"); values.remove("url"); }
-                self.store.save_chapter_view(book_id, &chapter_id, &current_book["chapters"][index]).await.map_err(|error| error.to_string())?;
-                prepared += 1;
-                changed = true;
-                continue;
-            }
-            let existing_ref = descriptors[index]
-                .get("resource")
-                .and_then(|resource| resource.get("resourceId"))
-                .and_then(Value::as_str)
-                .filter(|src| !src.is_empty())
-                .map(|src| scoped_chapter_cache_ref(book_id, src))
-                .transpose()?;
-            let media_content_format = media_request.as_ref().map(|media| match media {
-                PreparedChapterMedia::Audio { .. } => "audio",
-                PreparedChapterMedia::Video { .. } => "video",
-            });
-            let reference = if let Some(media_request) = media_request {
-                match media_request {
-                    PreparedChapterMedia::Audio {
-                        url,
-                        headers,
-                        media_format,
-                    } => {
-                        let media_id = chapter_media_id(book_id, &chapter_id, &url, &headers);
-                        let media_ref = self
-                            .server
-                            .register_media_with_id(book_id, &media_id, &url, &headers)
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        current_book["chapters"][index]["protocol"] = json!(media_format);
-                        self.store
-                            .write_chapter_media(
-                                book_id,
-                                &chapter_id,
-                                &media_ref,
-                                "audio",
-                                media_format,
-                                &[],
-                            )
-                            .await
-                            .map_err(|error| error.to_string())?
-                    }
-                    PreparedChapterMedia::Video {
-                        options,
-                        selected_index,
-                    } => {
-                        let selected_media_format = options
-                            .get(selected_index)
-                            .and_then(|option| option.media_format)
-                            .ok_or_else(|| {
-                                "Video source selected a resolution without a media format"
-                                    .to_owned()
-                            })?;
-                        let mut video_sources = Vec::with_capacity(options.len());
-                        let mut selected_media_ref = None;
-                        for (option_index, option) in options.into_iter().enumerate() {
-                            if let Some(url) = option.url {
-                                let media_id = chapter_media_variant_id(
-                                    book_id,
-                                    &chapter_id,
-                                    option.source_index,
-                                    &url,
-                                    &option.headers,
-                                );
-                                let media_ref = self
-                                    .server
-                                    .register_media_with_id(book_id, &media_id, &url, &option.headers)
-                                    .await
-                                    .map_err(|error| error.to_string())?;
-                                let selected = option_index == selected_index;
-                                if selected {
-                                    selected_media_ref = Some(media_ref.clone());
-                                }
-                                video_sources.push(ChapterVideoSource {
-                                    label: option.label,
-                                    media_ref: Some(media_ref),
-                                    media_format: option.media_format,
-                                    unavailable_reason: None,
-                                    selected,
-                                });
-                            } else {
-                                video_sources.push(ChapterVideoSource {
-                                    label: option.label,
-                                    media_ref: None,
-                                    media_format: None,
-                                    unavailable_reason: Some(
-                                        option
-                                            .unavailable_reason
-                                            .unwrap_or(VIDEO_RESOLUTION_UNAVAILABLE),
-                                    ),
-                                    selected: false,
-                                });
-                            }
-                        }
-                        let selected_media_ref = selected_media_ref.ok_or_else(|| {
-                            "Video source selected no playable media resolution".to_owned()
-                        })?;
-                        let (reference, document) = self.store.chapter_media_document(
-                            book_id, &chapter_id, &selected_media_ref, "video", selected_media_format, &video_sources
-                        ).map_err(|error| error.to_string())?;
-                        current_book["chapters"][index]["protocol"] = json!(selected_media_format);
-                        current_book["chapters"][index]["sources"] = document["sources"].clone();
-                        reference
-                    }
-                }
-            } else if let Some(reference) = existing_ref {
-                if self.cached_chapter_format(&reference).await?
-                    == Some(non_media_content_format)
-                {
-                    reference
-                } else if non_media_content_format == "richText" {
-                    let (reference, document) = self.source_rich_text_document(
-                        book_id, &chapter_id, &source.source, &engine_book, &raw_chapter,
-                        content, content_base_url.as_deref(),
-                    ).await?;
-                    self.store.write_json_ref(&reference, &document).await.map_err(|error| error.to_string())?;
-                    reference
-                } else {
-                    self.store
-                        .write_chapter_text(book_id, &chapter_id, content)
-                        .await
-                        .map_err(|error| error.to_string())?
-                }
-            } else if non_media_content_format == "richText" {
-                let (reference, document) = self.source_rich_text_document(
-                    book_id, &chapter_id, &source.source, &engine_book, &raw_chapter,
-                    content, content_base_url.as_deref(),
-                ).await?;
-                self.store.write_json_ref(&reference, &document).await.map_err(|error| error.to_string())?;
-                reference
-            } else {
-                self.store
-                    .write_chapter_text(book_id, &chapter_id, content)
-                    .await
-                    .map_err(|error| error.to_string())?
-            };
-            if let Some(chapter) = current_book
-                .get_mut("chapters")
-                .and_then(Value::as_array_mut)
-                .and_then(|chapters| chapters.get_mut(index))
-            {
-                let content_format =
-                    media_content_format.unwrap_or(non_media_content_format);
-                chapter["resource"] = serde_json::to_value(
-                    crate::models::ChapterResourceDescriptor::for_chapter(
-                        &reference,
-                        content_format,
-                    ),
-                )
-                .map_err(|error| format!("Cannot encode chapter resource descriptor: {error}"))?;
-            }
-            self.store
-                .save_chapter_view(book_id, &chapter_id, &current_book["chapters"][index])
-                .await
-                .map_err(|error| error.to_string())?;
-            prepared += 1;
-            changed = true;
-        }
-        Ok(
-            json!({ "book": self.resource_descriptor(&book_ref), "prepared": prepared, "changed": changed, "bookId": book_id, "fromIndex": from_index }),
-        )
-    }
 }
 
-pub(super) fn chapter_id(book_id: &str, stable_url: &str) -> String {
-    format!(
-        "chapter-{:016x}",
-        stable_hash(&format!("{book_id}\0{stable_url}"))
-    )
-}
-
-/// Opaque media identities include the resolved request, not only chapter ID.
-/// A changed upstream URL or private headers must never retarget an earlier
-/// media descriptor to a different request.
+/// 缓存地址包含 URL 和请求头，刷新不会改变旧地址的含义。
 pub(super) fn chapter_media_id(
     book_id: &str,
     chapter_id: &str,
@@ -887,9 +328,7 @@ pub(super) fn chapter_media_variant_id(
     }
 }
 
-/// Reduce legacy VideoSource JSON or `name::url` chapter content to a bounded
-/// list of named candidates. Every candidate is resolved by KMP before it can
-/// be registered or exposed to the chapter HTML.
+/// 兼容视频清晰度列表、名称::地址及单地址。
 fn video_media_candidates(content: &str) -> Result<(Vec<VideoMediaCandidate>, usize), String> {
     let content = content.trim();
     if content.starts_with("#BASE:") || content.starts_with("#EXTM3U") {
@@ -897,8 +336,8 @@ fn video_media_candidates(content: &str) -> Result<(Vec<VideoMediaCandidate>, us
     }
 
     if content.starts_with('{') {
-        let source = serde_json::from_str::<Value>(content)
-            .map_err(|_| "Video source JSON is invalid".to_owned())?;
+        let source =
+            serde_json::from_str::<Value>(content).map_err(|_| "Video source JSON is invalid".to_owned())?;
         let resolutions = source
             .get("resolutions")
             .and_then(Value::as_array)
@@ -913,14 +352,10 @@ fn video_media_candidates(content: &str) -> Result<(Vec<VideoMediaCandidate>, us
             Some(value) => value
                 .as_u64()
                 .and_then(|value| usize::try_from(value).ok())
-                .ok_or_else(|| {
-                    "Video source defaultIndex must be a nonnegative integer".to_owned()
-                })?,
+                .ok_or_else(|| "Video source defaultIndex must be a nonnegative integer".to_owned())?,
         };
         if resolutions.get(index).is_none() {
-            return Err(
-                "Video source default resolution is outside its resolution list".to_owned(),
-            );
+            return Err("Video source default resolution is outside its resolution list".to_owned());
         }
         let headers = match source.get("headers") {
             None | Some(Value::Null) => None,
@@ -1023,9 +458,7 @@ pub(super) fn has_http_media_scheme(value: &str) -> bool {
     })
 }
 
-pub(super) fn resolved_media_result(
-    resolved: &Value,
-) -> Result<(String, Vec<(String, String)>), String> {
+pub(super) fn resolved_media_result(resolved: &Value) -> Result<(String, Vec<(String, String)>), String> {
     let media_url = resolved
         .get("url")
         .and_then(Value::as_str)
@@ -1059,4 +492,267 @@ pub(super) fn is_hls_media_url(value: &str) -> bool {
     reqwest::Url::parse(value)
         .ok()
         .is_some_and(|url| url.path().to_ascii_lowercase().ends_with(".m3u8"))
+}
+
+impl ApplicationService {
+    /// cache=true 时在正文提交前下载完整资源；取消或失败都不提交新章节地址。
+    pub(super) async fn cache_main_text_files(
+        &self,
+        book_id: &str,
+        chapter_id: &str,
+        chapter: Value,
+    ) -> Result<Value, String> {
+        let kind = self.store.book_type(book_id).map_err(|error| error.to_string())?;
+        let mut markup = None;
+        let mut roots = Vec::new();
+        if kind == "image" {
+            for page in chapter["pages"].as_array().into_iter().flatten() {
+                if let Some(url) = page["url"].as_str() {
+                    roots.push(url.to_owned());
+                }
+            }
+        } else if matches!(kind.as_str(), "audio" | "video") {
+            if let Some(url) = chapter["resource"]["resourceId"]
+                .as_str()
+                .or_else(|| chapter["url"].as_str())
+            {
+                roots.push(url.to_owned());
+            }
+            for source in chapter["sources"].as_array().into_iter().flatten() {
+                if let Some(url) = source["url"].as_str().or_else(|| source["src"].as_str()) {
+                    roots.push(url.to_owned());
+                }
+            }
+        } else if kind == "html" {
+            if let Some(raw) = chapter["resource"]["resourceId"].as_str() {
+                let reference = ResourceRef::new(raw).map_err(|e| e.to_string())?;
+                let document = self
+                    .store
+                    .read_json_ref(&reference)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let body = document["markup"].as_str().unwrap_or_default().to_owned();
+                let regex = regex::Regex::new(r#"resource://media/[^\s"'<>]+"#).map_err(|e| e.to_string())?;
+                roots.extend(regex.find_iter(&body).map(|value| value.as_str().to_owned()));
+                markup = Some(body);
+            }
+        }
+        // 本地文件无需重复下载。
+        roots.retain(|url| url.starts_with("resource://media/"));
+        if roots.is_empty() {
+            return Ok(chapter);
+        }
+        let mut names = HashMap::<String, String>::new();
+        let mut queue = VecDeque::new();
+        for root in &roots {
+            let reference = ResourceRef::new(root).map_err(|e| e.to_string())?;
+            let url = self.server.url_for(&reference);
+            if !names.contains_key(&url) {
+                queue.push_back(url.clone());
+                names.insert(url, String::new());
+            }
+        }
+        let client = crate::http_client::raw_builder()
+            .build()
+            .map_err(|e| e.to_string())?;
+        let mut payloads = Vec::new();
+        let mut files = Vec::new();
+        let uri_attributes = regex::Regex::new(r#"URI="([^"]+)""#).map_err(|e| e.to_string())?;
+        while let Some(url) = queue.pop_front() {
+            let mut response = client
+                .get(&url)
+                .send()
+                .await
+                .map_err(|e| e.without_url().to_string())?
+                .error_for_status()
+                .map_err(|e| e.without_url().to_string())?;
+            let content_type = response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_lowercase();
+            let mut bytes = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+                if bytes.len().saturating_add(chunk.len()) > 512 * 1024 * 1024 {
+                    return Err("A downloaded resource exceeds 512 MiB".into());
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            if bytes.is_empty() {
+                return Err("Downloaded resource is empty".into());
+            }
+            let playlist = bytes.starts_with(b"#EXTM3U");
+            let extension = if playlist {
+                "m3u8"
+            } else if content_type.contains("image/png") {
+                "png"
+            } else if content_type.contains("image/webp") {
+                "webp"
+            } else if content_type.contains("image/gif") {
+                "gif"
+            } else if content_type.contains("image/") {
+                "jpg"
+            } else if content_type.contains("audio/aac") {
+                "aac"
+            } else if content_type.contains("audio/mp4") {
+                "m4a"
+            } else if content_type.contains("audio/ogg") {
+                "ogg"
+            } else if content_type.contains("audio/wav") {
+                "wav"
+            } else if content_type.contains("audio/") {
+                "mp3"
+            } else if content_type.contains("video/mp4") {
+                "mp4"
+            } else if content_type.contains("webm") {
+                "webm"
+            } else if kind == "audio" {
+                "mp3"
+            } else {
+                "ts"
+            };
+            let stable_id = url
+                .strip_prefix(self.server.base_url())
+                .ok_or("Download escaped the resource server")?;
+            let name = format!(
+                "{}-{}.{}",
+                chapter_id,
+                sha256_hex(stable_id.as_bytes()),
+                extension
+            );
+            names.insert(url.clone(), name.clone());
+            let mut dependencies = Vec::new();
+            if playlist {
+                let body = std::str::from_utf8(&bytes).map_err(|e| e.to_string())?;
+                if !body.contains("#EXT-X-ENDLIST") && !body.contains("#EXT-X-STREAM-INF") {
+                    return Err("Live playlists cannot be saved as a complete offline chapter".into());
+                }
+                for line in body.lines() {
+                    let line = line.trim();
+                    let refs = if line.starts_with('#') {
+                        uri_attributes
+                            .captures_iter(line)
+                            .map(|c| c[1].to_owned())
+                            .collect::<Vec<_>>()
+                    } else if line.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![line.to_owned()]
+                    };
+                    for raw in refs {
+                        let child = reqwest::Url::parse(&url)
+                            .and_then(|base| base.join(&raw))
+                            .map_err(|e| e.to_string())?
+                            .to_string();
+                        if !child.starts_with(self.server.base_url()) {
+                            return Err("Playlist dependency escaped the resource server".into());
+                        }
+                        if !names.contains_key(&child) {
+                            if names.len() >= 8192 {
+                                return Err("Offline playlist has too many dependencies".into());
+                            }
+                            names.insert(child.clone(), String::new());
+                            queue.push_back(child.clone());
+                        }
+                        dependencies.push((raw, child));
+                    }
+                }
+            }
+            if playlist {
+                payloads.push((url, name, bytes, dependencies));
+            } else {
+                self.store
+                    .write_asset(book_id, &name, &bytes)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                files.push(name);
+            }
+        }
+        for (_, name, bytes, dependencies) in payloads {
+            let bytes = if dependencies.is_empty() {
+                bytes
+            } else {
+                let mut body = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+                // 先替换长地址，避免短地址误替换另一条地址的前缀。
+                let mut dependencies = dependencies;
+                dependencies.sort_by_key(|(raw, _)| std::cmp::Reverse(raw.len()));
+                for (raw, child) in dependencies {
+                    body = body.replace(&raw, names.get(&child).ok_or("Missing offline dependency")?);
+                }
+                body.into_bytes()
+            };
+            self.store
+                .write_asset(book_id, &name, &bytes)
+                .await
+                .map_err(|e| e.to_string())?;
+            files.push(name);
+        }
+        let replacements = roots
+            .iter()
+            .map(|root| {
+                let reference = ResourceRef::new(root).map_err(|e| e.to_string())?;
+                let url = self.server.url_for(&reference);
+                let name = names.get(&url).ok_or("Missing downloaded resource")?;
+                Ok((
+                    root.clone(),
+                    self.store
+                        .asset_ref(book_id, name)
+                        .map_err(|e| e.to_string())?
+                        .to_string(),
+                ))
+            })
+            .collect::<Result<HashMap<_, _>, String>>()?;
+        let mut next_chapter = chapter.clone();
+        rewrite_downloaded_refs(&mut next_chapter, &replacements);
+        if let Some(mut body) = markup {
+            for (from, to) in &replacements {
+                body = body.replace(from, to);
+            }
+            // 正文已经清理过；这里只替换地址，重复清理会删掉 resource:// 本地图片。
+            let document = json!({"schemaVersion":CURRENT_SCHEMA_VERSION,"kind":"richText","markup":body});
+            let reference = self.store.chapter_version_ref(book_id, chapter_id, &document)
+                .map_err(|e| e.to_string())?;
+            self.store
+                .write_json_ref(&reference, &document)
+                .await
+                .map_err(|e| e.to_string())?;
+            next_chapter["resource"] = serde_json::to_value(
+                crate::models::ChapterResourceDescriptor::for_chapter(&reference, "richText"),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        let roots = replacements
+            .values()
+            .filter_map(|url| url.rsplit('/').next())
+            .collect::<HashSet<_>>();
+        files.retain(|file| !roots.contains(file.as_str()));
+        if !files.is_empty() {
+            next_chapter["files"] = json!(files);
+        }
+        Ok(next_chapter)
+    }
+}
+
+fn rewrite_downloaded_refs(value: &mut Value, replacements: &HashMap<String, String>) {
+    match value {
+        Value::String(url) => {
+            if let Some(next) = replacements.get(url) {
+                *url = next.clone();
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                rewrite_downloaded_refs(value, replacements);
+            }
+        }
+        Value::Object(values) => {
+            for (key, value) in values {
+                if !matches!(key.as_str(), "engineurl" | "engineData" | "engineTitle") {
+                    rewrite_downloaded_refs(value, replacements);
+                }
+            }
+        }
+        _ => {}
+    }
 }

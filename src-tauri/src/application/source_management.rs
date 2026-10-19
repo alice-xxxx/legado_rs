@@ -1,4 +1,4 @@
-//! 书源定义的导入、登录、订阅和根目录持久化。
+//! 书源定义的基础校验、登录与缓存。
 
 use super::*;
 
@@ -16,7 +16,7 @@ impl SourceCatalog {
 
 /// Validate only the structural identity of a Legado JSON definition.
 /// Everything else, including unknown and nested keys, is retained verbatim.
-fn validate_source_definition(
+pub(crate) fn validate_source_definition(
     source: &Value,
 ) -> Result<(String, Option<String>, bool, String), String> {
     let object = source
@@ -343,155 +343,9 @@ impl ApplicationService {
         Ok(json!({ "cleared": true }))
     }
 
-    pub async fn import_sources(&self, source_json: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let imported: Value = serde_json::from_str(source_json)
-            .map_err(|error| format!("Invalid source JSON: {error}"))?;
-        let sources = extract_sources(imported)?;
-        let _lock = self.sources_lock.lock().await;
-        let mut records = self.read_sources().await?.as_ref().clone();
-        let mut by_id = HashMap::new();
-        let mut by_url = HashMap::new();
-        for (index, record) in records.iter().enumerate() {
-            by_id.insert(record.id.clone(), index);
-            if let Some(url) = text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"]) {
-                by_url.entry(url).or_insert(index);
-            }
-        }
-        for (position, source) in sources.into_iter().enumerate() {
-            let name = text_at(&source, &["bookSourceName", "name", "sourceName"])
-                .unwrap_or_else(|| format!("Source {}", position + 1));
-            let source_url =
-                text_at(&source, &["bookSourceUrl", "url", "sourceUrl"]).unwrap_or_default();
-            if source_url.is_empty() {
-                return Err(format!("Source '{name}' is missing bookSourceUrl"));
-            }
-            let group = text_at(&source, &["bookSourceGroup", "group"]);
-            let enabled = bool_at(&source, &["enabled", "bookSourceEnabled"]).unwrap_or(true);
-            let id = format!("source-{:016x}", stable_hash(&source_url));
-            let record = SourceRecord {
-                id: id.clone(),
-                name,
-                group,
-                enabled,
-                source,
-            };
-            // An editor may change bookSourceUrl while deliberately keeping
-            // the internal ID stable to preserve existing book references.
-            // Reimporting the new URL must update that record, not duplicate it.
-            let index = [by_id.get(&id), by_url.get(&source_url)].into_iter().flatten().copied().min();
-            if let Some(index) = index {
-                let old_url = text_at(&records[index].source, &["bookSourceUrl", "url", "sourceUrl"]);
-                records[index] = SourceRecord {
-                    id: records[index].id.clone(),
-                    ..record
-                };
-                if let Some(old_url) = old_url.filter(|url| *url != source_url) {
-                    if by_url.get(&old_url) == Some(&index) {
-                        by_url.remove(&old_url);
-                        if let Some(next) = records.iter().position(|record| {
-                            text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"]).as_ref() == Some(&old_url)
-                        }) { by_url.insert(old_url, next); }
-                    }
-                }
-                by_url.entry(source_url).and_modify(|previous| *previous = (*previous).min(index)).or_insert(index);
-            } else {
-                by_id.insert(id, records.len());
-                by_url.insert(source_url, records.len());
-                records.push(record);
-            }
-        }
-        let list_changed = self.write_sources(&records).await?;
-        Ok(json!({ "listChanged": list_changed }))
-    }
+}
 
-    pub async fn import_sources_from_url(&self, input: &str) -> Result<Value, String> {
-        let source_json = download_json_url(
-            input,
-            MAX_SOURCE_IMPORT_BODY_BYTES,
-            Duration::from_secs(30),
-            "源 JSON",
-        )
-        .await?;
-        self.import_sources(&source_json).await
-    }
-
-    pub async fn remove_sources(&self, source_ids: &[String]) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let _lock = self.sources_lock.lock().await;
-        let remove = source_ids
-            .iter()
-            .map(String::as_str)
-            .collect::<std::collections::HashSet<_>>();
-        let mut records = self.read_sources().await?.as_ref().clone();
-        let rss_source_ids = records
-            .iter()
-            .filter(|source| {
-                remove.contains(source.id.as_str()) && crate::rss::is_rss_source(&source.source)
-            })
-            .map(|source| source.id.clone())
-            .collect::<Vec<_>>();
-        records.retain(|source| !remove.contains(source.id.as_str()));
-        let list_changed = self.write_sources(&records).await?;
-        let mut result = json!({ "listChanged": list_changed });
-        let mut rss_state = None;
-        let mut cleanup_pending = false;
-        for source_id in rss_source_ids {
-            match crate::rss::remove_subscription_data(self, &source_id).await {
-                Ok(resource) => rss_state = Some(resource),
-                Err(_) => cleanup_pending = true,
-            }
-        }
-        if cleanup_pending {
-            result["cleanupPending"] = json!(true);
-            result["cleanupWarning"] = json!("源已移除，但部分 RSS 缓存未能清理。");
-            if rss_state.is_none() {
-                rss_state = crate::rss::rss_state_resource(&self.store).await.ok();
-            }
-        }
-        if let Some(resource) = rss_state {
-            result["rssState"] = self.resource_descriptor(&resource);
-        }
-        Ok(result)
-    }
-
-    /// Atomically replace one source definition. The internal source ID remains
-    /// stable even if bookSourceUrl changes, preserving library references.
-    pub async fn save_source_definition(
-        &self,
-        source_id: &str,
-        definition_json: String,
-    ) -> Result<Value, String> {
-        validate_id(source_id, "sourceId")?;
-        if definition_json.len() > MAX_SOURCE_IMPORT_BODY_BYTES {
-            return Err("Source definition exceeds the JSON import size limit".into());
-        }
-        // JSON travels through IPC as text to preserve 64-bit source fields.
-        let definition: Value = serde_json::from_str(&definition_json)
-            .map_err(|error| format!("Invalid source JSON: {error}"))?;
-        let (name, group, enabled, url) = validate_source_definition(&definition)?;
-        let _operation = self.operation_read().await;
-        let _lock = self.sources_lock.lock().await;
-        let mut records = self.read_sources().await?.as_ref().clone();
-        if records.iter().any(|record| {
-            record.id != source_id
-                && text_at(&record.source, &["bookSourceUrl", "url", "sourceUrl"])
-                    .is_some_and(|value| value == url)
-        }) {
-            return Err("Another imported source already uses that bookSourceUrl".into());
-        }
-        let record = records
-            .iter_mut()
-            .find(|record| record.id == source_id)
-            .ok_or_else(|| format!("Unknown source '{source_id}'"))?;
-        record.name = name;
-        record.group = group;
-        record.enabled = enabled;
-        record.source = definition;
-        let list_changed = self.write_sources(&records).await?;
-        Ok(json!({ "listChanged": list_changed }))
-    }
-
+impl ApplicationService {
     pub(super) async fn find_source(&self, id: &str) -> Result<SourceRecord, String> {
         self.lookup_source(id).await?
             .ok_or_else(|| format!("Book source '{id}' is no longer imported"))
@@ -504,6 +358,14 @@ impl ApplicationService {
 
     pub(super) async fn read_sources(&self) -> Result<Arc<Vec<SourceRecord>>, String> {
         Ok(self.read_source_catalog().await?.records.clone())
+    }
+
+    /// 公共写入提交后使后续请求重新读库，已打开的登录会话也重新核对版本。
+    pub(crate) async fn invalidate_sources(&self) {
+        *self.source_catalog.lock().await = None;
+        for revision in self.source_revisions.lock().await.values_mut() {
+            *revision = revision.saturating_add(1);
+        }
     }
 
     async fn read_source_catalog(&self) -> Result<Arc<SourceCatalog>, String> {
@@ -597,6 +459,14 @@ mod tests {
         service.write_sources(&[source.clone()]).await.unwrap();
         assert_eq!(first[0].name, "Test", "An in-flight snapshot stays immutable");
         assert_eq!(service.find_source(&source.id).await.unwrap().name, "Edited");
+        let revision = service.source_revision(&source.id).await.unwrap();
+        service.store.database().modify(serde_json::from_value(json!([{"action":"upsert","table":"sources","keys":["id"],
+            "values":{"id":source.id,"definition_json":{"bookSourceName":"From frontend","bookSourceUrl":"https://fixture","enabled":false}}}])).unwrap()).unwrap();
+        service.invalidate_sources().await;
+        let latest = service.find_source(&source.id).await.unwrap();
+        assert_eq!(latest.name, "From frontend");
+        assert!(!latest.enabled);
+        assert!(service.source_revision(&source.id).await.unwrap() > revision);
         let reference = ResourceRef::new("resource://sources.json").unwrap();
         service.store.write_json_ref(&reference, &json!([])).await.unwrap();
         *service.source_catalog.lock().await = None;

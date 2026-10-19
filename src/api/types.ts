@@ -100,6 +100,7 @@ export interface ContentGroup { id: string[]; name: string; }
 export type ContentLibrary = Partial<Record<ContentType, ContentPreview[]>> & { groups?: ContentGroup[] };
 
 export interface ContentAlternative {
+  bookUrl: string;
   sourceId: string;
   sourceName: string;
   title: string;
@@ -166,6 +167,7 @@ export interface ChapterPdfPageResource {
 }
 
 export interface BookResource {
+  bookUrl?: string;
   schemaVersion: number;
   id: string;
   title: string;
@@ -253,20 +255,6 @@ export interface ShelfResource {
   books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { groups?: string[]; updatedAt?: number }>;
 }
 
-export type ResetBookProgressResponse =
-  | {
-      commitState: "committed";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book: BookIdentity;
-    }
-  | {
-      commitState: "notCommitted" | "indeterminate";
-      recoveryRequired: boolean;
-      warning: string | null;
-      book?: never;
-    };
-
 export type ClearBookChapterCacheResponse =
   | {
       commitState: "committed";
@@ -347,6 +335,9 @@ export interface ReplacementRulesResource {
 
 /** Rust 处理后的单个书源候选；resultId 用于详情、入架和换源操作。 */
 export interface SearchResultSource {
+  /** 原始书籍上下文供统一写库保存，详情规则可继续使用其中的自定义字段。 */
+  engine?: Record<string, unknown>;
+  bookUrl: string;
   alternativeIndex?: number;
   resultId: string;
   sourceId: string;
@@ -363,41 +354,33 @@ export interface SearchResultSource {
   coverSrc?: string;
   intro?: string;
   latestChapter?: string;
-  requiresIdentityConfirmation?: boolean;
   [key: string]: unknown;
 }
 
-/** Rust 已合并的书目。顶层字段是默认候选，sources 保留全部来源。 */
+/** Vue 合并后的展示书目，sources 保存可换来源。 */
 export interface SearchBookResult extends SearchResultSource {
   sources?: SearchResultSource[];
 }
 
 export interface SearchResource {
-  hasMore?: boolean;
-  incremental?: boolean;
-  schemaVersion: number;
   searchId?: string;
-  taskId?: string;
   keyword: string;
-  sourceIds?: string[];
   page: number;
-  results: SearchBookResult[];
+  results: SearchResultSource[];
   errors: Array<{ sourceId?: string; message: string }>;
-  status?: "queued" | "running" | "paused" | "completed" | "cancelled" | "failed";
-  completedSources?: number;
-  totalSources?: number;
   complete?: boolean;
-  cancelled?: boolean;
-  error?: string;
 }
 
-export type SearchBatch = Pick<SearchResource,
-  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "hasMore"
-> & { incremental: true; incrementalErrors?: boolean; resultOrder: string[] };
+export type SearchPrecision = "exact" | "precise" | "none";
 
-export type BookSourceCandidateBatch = Pick<SearchResource,
-  "taskId" | "results" | "errors" | "status" | "completedSources" | "totalSources" | "complete" | "error" | "incremental"
->;
+/** 每个源只发送一次过滤结果；search 返回即结束。首次通知仅提供 searchId。 */
+export interface SearchUpdate {
+  searchId: string;
+  sourceId?: string;
+  results: SearchResultSource[];
+  hasMore?: boolean;
+  error?: string;
+}
 
 export interface SearchHistoryEntry {
   query: string;
@@ -520,32 +503,6 @@ export interface ReadingProgress {
   updatedAtMs: number;
 }
 
-export type SourceMutation =
-  | { kind: "local" }
-  | { kind: "url"; url: string }
-  | { kind: "save"; id: string | null; json: string }
-  | { kind: "delete"; sourceIds: string[] }
-  | { kind: "login"; sourceId: string; credentials: Record<string, string> }
-  | { kind: "runLoginAction"; sourceId: string; actionId: number; credentials: Record<string, string> }
-  | { kind: "clearLoginState"; sourceId: string }
-  | { kind: "startLoginWeb"; sourceId: string }
-  | { kind: "finishLoginWeb"; sourceId: string; sessionId: string }
-  | { kind: "cancelLoginWeb"; sourceId: string; sessionId: string };
-
-export type SourceMutationResponse =
-  | {
-      saved: boolean;
-      resource?: MutationAck;
-      cleanupPending?: boolean;
-      cleanupWarning?: string;
-      rssState?: MutationAck;
-    }
-  | SourceLoginResult
-  | SourceWebLoginResult
-  | { cleared: boolean }
-  | { sessionId: string }
-  | { cancelled: boolean };
-
 export interface AppSettingsResource {
   webdavBackup?: WebDavBackupConfig;
   schemaVersion: number;
@@ -561,57 +518,6 @@ export interface BookIdentity { bookId: string; }
 export interface AppBootstrap {
   assetBaseUrl: string;
   settings: AppSettingsResource;
-}
-
-export interface SearchResponse {
-  search: SearchResource;
-  bookCount: number;
-  errors: Array<{ sourceId?: string; message: string }>;
-}
-
-export interface SourceDebugResponse {
-  ok: boolean;
-  stage?: "result" | "source" | "detail" | "catalog" | "chapter";
-  error?: string;
-  cleared?: boolean;
-  book?: {
-    title: string;
-    author?: string;
-    intro?: string;
-    kind?: string;
-    wordCount?: string;
-    latestChapter?: string;
-    sourceId: string;
-    sourceName: string;
-    sourceGroup?: string;
-  };
-  chapters?: Array<{ index: number; title: string }>;
-  chapterResource?: ResourceDescriptor | null;
-}
-
-export type RefreshBookInfoResponse = ResetBookProgressResponse;
-
-export type ChangeChapterSourceResponse =
-  | {
-      commitState: "committed";
-      recoveryRequired: boolean;
-      warning: string | null;
-      error?: string;
-      book: BookIdentity;
-      chapterId: string;
-    }
-  | {
-      commitState: "notCommitted" | "indeterminate";
-      recoveryRequired: boolean;
-      warning: string | null;
-      error?: string;
-      book?: never;
-      chapterId?: never;
-    };
-
-export interface BookSourceMutationResponse {
-  book: BookIdentity;
-  progress: ReadingProgress;
 }
 
 export interface LocalBookImportResponse {
@@ -643,7 +549,6 @@ export interface AppTask {
   downloadSnapshotValid?: boolean;
   sourceIds?: string[];
   keyword?: string;
-  checkOnly?: boolean;
   page: number;
   fromIndex: number;
   total: number;
@@ -670,13 +575,6 @@ export interface AppTask {
 export interface TasksResource {
   schemaVersion: number;
   tasks: AppTask[];
-}
-
-export interface TaskResponse {
-  taskId?: string;
-  task: AppTask;
-  resource: MutationAck;
-  reused?: boolean;
 }
 
 export interface ClearFinishedTasksResponse {

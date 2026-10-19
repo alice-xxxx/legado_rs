@@ -56,12 +56,11 @@ function hideBrokenCover(event: Event): void { (event.target as HTMLImageElement
             <strong>{{ candidate.sourceName }}</strong>
             <span>{{ candidate.title }} · {{ candidate.author || '作者未提供' }}</span>
             <small>{{ candidate.latestChapter ? `最新：${candidate.latestChapter}` : '最新章节暂未提供' }}</small>
-            <small v-if="candidate.requiresIdentityConfirmation" class="source-warning">作者未验证，更换前需要确认</small>
           </div>
           <span v-if="candidate.sourceId === book.sourceId" class="source-current-label">{{ loading ? '加载中…' : '当前' }}</span>
           <div v-else class="source-actions">
             <button type="button" :disabled="busy" @click="emit('select', candidate)">{{ session.bookSourceSwitchBusy && session.selectedBookSourceCandidate?.resultId === candidate.resultId ? '正在换源…' : '换源' }}</button>
-            <button v-if="canReplaceChapter" type="button" :disabled="busy" @click="session.replaceCurrentChapterFromCandidate(candidate, session.chapterSourceIdentityConfirmResultId === candidate.resultId)">{{ session.chapterSourceBusyResultId === candidate.resultId ? '替换中…' : session.chapterSourceIdentityConfirmResultId === candidate.resultId ? '确认替换' : '替换本章' }}</button>
+            <button v-if="canReplaceChapter" type="button" :disabled="busy" @click="session.replaceCurrentChapterFromCandidate(candidate)">{{ session.chapterSourceBusyResultId === candidate.resultId ? '替换中…' : '替换本章' }}</button>
           </div>
         </article>
       </div>

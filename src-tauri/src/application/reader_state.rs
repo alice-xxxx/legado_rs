@@ -86,7 +86,7 @@ mod reading_notification_tests {
     async fn comic_img_list_is_indexed_as_pages_without_a_chapter_json() {
         let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
         service.get_book("book-a").await.unwrap();
-        service.prepare_chapters("book-a", 0, 1).await.unwrap();
+        service.main_text("book-a", "chapter-0", false).await.unwrap();
         let reference = service.store.book_ref("book-a").unwrap();
         let book = service.store.read_json_ref(&reference).await.unwrap();
         assert_eq!(book["contentType"], "image");
@@ -99,7 +99,7 @@ mod reading_notification_tests {
     }
 
     #[tokio::test]
-    async fn old_comic_text_cache_is_repaired_without_refetching_chapter() {
+    async fn old_comic_text_cache_is_replaced_by_the_unified_content_request() {
         let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
         let original = service.store.write_chapter_text("book-a", "chapter-0", COMIC).await.unwrap();
         let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(&original, "text")).unwrap();
@@ -118,7 +118,7 @@ mod reading_notification_tests {
         assert!(book["chapters"][0]["resource"].is_null());
         assert_eq!(book["chapters"][0]["pages"].as_array().unwrap().len(), 2);
         assert_eq!(service.store.read_json_ref(&original).await.unwrap()["kind"], "text");
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "Only image requests are resolved; cached chapter content is reused");
+        assert_eq!(calls.load(Ordering::SeqCst), 3, "One content request and two image resolutions replace the old cache");
         assert_eq!(published.lock().unwrap().len(), 1);
     }
 
@@ -129,7 +129,7 @@ mod reading_notification_tests {
             "[\"https://images.example.invalid/1.webp\",\"https://images.example.invalid/2.webp\"]",
         ] {
             let (_directory, service, calls) = fixture_with_content(2, content).await;
-            service.prepare_chapters("book-a", 0, 1).await.unwrap();
+            service.main_text("book-a", "chapter-0", false).await.unwrap();
             let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
             assert_eq!(book["contentType"], "image");
             let pages = book["chapters"][0]["pages"].as_array().unwrap();
@@ -168,7 +168,7 @@ mod reading_notification_tests {
         for (source_type, expected) in [(1, "audio"), (4, "video")] {
             let (_directory, service, calls) = fixture_with_content(source_type, "https://media.example.invalid/play.mp4").await;
             service.get_book("book-a").await.unwrap();
-            service.prepare_chapters("book-a", 0, 1).await.unwrap();
+            service.main_text("book-a", "chapter-0", false).await.unwrap();
             let book = service.store.read_json_ref(&service.store.book_ref("book-a").unwrap()).await.unwrap();
             assert_eq!(book["contentType"], expected);
             assert_eq!(book["mediaType"], expected);
@@ -208,8 +208,9 @@ impl ApplicationService {
             if current["progress"]["chapterIndex"].as_u64() != Some(chapter_index as u64) { break; }
             if current["chapters"][index]["volume"] == true { continue; }
             if self.indexed_chapter_ready(&current, index).await? { continue; }
-            let result = self.prepare_chapters_unlocked(book_id, index, 1).await?;
-            if result["changed"].as_bool() == Some(true) { updated(result["book"].clone()); }
+            let chapter_id = current["chapters"][index]["id"].as_str().ok_or("Reading chapter ID is missing")?;
+            self.main_text(book_id, chapter_id, false).await?;
+            updated(self.resource_descriptor(&book_ref));
         }
         Ok(())
     }
@@ -255,82 +256,6 @@ impl ApplicationService {
         Ok(descriptor)
     }
 
-    pub async fn reset_book_progress(&self, book_id: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let result: Result<Value, String> = async {
-        validate_id(book_id, "bookId")?;
-        let book_ref = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-
-        let _book = self.book_lock(book_id).await;
-        let database=self.store.database().clone();
-        let path=book_ref.path().to_owned();
-        let transaction_result=tokio::task::spawn_blocking(move ||database.reset_progress(&path)
-            .map_err(|error|crate::resource_transactions::TransactionError::new(error.to_string()))).await;
-
-        let (commit_state, recovery_required, warning) = match transaction_result {
-            Ok(Ok(())) => (
-                crate::resource_transactions::CommitState::Committed,
-                false,
-                None,
-            ),
-            Ok(Err(error)) => {
-                let commit_state = error.commit_state();
-                let recovery_required = error.recovery_required_flag();
-                let warning = match commit_state {
-                    crate::resource_transactions::CommitState::NotCommitted
-                        if recovery_required => Some(format!(
-                            "Progress reset was not committed, but rollback is incomplete and resource files may be mixed. Restart before retrying. Details: {error}"
-                        )),
-                    crate::resource_transactions::CommitState::NotCommitted => Some(format!(
-                        "Progress reset was not committed. Changes were not saved and it is safe to retry. Details: {error}"
-                    )),
-                    crate::resource_transactions::CommitState::Committed => Some(format!(
-                        "Progress reset was committed, but journal recovery is pending. Restart before further writes. Details: {error}"
-                    )),
-                    crate::resource_transactions::CommitState::Indeterminate => Some(format!(
-                        "Progress reset status is unknown. Do not retry; restart the application to recover the transaction first. Details: {error}"
-                    )),
-                };
-                (commit_state, recovery_required, warning)
-            }
-            Err(error) => (
-                crate::resource_transactions::CommitState::Indeterminate,
-                true,
-                Some(format!(
-                    "Progress reset status is unknown. Do not retry; restart the application to recover the transaction first. Details: {error}"
-                )),
-            ),
-        };
-        let resources = (commit_state == crate::resource_transactions::CommitState::Committed)
-            .then(|| {
-                self.resource_descriptor(&book_ref)
-            });
-        Ok(book_display_metadata_commit_outcome(
-            commit_state,
-            recovery_required,
-            warning,
-            resources,
-        ))
-        }
-        .await;
-        match result {
-            Ok(outcome) => Ok(outcome),
-            Err(error) => {
-                let mut outcome = book_display_metadata_commit_outcome(
-                    crate::resource_transactions::CommitState::NotCommitted,
-                    false,
-                    None,
-                    None,
-                );
-                outcome["error"] = json!(error);
-                Ok(outcome)
-            }
-        }
-    }
-
     pub async fn clear_book_chapter_cache(&self, book_id: &str) -> Result<Value, String> {
         let _operation = self.operation_read().await;
         let result: Result<Value, String> = async {
@@ -341,10 +266,7 @@ impl ApplicationService {
             .map_err(|error| error.to_string())?;
         let private_path = self.book_engine_path(book_id)?;
 
-        // Take an unlocked catalog snapshot first, then acquire every chapter
-        // lock before the source/book/writer locks. prepare_chapters holds a
-        // chapter lock across its fetch and publish, so this prevents an
-        // in-flight fetch from restoring a cache after the clear commits.
+        // 清缓存前取消在途正文，避免旧请求重新写入。
         let initial_book = self
             .store
             .read_json_ref(&book_ref)
@@ -403,10 +325,7 @@ impl ApplicationService {
             .ok_or_else(|| "Book source ID is missing".to_owned())?
             .to_owned();
 
-        let mut chapter_guards = Vec::with_capacity(initial_chapter_ids.len());
-        for chapter_id in &initial_chapter_ids {
-            chapter_guards.push(self.chapter_lock(book_id, chapter_id).await);
-        }
+        for chapter_id in &initial_chapter_ids { self.cancel_main_text(book_id, chapter_id); }
         let _sources = self.sources_lock.lock().await;
         let _book = self.book_lock(book_id).await;
         let writer_guard = self
@@ -488,12 +407,12 @@ impl ApplicationService {
                 .and_then(|resource| resource.get("resourceId"))
                 .and_then(Value::as_str)
                 .filter(|src| !src.is_empty())
-                .map(|src| scoped_chapter_cache_ref(book_id, src))
+                .map(|src| ResourceRef::new(src).map_err(|error|error.to_string()))
                 .transpose()?;
             if chapter_ref.as_ref().is_some_and(|reference| reference.path().starts_with("media/")) {
                 cached_count += 1;
             }
-            if let Some(chapter_ref) = chapter_ref.filter(|reference| !reference.path().starts_with("media/")) {
+            if let Some(chapter_ref) = chapter_ref.filter(|reference| crate::resources::content::content_path(reference.path()).is_some_and(|(_, owner, _)|owner == book_id)) {
                 let cache_path = writer_guard.data_root().join(chapter_ref.path());
                 match tokio::fs::symlink_metadata(&cache_path).await {
                     Ok(metadata) if metadata.file_type().is_file() => cached_count += 1,
@@ -530,17 +449,13 @@ impl ApplicationService {
             &mut post_commit_deletes,
         ).await?;
 
-        let replacements = vec![
-            writer_guard
-                .public_json_replacement(&book_ref, &book)
-                .map_err(|error| error.to_string())?,
-        ];
+        let replacement = writer_guard.public_json_replacement(&book_ref, &book).map_err(|error|error.to_string())?;
         let transaction_root = writer_guard.data_root().to_path_buf();
         let transaction_result = tokio::task::spawn_blocking(move || {
             let transaction = crate::resource_transactions::FileTransaction::prepare(
                 &transaction_root,
                 "clear-book-chapter-cache",
-                replacements,
+                vec![replacement],
                 post_commit_deletes,
                 &writer_guard,
             )?;
@@ -593,7 +508,6 @@ impl ApplicationService {
         } else {
             outcome["clearedCount"] = json!(0);
         }
-        drop(chapter_guards);
         Ok(outcome)
         }
         .await;

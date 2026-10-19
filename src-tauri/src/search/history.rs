@@ -54,10 +54,8 @@ pub async fn load(store: &ResourceStore) -> Result<SearchHistoryDocument, String
     Ok(document)
 }
 
-/// Record a user initiated search exactly once per `search_id` within the
-/// bounded retry window. Distinct searches for the same normalized keyword
-/// update its usage count and last-use time. Internal source-switch searches
-/// must not call this helper.
+/// 统一搜索入口自动记录历史；每个 search_id 只计一次。
+/// 同一关键词规范化后合并，由 Rust 更新次数和最近使用时间。
 pub async fn record_search(
     store: &ResourceStore,
     search_id: &str,

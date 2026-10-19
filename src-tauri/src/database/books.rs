@@ -335,7 +335,13 @@ pub(super) fn replace(
     }
     if value.get("alternatives").is_some() {
         db.execute("DELETE FROM alternative_sources WHERE book_id=?1", [id])?;
-        merge_alternatives(db, id, array(value, "alternatives"))?;
+        // 按调用方给出的顺序存储，不在数据库层合并可换来源。
+        for (position, alternative) in array(value, "alternatives").iter().enumerate() {
+            let mut entry = alternative.clone();
+            entry["_bookId"] = json!(id);
+            entry["_position"] = json!(position);
+            rows::upsert(db, "alternative_sources", ALTERNATIVE, &["book_id", "source_id", "engine_url"], &entry)?;
+        }
     }
     for (key, entry) in value["media"].as_object().into_iter().flatten() {
         let exists: bool = db.query_row(
@@ -402,37 +408,6 @@ pub(super) fn set_media(
         )?;
     }
     Ok(())
-}
-
-pub(super) fn merge_alternatives(
-    db: &Connection,
-    id: &str,
-    values: &[Value],
-) -> Result<bool, ResourceError> {
-    let mut next: i64 = db.query_row(
-        "SELECT coalesce(max(position)+1,0) FROM alternative_sources WHERE book_id=?1",
-        [id],
-        |r| r.get(0),
-    )?;
-    for value in values {
-        let source = text(value, "sourceId")?;
-        let url = text(value, "engineurl")?;
-        let position=db.query_row("SELECT position FROM alternative_sources WHERE book_id=?1 AND source_id=?2 AND engine_url=?3",params![id,source,url],|r|r.get::<_,i64>(0)).optional()?;
-        let mut entry = value.clone();
-        entry["_bookId"] = json!(id);
-        entry["_position"] = json!(position.unwrap_or(next));
-        if position.is_none() {
-            next += 1;
-        }
-        rows::upsert(
-            db,
-            "alternative_sources",
-            ALTERNATIVE,
-            &["book_id", "source_id", "engine_url"],
-            &entry,
-        )?;
-    }
-    Ok(!values.is_empty())
 }
 
 /// Commit only the chapter cache fields. Engine/catalog identity stays in its row.

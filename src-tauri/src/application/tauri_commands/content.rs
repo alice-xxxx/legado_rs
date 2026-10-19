@@ -8,63 +8,6 @@ pub async fn get_rss_state(service: State<'_, ApplicationService>) -> Result<Val
     service.get_rss_state().await
 }
 
-#[tauri::command]
-pub async fn set_rss_filter(
-    app: tauri::AppHandle,
-    source_id: String,
-    filter: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let resource = service.set_rss_filter(&source_id, &filter).await?;
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "rssState", "resource": resource }),
-    );
-    Ok(resource)
-}
-
-#[tauri::command]
-pub async fn set_rss_article_state(
-    app: tauri::AppHandle,
-    source_id: String,
-    article_id: String,
-    is_read: Option<bool>,
-    is_favorite: Option<bool>,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let resource = service
-        .set_rss_article_state(&source_id, &article_id, is_read, is_favorite)
-        .await?;
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "rssState", "resource": resource }),
-    );
-    Ok(resource)
-}
-
-#[tauri::command]
-pub async fn unsubscribe_rss(
-    app: tauri::AppHandle,
-    source_id: String,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let mut result = service.unsubscribe_rss(&source_id).await?;
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "rssState", "resource": result["resource"] }),
-    );
-    if result["listChanged"].as_bool() == Some(true) {
-        let sources = service.store.source_list_ref().map_err(|error| error.to_string())?;
-        let _ = app.emit("sources-updated", json!({
-            "requestId": 0, "resource": service.resource_descriptor(&sources),
-        }));
-    }
-    if let Some(object) = result.as_object_mut() {
-        object.remove("listChanged");
-    }
-    Ok(result)
-}
-
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ConfigurationImportSource {
@@ -150,25 +93,6 @@ pub async fn list_discovery_favorites(
     let _operation = service.operation_read().await;
     let resource = crate::discovery::favorites_resource(service.resource_store()).await?;
     Ok(json!({ "resource": service.resource_descriptor(&resource) }))
-}
-
-#[tauri::command]
-pub async fn set_discovery_favorite(
-    app: tauri::AppHandle,
-    source_id: String,
-    category_id: String,
-    favorite: bool,
-    service: State<'_, ApplicationService>,
-) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    let resource =
-        crate::discovery::set_favorite(&service, &source_id, &category_id, favorite).await?;
-    let descriptor = service.resource_descriptor(&resource);
-    let _ = app.emit(
-        "resource-updated",
-        json!({ "kind": "discoveryFavorites", "resource": descriptor }),
-    );
-    Ok(descriptor)
 }
 
 #[tauri::command]

@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
-import { refreshChapters, startBookDownload } from "../../api/tasks";
 import type { AppBootstrap, ShelfResource, ShelfSortKey, ShelfSortOrder } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
-import { taskRecoveryRequired, latestTaskUpdate, ensureTasksLoaded } from "../tasks/tasksStore";
 import ShelfLoadState from "./ShelfLoadState.vue";
 import { contentLibrary, librarySort, librarySortOrder } from "../books/contentLibraryState";
 import { shelfBooks as shelf } from "./shelfBooks";
@@ -34,13 +32,6 @@ const recoveryTitle = ref("需要重启应用完成恢复");
 const recoveryMessage = ref("");
 let restoreRevision = 0;
 const unlisteners: UnlistenFn[] = [];
-watch(taskRecoveryRequired, required => {
-  if (!required) return;
-  recoveryRequired.value = true;
-  recoveryTitle.value = "目录任务需要恢复";
-  recoveryMessage.value = latestTaskUpdate.value?.error || "请重启应用完成任务恢复后，再继续修改书架。";
-}, { immediate: true });
-
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -75,7 +66,6 @@ async function openBookInfo(bookId: string): Promise<void> {
 
 async function loadShelf(): Promise<void> {
   loading.value = false;
-  void ensureTasksLoaded().catch((error) => notify(errorText(error), "error"));
 }
 
 async function loadRestoredState(): Promise<void> {
@@ -85,7 +75,6 @@ async function loadRestoredState(): Promise<void> {
     if (currentRestoreRevision !== restoreRevision) return;
     recoveryRequired.value = false;
     recoveryMessage.value = "";
-    await ensureTasksLoaded();
   } catch (error) {
     if (currentRestoreRevision !== restoreRevision) return;
     recoveryRequired.value = true;
@@ -132,8 +121,6 @@ const shelfBatch = reactive(useShelfBatchActions({
   recoveryMessage,
   isShelfScreen: () => route.name === routeNames.shelf,
   getRestoreRevision: () => restoreRevision,
-  refreshChapters,
-  startBookDownload,
   notify,
   errorText,
 }));
@@ -316,10 +303,10 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
                     @click="shelfBatch.clearVisibleBookSelection">取消本组选择</button>
                   <button type="button"
                     :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.startSelectedTasks('catalog')">更新目录</button>
+                    @click="shelfBatch.refreshSelectedInformation()">更新目录</button>
                   <button type="button"
                     :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.startSelectedTasks('download')">下载章节</button>
+                    @click="shelfBatch.cacheSelectedBooks()">下载章节</button>
                   <label class="library-manage-sort-label">排序
                     <select :value="shelfView.shelfSortKey" :disabled="shelfBatch.batchBusy || mutationLocked"
                       @change="shelfView.changeShelfSort(($event.target as HTMLSelectElement).value as ShelfSortKey)">
@@ -339,61 +326,10 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
                     本本地书，不支持在线任务。</span>
                 </div>
               </details>
-              <section v-if="shelfBatch.taskResult" class="shelf-batch-result-inline">
-                <span>{{ shelfBatch.taskResult.operation === 'catalog' ? '目录更新' : '章节下载' }}任务：已启动 {{
-                  shelfBatch.taskResult.started.length }} 本；本地书跳过 {{ shelfBatch.taskResult.skippedLocal.length }}
-                  本；已有任务跳过 {{ shelfBatch.taskResult.skippedActive.length }} 本；当前未启动 {{ shelfBatch.taskResult.failed ? 1
-                    : 0 }} 本；后续未启动 {{ shelfBatch.taskResult.notStarted.length }} 本。</span>
-                <button class="text-button" @click="shelfBatch.taskResult = null">关闭结果</button>
-                <div class="library-cover-control">
-                  <section v-if="shelfBatch.taskResult.blockedByRecovery" class="shelf-batch-result-section error">
-                    <h3>恢复尚未完成</h3>
-                    <p>本次未启动的任务不能在重启应用完成恢复前重试。</p>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.started.length" class="shelf-batch-result-section">
-                    <h3>已创建{{ shelfBatch.taskResult.operation === 'catalog' ? '目录更新' : '章节下载' }}任务</h3>
-                    <ul>
-                      <li v-for="book in shelfBatch.taskResult.started" :key="book.taskId"><strong>{{ book.title
-                      }}</strong><span>任务 {{ book.taskId }}</span></li>
-                    </ul>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.taskListWarnings.length"
-                    class="shelf-batch-result-section warning">
-                    <h3>任务已创建，但列表刷新有提示</h3>
-                    <ul>
-                      <li v-for="warning in shelfBatch.taskResult.taskListWarnings" :key="warning.id"><strong>{{
-                        warning.title }}</strong><span>{{ warning.message }}</span></li>
-                    </ul>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.failed" class="shelf-batch-result-section error">
-                    <h3>{{ shelfBatch.taskResult.failed.outcome === 'unknown' ? '提交结果未确认' : '任务未启动' }}</h3>
-                    <ul>
-                      <li><strong>{{ shelfBatch.taskResult.failed.title }}</strong><span>{{
-                        shelfBatch.taskResult.failed.message }}</span></li>
-                    </ul>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.notStarted.length" class="shelf-batch-result-section">
-                    <h3>未启动</h3>
-                    <ul>
-                      <li v-for="book in shelfBatch.taskResult.notStarted" :key="book.id"><strong>{{ book.title
-                      }}</strong></li>
-                    </ul>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.skippedActive.length" class="shelf-batch-result-section">
-                    <h3>已有{{ shelfBatch.taskResult.operation === 'catalog' ? '目录更新' : '章节下载' }}任务，未重复启动</h3>
-                    <ul>
-                      <li v-for="book in shelfBatch.taskResult.skippedActive" :key="book.id"><strong>{{ book.title
-                      }}</strong></li>
-                    </ul>
-                  </section>
-                  <section v-if="shelfBatch.taskResult.skippedLocal.length" class="shelf-batch-result-section">
-                    <h3>本地导入书不支持在线任务</h3>
-                    <ul>
-                      <li v-for="book in shelfBatch.taskResult.skippedLocal" :key="book.id"><strong>{{ book.title
-                      }}</strong></li>
-                    </ul>
-                  </section>
-                </div>
+              <section v-if="shelfBatch.cacheResult" class="shelf-batch-result-inline">
+                <span class="muted">缓存完成 {{ shelfBatch.cacheResult.completed.length }} 本；失败 {{ shelfBatch.cacheResult.failed.length }} 本；本地书跳过 {{ shelfBatch.cacheResult.skipped }} 本。</span>
+                <button class="text-button" @click="shelfBatch.cacheResult = null">关闭结果</button>
+                <p v-for="book in shelfBatch.cacheResult.failed" :key="book.id" class="error">{{ book.title }}：{{ book.message }}</p>
               </section>
               <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
                 <label v-for="book in shelfView.visibleBooks" :key="book.id" class="library-manage-book"

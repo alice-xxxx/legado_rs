@@ -3,6 +3,9 @@
 use super::*;
 
 impl ApplicationService {
+    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    pub fn set_source_engine_app(&mut self, app: tauri::AppHandle) { self.app = Some(app); }
+
     pub async fn open_with_executor(
         root: impl Into<PathBuf>,
         executor: Arc<dyn SourceExecutor>,
@@ -87,105 +90,7 @@ impl ApplicationService {
             }
         }
         let root = store.root().to_path_buf();
-        let task_ref = store
-            .document_ref("tasks")
-            .map_err(|error| error.to_string())?;
-        let empty_tasks = json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": [] });
-        let task_document = store
-            .read_json_ref_or_default(&task_ref, empty_tasks)
-            .await
-            .map_err(|error| error.to_string())?;
-        let mut task_records = if task_document.get("schemaVersion").and_then(Value::as_u64)
-            == Some(u64::from(CURRENT_SCHEMA_VERSION))
-        {
-            serde_json::from_value::<Vec<AppTask>>(
-                task_document
-                    .get("tasks")
-                    .cloned()
-                    .unwrap_or_else(|| json!([])),
-            )
-            .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let mut task_registry = TaskRegistry {
-            records: task_records,
-            signals: HashMap::new(),
-            active_search_task_id: None,
-            search_documents: HashMap::new(),
-            search_result_documents: HashMap::new(),
-            search_replacement_contexts: HashMap::new(),
-            search_book_group_roots: HashMap::new(),
-            search_group_indexes: HashMap::new(),
-            dirty_search_results: HashSet::new(),
-            search_results_need_sort: false,
-            published_search_error_count: 0,
-        };
-        for task in &mut task_registry.records {
-            if matches!(task.kind.as_str(), "search" | "bookSourceCandidates") {
-                // Published search files are session resources and were reclaimed at startup.
-                task.result = None;
-            }
-            if task.kind == "search" {
-                // Search results are session memory. Preserve explicit stop
-                // intent, but restart resumable searches with an empty result
-                // set and a source-zero checkpoint.
-                let recovered_status = match task.status.as_str() {
-                    "cancelling" => Some("cancelled"),
-                    "pausing" => Some("paused"),
-                    "queued" | "running" => Some("interrupted"),
-                    "paused" => Some("paused"),
-                    "interrupted" => Some("interrupted"),
-                    _ => None,
-                };
-                if let Some(status) = recovered_status {
-                    task.status = status.to_owned();
-                    task.updated_at_ms = now_ms();
-                    if !matches!(status, "cancelled") {
-                        task.completed = 0;
-                        task.error = None;
-                        if let Some(search_id) = task.search_id.as_ref() {
-                            task_registry.search_documents.insert(
-                                search_id.clone(),
-                                empty_search_task_document(task),
-                            );
-                        }
-                    }
-                }
-                continue;
-            }
-            // A persisted user stop request remains effective after process loss.
-            let recovered_status = match task.status.as_str() {
-                "cancelling" => Some("cancelled"),
-                "pausing" => Some("paused"),
-                "queued" | "running" => Some("interrupted"),
-                _ => None,
-            };
-            if let Some(status) = recovered_status {
-                task.status = status.to_owned();
-                task.updated_at_ms = now_ms();
-            }
-            if task.kind == "bookSourceCandidates"
-                && !matches!(
-                    task.status.as_str(),
-                    "completed" | "failed" | "cancelled" | "recoveryRequired"
-                )
-            {
-                task.status = "failed".into();
-                task.error = Some(
-                    "Candidate search results are transient and cannot resume after restart; retry the search.".into(),
-                );
-                task.updated_at_ms = now_ms();
-            }
-        }
-        task_records = task_registry.records.clone();
-        store
-            .write_json_ref(
-                &task_ref,
-                &json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "tasks": task_records }),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        task_history::retire_task_history(&store).await?;
         let (restore_barrier, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             root,
@@ -193,19 +98,16 @@ impl ApplicationService {
             store,
             server,
             executor,
+            #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+            app: None,
             book_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            chapter_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             sources_lock: Arc::new(tokio::sync::Mutex::new(())),
             source_catalog: Arc::new(tokio::sync::Mutex::new(None)),
             source_revisions: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
-            tasks: Arc::new(tokio::sync::Mutex::new(task_registry)),
-            task_slots: Arc::new(tokio::sync::Semaphore::new(2)),
-            search_slots: Arc::new(tokio::sync::Semaphore::new(task_execution::SEARCH_CONCURRENCY)),
-            detail_preparation: Arc::new(std::sync::Mutex::new((0, None))),
-            book_notifier: Arc::new(std::sync::RwLock::new(None)),
-            task_notifier: Arc::new(std::sync::RwLock::new(None)),
-            task_recovery_notifier: Arc::new(std::sync::RwLock::new(None)),
-            search_notifiers: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            search_slots: Arc::new(tokio::sync::Semaphore::new(source_search::SEARCH_CONCURRENCY)),
+            information_cancel: tokio::sync::broadcast::channel(64).0,
+            text_cancel: tokio::sync::broadcast::channel(64).0,
+            searches: Arc::new(tokio::sync::Mutex::new(source_search::SearchRegistry::default())),
             admission_gate: Arc::new(tokio::sync::RwLock::new(())),
             operation_gate: Arc::new(tokio::sync::RwLock::new(())),
             webdav_backup_upload_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -228,23 +130,6 @@ impl ApplicationService {
     pub fn data_root(&self) -> &Path {
         &self.root
     }
-
-    pub fn set_book_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
-        if let Ok(mut target) = self.book_notifier.write() { *target = Some(notifier); }
-    }
-
-    pub fn set_task_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
-        if let Ok(mut target) = self.task_notifier.write() {
-            *target = Some(notifier);
-        }
-    }
-
-    pub fn set_task_recovery_notifier(&self, notifier: Arc<dyn Fn(Value) + Send + Sync>) {
-        if let Ok(mut target) = self.task_recovery_notifier.write() {
-            *target = Some(notifier);
-        }
-    }
-
 
     pub async fn operation_read(&self) -> OperationReadGuard {
         let mut barrier = self.restore_barrier.subscribe();
@@ -341,29 +226,7 @@ impl ApplicationService {
         lock.lock_owned().await
     }
 
-    pub(super) async fn chapter_lock(
-        &self,
-        book_id: &str,
-        chapter_id: &str,
-    ) -> tokio::sync::OwnedMutexGuard<()> {
-        let key = format!("{book_id}\0{chapter_id}");
-        let lock = {
-            let mut locks = self.chapter_locks.lock().await;
-            // The map keeps only weak references. Every in-flight waiter or
-            // OwnedMutexGuard owns a strong reference, so duplicate requests
-            // still share the same mutex while completed chapter IDs do not
-            // accumulate for the lifetime of a long reading session.
-            locks.retain(|_, lock| lock.strong_count() > 0);
-            if let Some(lock) = locks.get(&key).and_then(Weak::upgrade) {
-                lock
-            } else {
-                let lock = Arc::new(tokio::sync::Mutex::new(()));
-                locks.insert(key, Arc::downgrade(&lock));
-                lock
-            }
-        };
-        lock.lock_owned().await
-    }
+
 }
 
 fn valid_startup_settings(value: &Value) -> bool {

@@ -1,9 +1,9 @@
 import { textPosition, imagePosition, type ReaderPosition } from "./readerPosition";
 import { computed, nextTick, onScopeDispose, ref, watch } from "vue";
 import { notifyReading } from "../../api/books";
+import { mainText } from "../../api/mainText";
 import { bookContentType } from "../../api/bookContentType";
-import type { AppTask, BookResource } from "../../api/types";
-import { startChapterDownload as appStartChapterDownload } from "../../api/tasks";
+import type { BookResource } from "../../api/types";
 import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { isImageOnlyChapter, type PdfPageResource } from "./readerContent";
@@ -31,8 +31,6 @@ interface AppReaderFeatureDependencies {
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
-  startChapterDownload: typeof appStartChapterDownload;
-  reusedCatalogTaskNotice: (task: AppTask) => string;
   openOtherSettings: () => void;
   showShelfBehindReader: (book: BookResource) => Promise<void>;
 }
@@ -40,7 +38,7 @@ interface AppReaderFeatureDependencies {
 /** 组合阅读器状态和阅读相关功能。 */
 export function useAppReaderFeatures(options: AppReaderFeatureDependencies) {
 const { pdfImportPasswords, getRestoreRevision, notify, errorText,
-  startChapterDownload, reusedCatalogTaskNotice, openOtherSettings } = options;
+  openOtherSettings } = options;
 const readerVisible = ref(false);
 const readingBook = openedBook;
 const readingChapterIndex = ref(0);
@@ -543,8 +541,9 @@ async function downloadReaderBook(): Promise<void> {
   }
   readerBookDownloadBusy.value = true;
   try {
-    const response = await startChapterDownload(book.id, 0, chapterCount);
-    notify(response.reused ? reusedCatalogTaskNotice(response.task) : "全书章节缓存任务已加入。");
+    await Promise.all(book.chapters.filter(chapter => !chapter.volume).map(chapter => mainText(book.id, chapter.id, true)));
+    if (isBackupRestoreInProgress()) return;
+    notify("全书章节缓存完成。");
   } catch (error) {
     notify(`无法缓存全书章节：${errorText(error)}`, "error");
   } finally {

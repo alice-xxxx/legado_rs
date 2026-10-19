@@ -1,7 +1,9 @@
 import type { ComputedRef, Ref } from "vue";
-import { refreshBookInfo, resetBookProgress } from "../../api/books";
-import { type BookResource, type ResetBookProgressResponse } from "../../api/types";
-import { openedBook, replaceOpenedBook, refreshOpenedBook } from "./bookDetailState";
+import { moreInformation } from "../../api/moreInformation";
+import { resetBookProgress } from "../../api/books";
+import { type BookResource } from "../../api/types";
+import { openedBook, replaceOpenedBook, refreshOpenedBook, clearBookProgress } from "./bookDetailState";
+import { refreshContentLibrary } from "./contentLibraryState";
 
 type PendingProgressReset = { id: string; title: string };
 
@@ -12,8 +14,6 @@ export interface BookDetailActionsOptions {
   canRefreshInfo: ComputedRef<boolean>;
   progressResetBusy: Ref<boolean>;
   recoveryRequired: Ref<boolean>;
-  recoveryTitle: Ref<string>;
-  recoveryMessage: Ref<string>;
   pendingProgressReset: Ref<PendingProgressReset | null>;
   progressResetError: Ref<string>;
   readerProgressDirty: Ref<boolean>;
@@ -34,8 +34,6 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
     canRefreshInfo,
     progressResetBusy,
     recoveryRequired,
-    recoveryTitle,
-    recoveryMessage,
     pendingProgressReset,
     progressResetError,
     readerProgressDirty,
@@ -49,55 +47,14 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
 
   async function refreshOpenedBookInfo(): Promise<void> {
     const book = openedBook.value;
-    if (!book || !canRefreshInfo.value || infoRefreshBusy.value || recoveryRequired.value) return;
+    if (!book || !book.sourceId || !book.bookUrl || !canRefreshInfo.value || infoRefreshBusy.value || recoveryRequired.value) return;
     const revision = getRestoreRevision();
-    const bookId = book.id;
     infoRefreshBusy.value = true;
     try {
-      const response = await refreshBookInfo(bookId);
+      await moreInformation(book.sourceId, book.bookUrl);
       if (revision !== getRestoreRevision()) return;
-      const warning = response.warning?.trim() ?? "";
-      if (response.commitState !== "committed") {
-        if (response.commitState === "notCommitted") {
-          if (response.recoveryRequired) {
-            recoveryRequired.value = true;
-            recoveryTitle.value = "需要重启应用完成恢复";
-            recoveryMessage.value = `《${book.title}》的信息刷新未提交，但回滚或恢复尚未完成。请重启应用后再继续。${warning ? ` ${warning}` : ""}`;
-            notify("信息刷新未提交；恢复待完成，请重启应用。", "error");
-          } else {
-            notify(`《${book.title}》的信息刷新未提交，可以重试。${warning ? ` ${warning}` : ""}`, "error");
-          }
-        } else {
-          recoveryRequired.value = true;
-          recoveryTitle.value = "书籍信息刷新状态未知";
-          recoveryMessage.value = `《${book.title}》的信息刷新提交状态未知。请重启应用检查书籍状态后再继续。${warning ? ` ${warning}` : ""}`;
-          notify("信息刷新状态未知，已暂停书架修改；请重启应用检查。", "error");
-        }
-        return;
-      }
-
-      let bookReadError = "";
-      try {
-        await refreshOpenedBook(response.book);
-      } catch (error) {
-        bookReadError = errorText(error);
-      }
-
-      if (response.recoveryRequired && revision === getRestoreRevision()) {
-        recoveryRequired.value = true;
-        recoveryTitle.value = "需要重启应用完成恢复";
-        recoveryMessage.value = `《${book.title}》的信息已刷新，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`;
-      }
-
-      if (revision !== getRestoreRevision()) return;
-      if (bookReadError) {
-        const details = `详情未能重新载入：${bookReadError}`;
-        notify(`书籍信息已刷新，但${details}。`, "error");
-      } else if (response.recoveryRequired) {
-        notify("书籍信息已刷新，但恢复待完成；请重启应用。", "error");
-      } else {
-        notify(`书籍信息已刷新。${warning ? ` ${warning}` : ""}`);
-      }
+      await refreshOpenedBook(book.id);
+      notify(`《${book.title}》的信息已刷新。`);
     } catch (error) {
       if (revision === getRestoreRevision()) notify(`刷新书籍信息失败：${errorText(error)}`, "error");
     } finally {
@@ -138,68 +95,13 @@ export function useBookDetailActions(options: BookDetailActionsOptions) {
         if (!isCurrentRestore()) return;
       }
 
-      let response: ResetBookProgressResponse;
-      try {
-        response = await resetBookProgress(bookId);
-      } catch (error) {
-        if (!isCurrentRestore()) return;
-        const message = errorText(error);
-        pendingProgressReset.value = null;
-        recoveryRequired.value = true;
-        recoveryTitle.value = "阅读进度重置状态未确认";
-        recoveryMessage.value = `没有收到《${title}》的结构化重置结果，无法确认阅读进度是否已清除。请重启应用检查书籍状态后再继续。应用返回信息：${message}`;
-        notify("阅读进度重置状态未知，已暂停书架修改；请重启应用检查。", "error");
-        return;
-      }
-
+      await resetBookProgress(bookId);
       if (!isCurrentRestore()) return;
-      const warning = response.warning?.trim() ?? "";
-      if (response.commitState !== "committed") {
-        if (response.commitState === "notCommitted") {
-          if (response.recoveryRequired) {
-            pendingProgressReset.value = null;
-            recoveryRequired.value = true;
-            recoveryTitle.value = "需要重启应用完成进度恢复";
-            recoveryMessage.value = `《${title}》的阅读进度未重置，但回滚或恢复尚未完成。请重启应用后再继续。${warning ? ` ${warning}` : ""}`;
-            notify("阅读进度未重置；恢复待完成，请重启应用。", "error");
-          } else {
-            progressResetError.value = `《${title}》的阅读进度未重置，可以重试。${warning || "操作未提交，原进度仍保留。"}`;
-            notify(progressResetError.value, "error");
-          }
-        } else {
-          pendingProgressReset.value = null;
-          recoveryRequired.value = true;
-          recoveryTitle.value = "阅读进度重置状态未知";
-          recoveryMessage.value = `《${title}》的阅读进度重置提交状态未知。请重启应用检查书籍状态后再继续。${warning ? ` ${warning}` : ""}`;
-          notify("阅读进度重置状态未知，已暂停书架修改；请重启应用检查。", "error");
-        }
-        return;
-      }
-
+      clearBookProgress(bookId);
       pendingProgressReset.value = null;
-      let bookReadError = "";
-      try {
-        await refreshOpenedBook(response.book);
-      } catch (error) {
-        if (!isCurrentRestore()) return;
-        bookReadError = errorText(error);
-      }
-
-      if (!isCurrentRestore()) return;
-      if (response.recoveryRequired) {
-        recoveryRequired.value = true;
-        recoveryTitle.value = "需要重启应用完成进度恢复";
-        recoveryMessage.value = `《${title}》的阅读进度已重置，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`;
-      }
-
-      if (bookReadError) {
-        const details = `详情未能重新载入：${bookReadError}`;
-        notify(`《${title}》的阅读进度已重置；${details}。`, "error");
-      } else if (response.recoveryRequired) {
-        notify("阅读进度已重置，但恢复待完成；请重启应用。", "error");
-      } else {
-        notify(`《${title}》的阅读进度已重置。目录、缓存、源、书签和阅读历史已保留。${warning ? ` ${warning}` : ""}`);
-      }
+      await refreshOpenedBook(bookId);
+      await refreshContentLibrary();
+      if (isCurrentRestore()) notify(`《${title}》的阅读进度已重置。`);
     } catch (error) {
       if (isCurrentRestore()) {
         progressResetError.value = errorText(error);

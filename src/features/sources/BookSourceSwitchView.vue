@@ -22,11 +22,10 @@ defineProps<{ session: BookSourceSwitchSession; locked: boolean }>();
     <article class="app-modal source-confirm" role="dialog" aria-modal="true" aria-labelledby="source-confirm-title">
       <h2 id="source-confirm-title">确认更换源？</h2>
       <p>将《{{ session.bookSourceSwitchBook?.title }}》切换到“{{ session.selectedBookSourceCandidate.sourceName }}”。阅读位置会按新目录更新；无法匹配的书签仍会保留。</p>
-      <p v-if="session.bookSourceNeedsIdentityConfirmation" class="source-identity-warning">{{ session.bookSourceChangeError || '这个候选源缺少可核实的作者信息，请确认是同一本书。' }}</p>
-      <p v-else-if="session.bookSourceChangeError" class="source-identity-warning">{{ session.bookSourceChangeError }}</p>
+      <p v-if="session.bookSourceChangeError" class="source-identity-warning">{{ session.bookSourceChangeError }}</p>
       <div class="modal-actions">
         <button type="button" class="button secondary small" :disabled="session.bookSourceSwitchBusy" data-back-action @click="session.bookSourceSwitchConfirmOpen = false">返回</button>
-        <button type="button" class="button primary small" :disabled="session.bookSourceSwitchBusy || locked" @click="session.confirmBookSourceChange">{{ session.bookSourceSwitchBusy ? '正在更换…' : '确认书名正确并更换' }}</button>
+        <button type="button" class="button primary small" :disabled="session.bookSourceSwitchBusy || locked" @click="session.confirmBookSourceChange">{{ session.bookSourceSwitchBusy ? '正在更换…' : '确认更换' }}</button>
       </div>
     </article>
   </section>

@@ -87,12 +87,6 @@ impl ResourceStore {
         &self.inner.database
     }
 
-    pub(crate) async fn save_chapter_view(&self,book_id:&str,chapter_id:&str,chapter:&Value)->Result<(),ResourceError>{
-        let (database,book_id,chapter_id,chapter)=(self.database().clone(),book_id.to_owned(),chapter_id.to_owned(),chapter.clone());
-        tokio::task::spawn_blocking(move ||database.save_chapter_view(&book_id,&chapter_id,&chapter))
-            .await.map_err(|e|ResourceError::new(e.to_string()))?
-    }
-
     pub fn root(&self) -> &Path {
         &self.inner.root
     }
@@ -792,28 +786,6 @@ impl ResourceStore {
         Ok((reference, document))
     }
 
-    /// Validate resolved media. Its index belongs in the complete content document.
-    pub(crate) async fn write_chapter_media(
-        &self,
-        book_id: &str,
-        chapter_id: &str,
-        media_ref: &ResourceRef,
-        media_type: &str,
-        media_format: &str,
-        video_sources: &[ChapterVideoSource],
-    ) -> Result<ResourceRef, ResourceError> {
-        let (reference, document) = self.chapter_media_document(
-            book_id,
-            chapter_id,
-            media_ref,
-            media_type,
-            media_format,
-            video_sources,
-        )?;
-        let _ = document;
-        Ok(reference)
-    }
-
     pub(crate) fn chapter_media_document(
         &self,
         book_id: &str,
@@ -1372,21 +1344,7 @@ impl ResourceStoreWriterGuard {
         .map_err(|error| ResourceError::new(error.to_string()))
     }
 
-    pub(crate) fn content_replacement(
-        &self,
-        reference: &ResourceRef,
-        view: &Value,
-        state: &Value,
-    ) -> Result<crate::resource_transactions::Replacement, ResourceError> {
-        let encoded = self.store.encode_document(reference, view, Some(state))?;
-        let bytes =
-            serde_json::to_vec(&encoded).map_err(|error| ResourceError::new(error.to_string()))?;
-        crate::resource_transactions::Replacement::public_json(
-            self.store.canonical_reference(reference)?,
-            bytes,
-        )
-        .map_err(|error| ResourceError::new(error.to_string()))
-    }
+
 }
 
 fn ensure_resource_writes_recovered(root: &Path) -> Result<(), ResourceError> {

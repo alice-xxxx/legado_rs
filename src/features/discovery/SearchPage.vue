@@ -5,12 +5,12 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import type { SearchBookResult, SearchType } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import SearchHistory from "./SearchHistory.vue";
-import { useSearchHistory } from "./useSearchHistory";
+import { history, removeSearchHistory } from "../settings/historyStore";
 import { SEARCH_RESULT_ROW_HEIGHT, useSearchResultWindow } from "./useSearchResultWindow";
 import {
   searchType as selectedContentType, searchSources, selectedSourceIds, searchKeyword,
-  searchBusy, searchProgress, searchResponseErrors, searchResults,
-  searchResourceErrors, searchWasRun, searchHasMore, searchComplete, loadMoreSearchResults,
+  searchBusy, searchProgress, searchErrors, searchResults,
+  searchWasRun, searchHasMore, searchComplete, loadMoreSearchResults,
   activeSearchCancellationPending, runSearch, cancelActiveSearch,
   precisionSearch,
 } from "./searchState";
@@ -45,7 +45,11 @@ function errorText(error: unknown): string {
 }
 
 
-const { searchHistoryEntries, removeSearchHistoryEntry, clearSearchHistoryEntries } = useSearchHistory();
+const searchHistoryEntries = computed(() => history.value.search.entries);
+
+function removeSearchHistoryEntry(query?: string): void {
+  void removeSearchHistory(query).catch(error => notify(errorText(error), "error"));
+}
 
 function startNewSearch(): void {
   if (shelfBatchRecoveryRequired.value) return;
@@ -141,7 +145,6 @@ useOutsidePointerDismiss(
 );
 watch(() => router.currentRoute.value.name, () => closeSearchOptions());
 const searchErrorsOpen = ref(false);
-const searchErrors = computed(() => [...searchResponseErrors.value, ...searchResourceErrors.value]);
 const failedSourceCount = computed(() => new Set(searchErrors.value.flatMap(error => error.sourceId ? [error.sourceId] : [])).size);
 watch(() => searchErrors.value.length, count => { if (!count) searchErrorsOpen.value = false; }, { flush: "sync" });
 function onSearchErrorsToggle(event: Event): void {
@@ -263,11 +266,15 @@ watch(selectedContentType, clearResultFilters);
             <PrototypeIcon name="more" />
           </button>
           <div v-if="searchOptionsOpen" id="search-options-panel" class="search-options-panel" role="region" aria-label="搜索选项">
-            <label class="search-precision" title="只显示书名或作者包含搜索关键词的结果">
-              <input v-model="precisionSearch" type="checkbox"
+            <label class="search-precision">
+              匹配程度
+              <select v-model="precisionSearch"
                 :disabled="activeSearchCancellationPending || shelfBatchRecoveryRequired"
-                @change="searchWasRun && startNewSearch()" />
-              精准搜索
+                @change="searchWasRun && startNewSearch()">
+                <option value="exact">100% 匹配关键词</option>
+                <option value="precise">精准搜索</option>
+                <option value="none">无</option>
+              </select>
             </label>
             <section class="search-menu-section">
               <div class="search-sidebar-source-heading">
@@ -342,7 +349,7 @@ watch(selectedContentType, clearResultFilters);
         @touchmove.passive="onSearchTouchMove" @keydown="onSearchKeyDown">
         <SearchHistory v-if="!searchWasRun && searchHistoryEntries.length" :entries="searchHistoryEntries"
           @use-query="reuseSearchQuery" @delete-query="removeSearchHistoryEntry"
-          @clear-all="clearSearchHistoryEntries" />
+          @clear-all="removeSearchHistoryEntry()" />
         <div v-else-if="!searchWasRun" class="page-empty-state search-start-state">
           <span class="empty-state-glyph"><PrototypeIcon name="search" /></span>
           <strong>{{ searchSources.length ? '找到下一本想读的书' : '先添加内容来源' }}</strong>

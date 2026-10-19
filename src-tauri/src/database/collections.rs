@@ -55,39 +55,6 @@ const ARTICLE: &[Field] = &[
     ("content_ref", "contentRef", Text),
 ];
 
-pub(super) fn save_rule(
-    db: &Connection,
-    kind: &str,
-    id: &str,
-    value: &Value,
-) -> Result<(), ResourceError> {
-    let (table, fields) = match kind {
-        "replacementRules" => ("replacement_rules", REPLACEMENT),
-        "txtTocRules" => ("txt_toc_rules", TOC),
-        "httpTtsConfigs" => ("http_tts_configs", TTS),
-        _ => return Err(ResourceError::new("Unknown configuration kind")),
-    };
-    if value.is_null() {
-        db.execute(&format!("DELETE FROM {table} WHERE id=?1"), [id])?;
-        return Ok(());
-    }
-    let position: i64 = db
-        .query_row(
-            &format!("SELECT position FROM {table} WHERE id=?1"),
-            [id],
-            |r| r.get(0),
-        )
-        .optional()?
-        .unwrap_or(db.query_row(
-            &format!("SELECT coalesce(max(position)+1,0) FROM {table}"),
-            [],
-            |r| r.get(0),
-        )?);
-    let mut value = value.clone();
-    value["_position"] = json!(position);
-    rows::upsert(db, table, fields, &["id"], &value)
-}
-
 pub(super) fn clean(mut value: Value) -> Value {
     if let Some(o) = value.as_object_mut() {
         o.retain(|k, _| !k.starts_with('_'));
@@ -199,11 +166,20 @@ pub(super) fn save_source(
 ) -> Result<(), ResourceError> {
     let record: crate::application::SourceRecord =
         serde_json::from_value(value.clone()).map_err(|e| ResourceError::new(e.to_string()))?;
-    let metadata =
-        crate::application::source_metadata_rows(std::slice::from_ref(&record)).remove(0);
-    db.execute("INSERT INTO sources(id,position,name,source_group,enabled,definition_json,is_rss,content_type,search_type,media_type,can_search,can_detail,can_toc,can_content,user_agent_override) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15) ON CONFLICT(id) DO UPDATE SET position=excluded.position,name=excluded.name,source_group=excluded.source_group,enabled=excluded.enabled,definition_json=excluded.definition_json,is_rss=excluded.is_rss,content_type=excluded.content_type,search_type=excluded.search_type,media_type=excluded.media_type,can_search=excluded.can_search,can_detail=excluded.can_detail,can_toc=excluded.can_toc,can_content=excluded.can_content,user_agent_override=excluded.user_agent_override",
-      params![record.id,position as i64,record.name,record.group,record.enabled,record.source.to_string(),metadata.is_rss,metadata.content_type,metadata.search_type,metadata.media_type,metadata.capabilities.search,metadata.capabilities.detail,metadata.capabilities.toc,metadata.capabilities.content,metadata.user_agent_override])?;
-    Ok(())
+    super::write::apply(db, Change::Upsert {
+        table: "sources".into(), keys: vec!["id".into()],
+        values: source_values(position, &record),
+    })
+}
+
+pub(super) fn source_values(position: usize, record: &crate::application::SourceRecord) -> Map<String, Value> {
+    let metadata = crate::application::source_metadata_rows(std::slice::from_ref(record)).remove(0);
+    json!({"id":record.id,"position":position,"name":record.name,"source_group":record.group,
+            "enabled":record.enabled,"definition_json":record.source,"is_rss":metadata.is_rss,
+            "content_type":metadata.content_type,"search_type":metadata.search_type,"media_type":metadata.media_type,
+            "can_search":metadata.capabilities.search,"can_detail":metadata.capabilities.detail,
+            "can_toc":metadata.capabilities.toc,"can_content":metadata.capabilities.content,
+            "user_agent_override":metadata.user_agent_override}).as_object().unwrap().clone()
 }
 
 pub(super) fn library(db: &Connection) -> Result<Value, ResourceError> {

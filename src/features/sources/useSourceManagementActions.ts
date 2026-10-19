@@ -1,5 +1,5 @@
 import { computed, ref, type Ref } from "vue";
-import { sources, bookSourceCandidates, mutateSources as mutateSource, readSourceDefinitionJson, saveSourceMetadata, saveSourceDefinition, exportSourceDefinitions, type SourceMetadataChanges } from "./sourcesStore";
+import { sources, bookSourceCandidates, importSourceDefinitionsFrom, removeSources, readSourceDefinitionJson, saveSourceMetadata, saveSourceDefinition, exportSourceDefinitions, type SourceMetadataChanges } from "./sourcesStore";
 import type { SourceMetadata } from "../../api/types";
 import { shelfBatchRecoveryRequired as recoveryRequired } from "../../app/recoveryState";
 
@@ -194,8 +194,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceImportBusy.value = true;
     try {
-      const response = await mutateSource({ kind: "local" });
-      if ("cancelled" in response && response.cancelled) return;
+      if (!await importSourceDefinitionsFrom({ kind: "local" })) return;
       if (revision !== getRestoreFrontendRevision()) return;
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportOpen.value = false;
@@ -215,10 +214,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceImportBusy.value = true;
     try {
-      await mutateSource({
-        kind: "url",
-        url,
-      });
+      await importSourceDefinitionsFrom({ kind: "url", url });
       if (revision !== getRestoreFrontendRevision()) return;
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportUrl.value = "";
@@ -265,10 +261,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceRemovalBusy.value = true;
     try {
-      const result = await mutateSource({
-        kind: "delete",
-        sourceIds: targets,
-      });
+      await removeSources(targets);
       if (revision !== getRestoreFrontendRevision()) return;
       // Rust has committed removal. Do not leave a confirm dialog that can
       // accidentally submit the same destructive operation a second time.
@@ -276,9 +269,7 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
       selectedSourceRows.value = selectedSourceRows.value.filter((id) => !removed.has(id));
       pendingSourceRemoval.value = [];
       if (revision !== getRestoreFrontendRevision()) return;
-      const cleanupWarning = "cleanupWarning" in result ? result.cleanupWarning : undefined;
-      const cleanupPending = "cleanupPending" in result && result.cleanupPending;
-      notify(cleanupWarning || "所选源已移除。", cleanupPending ? "error" : "success");
+      notify("所选源已移除。", "success");
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
       notify(`删除源失败：${errorText(error)}`, "error");

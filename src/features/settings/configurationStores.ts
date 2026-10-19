@@ -1,12 +1,22 @@
 import type { TxtTocRulesDocument } from "../../api/settings";
 import { computed, nextTick, ref, type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { command } from "../../api/ipc";
+import { modifyDatabase, type DatabaseChange } from "../../api/feDb";
 import { readConfiguration } from "../../api/database";
 import type { AppBootstrap, DisplayReplacementRule, HttpTtsConfigResource } from "../../api/types";
 
 type ConfigurationKind = "replacementRules" | "txtTocRules" | "httpTtsConfigs";
-type RuleUpdatedEvent = { kind: ConfigurationKind; ruleId: string; requestId: number };
+const tables = { replacementRules: "replacement_rules", txtTocRules: "txt_toc_rules", httpTtsConfigs: "http_tts_configs" };
+
+function ruleChange(kind: ConfigurationKind, id: string, rule: unknown, position: number): DatabaseChange {
+  const table = tables[kind];
+  if (!rule) return { action: "delete", table, filter: { id } };
+  const value = rule as Record<string, unknown>;
+  const values = kind === "httpTtsConfigs" ? { id, position, name: value.name, enabled: value.enabled, definition_json: value.config } :
+    kind === "txtTocRules" ? { id, position, name: value.name, rule: value.rule, example: value.example ?? null, serial_number: value.serialNumber ?? null, enabled: value.enable } :
+    { id, position, name: value.name, pattern: value.pattern, replacement: value.replacement, enabled: value.enabled, is_regex: value.isRegex, scope: value.scope };
+  return { action: "upsert", table, keys: ["id"], values };
+}
 
 // Mutations name the changed entry; reading or applying a response never writes it back.
 function configurationStore<T, R extends { id: string }>(kind: ConfigurationKind, initial: T, entries: (document: T) => R[]) {
@@ -22,7 +32,8 @@ function configurationStore<T, R extends { id: string }>(kind: ConfigurationKind
       const changes = [...pending];
       pending.clear();
       for (const [ruleId, { id, rule }] of changes) {
-        void command("save_configuration_rule", { kind, ruleId, rule, requestId: id }).catch(console.error);
+        void modifyDatabase([ruleChange(kind, ruleId, rule, items.value.findIndex(item => item.id === ruleId))])
+          .then(() => updateRule(ruleId, id)).catch(console.error);
       }
     });
     pending.set(ruleId, { id, rule });
@@ -48,21 +59,18 @@ function configurationStore<T, R extends { id: string }>(kind: ConfigurationKind
     save(ruleId, null);
   }
 
-  async function updateRule(event: RuleUpdatedEvent): Promise<void> {
-    if (requests.get(event.ruleId) !== event.requestId) return;
-    const document = await readConfiguration<T>(kind, event.ruleId);
+  async function updateRule(ruleId: string, id: number): Promise<void> {
+    if (requests.get(ruleId) !== id) return;
+    const document = await readConfiguration<T>(kind, ruleId);
     await nextTick();
-    if (requests.get(event.ruleId) !== event.requestId) return;
-    const rule = entries(document).find(item => item.id === event.ruleId);
-    apply(event.ruleId, rule ?? null);
-    requests.delete(event.ruleId);
+    if (requests.get(ruleId) !== id) return;
+    const rule = entries(document).find(item => item.id === ruleId);
+    apply(ruleId, rule ?? null);
+    requests.delete(ruleId);
   }
 
   async function load(): Promise<void> {
     state.value = await readConfiguration<T>(kind);
-    await listen<RuleUpdatedEvent>("resource-updated", ({ payload }) => {
-      if (payload.kind === kind) void updateRule(payload).catch(console.error);
-    });
     await listen<AppBootstrap>("app-state-updated", async () => {
       const id = ++requestId;
       requests.clear();

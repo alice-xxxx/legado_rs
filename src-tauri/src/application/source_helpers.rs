@@ -496,25 +496,6 @@ pub(super) fn valid_user_agent_override(source: &Value) -> Option<String> {
         .then(|| value.to_owned())
 }
 
-pub(super) fn can_change_source_from_private(private: &Value) -> bool {
-    private
-        .get("sourceId")
-        .and_then(Value::as_str)
-        .is_some_and(|source_id| !source_id.trim().is_empty())
-        && private.get("book").is_some_and(Value::is_object)
-        && private.get("chapters").and_then(Value::as_array).is_some()
-}
-
-pub(super) fn set_optional_public_field(document: &mut Value, key: &str, value: Option<Value>) {
-    if let Some(fields) = document.as_object_mut() {
-        if let Some(value) = value {
-            fields.insert(key.to_owned(), value);
-        } else {
-            fields.remove(key);
-        }
-    }
-}
-
 #[cfg(test)]
 mod login_form_tests {
     use super::*;
@@ -608,4 +589,108 @@ mod login_form_tests {
         input["layout"].as_array_mut().unwrap().pop();
         assert!(sanitize_source_login_form(&input).is_err());
     }
+}
+
+impl ApplicationService {
+    pub(crate) async fn source_record(&self, source_id: &str) -> Result<SourceRecord, String> {
+        self.find_source(source_id).await
+    }
+
+    /// Hold source metadata stable while an RSS request publishes its
+    /// category/article/state resources. Removing or changing a subscription
+    /// uses the same mutex, so a delayed response cannot recreate its state.
+    pub(crate) async fn lock_rss_source_snapshot(
+        &self,
+        expected: &SourceRecord,
+    ) -> Result<tokio::sync::OwnedMutexGuard<()>, String> {
+        let guard = self.sources_lock.clone().lock_owned().await;
+        let current = self
+            .lookup_source(&expected.id)
+            .await?
+            .ok_or_else(|| "RSS source was removed while the request was running".to_owned())?;
+        if !current.enabled
+            || current.source != expected.source
+            || !crate::source_metadata::is_rss_source_metadata(&current.source)
+        {
+            return Err("RSS source changed while the request was running".to_owned());
+        }
+        Ok(guard)
+    }
+
+    pub(crate) async fn execute_source_operation(
+        &self,
+        source_id: &str,
+        operation: &str,
+        keyword: Option<String>,
+        page: Option<u32>,
+        book: Option<Value>,
+        chapter: Option<Value>,
+        next_chapter_url: Option<String>,
+    ) -> Result<Value, String> {
+        if matches!(operation, "search" | "searchBatch") {
+            return Err("Search must use the search entry point".into());
+        }
+        if matches!(operation, "bookInfo" | "rssBookInfo") {
+            return Err("Book details must use the more_information entry point".into());
+        }
+        if matches!(operation, "content" | "rssContent") {
+            return Err("Chapter content must use the main_text entry point".into());
+        }
+        let source = self.find_source(source_id).await?;
+        self.executor
+            .execute(engine_request(
+                operation,
+                &source.source,
+                keyword,
+                page.map(|page| page as i32),
+                book,
+                chapter,
+                next_chapter_url,
+            ))
+            .await
+    }
+
+}
+
+impl ApplicationService {
+    // 发现与 RSS 的结果仅在此投影和缓存，不在此发起搜索。
+    pub(crate) async fn store_processed_results(
+        &self,
+        keyword: &str,
+        page: u32,
+        source_results: Vec<(SourceRecord, Value)>,
+        errors: Vec<Value>,
+    ) -> Result<Value, String> {
+        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
+        let mut public_results = Vec::with_capacity(source_results.len());
+        let mut private_results = Vec::with_capacity(source_results.len());
+        for (source, book) in source_results {
+            let result_id = source_book_id(&source, &book);
+            let leaf = project_search_result(&result_id, &source, &book);
+            let cache = json!({
+                "searchId": search_id,
+                "sourceId": source.id,
+                "book": book,
+                "result": leaf
+            });
+            public_results.push(serde_json::to_value(leaf).map_err(|error| error.to_string())?);
+            private_results.push((result_id, cache));
+        }
+        self.searches
+            .lock()
+            .await
+            .search_result_documents
+            .extend(private_results);
+        let count = public_results.len();
+        let document = json!({
+            "searchId": search_id,
+            "keyword": keyword,
+            "page": page.max(1),
+            "results": public_results,
+            "errors": errors,
+            "complete": true,
+        });
+        Ok(json!({ "search": document, "bookCount": count, "errors": errors }))
+    }
+
 }

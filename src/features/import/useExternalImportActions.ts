@@ -4,18 +4,20 @@ import { computed, ref, watch, type Ref } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles, prepareBookFromUrl } from "../../api/books";
+import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles } from "../../api/books";
 import { type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule, type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
 import { prepareDeepLinkImport } from "../../api/settings";
-import { readBook } from "../../api/database";
-import { mutateSources as mutateSource } from "../sources/sourcesStore";
+import { readMoreInformation, readSources, readSourceDefinition } from "../../api/database";
+import { moreInformation } from "../../api/moreInformation";
+import { libraryType } from "../books/contentLibraryState";
+import { importSourceDefinitions } from "../sources/sourcesStore";
 import { replacementRuleStore, txtTocRuleStore, httpTtsStore } from "../settings/configurationStores";
 import { requestBookDetailOpen, discardBookDetailOpenRequest } from "../books/bookDetailOpenRequest";
 import { parseDeepLink, parseImportInput, deepLinkLabels, type ImportKind, type PendingImportLink } from "./deepLinks";
 import router, { routeNames } from "../../router";
 import type { ReaderSession } from "../reader/readerSession";
 
-type ImportEntry = { key: string; name: string; data: Record<string, unknown> };
+type ImportEntry = { key: string; name: string; data: Record<string, unknown>; json?: string };
 
 interface ExternalImportOptions {
   unlisteners: UnlistenFn[];
@@ -208,11 +210,30 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     try {
       if (!await closeReaderForImport(revision) || !isCurrent()) return;
       if (pending.kind === "read" || pending.kind === "addToBookshelf") {
-        const response = await prepareBookFromUrl(pending.url, pending.kind === "read");
+        const optionStart = pending.url.search(/,\s*\{/);
+        const url = new URL(optionStart < 0 ? pending.url : pending.url.slice(0, optionStart));
+        const origin = optionStart < 0 ? undefined : JSON.parse(pending.url.slice(optionStart + 1)).origin;
+        let sourceId = "";
+        for (const source of (await readSources()).filter(source => source.enabled && !source.isRss)) {
+          const definition = JSON.parse(await readSourceDefinition(source.id));
+          const base = definition.bookSourceUrl;
+          let matches = origin ? base === origin : false;
+          if (!origin) {
+            try { matches = new URL(base).origin === url.origin; } catch { /* 继续按 URL 规则匹配。 */ }
+            if (!matches && definition.bookUrlPattern) {
+              try { matches = new RegExp(`^(?:${definition.bookUrlPattern})$`).test(pending.url); } catch { /* 跳过无效规则。 */ }
+            }
+          }
+          if (matches) { sourceId = source.id; break; }
+        }
+        if (!sourceId) throw new Error("未找到匹配书源");
+        await moreInformation(sourceId, pending.url);
         if (!isCurrent()) return;
-        const book = await readBook(response.book.bookId);
+        const book = await readMoreInformation(sourceId, pending.url);
+        const inShelf = libraryType(book.id) !== undefined;
+        if (pending.kind === "addToBookshelf" && inShelf) throw new Error("已在书架");
         if (!isCurrent()) return;
-        if (pending.kind === "read" && response.inShelf) {
+        if (pending.kind === "read" && inShelf) {
           await router.push({ name: routeNames.shelf });
           if (isCurrent()) await options.getReaderSession().startReading(book);
         } else {
@@ -237,10 +258,12 @@ export function useExternalImportActions(options: ExternalImportOptions) {
       importKind.value = prepared.kind;
       const items = prepared.document[prepared.kind === "sources" ? "sources" : prepared.kind === "httpTtsConfigs" ? "configs" : "rules"];
       if (!Array.isArray(items) || !items.length) throw new Error("没有可导入的内容");
-      importEntries.value = items.map((data: Record<string, unknown>, index) => ({
-        key: String(index), data,
-        name: String(data.bookSourceName ?? data.sourceName ?? data.name ?? data.bookSourceUrl ?? data.sourceUrl ?? "未命名"),
-      }));
+      importEntries.value = items.map((item, index) => {
+        const json = typeof item === "string" ? item : undefined;
+        const data = json ? JSON.parse(json) as Record<string, unknown> : item as Record<string, unknown>;
+        return { key: String(index), data, json,
+          name: String(data.bookSourceName ?? data.sourceName ?? data.name ?? data.bookSourceUrl ?? data.sourceUrl ?? "未命名") };
+      });
       selectedImportKeys.value = importEntries.value.map(entry => entry.key);
     } catch (error) {
       if (isCurrent()) {
@@ -279,7 +302,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     importLinkOpening.value = true;
     importError.value = "";
     try {
-      if (kind === "sources") await mutateSource({ kind: "save", id: null, json: JSON.stringify(selected.map(entry => entry.data)) });
+      if (kind === "sources") await importSourceDefinitions(selected.map(entry => entry.json!));
       else for (const { data } of selected) {
         if (kind === "replacementRules") replacementRuleStore.update(data as unknown as DisplayReplacementRule);
         else if (kind === "txtTocRules") txtTocRuleStore.update(data as unknown as TxtTocRule);

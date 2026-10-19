@@ -13,7 +13,12 @@ mod collections;
 mod discovery;
 mod history;
 mod rows;
+mod sources;
 mod tasks;
+mod write;
+pub(crate) use write::Change;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+pub(crate) mod fe_db;
 pub(crate) const FILE_NAME: &str = "library.sqlite3";
 const ROOTS: &[&str] = &[
     "sources.json",
@@ -80,6 +85,7 @@ pub(crate) struct Database {
     _settings: Arc<crate::configuration::FileOwner>,
 }
 impl Database {
+    #[cfg(test)]
     pub(crate) fn save_task_changes(
         &self,
         created: Option<Value>,
@@ -103,38 +109,6 @@ impl Database {
         now: u64,
     ) -> Result<(), ResourceError> {
         self.transaction(move |db| history::record_search(db, &id, &query, &normalized, now))
-    }
-    pub(crate) fn save_bookmark(
-        &self,
-        book_id: String,
-        bookmark: Value,
-    ) -> Result<(), ResourceError> {
-        self.transaction(move |db| history::save_bookmark(db, &book_id, &bookmark))
-    }
-    pub(crate) fn remove_bookmark(&self, book_id: String, id: String) -> Result<(), ResourceError> {
-        self.transaction(move |db| {
-            db.execute(
-                "DELETE FROM bookmarks WHERE book_id=?1 AND id=?2",
-                params![book_id, id],
-            )?;
-            Ok(())
-        })
-    }
-    pub(crate) fn record_session(
-        &self,
-        session: crate::reading_tools::ReadingSession,
-    ) -> Result<(), ResourceError> {
-        self.transaction(move |db| history::record_session(db, &session))
-    }
-    pub(crate) fn remove_search_history(&self, query: Option<String>) -> Result<(), ResourceError> {
-        self.transaction(move |db| {
-            if let Some(query) = query {
-                db.execute("DELETE FROM search_history WHERE query=?1", [query])?;
-            } else {
-                db.execute("DELETE FROM search_history", [])?;
-            }
-            Ok(())
-        })
     }
     pub(crate) fn at(root: &Path) -> Self {
         let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_owned());
@@ -185,6 +159,15 @@ impl Database {
         db.busy_timeout(Duration::from_secs(5))?;
         db.pragma_update(None, "foreign_keys", true)?;
         Ok(db)
+    }
+    pub(crate) fn information_seed(&self, source_id: &str, book_url: &str, kind: &str) -> Result<Option<Value>, ResourceError> {
+        let json = self.connect()?.query_row("SELECT engine_json FROM books WHERE source_id=?1 AND kind=?3 AND coalesce(json_extract(engine_json,'$.bookUrl'),json_extract(engine_json,'$.url'))=?2 UNION ALL SELECT engine_json FROM alternative_sources WHERE source_id=?1 AND engine_url=?2 LIMIT 1",
+            params![source_id,book_url,kind], |row|row.get::<_, Option<String>>(0)).optional()?.flatten();
+        json.map(|json|serde_json::from_str(&json).map_err(|error|ResourceError::new(error.to_string()))).transpose()
+    }
+    pub(crate) fn information_id(&self, source_id: &str, book_url: &str, kind: &str) -> Result<Option<String>, ResourceError> {
+        Ok(self.connect()?.query_row("SELECT id FROM books WHERE source_id=?1 AND kind=?3 AND coalesce(json_extract(engine_json,'$.bookUrl'),json_extract(engine_json,'$.url'))=?2 ORDER BY id LIMIT 1",
+            params![source_id,book_url,kind], |row|row.get(0)).optional()?)
     }
     pub(crate) fn file_path(&self) -> PathBuf {
         self.root.join(FILE_NAME)
@@ -285,17 +268,6 @@ impl Database {
             books::set_media(db, &id, &key, value.as_ref())
         })
     }
-    pub(crate) fn merge_alternatives(
-        &self,
-        path: &str,
-        values: Vec<Value>,
-    ) -> Result<bool, ResourceError> {
-        let path = path.to_owned();
-        self.transaction(move |db| {
-            let id = book_id(db, &path)?;
-            books::merge_alternatives(db, &id, &values)
-        })
-    }
     pub(crate) fn media(&self) -> Result<Vec<(String, Value)>, ResourceError> {
         books::all_media(&self.connect()?)
     }
@@ -307,6 +279,7 @@ impl Database {
         tx.commit()?;
         Ok(value)
     }
+    #[cfg(test)]
     pub(crate) fn save_chapter_view(
         &self,
         id: &str,
@@ -316,16 +289,14 @@ impl Database {
         let (id, chapter_id, view) = (id.to_owned(), chapter_id.to_owned(), view.clone());
         self.transaction(move |db| books::save_chapter_view(db, &id, &chapter_id, &view))
     }
-    pub(crate) fn save_rule(
-        &self,
-        kind: &str,
-        id: &str,
-        value: &Value,
-    ) -> Result<(), ResourceError> {
-        let (kind, id, value) = (kind.to_owned(), id.to_owned(), value.clone());
-        self.transaction(move |db| collections::save_rule(db, &kind, &id, &value))
-    }
 
+    /// 只更新对应章节的缓存字段，取消时保留原缓存。
+    pub(crate) fn save_main_text(&self, id: String, chapter_id: String, view: Value, token: tokio_util::sync::CancellationToken) -> Result<(), ResourceError> {
+        self.transaction(move |db| {
+            if token.is_cancelled() { return Err(ResourceError::new("Chapter content cancelled")); }
+            books::save_chapter_view(db, &id, &chapter_id, &view)
+        })
+    }
     pub(crate) fn save_library_positions(
         &self,
         shelf: crate::models::ShelfDocument,
@@ -353,14 +324,6 @@ impl Database {
                 "DELETE FROM sources WHERE id NOT IN (SELECT value FROM json_each(?1))",
                 [serde_json::to_string(&ids).map_err(|e| ResourceError::new(e.to_string()))?],
             )?;
-            Ok(())
-        })
-    }
-    pub(crate) fn reset_progress(&self, path: &str) -> Result<(), ResourceError> {
-        let path = path.to_owned();
-        self.transaction(move |db| {
-            let id = book_id(db, &path)?;
-            db.execute("DELETE FROM reading_progress WHERE book_id=?1", [id])?;
             Ok(())
         })
     }

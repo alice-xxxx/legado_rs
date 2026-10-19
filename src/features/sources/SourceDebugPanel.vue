@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ResourceDescriptor, SearchBookResult, SourceDebugResponse, SourceMetadata } from "../../api/types";
+import type { ResourceDescriptor, SearchBookResult, BookResource, SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 
 defineProps<{
@@ -9,13 +9,13 @@ defineProps<{
   busy: boolean;
   searchResultBatchBusy: boolean;
   recoveryRequired: boolean;
-  stage: SourceDebugResponse["stage"] | null;
+  stage: "result" | "source" | "detail" | "catalog" | "chapter" | null;
   error: string;
   searchErrors: Array<{ sourceId?: string; message: string }>;
   results: SearchBookResult[];
   searched: boolean;
   selectedResult: SearchBookResult | null;
-  book: SourceDebugResponse["book"] | null;
+  book: BookResource | null;
   chapters: Array<{ index: number; title: string }>;
   selectedChapterIndex: number | null;
   chapterResource: ResourceDescriptor | null;

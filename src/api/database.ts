@@ -11,6 +11,11 @@ export function assetUrl(kind: ContentType, id: string, name: string): string {
   return new URL(path, assetBase).href;
 }
 
+/** 数据库存稳定资源地址，不保存带端口和令牌的运行时访问地址。 */
+export function storedAssetUrl(url: string): string {
+  return assetBase && url.startsWith(assetBase) ? `resource://${url.slice(assetBase.length)}` : url;
+}
+
 type Row = Record<string, any>;
 type Table = { table: string; fields: string; where?: string };
 function fields(mapping: string): string[] { return mapping.split(" ").filter(Boolean); }
@@ -82,12 +87,12 @@ export async function readLibrary(): Promise<ContentLibrary> {
 
 export async function readBook(id: string): Promise<BookResource> {
   const [metadata, chapters, pages, streams, tags, alternatives, progressRows] = await tables([
-    { table: "books", fields: "id kind title author intro cover source_id:sourceId source_name:sourceName source_group:sourceGroup word_count:wordCount original_json:original page_count:pageCount document_url:url updated_at_ms:updatedAtMs chapter_count:chapterCount latest_title:latestChapter title_override:titleOverride author_override:authorOverride intro_override:introOverride cover_override:coverOverride (engine_json!=char(0)):hasEngine", where: "WHERE id=$1" },
+    { table: "books", fields: "id kind title author intro cover source_id:sourceId source_name:sourceName source_group:sourceGroup coalesce(json_extract(engine_json,'$.bookUrl'),json_extract(engine_json,'$.url')):bookUrl word_count:wordCount original_json:original page_count:pageCount document_url:url updated_at_ms:updatedAtMs chapter_count:chapterCount latest_title:latestChapter title_override:titleOverride author_override:authorOverride intro_override:introOverride cover_override:coverOverride (engine_json!=char(0)):hasEngine", where: "WHERE id=$1" },
     { table: "chapters", fields: "id position:index title is_volume:volume resource_url:url duration_ms:durationMs protocol", where: "WHERE book_id=$1 ORDER BY position" },
     { table: "chapter_pages", fields: "chapter_id:chapterId id url width height", where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
     { table: "chapter_streams", fields: "chapter_id:chapterId label url protocol", where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
     { table: "book_tags", fields: "tag", where: "WHERE book_id=$1 ORDER BY position" },
-    { table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName title author cover latest", where: "WHERE book_id=$1 ORDER BY position" },
+    { table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" },
     { table: "book_previews", fields: previewFields, where: "WHERE id=$1" },
   ], [id]);
   // The preview is selected in the same statement; no separate metadata request races a catalog replacement.
@@ -106,7 +111,7 @@ export async function readBook(id: string): Promise<BookResource> {
   const catalog = chapters!.map(chapter => {
     const next: Row = { ...optional(chapter), volume: !!chapter.volume };
     if (chapter.url) next.resource = descriptor(chapter.url);
-    if (pageMap.has(chapter.id)) next.pages = pageMap.get(chapter.id)!.map(page => ({ ...optional(page), src: assetUrl(type, id, page.url) }));
+    if (pageMap.has(chapter.id)) next.pages = pageMap.get(chapter.id)!.map(page => ({ ...optional(page), url: descriptor(page.url).resourceId, src: assetUrl(type, id, page.url) }));
     if (type === "audio" || type === "video") {
       const sources = streamMap.get(chapter.id) ?? [];
       const selected = progress.chapterId === chapter.id ? sources.find(source => source.label === progress.quality && source.url) : undefined;
@@ -133,13 +138,13 @@ export async function readCategories(sourceId: string): Promise<DiscoveryCategor
 
 export async function readTasks(): Promise<AppTask[]> {
   const [tasks, chapters, sources] = await tables([
-    { table: "tasks", fields: "id kind status book_id:bookId keyword source_type:sourceType precision_search:precisionSearch page from_index:fromIndex total completed check_only:checkOnly search_id:searchId result_json:result error created_at_ms:createdAtMs updated_at_ms:updatedAtMs", where: "ORDER BY position" },
+    { table: "tasks", fields: "id kind status book_id:bookId keyword source_type:sourceType precision_search:precisionSearch page from_index:fromIndex total completed search_id:searchId result_json:result error created_at_ms:createdAtMs updated_at_ms:updatedAtMs", where: "ORDER BY position" },
     { table: "task_chapters", fields: "task_id:taskId chapter_id:id", where: "ORDER BY task_id,position" },
     { table: "task_sources", fields: "task_id:taskId source_id:id", where: "ORDER BY task_id,position" },
   ]);
   const index = (values: Row[]) => { const map = new Map<string, string[]>(); for (const row of values) { const ids = map.get(row.taskId) ?? []; ids.push(row.id); map.set(row.taskId, ids); } return map; };
   const chapterIds = index(chapters!), sourceIds = index(sources!);
-  return tasks!.map(row => ({ ...booleans(optional(row), "precisionSearch", "checkOnly"), result: row.result ? JSON.parse(row.result) : undefined,
+  return tasks!.map(row => ({ ...booleans(optional(row), "precisionSearch"), result: row.result ? JSON.parse(row.result) : undefined,
     chapterIds: chapterIds.get(row.id), sourceIds: sourceIds.get(row.id) })) as AppTask[];
 }
 
@@ -180,4 +185,11 @@ export async function readHistory(): Promise<HistoryResource> {
   const groupedDays = new Map<string, Row[]>();
   for (const row of dayBooks!) { const values = groupedDays.get(row.day) ?? []; values.push(row); groupedDays.set(row.day, values); }
   return { schemaVersion: 2, reading: { sessions, books, days: days!.map(day => ({ ...day, books: groupedDays.get(day.day) ?? [] })), ...totals![0] }, search: { entries, processedSearchIds: ids!.map(row => row.id) }, bookmarks: grouped } as HistoryResource;
+}
+
+/** 与写入接口使用相同的来源和 URL，直接读详情存储。 */
+export async function readMoreInformation(sourceId: string, bookUrl: string): Promise<BookResource> {
+  const rows = await database.select<Array<{ id: string }>>(`SELECT b.id FROM books b JOIN sources s ON s.id=b.source_id AND s.content_type=b.kind WHERE b.source_id=$1 AND coalesce(json_extract(b.engine_json,'$.bookUrl'),json_extract(b.engine_json,'$.url'))=$2 ORDER BY b.id LIMIT 1`, [sourceId, bookUrl]);
+  if (!rows[0]) throw new Error("详情尚未保存");
+  return readBook(rows[0].id);
 }

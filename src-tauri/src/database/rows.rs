@@ -1,7 +1,6 @@
 //! Fixed, domain-specific row mappings at the JSON API boundary.
 use crate::resources::ResourceError;
 use rusqlite::{
-    params_from_iter,
     types::{Value as SqlValue, ValueRef},
     Connection, Params,
 };
@@ -66,19 +65,6 @@ pub(super) fn upsert(
     keys: &[&str],
     value: &Value,
 ) -> Result<(), ResourceError> {
-    let columns = fields.iter().map(|f| f.0).collect::<Vec<_>>();
-    let updates = columns
-        .iter()
-        .filter(|column| !keys.contains(column))
-        .map(|c| format!("{c}=excluded.{c}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    let sql = format!(
-        "INSERT INTO {table}({}) VALUES({}) ON CONFLICT({}) DO UPDATE SET {updates}",
-        columns.join(","),
-        vec!["?"; fields.len()].join(","),
-        keys.join(",")
-    );
     let values = fields
         .iter()
         .map(|(_, name, kind)| {
@@ -103,8 +89,8 @@ pub(super) fn upsert(
             }
         })
         .collect::<Vec<_>>();
-    db.execute(&sql, params_from_iter(values))?;
-    Ok(())
+    super::write::insert(db, table, fields.iter().zip(values).map(|(field, value)| (field.0.to_owned(), value)).collect(),
+        Some(&keys.iter().map(|key| (*key).to_owned()).collect::<Vec<_>>()))
 }
 
 pub(super) fn array<'a>(value: &'a Value, name: &str) -> &'a [Value] {
