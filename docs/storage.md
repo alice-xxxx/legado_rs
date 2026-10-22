@@ -4,7 +4,7 @@
 
 ## 边界
 
-`db.rs` 是唯一能创建连接、执行语句、提交事务的文件；其 `read/write` 仅供 database 内部使用。其他文件定义固定业务操作，例如 `record_reading_time(session)`、`save_reading_progress(book_id, progress)`；外部不需要知道表结构或 SQL。
+`db.rs` 是唯一能创建连接、执行语句、提交事务的文件；其 `read/write` 仅供 database 内部使用。固定写入通过 `Mutation` 枚举和 `Database::submit` 提交；外部不需要知道表结构或 SQL。
 
 - Rust 的连接、SQL、事务和数据拆装只在 `src-tauri/src/database` 内，其它模块调用固定业务 API，不能传 SQL、表名、字段映射或事务闭包，也不能取得连接。
 - Vue 通过 SQL 插件 `sqlite:library-reader` 自行读取，连接物理只读，权限只开放 `select`；Rust 查询也使用只读连接。组合读取使用同一查询或同一读事务的快照。
@@ -47,9 +47,9 @@ Rust 写入返回 `Pending<T>`：普通调用入队后即可继续；依赖提�
 | Vue `saveBookmark` / `deleteBookmark` / `recordSession` / `clearSearchHistory` | 保存书签、会话；删除书签、一条或全部搜索历史。 |
 | Rust `import_book` / `shelve_import` / `bind_book_type` / `save_information` / `save_main_text` | 导入、上架、绑定内容类型、刷新目录和发布正文。引擎上下文按实际提供的字段保存；目录匹配、缓存保留及位置映射在数据库内完成。 |
 | Rust `save_discovery_categories` / `ensure_rss_subscription` / `save_rss_articles` | 保存分类、登记订阅；批量登记文章或修改已登记文章的标记、正文地址。 |
-| Rust `save_media` / `remove_media` / `clear_chapter_cache` / `remove_book_assets` / `recover_cleanup` | 登记资源请求，清理缓存、书籍及待删文件。 |
+| Rust `save_media` / `clear_chapter_cache` / `remove_book_assets` / `recover_cleanup` | 登记资源请求，清理缓存、书籍及待删文件。 |
 | Rust `backup_file` / `restore_archive` / `storage` | 通过同一写线程备份、恢复；执行固定的原生 KV 操作。 |
 
-Rust 查询使用 `sources`、`book`、`book_engine`、`book_type`、`txt_toc_rules`、`tts_config`、`rss_state`、`discovery_category`、`media`、`has_media`、`asset_referenced` 等具名接口。在线书籍统一使用 `online_book_id` 生成身份。
+Rust 查询使用 `sources`、`book`、`book_engine`、`book_type`、`txt_toc_rules`、`tts_config`、`rss_state`、`discovery_category`、`media`、`asset_referenced` 等具名接口。在线书籍统一使用 `online_book_id` 生成身份。
 
 部分修改中，缺省字段保留，允许清空的字段用 `null` 清空；明确提交的有序子列表整体替换。阅读位置的章节归属和时间戳在库内处理。提交后才发送书源、进度通知，依赖新值的调用方再查询。`prepareCurrent` 可请求预读；回执只表示数据库结果，后续资源失败通过 `reading-resource-error` 通知。

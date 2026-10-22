@@ -43,12 +43,6 @@ impl Proxy {
         })
     }
 
-    pub(crate) fn register(&self, url: &str, headers: HeaderMap) -> io::Result<String> {
-        let id = uuid::Uuid::new_v4().simple().to_string();
-        self.register_with_id(&id, url, headers)?;
-        Ok(id)
-    }
-
     pub(crate) fn contains(&self, id: &str) -> bool {
         self.targets.lock().unwrap().entries.contains_key(id)
     }
@@ -86,20 +80,6 @@ impl Proxy {
             }),
         );
         Ok(())
-    }
-
-    pub(crate) fn remove(&self, id: &str) -> bool {
-        let mut targets = self.targets.lock().unwrap();
-        let Some(target) = targets.entries.get(id).cloned() else {
-            return false;
-        };
-        targets
-            .entries
-            .retain(|_, entry| entry.owner != target.owner);
-        targets
-            .children
-            .retain(|(owner, _), _| *owner != target.owner);
-        true
     }
 
     pub(crate) fn clear(&self) {

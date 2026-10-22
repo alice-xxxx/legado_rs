@@ -18,13 +18,6 @@ impl Database {
         })
     }
 
-    pub(crate) fn remove_media(&self, book: String, id: String) -> Result<Pending<()>> {
-        db::write(self, WriteMode::Transaction, move |s| {
-            s.write("DELETE FROM media_requests WHERE id=?1 AND book_id=?2 AND NOT EXISTS(SELECT 1 FROM content_media WHERE media_id=?1)",params![id,book])?;
-            Ok(())
-        })
-    }
-
     pub(crate) fn media(&self) -> Result<Vec<MediaRequest>> {
         db::read(self, |s| {
             let mut requests = s.read(
@@ -56,12 +49,6 @@ impl Database {
                 },
             )?;
             Ok(requests)
-        })
-    }
-
-    pub(crate) fn has_media(&self, book: &str, id: &str) -> Result<bool> {
-        db::read(self, |s| {
-            Ok(s.read("SELECT EXISTS(SELECT 1 FROM media_requests m WHERE m.id=?2 AND (m.book_id=?1 OR EXISTS(SELECT 1 FROM content_media a JOIN chapters c ON c.content_id=a.content_id WHERE a.media_id=m.id AND c.book_id=?1)))",params![book,id],|r|r.get(0))?[0])
         })
     }
 

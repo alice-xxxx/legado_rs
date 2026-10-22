@@ -67,24 +67,6 @@ pub(crate) async fn read_document(database: &Database) -> Result<TxtTocRulesDocu
     database.txt_toc_rules().map_err(|e| e.to_string())
 }
 
-/// Replace the full JSON document with an atomically validated snapshot.
-pub(crate) async fn replace_document(
-    database: &Database,
-    document: &TxtTocRulesDocument,
-) -> Result<(), String> {
-    validate_document(document)?;
-    let operations = serde_json::from_value(
-        serde_json::json!([{"operation":"saveTxtTocRules","rules":document.rules}]),
-    )
-    .map_err(|e| format!("{e}"))?;
-    database
-        .submit(operations)
-        .map_err(|e| e.to_string())?
-        .await
-        .map(|_| ())
-        .map_err(|e| e.to_string())
-}
-
 struct ImportedTxtTocRule {
     name: String,
     rule: String,

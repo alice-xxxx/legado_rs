@@ -154,32 +154,6 @@ impl Database {
             Ok(updates)
         })
     }
-    pub(crate) fn record_reading_time(
-        &self,
-        session: crate::reading_tools::ReadingSession,
-    ) -> Result<Pending<()>> {
-        db::write(self, WriteMode::Transaction, move |s| {
-            record_time(s, session)
-        })
-    }
-    pub(crate) fn save_reading_progress(
-        &self,
-        book_id: String,
-        progress: ProgressInput,
-    ) -> Result<Pending<Option<ReadingUpdate>>> {
-        db::write(self, WriteMode::Transaction, move |s| {
-            save_progress(s, book_id, progress)
-        })
-    }
-    pub(crate) fn save_bookmark(
-        &self,
-        book_id: String,
-        bookmark: crate::reading_tools::Bookmark,
-    ) -> Result<Pending<()>> {
-        db::write(self, WriteMode::Transaction, move |s| {
-            save_bookmark(s, &book_id, bookmark)
-        })
-    }
     pub(crate) fn record_search(&self, query: String, time: u64) -> Result<Pending<()>> {
         db::write(self, WriteMode::Transaction, move |s| {
             let query = query.trim();
