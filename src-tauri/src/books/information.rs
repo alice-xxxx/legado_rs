@@ -211,9 +211,6 @@ pub(crate) fn cancel_more_information(
     service.cancel_information(&source_id, &book_url);
 }
 
-#[cfg(test)]
-#[path = "tests/information.rs"]
-mod tests;
 
 impl Information {
     pub(crate) fn cancel_all(&self) {

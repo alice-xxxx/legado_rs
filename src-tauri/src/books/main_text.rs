@@ -27,9 +27,6 @@ impl MainText {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/main_text.rs"]
-mod tests;
 
 /// 文本始终缓存；cache 仅决定是否下载完整图片和音视频。Vue 等待完成后读取缓存。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]

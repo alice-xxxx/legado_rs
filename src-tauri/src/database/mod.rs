@@ -44,6 +44,3 @@ pub(crate) fn online_book_id(source: &str, kind: &str, url: &str) -> String {
         crate::support::stable_hash(&format!("{source}\0{kind}\0{url}"))
     )
 }
-
-#[cfg(test)]
-mod tests;

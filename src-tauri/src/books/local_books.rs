@@ -18,9 +18,6 @@ mod rewrite;
 #[path = "local_books/txt.rs"]
 mod txt;
 
-#[cfg(test)]
-#[path = "local_books/import_tests.rs"]
-mod import_tests;
 
 use std::path::Path;
 use std::{

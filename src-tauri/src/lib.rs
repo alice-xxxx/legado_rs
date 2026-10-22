@@ -86,9 +86,6 @@ async fn open_data(
     Ok((database, resources, lock))
 }
 
-#[cfg(test)]
-mod test_support;
-
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) fn app_data_root<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,

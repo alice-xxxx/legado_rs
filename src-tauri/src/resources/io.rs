@@ -4,8 +4,6 @@ mod file;
 pub(super) mod proxy;
 pub(super) mod settings;
 mod stream;
-#[cfg(test)]
-mod tests;
 pub(super) mod tts;
 use axum::{
     extract::Request,

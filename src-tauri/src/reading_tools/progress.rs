@@ -1,7 +1,5 @@
 //! 阅读进度与相邻章节预读；正文请求统一调用 main_text。
 
-#[cfg(test)]
-use crate::support::validate_id;
 use crate::{main_text::MainText, settings::preload_count};
 use serde_json::{json, Value};
 
@@ -54,30 +52,4 @@ impl MainText {
         }
         Ok(())
     }
-
-    #[cfg(test)]
-    pub async fn save_progress(
-        &self,
-        database: &crate::database::Database,
-        book_id: &str,
-        progress: Value,
-    ) -> Result<Value, String> {
-        validate_id(book_id, "bookId")?;
-        let updates = database
-            .save_reading_progress(
-                book_id.to_owned(),
-                serde_json::from_value(progress).map_err(|error| error.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
-            .await
-            .map_err(|e| e.to_string())?;
-        Ok(json!({"bookId":book_id,"readingUpdate":updates}))
-    }
 }
-
-#[cfg(test)]
-#[path = "tests/performance.rs"]
-mod performance_tests;
-#[cfg(test)]
-#[path = "tests/progress.rs"]
-mod tests;

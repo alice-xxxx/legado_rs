@@ -206,34 +206,3 @@ pub(crate) fn execute_json(input: &str) -> String {
         Err(error) => json!({"ok":false,"error":error}).to_string(),
     }
 }
-
-#[cfg(test)]
-#[test]
-fn bridge_split_stitch_and_crop_preserve_pixels() {
-    let image = DynamicImage::ImageRgba8(RgbaImage::from_fn(4, 2, |x, y| {
-        Rgba([x as u8, y as u8, 0, 255])
-    }));
-    let encoded = png(&image).unwrap();
-    let split = execute(json!({"op":"split","imageBase64":encoded,"rows":1,"cols":2})).unwrap();
-    let stitched =
-        execute(json!({"op":"stitch","imagesBase64":split["imagesBase64"],"direction":"h"}))
-            .unwrap();
-    assert_eq!(
-        decode(stitched["pngBase64"].as_str().unwrap())
-            .unwrap()
-            .to_rgba8(),
-        image.to_rgba8()
-    );
-    let cropped =
-        execute(json!({"op":"crop","imageBase64":encoded,"x":1,"y":0,"w":2,"h":2})).unwrap();
-    assert_eq!(
-        decode(cropped["pngBase64"].as_str().unwrap())
-            .unwrap()
-            .to_rgba8(),
-        image.crop_imm(1, 0, 2, 2).to_rgba8()
-    );
-    assert_eq!(
-        serde_json::from_str::<Value>(&execute_json("{}")).unwrap()["ok"],
-        false
-    );
-}

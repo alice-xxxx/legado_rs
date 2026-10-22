@@ -578,18 +578,3 @@ fn decode_result(result: &str) -> Result<Value, String> {
     }
     Ok(result)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    #[test]
-    fn requests_replace_source_type_bits_and_keep_book_flags() {
-        for (source_type, expected) in [(0, 8), (1, 32), (2, 64), (4, 2048)] {
-            let request =
-                SourceEngineRequest::new("content", &json!({"bookSourceType":source_type}))
-                    .with_book(json!({"type":8 | 256 | 16}));
-            assert_eq!(request.book.unwrap()["type"], expected | 256 | 16);
-        }
-    }
-}

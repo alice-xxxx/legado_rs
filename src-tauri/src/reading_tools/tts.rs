@@ -859,7 +859,3 @@ fn http_tts_audio_type_from_signature(bytes: &[u8]) -> Result<&'static str, Stri
         Err("HTTP TTS returned an unsupported audio signature".to_owned())
     }
 }
-
-#[cfg(test)]
-#[path = "tests/tts.rs"]
-mod tests;

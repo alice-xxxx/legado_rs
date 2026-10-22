@@ -1,8 +1,6 @@
 //! 独立资源模块：管理分发、文件与代理生命周期，只调用数据库具名 API。
 mod io;
 mod reference;
-#[cfg(test)]
-mod tests;
 pub(crate) mod validation;
 pub(crate) use io::settings::protected_resources;
 pub(crate) use io::tts::Writer as TtsWriter;

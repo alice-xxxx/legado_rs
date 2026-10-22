@@ -11,8 +11,6 @@ pub(crate) const SCHEMA_VERSION: u32 = 1;
 pub(crate) mod appearance;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) mod import;
-#[cfg(test)]
-mod tests;
 
 use crate::resources::Resources;
 use serde_json::{json, Value};

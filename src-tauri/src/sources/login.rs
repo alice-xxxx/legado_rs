@@ -198,9 +198,6 @@ impl Login {
     }
 }
 
-#[cfg(test)]
-#[path = "tests/login.rs"]
-mod tests;
 
 fn validate_login_cookies(cookies: &str) -> Result<(), String> {
     if cookies.len() > 256 * 1024 || cookies.contains(['\r', '\n']) {

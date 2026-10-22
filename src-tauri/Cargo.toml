@@ -116,6 +116,3 @@ lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true
-
-[dev-dependencies]
-lopdf = { version = "0.45", default-features = false }

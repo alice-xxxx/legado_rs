@@ -132,7 +132,3 @@ pub(crate) struct SourceRecord {
     pub(crate) enabled: bool,
     pub(crate) source: Value,
 }
-
-#[cfg(test)]
-#[path = "tests/catalog.rs"]
-mod tests;

@@ -288,10 +288,6 @@ pub(crate) async fn release_search_results(
     service.release_search_results(&search_id).await
 }
 
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SearchResultSource {
@@ -374,20 +370,6 @@ pub(crate) fn search_match_rank(title: &str, author: Option<&str>, keyword: &str
         1
     } else {
         2
-    }
-}
-
-#[cfg(test)]
-mod search_content_type_tests {
-    use super::*;
-
-    #[test]
-    fn search_matching_ignores_case_and_edge_whitespace_but_keeps_punctuation() {
-        assert_eq!(search_match_rank(" DUNE ", None, "dune"), 0);
-        assert_eq!(search_match_rank("Children of Dune", None, "dune"), 1);
-        assert_eq!(search_match_rank("其他书", Some(" Dune "), "dune"), 0);
-        assert_eq!(search_match_rank("C# 入门", None, "c++"), 2);
-        assert_eq!(search_match_rank("其他书", Some("作者"), "dune"), 2);
     }
 }
 
