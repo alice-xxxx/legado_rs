@@ -3,9 +3,9 @@ use super::{
     LocalImportOptions,
 };
 use crate::{
-    application::ApplicationService,
     source_engine::SourceEngineRequest,
     source_engine::{EngineFuture, SourceExecutor},
+    test_support::TestApp,
 };
 use serde_json::{json, Value};
 use std::{
@@ -21,9 +21,9 @@ impl SourceExecutor for Offline {
     }
 }
 
-async fn fixture() -> (tempfile::TempDir, ApplicationService) {
+async fn fixture() -> (tempfile::TempDir, TestApp) {
     let dir = tempfile::tempdir().unwrap();
-    let service = ApplicationService::open_with_executor(dir.path(), Arc::new(Offline))
+    let service = TestApp::open_with_executor(dir.path(), Arc::new(Offline))
         .await
         .unwrap();
     (dir, service)
@@ -43,29 +43,32 @@ fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
     zip.finish().unwrap().into_inner()
 }
 
-async fn import(service: &ApplicationService, file: &Path) -> Value {
-    let response = service
-        .import_book_file(
-            std::fs::File::open(file).unwrap(),
-            file.into(),
-            LocalImportOptions::default(),
-        )
-        .await
-        .unwrap();
+async fn import(service: &TestApp, file: &Path) -> Value {
+    let response = crate::book_import::import_book_file(
+        &service.backup,
+        &service.database,
+        &service.resources,
+        std::fs::File::open(file).unwrap(),
+        file.into(),
+        LocalImportOptions::default(),
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
     imported_book(service, &response)
 }
 
-fn imported_book(service: &ApplicationService, response: &str) -> Value {
+fn imported_book(service: &TestApp, response: &str) -> Value {
     let id = response;
     let stored = service.database.book(id).unwrap().unwrap();
     serde_json::to_value(stored).unwrap()
 }
 
-async fn chapter(service: &ApplicationService, book: &Value, index: usize) -> String {
+async fn chapter(service: &TestApp, book: &Value, index: usize) -> String {
     let reference =
         crate::resources::ResourceRef::new(book["chapters"][index]["url"].as_str().unwrap())
             .unwrap();
-    let response = reqwest::get(service.resources().url_for(&reference))
+    let response = reqwest::get(service.resources.url_for(&reference))
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -98,7 +101,7 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
     assert_eq!(book["chapters"].as_array().unwrap().len(), 3);
     assert_eq!(book["chapters"][1]["title"], "【开场】");
     assert_eq!(chapter(&service, &book, 1).await, "第一段。");
-    service.save_progress(id, json!({"chapterId": "chapter-00002", "chapterIndex": 1, "offset": 3, "updatedAtMs": 1234})).await.unwrap();
+    service.text.save_progress(&service.database, id, json!({"chapterId": "chapter-00002", "chapterIndex": 1, "offset": 3, "updatedAtMs": 1234})).await.unwrap();
     service.database.submit(serde_json::from_value(json!([
         {"operation":"saveShelf","shelf":{"schemaVersion":1,"books":[{"id":id,"groups":["本地"]}],"groups":["本地"]}}
     ])).unwrap()).unwrap().await.unwrap();
@@ -153,14 +156,17 @@ async fn txt_without_headings_splits_utf16_and_rejects_blank_input() {
     assert_eq!(actual, text);
     let blank = dir.path().join("空白.txt");
     std::fs::write(&blank, " \n\t").unwrap();
-    assert!(service
-        .import_book_file(
-            std::fs::File::open(&blank).unwrap(),
-            blank.clone(),
-            LocalImportOptions::default()
-        )
-        .await
-        .is_err());
+    assert!(crate::book_import::import_book_file(
+        &service.backup,
+        &service.database,
+        &service.resources,
+        std::fs::File::open(&blank).unwrap(),
+        blank.clone(),
+        LocalImportOptions::default(),
+        Arc::new(|_| {})
+    )
+    .await
+    .is_err());
     assert_eq!(
         std::fs::read_dir(dir.path().join("cache/text"))
             .unwrap()
@@ -209,7 +215,7 @@ async fn epub_navigation_splits_shared_xhtml_and_keeps_assets_and_metadata() {
     );
     assert!(reqwest::get(
         service
-            .resources()
+            .resources
             .url_for(&crate::resources::ResourceRef::new(book["cover"].as_str().unwrap()).unwrap())
     )
     .await
@@ -251,7 +257,7 @@ async fn cbz_caches_naturally_ordered_webp_pages_in_one_chapter() {
         let url = pages[index]["url"].as_str().unwrap();
         assert!(url.ends_with(&format!("c001_p{:03}.webp", index + 1)));
         let reference = crate::resources::ResourceRef::new(url).unwrap();
-        let bytes = reqwest::get(service.resources().url_for(&reference))
+        let bytes = reqwest::get(service.resources.url_for(&reference))
             .await
             .unwrap()
             .bytes()
@@ -274,14 +280,17 @@ async fn malformed_archive_leaves_no_library_entry_or_partial_cache() {
     for extension in ["epub", "cbz"] {
         let file = dir.path().join(format!("broken.{extension}"));
         std::fs::write(&file, b"broken").unwrap();
-        assert!(service
-            .import_book_file(
-                std::fs::File::open(&file).unwrap(),
-                file.clone(),
-                LocalImportOptions::default()
-            )
-            .await
-            .is_err());
+        assert!(crate::book_import::import_book_file(
+            &service.backup,
+            &service.database,
+            &service.resources,
+            std::fs::File::open(&file).unwrap(),
+            file.clone(),
+            LocalImportOptions::default(),
+            Arc::new(|_| {})
+        )
+        .await
+        .is_err());
     }
     service.database.assert_shelf(&[]);
     for kind in ["html", "image", "pdf"] {
@@ -381,7 +390,7 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
     let response = reqwest::Client::new()
         .get(
-            service.resources().url_for(
+            service.resources.url_for(
                 &crate::resources::ResourceRef::new(format!(
                     "resource://cache/pdf/{id}/original.pdf"
                 ))
@@ -395,7 +404,7 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     assert_eq!(response.status(), 206);
     assert_eq!(response.bytes().await.unwrap().as_ref(), b"%PDF-");
     drop(service);
-    let reopened = ApplicationService::open_with_executor(dir.path(), Arc::new(Offline))
+    let reopened = TestApp::open_with_executor(dir.path(), Arc::new(Offline))
         .await
         .unwrap();
     reopened.database.assert_shelf(&[&id]);
@@ -439,7 +448,7 @@ async fn direct_copy_reports_progress_and_imports_into_the_shelf_without_staging
     });
     let book = super::import_local_book(
         &service.database,
-        service.resources(),
+        &service.resources,
         std::fs::File::open(&source).unwrap(),
         source.clone(),
         &LocalImportOptions::default(),
@@ -457,14 +466,17 @@ async fn direct_copy_reports_progress_and_imports_into_the_shelf_without_staging
         .iter()
         .any(|(stage, completed, total)| stage == "cache" && completed == total && *total > 0));
     assert_eq!(stages.last().unwrap().0, "save");
-    let id = service
-        .import_book_file(
-            std::fs::File::open(&source).unwrap(),
-            source.clone(),
-            LocalImportOptions::default(),
-        )
-        .await
-        .unwrap();
+    let id = crate::book_import::import_book_file(
+        &service.backup,
+        &service.database,
+        &service.resources,
+        std::fs::File::open(&source).unwrap(),
+        source.clone(),
+        LocalImportOptions::default(),
+        Arc::new(|_| {}),
+    )
+    .await
+    .unwrap();
     assert_eq!(id, book);
     service.database.assert_shelf(&[&id]);
     assert_eq!(

@@ -1,8 +1,26 @@
 //! 朗读会话：开始清空队列，投递后顺序朗读，只有结束才关闭会话。
-use super::ApplicationService;
+use std::sync::Arc;
+
 use crate::source_engine::SourceEngineRequest;
 use base64::Engine as _;
 use serde::Deserialize;
+pub(crate) struct Tts {
+    executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    tts: tokio::sync::watch::Sender<Option<TtsSession>>,
+    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    pub(crate) app: Option<tauri::AppHandle>,
+}
+impl Tts {
+    pub(crate) fn new(executor: Arc<dyn crate::source_engine::SourceExecutor>) -> Self {
+        Self {
+            executor,
+            tts: tokio::sync::watch::channel(None).0,
+            #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+            app: None,
+        }
+    }
+}
+
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use serde_json::json;
 use serde_json::Value;
@@ -66,7 +84,7 @@ impl TtsStream {
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-impl ApplicationService {
+impl Tts {
     fn tts_progress(&self, progress: Value) {
         use tauri::Emitter;
         if let Some(app) = &self.app {
@@ -76,6 +94,8 @@ impl ApplicationService {
 
     async fn run_tts(
         &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
         options: TtsOptions,
         mut input: mpsc::Receiver<Vec<TtsText>>,
         mut cancellation: watch::Receiver<bool>,
@@ -90,8 +110,7 @@ impl ApplicationService {
             };
             let reading = async {
                 if let Some(id) = &options.config_id {
-                    let config = self
-                        .database
+                    let config = database
                         .tts_config(id)
                         .map_err(|e| e.to_string())?
                         .ok_or("朗读配置不存在或已停用")?;
@@ -99,6 +118,7 @@ impl ApplicationService {
                     let (sender, receiver) = mpsc::channel(1);
                     tokio::try_join!(
                         self.generate_tts_audio(
+                            resources,
                             &config,
                             options.rate,
                             texts,
@@ -121,7 +141,7 @@ impl ApplicationService {
             };
             player.stop();
             for id in assets.drain(..) {
-                self.resources.tts.release(&id);
+                resources.tts.release(&id);
             }
             if let Err(error) = result {
                 self.tts_progress(json!(error));
@@ -130,7 +150,7 @@ impl ApplicationService {
         player.stop();
         player.close();
         for id in assets {
-            self.resources.tts.release(&id);
+            resources.tts.release(&id);
         }
     }
 
@@ -386,7 +406,7 @@ struct TtsNativeAudio(tauri::plugin::PluginHandle<tauri::Wry>);
 tauri::ios_plugin_binding!(init_plugin_native_audio);
 
 #[cfg(mobile)]
-pub fn tts_native_audio() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+pub(crate) fn tts_native_audio() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     // 沿用同一个原生播放器，同时保留句柄供 Rust 直接调用。
     tauri::plugin::Builder::new("native-audio")
         .setup(|app, api| {
@@ -404,11 +424,14 @@ pub fn tts_native_audio() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn start_tts(
+pub(crate) async fn start_tts(
+    backup: tauri::State<'_, Arc<crate::backup::state::Operations>>,
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, Arc<crate::resources::Resources>>,
     options: TtsOptions,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Tts>>,
 ) -> Result<(), String> {
-    if *service.restore_barrier.borrow() {
+    if *backup.restore_barrier.borrow() {
         return Err("正在恢复数据，暂时无法朗读".into());
     }
     if !options.rate.is_finite() || !(0.5..=5.0).contains(&options.rate) {
@@ -450,9 +473,18 @@ pub async fn start_tts(
         }
     };
     let service = service.inner().clone();
+    let database = database.inner().clone();
+    let resources = resources.inner().clone();
     tokio::spawn(async move {
         service
-            .run_tts(options, receiver, cancellation, player)
+            .run_tts(
+                &database,
+                &resources,
+                options,
+                receiver,
+                cancellation,
+                player,
+            )
             .await;
     });
     Ok(())
@@ -460,16 +492,16 @@ pub async fn start_tts(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn stop_tts(service: tauri::State<'_, ApplicationService>) -> Result<(), String> {
+pub(crate) async fn stop_tts(service: tauri::State<'_, Arc<Tts>>) -> Result<(), String> {
     service.end_tts().await;
     Ok(())
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn submit_tts(
+pub(crate) async fn submit_tts(
     texts: Vec<TtsText>,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Tts>>,
 ) -> Result<(), String> {
     validate_texts(&texts)?;
     let session = service.tts.borrow().clone().ok_or("请先开始朗读")?;
@@ -499,7 +531,7 @@ fn validate_texts(texts: &[TtsText]) -> Result<(), String> {
     Ok(())
 }
 
-impl ApplicationService {
+impl Tts {
     // 提前排入原生队列，片段交接由系统完成，不等 finish 后再发 speak。
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
     async fn queue_system_tts(
@@ -589,6 +621,7 @@ impl ApplicationService {
 
     async fn generate_tts_audio(
         &self,
+        resources: &crate::resources::Resources,
         config: &Value,
         rate: f32,
         texts: Vec<TtsText>,
@@ -633,8 +666,7 @@ impl ApplicationService {
                 if let Some(played) = finishing.take() {
                     played.await.map_err(|_| "朗读播放器已关闭")?;
                 }
-                let writer = self
-                    .resources
+                let writer = resources
                     .tts
                     .create(content_type)
                     .await
@@ -643,7 +675,7 @@ impl ApplicationService {
                 let (boundaries, progress) = watch::channel(vec![]);
                 let (played, completion) = oneshot::channel();
                 let source = TtsAudio {
-                    src: format!("{}tts/{}", self.resources.base_url(), writer.id),
+                    src: format!("{}tts/{}", resources.base_url(), writer.id),
                     boundaries: progress,
                     played,
                 };
@@ -829,5 +861,5 @@ fn http_tts_audio_type_from_signature(bytes: &[u8]) -> Result<&'static str, Stri
 }
 
 #[cfg(test)]
-#[path = "tests/tts_tests.rs"]
+#[path = "tests/tts.rs"]
 mod tests;

@@ -1,6 +1,5 @@
 //! 统一登录入口：Rust 执行规则、保存登录数据，Vue 只收取表单和显示结果。
 
-use super::ApplicationService;
 use crate::{source_engine::SourceEngineRequest, support::validate_id};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -9,6 +8,31 @@ use std::{
     sync::Arc,
 };
 use tokio_util::sync::CancellationToken;
+
+pub(crate) struct Login {
+    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
+    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    pub(crate) app: Option<tauri::AppHandle>,
+    login: tokio::sync::watch::Sender<Option<Arc<LoginSession>>>,
+    backup: Arc<crate::backup::state::Operations>,
+}
+impl Login {
+    pub(crate) fn new(
+        sources: Arc<crate::source_catalog::SourceCatalog>,
+        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        backup: Arc<crate::backup::state::Operations>,
+    ) -> Self {
+        Self {
+            sources,
+            executor,
+            backup,
+            login: tokio::sync::watch::channel(None).0,
+            #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+            app: None,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
@@ -31,15 +55,15 @@ pub(crate) struct LoginSession {
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn login(
+pub(crate) async fn login(
     source_id: String,
     action: LoginAction,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Login>>,
 ) -> Result<(), String> {
     service.login(&source_id, action).await
 }
 
-impl ApplicationService {
+impl Login {
     pub(crate) async fn cancel_login(&self) -> Result<(), String> {
         let Some(session) = self.login.send_replace(None) else {
             return Ok(());
@@ -92,9 +116,12 @@ impl ApplicationService {
         };
         let operation = async {
             // 只使用现有备份屏障，不持有书源锁等待规则或网络。
-            let _operation = self.operation_read().await;
+            let _operation = self.backup.operation_read().await;
             let revision = self.sources.revision(source_id).await;
-            let epoch = self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst);
+            let epoch = self
+                .backup
+                .restore_epoch
+                .load(std::sync::atomic::Ordering::SeqCst);
             let source = self.sources.get(source_id).await?;
             if crate::rss::is_rss_source(&source.source) {
                 return Err("RSS sources do not support book-source login".into());
@@ -126,7 +153,11 @@ impl ApplicationService {
                     if captured["sourceRevision"].as_u64()
                         != Some(self.sources.revision(source_id).await)
                         || captured["restoreEpoch"].as_u64()
-                            != Some(self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst))
+                            != Some(
+                                self.backup
+                                    .restore_epoch
+                                    .load(std::sync::atomic::Ordering::SeqCst),
+                            )
                     {
                         return Err("书源或备份已变化，请重新打开登录页".into());
                     }
@@ -168,7 +199,7 @@ impl ApplicationService {
 }
 
 #[cfg(test)]
-#[path = "tests/login_tests.rs"]
+#[path = "tests/login.rs"]
 mod tests;
 
 fn validate_login_cookies(cookies: &str) -> Result<(), String> {
@@ -180,7 +211,7 @@ fn validate_login_cookies(cookies: &str) -> Result<(), String> {
 
 // 原生插件是同步桥接，放到阻塞线程执行，避免占用 iOS 主线程和异步执行器。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-impl ApplicationService {
+impl Login {
     async fn open_login_browser(
         &self,
         session: Arc<LoginSession>,
@@ -297,7 +328,7 @@ fn close_browser(app: &tauri::AppHandle, session: &LoginSession) -> Result<(), S
 }
 
 #[cfg(not(any(feature = "desktop", feature = "mobile-runtime")))]
-impl ApplicationService {
+impl Login {
     async fn open_login_browser(
         &self,
         _: Arc<LoginSession>,

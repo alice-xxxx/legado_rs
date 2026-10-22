@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
+use super::DATA_SCHEMA_VERSION;
 use crate::backup::state::{CommitState, TransactionError};
-use crate::models::CURRENT_SCHEMA_VERSION;
 
 use super::create::{is_allowed_snapshot_path, validate_archive_path};
 use super::{
@@ -378,7 +378,7 @@ fn extract_and_validate(archive_path: &Path, stage: &Path) -> Result<(), String>
         .map_err(|error| format!("Backup manifest is invalid JSON: {error}"))?;
     if manifest.format != BACKUP_FORMAT
         || manifest.backup_version != BACKUP_VERSION
-        || manifest.app_schema_version != CURRENT_SCHEMA_VERSION
+        || manifest.app_schema_version != DATA_SCHEMA_VERSION
     {
         return Err("Backup format or application schema version is not supported".to_owned());
     }

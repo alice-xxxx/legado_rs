@@ -1,9 +1,9 @@
 use super::*;
-use crate::application::ApplicationService;
 use crate::source_catalog::SourceRecord;
 use crate::source_engine::EngineFuture;
 use crate::source_engine::SourceEngineRequest;
 use crate::source_engine::SourceExecutor;
+use crate::test_support::TestApp;
 use serde_json::json;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -33,12 +33,12 @@ async fn service(
     wait_for_submit: bool,
 ) -> (
     tempfile::TempDir,
-    ApplicationService,
+    TestApp,
     mpsc::UnboundedReceiver<SourceEngineRequest>,
 ) {
     let directory = tempfile::tempdir().unwrap();
     let (requests, receiver) = mpsc::unbounded_channel();
-    let service = ApplicationService::open_with_executor(
+    let service = TestApp::open_with_executor(
         directory.path(),
         Arc::new(LoginExecutor {
             requests,
@@ -67,10 +67,12 @@ async fn form_and_button_submissions_use_one_engine_call_without_followup_querie
     let (_directory, service, mut requests) = service(false).await;
     let fields = HashMap::from([("account".into(), "reader".into())]);
     service
+        .login
         .login("login-source", LoginAction::Open)
         .await
         .unwrap();
     service
+        .login
         .login(
             "login-source",
             LoginAction::Submit {
@@ -81,6 +83,7 @@ async fn form_and_button_submissions_use_one_engine_call_without_followup_querie
         .await
         .unwrap();
     service
+        .login
         .login(
             "login-source",
             LoginAction::Submit {
@@ -91,6 +94,7 @@ async fn form_and_button_submissions_use_one_engine_call_without_followup_querie
         .await
         .unwrap();
     service
+        .login
         .login("login-source", LoginAction::Clear)
         .await
         .unwrap();
@@ -114,16 +118,18 @@ async fn form_and_button_submissions_use_one_engine_call_without_followup_querie
 async fn cancellation_interrupts_pending_rules_and_reopening_replaces_the_session() {
     let (_directory, service, mut requests) = service(true).await;
     service
+        .login
         .login("login-source", LoginAction::Open)
         .await
         .unwrap();
-    let old = service.login.borrow().clone().unwrap();
+    let old = service.login.login.borrow().clone().unwrap();
     assert_eq!(old.id.len(), 32);
     requests.recv().await.unwrap();
     let submit = {
         let service = service.clone();
         tokio::spawn(async move {
             service
+                .login
                 .login(
                     "login-source",
                     LoginAction::Submit {
@@ -136,11 +142,13 @@ async fn cancellation_interrupts_pending_rules_and_reopening_replaces_the_sessio
     };
     let request = requests.recv().await.unwrap();
     service
+        .login
         .login("other-source", LoginAction::Cancel)
         .await
         .unwrap();
     assert!(!old.cancel.is_cancelled());
     service
+        .login
         .login("login-source", LoginAction::Cancel)
         .await
         .unwrap();
@@ -151,23 +159,26 @@ async fn cancellation_interrupts_pending_rules_and_reopening_replaces_the_sessio
         .unwrap()
         .is_err());
     service
+        .login
         .login("login-source", LoginAction::Open)
         .await
         .unwrap();
-    let reopened = service.login.borrow().clone().unwrap();
+    let reopened = service.login.login.borrow().clone().unwrap();
     service
+        .login
         .login("login-source", LoginAction::Open)
         .await
         .unwrap();
     assert!(reopened.cancel.is_cancelled());
     assert!(!service
         .login
+        .login
         .borrow()
         .as_ref()
         .unwrap()
         .cancel
         .is_cancelled());
-    service.cancel_login().await.unwrap();
+    service.login.cancel_login().await.unwrap();
 }
 
 #[test]

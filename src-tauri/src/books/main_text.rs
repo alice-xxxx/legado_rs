@@ -1,40 +1,64 @@
 //! 正文统一入口：请求后入库，缓存没有就新增，有就更新。
-use super::ApplicationService;
+use std::sync::Arc;
+
 use crate::{
-    resources::ResourceRef,
     source_engine::SourceEngineRequest,
     support::{text_at, validate_id},
 };
-use serde_json::Value;
+
+pub(crate) struct MainText {
+    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
+    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    pub(crate) text_cancel: tokio::sync::broadcast::Sender<Option<(String, String)>>,
+    pub(crate) backup: Arc<crate::backup::state::Operations>,
+}
+impl MainText {
+    pub(crate) fn new(
+        sources: Arc<crate::source_catalog::SourceCatalog>,
+        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        backup: Arc<crate::backup::state::Operations>,
+    ) -> Self {
+        Self {
+            sources,
+            executor,
+            backup,
+            text_cancel: tokio::sync::broadcast::channel(64).0,
+        }
+    }
+}
 
 #[cfg(test)]
-#[path = "tests/main_text_tests.rs"]
+#[path = "tests/main_text.rs"]
 mod tests;
 
 /// 文本始终缓存；cache 仅决定是否下载完整图片和音视频。Vue 等待完成后读取缓存。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn main_text(
+pub(crate) async fn main_text(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, Arc<crate::resources::Resources>>,
     book_id: String,
     chapter_id: String,
     cache: bool,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<MainText>>,
 ) -> Result<(), String> {
-    service.main_text(&book_id, &chapter_id, cache).await
+    service
+        .main_text(&database, &resources, &book_id, &chapter_id, cache)
+        .await
 }
 
 /// 按书籍和章节取消，不影响其他章节或后续请求。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub fn cancel_main_text(
+pub(crate) fn cancel_main_text(
     book_id: String,
     chapter_id: String,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<MainText>>,
 ) {
     service.cancel_main_text(&book_id, &chapter_id);
 }
 
-impl ApplicationService {
+impl MainText {
     pub(crate) fn cancel_main_text(&self, book_id: &str, chapter_id: &str) {
         let _ = self
             .text_cancel
@@ -43,6 +67,8 @@ impl ApplicationService {
 
     pub(crate) async fn main_text(
         &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
         book_id: &str,
         chapter_id: &str,
         cache: bool,
@@ -62,8 +88,7 @@ impl ApplicationService {
         let operation = async {
             validate_id(book_id, "bookId")?;
             validate_id(chapter_id, "chapterId")?;
-            let book = self
-                .read_book(book_id)
+            let book = crate::book_files::read_book(database, book_id)
                 .await
                 .map_err(|error| error.to_string())?;
             let index = book["chapters"]
@@ -78,7 +103,7 @@ impl ApplicationService {
                 return Ok(());
             }
             let Some(source_id) = book["sourceId"].as_str() else {
-                return if self.indexed_chapter_ready(&book, index).await? {
+                return if crate::book_files::indexed_chapter_ready(resources, &book, index).await? {
                     Ok(())
                 } else {
                     Err("Local chapter resource is missing; re-import the original file".into())
@@ -107,7 +132,8 @@ impl ApplicationService {
             let content = self.executor.execute(request.clone()).await?;
 
             let mut chapter = crate::chapter_resources::chapter_content(
-                self,
+                database,
+                resources,
                 self.executor.as_ref(),
                 book_id,
                 chapter_id,
@@ -118,12 +144,12 @@ impl ApplicationService {
             .await?;
             if cache {
                 chapter = crate::chapter_resources::cache_chapter_files(
-                    self, book_id, chapter_id, chapter,
+                    database, resources, book_id, chapter_id, chapter,
                 )
                 .await?;
             }
             // 只提交这一章的缓存字段，不重写目录和进度。
-            let database = self.database.clone();
+            let database = database.clone();
             let (book_id, chapter_id, token) =
                 (book_id.to_owned(), chapter_id.to_owned(), token.clone());
             database
@@ -143,49 +169,10 @@ impl ApplicationService {
             result = operation => result,
         }
     }
+}
 
-    /// 阅读预加载先检查缓存；显式正文请求则直接刷新。
-    pub(crate) async fn indexed_chapter_ready(
-        &self,
-        book: &Value,
-        index: usize,
-    ) -> Result<bool, String> {
-        let chapter = &book["chapters"][index];
-        let kind = book["contentType"].as_str().unwrap_or("text");
-        let addresses = match kind {
-            "image" => {
-                let Some(pages) = chapter["pages"]
-                    .as_array()
-                    .filter(|pages| !pages.is_empty())
-                else {
-                    return Ok(false);
-                };
-                pages
-                    .iter()
-                    .map(|page| page["url"].as_str())
-                    .collect::<Option<Vec<_>>>()
-            }
-            "pdf" => book["url"].as_str().map(|src| vec![src]),
-            _ => chapter["url"].as_str().map(|src| vec![src]),
-        };
-        let Some(addresses) = addresses else {
-            return Ok(false);
-        };
-        for address in addresses {
-            let reference = ResourceRef::new(address).map_err(|error| error.to_string())?;
-            let exists = if let Some(id) = reference.path().strip_prefix("proxy/") {
-                self.resources.proxy.contains(id)
-            } else {
-                self.resources
-                    .cache
-                    .contains(&reference)
-                    .await
-                    .map_err(|error| error.to_string())?
-            };
-            if !exists {
-                return Ok(false);
-            }
-        }
-        Ok(true)
+impl MainText {
+    pub(crate) fn cancel_all(&self) {
+        let _ = self.text_cancel.send(None);
     }
 }

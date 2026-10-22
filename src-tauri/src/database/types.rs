@@ -258,7 +258,7 @@ pub(crate) struct Chapter {
     pub sources: Vec<Stream>,
     pub files: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource: Option<crate::models::ChapterResourceDescriptor>,
+    pub resource: Option<crate::book_files::ChapterResourceDescriptor>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -426,4 +426,46 @@ pub(crate) struct TtsInput {
     pub enabled: bool,
     #[serde(deserialize_with = "crate::source_wire::required")]
     pub definition: TtsDefinition,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ShelfDocument {
+    pub schema_version: u32,
+    #[serde(default = "default_shelf_sort")]
+    pub sort: String,
+    #[serde(default = "default_shelf_sort_order")]
+    pub sort_order: String,
+    #[serde(default)]
+    pub groups: Vec<String>,
+    pub books: Vec<ShelfBookPosition>,
+}
+
+impl Default for ShelfDocument {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            sort: default_shelf_sort(),
+            sort_order: default_shelf_sort_order(),
+            groups: Vec::new(),
+            books: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+/// 书架顺序和分组；书籍资料、目录和阅读位置使用各自的关系表。
+pub struct ShelfBookPosition {
+    pub id: String,
+    #[serde(default)]
+    pub groups: Vec<String>,
+}
+
+fn default_shelf_sort() -> String {
+    "updatedAt".to_owned()
+}
+
+fn default_shelf_sort_order() -> String {
+    "descending".to_owned()
 }

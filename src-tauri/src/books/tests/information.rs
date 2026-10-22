@@ -1,8 +1,8 @@
-use crate::application::ApplicationService;
 use crate::source_catalog::SourceRecord;
 use crate::source_engine::EngineFuture;
 use crate::source_engine::SourceEngineRequest;
 use crate::source_engine::SourceExecutor;
+use crate::test_support::TestApp;
 use serde_json::json;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -59,10 +59,10 @@ impl SourceExecutor for Engine {
         })
     }
 }
-async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<Engine>) {
+async fn fixture() -> (tempfile::TempDir, TestApp, Arc<Engine>) {
     let directory = tempfile::tempdir().unwrap();
     let engine = Arc::new(Engine::default());
-    let service = ApplicationService::open_with_executor(directory.path(), engine.clone())
+    let service = TestApp::open_with_executor(directory.path(), engine.clone())
         .await
         .unwrap();
     let records = ["fast","slow"].map(|id|SourceRecord { id:id.into(), name:id.into(), group:None, enabled:true,
@@ -75,21 +75,38 @@ async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<Engine>) {
 async fn same_details_interface_inserts_then_refreshes_without_resetting_catalog_or_progress() {
     let (_directory, service, engine) = fixture().await;
     let result: () = service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
     assert_eq!(result, ());
     let id = crate::database::online_book_id("fast", "text", "https://fixture/book");
     service
-        .save_progress(&id, json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}))
+        .text
+        .save_progress(
+            &service.database,
+            &id,
+            json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}),
+        )
         .await
         .unwrap();
-    let cached = service.read_book(&id).await.unwrap();
+    let cached = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     service
-        .main_text(&id, cached["chapters"][0]["id"].as_str().unwrap(), false)
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            &id,
+            cached["chapters"][0]["id"].as_str().unwrap(),
+            false,
+        )
         .await
         .unwrap();
-    let before = service.read_book(&id).await.unwrap();
+    let before = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     // 模拟同一本书另一条首次打开请求晚入库，不能覆盖已产生的缓存和进度。
     service
         .database
@@ -109,12 +126,20 @@ async fn same_details_interface_inserts_then_refreshes_without_resetting_catalog
         .unwrap()
         .wait()
         .unwrap();
-    assert_eq!(before, service.read_book(&id).await.unwrap());
+    assert_eq!(
+        before,
+        crate::book_files::read_book(&service.database, &id)
+            .await
+            .unwrap()
+    );
     service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
-    let after = service.read_book(&id).await.unwrap();
+    let after = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     assert_eq!(before["title"], "详情1");
     assert_eq!(after["title"], "详情2");
     assert_eq!(before["chapters"], after["chapters"]);
@@ -130,26 +155,46 @@ async fn same_details_interface_inserts_then_refreshes_without_resetting_catalog
 async fn unified_refresh_updates_catalog_without_tasks_and_preserves_cached_reading_position() {
     let (_directory, service, engine) = fixture().await;
     service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
     let id = crate::database::online_book_id("fast", "text", "https://fixture/book");
     service
-        .save_progress(&id, json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}))
+        .text
+        .save_progress(
+            &service.database,
+            &id,
+            json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}),
+        )
         .await
         .unwrap();
-    let cached = service.read_book(&id).await.unwrap();
+    let cached = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     service
-        .main_text(&id, cached["chapters"][0]["id"].as_str().unwrap(), false)
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            &id,
+            cached["chapters"][0]["id"].as_str().unwrap(),
+            false,
+        )
         .await
         .unwrap();
-    let before = service.read_book(&id).await.unwrap();
+    let before = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     engine.catalog.store(1, Ordering::SeqCst);
     service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
-    let after = service.read_book(&id).await.unwrap();
+    let after = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     assert_eq!(after["title"], "详情2");
     assert_eq!(after["chapters"].as_array().unwrap().len(), 3);
     assert_eq!(after["chapters"][1]["id"], before["chapters"][0]["id"]);
@@ -160,10 +205,16 @@ async fn unified_refresh_updates_catalog_without_tasks_and_preserves_cached_read
     for invalid in [2, 3] {
         engine.catalog.store(invalid, Ordering::SeqCst);
         assert!(service
-            .more_information("fast", "https://fixture/book")
+            .information
+            .more_information(&service.database, "fast", "https://fixture/book")
             .await
             .is_err());
-        assert_eq!(after, service.read_book(&id).await.unwrap());
+        assert_eq!(
+            after,
+            crate::book_files::read_book(&service.database, &id)
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -171,29 +222,40 @@ async fn unified_refresh_updates_catalog_without_tasks_and_preserves_cached_read
 async fn cancelling_catalog_request_does_not_commit_partial_details() {
     let (_directory, service, engine) = fixture().await;
     service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
     let id = crate::database::online_book_id("fast", "text", "https://fixture/book");
-    let before = service.read_book(&id).await.unwrap();
+    let before = crate::book_files::read_book(&service.database, &id)
+        .await
+        .unwrap();
     engine.catalog.store(4, Ordering::SeqCst);
     let worker = service.clone();
     let pending = tokio::spawn(async move {
         worker
-            .more_information("fast", "https://fixture/book")
+            .information
+            .more_information(&worker.database, "fast", "https://fixture/book")
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), engine.entered.notified())
         .await
         .unwrap();
-    service.cancel_information("fast", "https://fixture/book");
+    service
+        .information
+        .cancel_information("fast", "https://fixture/book");
     assert!(tokio::time::timeout(Duration::from_secs(2), pending)
         .await
         .unwrap()
         .unwrap()
         .is_err());
     assert!(engine.slow_token.get().unwrap().is_cancelled());
-    assert_eq!(before, service.read_book(&id).await.unwrap());
+    assert_eq!(
+        before,
+        crate::book_files::read_book(&service.database, &id)
+            .await
+            .unwrap()
+    );
 }
 
 #[tokio::test]
@@ -202,7 +264,8 @@ async fn independent_details_finish_while_another_request_is_pending() {
     let slow_service = service.clone();
     let slow = tokio::spawn(async move {
         slow_service
-            .more_information("slow", "https://fixture/slow")
+            .information
+            .more_information(&slow_service.database, "slow", "https://fixture/slow")
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), engine.entered.notified())
@@ -211,13 +274,17 @@ async fn independent_details_finish_while_another_request_is_pending() {
     // 慢请求仍在执行时，另一部书的详情可以完成。
     tokio::time::timeout(
         Duration::from_secs(2),
-        service.more_information("fast", "https://fixture/fast"),
+        service
+            .information
+            .more_information(&service.database, "fast", "https://fixture/fast"),
     )
     .await
     .unwrap()
     .unwrap();
     assert!(!slow.is_finished());
-    service.cancel_information("slow", "https://fixture/slow");
+    service
+        .information
+        .cancel_information("slow", "https://fixture/slow");
     assert!(tokio::time::timeout(Duration::from_secs(2), slow)
         .await
         .unwrap()
@@ -251,7 +318,8 @@ async fn cancelling_one_url_does_not_cancel_another_on_the_same_source() {
     let first_service = service.clone();
     let first = tokio::spawn(async move {
         first_service
-            .more_information("slow", "https://fixture/first")
+            .information
+            .more_information(&first_service.database, "slow", "https://fixture/first")
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), engine.entered.notified())
@@ -260,13 +328,16 @@ async fn cancelling_one_url_does_not_cancel_another_on_the_same_source() {
     let second_service = service.clone();
     let second = tokio::spawn(async move {
         second_service
-            .more_information("slow", "https://fixture/second")
+            .information
+            .more_information(&second_service.database, "slow", "https://fixture/second")
             .await
     });
     tokio::time::timeout(Duration::from_secs(2), engine.entered.notified())
         .await
         .unwrap();
-    service.cancel_information("slow", "https://fixture/first");
+    service
+        .information
+        .cancel_information("slow", "https://fixture/first");
     assert!(tokio::time::timeout(Duration::from_secs(2), first)
         .await
         .unwrap()
@@ -274,7 +345,9 @@ async fn cancelling_one_url_does_not_cancel_another_on_the_same_source() {
         .unwrap_err()
         .contains("cancelled"));
     assert!(!second.is_finished());
-    service.cancel_information("slow", "https://fixture/second");
+    service
+        .information
+        .cancel_information("slow", "https://fixture/second");
     assert!(tokio::time::timeout(Duration::from_secs(2), second)
         .await
         .unwrap()
@@ -286,9 +359,12 @@ async fn cancelling_one_url_does_not_cancel_another_on_the_same_source() {
 #[tokio::test]
 async fn cancelling_when_idle_does_not_cancel_the_next_details_request() {
     let (_directory, service, _engine) = fixture().await;
-    service.cancel_information("fast", "https://fixture/book");
     service
-        .more_information("fast", "https://fixture/book")
+        .information
+        .cancel_information("fast", "https://fixture/book");
+    service
+        .information
+        .more_information(&service.database, "fast", "https://fixture/book")
         .await
         .unwrap();
     assert!(service

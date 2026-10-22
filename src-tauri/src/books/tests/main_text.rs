@@ -1,9 +1,9 @@
-use crate::application::ApplicationService;
 use crate::resources::ResourceRef;
 use crate::source_catalog::SourceRecord;
 use crate::source_engine::EngineFuture;
 use crate::source_engine::SourceEngineRequest;
 use crate::source_engine::SourceExecutor;
+use crate::test_support::TestApp;
 use serde_json::json;
 use serde_json::Value;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -24,7 +24,7 @@ impl SourceExecutor for Engine {
     fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
         Box::pin(async move {
             if request.operation == "resolveMedia" {
-                return Ok(json!({"url":request.media_url,"headers":{"X-Fixture":"private"}}));
+                return Ok(json!({"url":request.media_url,"headers":{"X-TestApp":"private"}}));
             }
             assert_eq!(request.operation, "content");
             if self.slow.load(Ordering::SeqCst) && request.chapter.as_ref().unwrap()["index"] == 0 {
@@ -62,14 +62,28 @@ async fn proxy_registration_survives_restart_and_archive_restore() {
     let origin = origin().await;
     let (directory, service, engine) = fixture().await;
     set_media(&service, &engine, 1, format!("{}/audio", origin.url)).await;
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     let saved = book(&service).await;
     let reference = ResourceRef::new(saved["chapters"][0]["url"].as_str().unwrap()).unwrap();
     let archive = tempfile::tempdir().unwrap();
     let backup = archive.path().join("resources.zip");
-    service.create_backup(&backup).await.unwrap();
+    service
+        .backup
+        .create_backup(&service.database, &service.resources, &backup)
+        .await
+        .unwrap();
     drop(service);
-    let reopened = ApplicationService::open_with_executor(directory.path(), engine)
+    let reopened = TestApp::open_with_executor(directory.path(), engine)
         .await
         .unwrap();
     let client = reqwest::Client::builder().no_proxy().build().unwrap();
@@ -90,7 +104,20 @@ async fn proxy_registration_survives_restart_and_archive_restore() {
             .status(),
         reqwest::StatusCode::NOT_FOUND
     );
-    reopened.restore_backup(&backup).await.unwrap();
+    reopened
+        .backup
+        .restore_backup(
+            &reopened.search,
+            &reopened.information,
+            &reopened.text,
+            &reopened.tts,
+            &reopened.login,
+            &reopened.database,
+            &reopened.resources,
+            &backup,
+        )
+        .await
+        .unwrap();
     assert!(client
         .get(reopened.resources.url_for(&reference))
         .send()
@@ -110,7 +137,7 @@ async fn origin() -> Origin {
         let requests = requests.clone();
         let blocked = blocked.clone();
         async move {
-            if request.headers().get("X-Fixture").and_then(|value|value.to_str().ok()) != Some("private") {
+            if request.headers().get("X-TestApp").and_then(|value|value.to_str().ok()) != Some("private") {
                 return axum::http::Response::builder().status(401).body(axum::body::Body::empty()).unwrap();
             }
             requests.fetch_add(1, Ordering::SeqCst);
@@ -138,7 +165,7 @@ async fn origin() -> Origin {
     }
 }
 
-async fn set_media(service: &ApplicationService, engine: &Engine, source_type: u32, url: String) {
+async fn set_media(service: &TestApp, engine: &Engine, source_type: u32, url: String) {
     let mut source = service.sources.get("source").await.unwrap();
     source.source["bookSourceType"] = json!(source_type);
     service.sources.replace(&[source]).await.unwrap();
@@ -174,13 +201,33 @@ async fn cache_flag_downloads_complete_images_and_audio_with_private_headers() {
             format!("{}/{path}", origin.url),
         )
         .await;
-        service.main_text("book", "chapter-0", false).await.unwrap();
+        service
+            .text
+            .main_text(
+                &service.database,
+                &service.resources,
+                "book",
+                "chapter-0",
+                false,
+            )
+            .await
+            .unwrap();
         assert_eq!(
             origin.calls.load(Ordering::SeqCst),
             0,
             "阅读只缓存地址，不预先下载完整媒体"
         );
-        service.main_text("book", "chapter-0", true).await.unwrap();
+        service
+            .text
+            .main_text(
+                &service.database,
+                &service.resources,
+                "book",
+                "chapter-0",
+                true,
+            )
+            .await
+            .unwrap();
         let saved = book(&service).await;
         let address = if source_type == 2 {
             saved["chapters"][0]["pages"][0]["url"].as_str().unwrap()
@@ -190,11 +237,15 @@ async fn cache_flag_downloads_complete_images_and_audio_with_private_headers() {
         let reference = ResourceRef::new(address).unwrap();
         assert!(reference.path().starts_with("cache/"));
         assert_eq!(
-            std::fs::read(service.root.join(reference.path())).unwrap(),
+            std::fs::read(service.resources.root().join(reference.path())).unwrap(),
             expected.as_bytes()
         );
         assert_eq!(origin.calls.load(Ordering::SeqCst), 1);
-        assert!(service.indexed_chapter_ready(&saved, 0).await.unwrap());
+        assert!(
+            crate::book_files::indexed_chapter_ready(&service.resources, &saved, 0)
+                .await
+                .unwrap()
+        );
     }
 }
 
@@ -203,10 +254,20 @@ async fn cache_flag_downloads_hls_playlists_and_all_dependencies() {
     let origin = origin().await;
     let (_directory, service, engine) = fixture().await;
     set_media(&service, &engine, 4, format!("{}/master.m3u8", origin.url)).await;
-    service.main_text("book", "chapter-0", true).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            true,
+        )
+        .await
+        .unwrap();
     let saved = book(&service).await;
     let reference = ResourceRef::new(saved["chapters"][0]["url"].as_str().unwrap()).unwrap();
-    let path = service.root.join(reference.path());
+    let path = service.resources.root().join(reference.path());
     let master = std::fs::read_to_string(&path).unwrap();
     let media = master
         .lines()
@@ -243,12 +304,32 @@ async fn text_is_always_saved_and_cache_flag_also_saves_embedded_images() {
         .content
         .set(format!("<p>正文</p><img src=\"{}/image\">", origin.url))
         .unwrap();
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     assert_eq!(origin.calls.load(Ordering::SeqCst), 0);
     let text = book(&service).await;
     let reference = ResourceRef::new(text["chapters"][0]["url"].as_str().unwrap()).unwrap();
-    assert!(service.root.join(reference.path()).is_file());
-    service.main_text("book", "chapter-0", true).await.unwrap();
+    assert!(service.resources.root().join(reference.path()).is_file());
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            true,
+        )
+        .await
+        .unwrap();
     let cached = book(&service).await;
     let reference = ResourceRef::new(cached["chapters"][0]["url"].as_str().unwrap()).unwrap();
     let document = service
@@ -269,30 +350,58 @@ async fn cancelling_or_failing_a_media_download_preserves_the_previous_chapter()
         let origin = origin().await;
         let (_directory, service, engine) = fixture().await;
         set_media(&service, &engine, 1, format!("{}/{path}", origin.url)).await;
-        service.main_text("book", "chapter-0", false).await.unwrap();
+        service
+            .text
+            .main_text(
+                &service.database,
+                &service.resources,
+                "book",
+                "chapter-0",
+                false,
+            )
+            .await
+            .unwrap();
         let before = book(&service).await;
         let result = if path == "slow" {
             let cancel = async {
                 tokio::time::timeout(Duration::from_secs(3), origin.entered.notified())
                     .await
                     .unwrap();
-                service.cancel_main_text("book", "chapter-0");
+                service.text.cancel_main_text("book", "chapter-0");
             };
-            let (result, ()) = tokio::join!(service.main_text("book", "chapter-0", true), cancel);
+            let (result, ()) = tokio::join!(
+                service.text.main_text(
+                    &service.database,
+                    &service.resources,
+                    "book",
+                    "chapter-0",
+                    true
+                ),
+                cancel
+            );
             assert_eq!(result.as_ref().unwrap_err(), "Chapter content cancelled");
             result
         } else {
-            service.main_text("book", "chapter-0", true).await
+            service
+                .text
+                .main_text(
+                    &service.database,
+                    &service.resources,
+                    "book",
+                    "chapter-0",
+                    true,
+                )
+                .await
         };
         assert!(result.is_err());
         assert_eq!(book(&service).await["chapters"], before["chapters"]);
     }
 }
 
-async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<Engine>) {
+async fn fixture() -> (tempfile::TempDir, TestApp, Arc<Engine>) {
     let directory = tempfile::tempdir().unwrap();
     let engine = Arc::new(Engine::default());
-    let service = ApplicationService::open_with_executor(directory.path(), engine.clone())
+    let service = TestApp::open_with_executor(directory.path(), engine.clone())
         .await
         .unwrap();
     service
@@ -330,28 +439,70 @@ async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<Engine>) {
     (directory, service, engine)
 }
 
-async fn book(service: &ApplicationService) -> Value {
-    service.read_book("book").await.unwrap()
+async fn book(service: &TestApp) -> Value {
+    crate::book_files::read_book(&service.database, "book")
+        .await
+        .unwrap()
 }
 
 #[tokio::test]
 async fn same_request_inserts_then_refreshes_and_invalid_body_preserves_cache() {
     let (_directory, service, engine) = fixture().await;
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     let first = book(&service).await;
     engine.revision.store(1, Ordering::SeqCst);
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     let refreshed = book(&service).await;
     assert_ne!(first["chapters"][0]["url"], refreshed["chapters"][0]["url"]);
     engine.revision.store(2, Ordering::SeqCst);
-    assert!(service.main_text("book", "chapter-0", false).await.is_err());
+    assert!(service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false
+        )
+        .await
+        .is_err());
     assert_eq!(book(&service).await, refreshed);
 }
 
 #[tokio::test]
 async fn targeted_cancel_preserves_cache_and_other_chapters_continue() {
     let (_directory, service, engine) = fixture().await;
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     let cached = book(&service).await["chapters"][0].clone();
     engine.slow.store(true, Ordering::SeqCst);
     let pending = async {
@@ -359,35 +510,70 @@ async fn targeted_cancel_preserves_cache_and_other_chapters_continue() {
         // 第一章未返回时，第二章仍能独立完成并入库。
         tokio::time::timeout(
             Duration::from_secs(2),
-            service.main_text("book", "chapter-1", false),
+            service.text.main_text(
+                &service.database,
+                &service.resources,
+                "book",
+                "chapter-1",
+                false,
+            ),
         )
         .await
         .unwrap()
         .unwrap();
-        service.cancel_main_text("book", "chapter-0");
+        service.text.cancel_main_text("book", "chapter-0");
     };
-    let (result, ()) = tokio::join!(service.main_text("book", "chapter-0", false), pending);
+    let (result, ()) = tokio::join!(
+        service.text.main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false
+        ),
+        pending
+    );
     assert_eq!(result.unwrap_err(), "Chapter content cancelled");
     assert!(engine.token.get().unwrap().is_cancelled());
     let saved = book(&service).await;
     assert_eq!(saved["chapters"][0], cached);
     assert!(saved["chapters"][1]["url"].is_string());
     // 已结束的取消不污染后续同章请求。
-    service.cancel_main_text("book", "chapter-0");
+    service.text.cancel_main_text("book", "chapter-0");
     engine.slow.store(false, Ordering::SeqCst);
     engine.revision.store(1, Ordering::SeqCst);
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     assert_ne!(book(&service).await["chapters"][0]["url"], cached["url"]);
 }
 
 #[tokio::test]
 async fn clearing_cache_cancels_the_previous_inflight_body() {
     let (_directory, service, engine) = fixture().await;
-    service.main_text("book", "chapter-0", false).await.unwrap();
+    service
+        .text
+        .main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false,
+        )
+        .await
+        .unwrap();
     engine.slow.store(true, Ordering::SeqCst);
     let clear = async {
         engine.entered.notified().await;
-        service.cancel_main_text("book", "chapter-0");
+        service.text.cancel_main_text("book", "chapter-0");
         tokio::time::timeout(
             Duration::from_secs(2),
             service.resources.clear_cache("book"),
@@ -397,7 +583,16 @@ async fn clearing_cache_cancels_the_previous_inflight_body() {
         .unwrap();
         engine.release.notify_one();
     };
-    let (result, ()) = tokio::join!(service.main_text("book", "chapter-0", false), clear);
+    let (result, ()) = tokio::join!(
+        service.text.main_text(
+            &service.database,
+            &service.resources,
+            "book",
+            "chapter-0",
+            false
+        ),
+        clear
+    );
     assert_eq!(result.unwrap_err(), "Chapter content cancelled");
     assert!(book(&service).await["chapters"][0]["url"].is_null());
 }

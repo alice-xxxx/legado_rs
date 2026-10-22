@@ -1,6 +1,6 @@
 //! 共享的字段读取、标识校验、哈希与时间函数。
 
-use serde_json::{Map, Value};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -57,38 +57,4 @@ pub(crate) fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
-}
-
-pub(crate) fn validate_number_range(
-    object: &Map<String, Value>,
-    field: &str,
-    min: f64,
-    max: f64,
-) -> Result<(), String> {
-    if let Some(value) = object.get(field) {
-        let Some(number) = value.as_f64() else {
-            return Err(format!("Settings {field} must be a number"));
-        };
-        if !number.is_finite() || number < min || number > max {
-            return Err(format!("Settings {field} must be between {min} and {max}"));
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn validate_integer_range(
-    object: &Map<String, Value>,
-    field: &str,
-    min: u64,
-    max: u64,
-) -> Result<(), String> {
-    if let Some(value) = object.get(field) {
-        let Some(number) = value.as_u64() else {
-            return Err(format!("Settings {field} must be a non-negative integer"));
-        };
-        if number < min || number > max {
-            return Err(format!("Settings {field} must be between {min} and {max}"));
-        }
-    }
-    Ok(())
 }

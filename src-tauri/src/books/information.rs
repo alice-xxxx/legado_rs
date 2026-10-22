@@ -1,10 +1,11 @@
 //! 唯一详情接口：按源和书籍 URL 请求，取得详情后统一刷新或新建存储。
+use std::sync::Arc;
 
-use super::{search::source_book_id, ApplicationService};
+use crate::search::source_book_id;
 use crate::source_engine::SourceEngineRequest;
 use serde_json::json;
 
-impl ApplicationService {
+impl Information {
     pub(crate) fn cancel_information(&self, source_id: &str, book_url: &str) {
         let _ = self
             .information_cancel
@@ -13,6 +14,7 @@ impl ApplicationService {
 
     pub(crate) async fn more_information(
         &self,
+        database: &crate::database::Database,
         source_id: &str,
         book_url: &str,
     ) -> Result<(), String> {
@@ -41,6 +43,7 @@ impl ApplicationService {
             let key = source_book_id(&source, &json!({"bookUrl":book_url}));
             // 搜索已提供的书名等参数可供规则使用，没有时只需书籍 URL。
             let cached = self
+                .search
                 .read_search_result_cache(&key)
                 .await
                 .ok()
@@ -48,7 +51,7 @@ impl ApplicationService {
             let mut raw_book = if let Some(book) = cached {
                 book
             } else {
-                let database = self.database.clone();
+                let database = database.clone();
                 let id = key.clone();
                 tokio::task::spawn_blocking(move || database.book_engine(&id))
                     .await
@@ -99,7 +102,7 @@ impl ApplicationService {
                 return Err("Book details cancelled".into());
             }
             let book_id = key;
-            self.database
+            database
                 .bind_book_type(book_id.to_owned(), kind.to_owned())
                 .map_err(|e| e.to_string())?
                 .await
@@ -121,7 +124,7 @@ impl ApplicationService {
                 .ok_or("Source engine returned an invalid chapter catalog")?
                 .clone();
             {
-                let database = self.database.clone();
+                let database = database.clone();
                 let token = token.clone();
                 database
                     .save_information(
@@ -164,26 +167,56 @@ impl ApplicationService {
 }
 
 /// 不返回详情数据，Vue 等待入库后自行读取业务表。
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-pub async fn more_information(
-    source_id: String,
-    book_url: String,
-    service: tauri::State<'_, ApplicationService>,
-) -> Result<(), String> {
-    service.more_information(&source_id, &book_url).await
+pub(crate) struct Information {
+    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
+    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    information_cancel: tokio::sync::broadcast::Sender<Option<(String, String)>>,
+    search: Arc<crate::search::Search>,
+}
+impl Information {
+    pub(crate) fn new(
+        sources: Arc<crate::source_catalog::SourceCatalog>,
+        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        search: Arc<crate::search::Search>,
+    ) -> Self {
+        Self {
+            sources,
+            executor,
+            search,
+            information_cancel: tokio::sync::broadcast::channel(64).0,
+        }
+    }
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub fn cancel_more_information(
+pub(crate) async fn more_information(
+    database: tauri::State<'_, crate::database::Database>,
     source_id: String,
     book_url: String,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Information>>,
+) -> Result<(), String> {
+    service
+        .more_information(&database, &source_id, &book_url)
+        .await
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub(crate) fn cancel_more_information(
+    source_id: String,
+    book_url: String,
+    service: tauri::State<'_, Arc<Information>>,
 ) {
     service.cancel_information(&source_id, &book_url);
 }
 
 #[cfg(test)]
-#[path = "tests/information_tests.rs"]
+#[path = "tests/information.rs"]
 mod tests;
+
+impl Information {
+    pub(crate) fn cancel_all(&self) {
+        let _ = self.information_cancel.send(None);
+    }
+}

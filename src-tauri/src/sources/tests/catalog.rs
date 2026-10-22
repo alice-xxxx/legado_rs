@@ -1,17 +1,16 @@
 use super::*;
 use crate::{
-    application::ApplicationService,
     source_engine::{EngineFuture, SourceEngineRequest, SourceExecutor},
+    test_support::TestApp,
 };
 use serde_json::json;
 
 #[tokio::test]
 async fn source_catalog_reuses_reads_and_refreshes_after_writes_and_restore() {
     let directory = tempfile::tempdir().unwrap();
-    let service =
-        ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
-            .await
-            .unwrap();
+    let service = TestApp::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+        .await
+        .unwrap();
     let mut source = SourceRecord {
         id: "source-cache-test".into(),
         name: "Test".into(),
@@ -58,10 +57,9 @@ impl SourceExecutor for UnusedExecutor {
 #[tokio::test]
 async fn source_tables_preserve_rule_fields_and_large_integer_identity() {
     let directory = tempfile::tempdir().unwrap();
-    let service =
-        ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
-            .await
-            .unwrap();
+    let service = TestApp::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+        .await
+        .unwrap();
     let source = SourceRecord {
         id: "source-test".into(),
         name: "Test".into(),
@@ -86,10 +84,9 @@ async fn source_tables_preserve_rule_fields_and_large_integer_identity() {
 #[tokio::test]
 async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file() {
     let directory = tempfile::tempdir().unwrap();
-    let service =
-        ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
-            .await
-            .unwrap();
+    let service = TestApp::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+        .await
+        .unwrap();
     service.resources.bootstrap().await.unwrap();
     let source = SourceRecord {
         id: "source-test".into(),
@@ -109,7 +106,7 @@ async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file()
 
     let backup_directory = tempfile::tempdir().unwrap();
     let archive = backup_directory.path().join("backup.zip");
-    crate::backup::create_backup(&service.root, &service.database, &archive)
+    crate::backup::create_backup(&service.resources.root(), &service.database, &archive)
         .await
         .unwrap();
     let mut edited = source.clone();
@@ -123,7 +120,20 @@ async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file()
     service.sources.replace(&[source.clone()]).await.unwrap();
     let reimported = service.sources.revision(&source.id).await;
     assert!(reimported > reverted);
-    service.restore_backup(&archive).await.unwrap();
+    service
+        .backup
+        .restore_backup(
+            &service.search,
+            &service.information,
+            &service.text,
+            &service.tts,
+            &service.login,
+            &service.database,
+            &service.resources,
+            &archive,
+        )
+        .await
+        .unwrap();
     assert!(service.sources.revision(&source.id).await > reimported);
     assert!(!directory.path().join("source-revisions.json").exists());
     let file = std::fs::File::open(archive).unwrap();
@@ -131,10 +141,9 @@ async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file()
     assert!(archive.by_name("source-revisions.json").is_err());
 
     drop(service);
-    let reopened =
-        ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
-            .await
-            .unwrap();
+    let reopened = TestApp::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+        .await
+        .unwrap();
     assert_eq!(reopened.sources.revision(&source.id).await, 0);
     assert_eq!(
         reopened.sources.all().await.unwrap()[0].source,

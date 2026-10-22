@@ -13,9 +13,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    application::ApplicationService,
     discovery::{self, DiscoveryCategory, PrivateCategory},
     resources::ResourceRef,
+    search::Search,
 };
 
 const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
@@ -53,7 +53,7 @@ pub struct RssArticleState {
 impl Default for RssStateDocument {
     fn default() -> Self {
         Self {
-            schema_version: crate::models::CURRENT_SCHEMA_VERSION,
+            schema_version: 1,
             subscriptions: Vec::new(),
             articles: Vec::new(),
         }
@@ -105,8 +105,9 @@ pub(crate) fn is_standard_feed_source(source: &Value) -> bool {
 }
 
 /// Load a subscription's processed categories as a public JSON resource.
-pub async fn load_rss_categories(
-    service: &ApplicationService,
+pub(crate) async fn load_rss_categories(
+    service: &Search,
+    database: &crate::database::Database,
     source_id: &str,
 ) -> Result<Value, String> {
     let source = service.sources.get(source_id).await?;
@@ -142,9 +143,9 @@ pub async fn load_rss_categories(
     // map, public categories, or subscription state.
     let _source_guard = service.sources.rss_snapshot(&source).await?;
     let result =
-        discovery::publish_categories(service, source_id, public_categories, private_categories)
+        discovery::publish_categories(database, source_id, public_categories, private_categories)
             .await?;
-    ensure_subscription_locked(service, &source).await?;
+    ensure_subscription_locked(database, &source).await?;
     Ok(result)
 }
 
@@ -153,15 +154,25 @@ pub async fn load_rss_categories(
 /// filter, so advance over a small bounded number of empty filtered pages. The
 /// returned page and hasNextPage always describe the engine page we actually
 /// return, allowing the caller to continue after the scan limit.
-pub async fn load_rss_articles(
-    service: &ApplicationService,
+pub(crate) async fn load_rss_articles(
+    service: &Search,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     source_id: &str,
     category_id: &str,
     page: u32,
 ) -> Result<Value, String> {
     let mut current_page = page.max(1);
-    let mut result =
-        discovery::list_books(service, source_id, category_id, current_page, Some(true)).await?;
+    let mut result = discovery::list_books(
+        service,
+        database,
+        resources,
+        source_id,
+        category_id,
+        current_page,
+        Some(true),
+    )
+    .await?;
     let source = service.sources.get(source_id).await?;
     if is_standard_feed_source(&source.source) {
         return Ok(result);
@@ -171,7 +182,7 @@ pub async fn load_rss_articles(
             .get("hasNextPage")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        result = filter_rule_rss_page(service, source_id, category_id, result).await?;
+        result = filter_rule_rss_page(service, database, source_id, category_id, result).await?;
         let visible_count = result.get("bookCount").and_then(Value::as_u64).unwrap_or(0);
         if visible_count > 0
             || !engine_has_next
@@ -184,21 +195,30 @@ pub async fn load_rss_articles(
             return Ok(result);
         }
         current_page += 1;
-        result = discovery::list_books(service, source_id, category_id, current_page, Some(true))
-            .await?;
+        result = discovery::list_books(
+            service,
+            database,
+            resources,
+            source_id,
+            category_id,
+            current_page,
+            Some(true),
+        )
+        .await?;
     }
     Ok(result)
 }
 
 async fn filter_rule_rss_page(
-    service: &ApplicationService,
+    service: &Search,
+    database: &crate::database::Database,
     source_id: &str,
     category_id: &str,
     mut result: Value,
 ) -> Result<Value, String> {
     let source = service.sources.get(source_id).await?;
     let _source_guard = service.sources.rss_snapshot(&source).await?;
-    let filter = subscription_filter(service, source_id).await?;
+    let filter = subscription_filter(database, source_id).await?;
     let cards = result["search"]
         .get_mut("results")
         .and_then(Value::as_array_mut)
@@ -213,8 +233,8 @@ async fn filter_rule_rss_page(
         card["articleId"] = json!(article_id);
         tracked.push(article_id);
     }
-    register_articles(service, source_id, &tracked).await?;
-    let state = read_state(service).await?;
+    register_articles(database, source_id, &tracked).await?;
+    let state = read_state(database).await?;
     for card in cards.iter_mut() {
         let article_id = card
             .get("articleId")
@@ -251,7 +271,9 @@ async fn filter_rule_rss_page(
 /// Execute the parser-backed path for a plain feed URL. Category URLs and feed
 /// credentials never cross into public resource JSON.
 pub(crate) async fn list_standard_feed_articles(
-    service: &ApplicationService,
+    service: &Search,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     source: &SourceRecord,
     category: PrivateCategory,
     page: u32,
@@ -263,7 +285,7 @@ pub(crate) async fn list_standard_feed_articles(
     let feed = fetch_feed(&feed_url).await?;
     let _source_guard = service.sources.rss_snapshot(source).await?;
     let page = page.max(1);
-    let existing_state = read_state(service).await?;
+    let existing_state = read_state(database).await?;
     let filter = existing_state
         .subscriptions
         .iter()
@@ -302,8 +324,8 @@ pub(crate) async fn list_standard_feed_articles(
         .cloned()
         .collect::<Vec<_>>();
     let has_next_page = end < total_count;
-    register_articles(service, &source.id, &article_ids).await?;
-    let current_articles = read_state(service)
+    register_articles(database, &source.id, &article_ids).await?;
+    let current_articles = read_state(database)
         .await?
         .articles
         .into_iter()
@@ -320,7 +342,7 @@ pub(crate) async fn list_standard_feed_articles(
             .map(|link| link.href.as_str())
             .unwrap_or(feed_url.as_str());
         let chapter_ref = crate::book_files::html(
-            &service.resources,
+            resources,
             "html",
             &rss_resource_book_id(&source.id),
             article_id,
@@ -345,10 +367,10 @@ pub(crate) async fn list_standard_feed_articles(
         card["isFavorite"] = json!(state.is_favorite);
         cards.push(card);
     }
-    record_article_resources(service, &source.id, article_resources).await?;
+    record_article_resources(database, &source.id, article_resources).await?;
     let card_count = cards.len();
     let public_results = json!({
-        "schemaVersion": crate::models::CURRENT_SCHEMA_VERSION,
+        "schemaVersion": 1,
         "keyword": category.title,
         "page": page,
         "results": cards,
@@ -369,8 +391,10 @@ pub(crate) async fn list_standard_feed_articles(
 
 /// Resolve a parsed feed article to its existing typed rich-text resource.
 /// `article_id` is the opaque result ID returned in the list.
-pub async fn read_standard_feed_article(
-    service: &ApplicationService,
+pub(crate) async fn read_standard_feed_article(
+    service: &Search,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     source_id: &str,
     article_id: &str,
 ) -> Result<Value, String> {
@@ -386,7 +410,7 @@ pub async fn read_standard_feed_article(
     if !is_rss_source(&source.source) {
         return Err("Selected source is not an RSS subscription".to_owned());
     }
-    let state = lookup_article_state(service, source_id, article_id)
+    let state = lookup_article_state(database, source_id, article_id)
         .await?
         .ok_or_else(|| "RSS article is unavailable; refresh the subscription".to_owned())?;
     let typed_resource = state
@@ -395,8 +419,7 @@ pub async fn read_standard_feed_article(
     if !is_rss_article_resource_ref(source_id, article_id, &typed_resource) {
         return Err("RSS article has an invalid resource reference".to_owned());
     }
-    if !service
-        .resources
+    if !resources
         .cache
         .contains(&typed_resource)
         .await
@@ -404,19 +427,18 @@ pub async fn read_standard_feed_article(
     {
         return Err("RSS article resource is missing; refresh the subscription".to_owned());
     }
-    set_article_state(service, source_id, article_id, Some(true), None).await?;
+    set_article_state(service, database, source_id, article_id, Some(true), None).await?;
     Ok(json!({
         "sourceId": source_id,
         "articleId": article_id,
-        "resource": service.resources.descriptor(&typed_resource),
+        "resource": resources.descriptor(&typed_resource),
     }))
 }
 
 async fn ensure_subscription_locked(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     expected_source: &SourceRecord,
 ) -> Result<(), String> {
-    let database = &service.database;
     let source_id = expected_source.id.clone();
     database
         .ensure_rss_subscription(source_id)
@@ -427,8 +449,9 @@ async fn ensure_subscription_locked(
 }
 
 /// 更新已登记文章的阅读和收藏标记。
-pub async fn set_article_state(
-    service: &ApplicationService,
+pub(crate) async fn set_article_state(
+    service: &Search,
+    database: &crate::database::Database,
     source_id: &str,
     article_id: &str,
     is_read: Option<bool>,
@@ -444,7 +467,6 @@ pub async fn set_article_state(
         return Err("Selected source is not an RSS subscription".to_owned());
     }
     let _source_guard = service.sources.rss_snapshot(&source).await?;
-    let database = &service.database;
     let source_id = source_id.to_owned();
     let article_id = article_id.to_owned();
     database
@@ -464,10 +486,10 @@ pub async fn set_article_state(
 }
 
 async fn subscription_filter(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
 ) -> Result<String, String> {
-    let document = read_state(service).await?;
+    let document = read_state(database).await?;
     Ok(document
         .subscriptions
         .iter()
@@ -476,16 +498,16 @@ async fn subscription_filter(
         .unwrap_or_else(|| "all".to_owned()))
 }
 
-async fn read_state(service: &ApplicationService) -> Result<RssStateDocument, String> {
-    service.database.rss_state().map_err(|e| e.to_string())
+async fn read_state(database: &crate::database::Database) -> Result<RssStateDocument, String> {
+    database.rss_state().map_err(|e| e.to_string())
 }
 
 async fn lookup_article_state(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
     article_id: &str,
 ) -> Result<Option<RssArticleState>, String> {
-    let document = read_state(service).await?;
+    let document = read_state(database).await?;
     Ok(document
         .articles
         .into_iter()
@@ -493,7 +515,7 @@ async fn lookup_article_state(
 }
 
 async fn register_articles(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
     article_ids: &[String],
 ) -> Result<(), String> {
@@ -501,7 +523,6 @@ async fn register_articles(
     for article_id in article_ids {
         validate_opaque_id(article_id, "articleId")?;
     }
-    let database = &service.database;
     let source_id = source_id.to_owned();
     let articles = article_ids
         .iter()
@@ -522,7 +543,7 @@ async fn register_articles(
 /// the mapping after all page bodies have been prepared, so a partial feed
 /// refresh cannot retarget previously saved article resources.
 async fn record_article_resources(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
     entries: Vec<(String, ResourceRef)>,
 ) -> Result<(), String> {
@@ -540,8 +561,7 @@ async fn record_article_resources(
             ..Default::default()
         })
         .collect();
-    service
-        .database
+    database
         .save_rss_articles(source_id, articles)
         .map_err(|e| e.to_string())?
         .await
@@ -732,13 +752,14 @@ fn validate_opaque_id(id: &str, field: &str) -> Result<(), String> {
 use tauri::{Emitter, State};
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn list_rss_categories(
+pub(crate) async fn list_rss_categories(
+    database: tauri::State<'_, crate::database::Database>,
     app: tauri::AppHandle,
     source_id: String,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Search>>,
 ) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    let result = crate::rss::load_rss_categories(&service, &source_id).await?;
+    let _operation = service.backup.operation_read().await;
+    let result = crate::rss::load_rss_categories(&service, &database, &source_id).await?;
     let _ = app.emit(
         "resource-updated",
         json!({ "kind": "rssCategories", "sourceId": source_id }),
@@ -752,17 +773,25 @@ pub async fn list_rss_categories(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn list_rss_articles(
+pub(crate) async fn list_rss_articles(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
     source_id: String,
     category_id: String,
     page: Option<u32>,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Search>>,
 ) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    let result =
-        crate::rss::load_rss_articles(&service, &source_id, &category_id, page.unwrap_or(1))
-            .await?;
+    let _operation = service.backup.operation_read().await;
+    let result = crate::rss::load_rss_articles(
+        &service,
+        &database,
+        &resources,
+        &source_id,
+        &category_id,
+        page.unwrap_or(1),
+    )
+    .await?;
     let _ = app.emit(
         "resource-updated",
         json!({ "kind": "rssArticles", "sourceId": source_id, "categoryId": category_id }),
@@ -772,14 +801,23 @@ pub async fn list_rss_articles(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn open_rss_article(
+pub(crate) async fn open_rss_article(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
     source_id: String,
     article_id: String,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Search>>,
 ) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    let result = crate::rss::read_standard_feed_article(&service, &source_id, &article_id).await?;
+    let _operation = service.backup.operation_read().await;
+    let result = crate::rss::read_standard_feed_article(
+        &service,
+        &database,
+        &resources,
+        &source_id,
+        &article_id,
+    )
+    .await?;
     let _ = app.emit(
         "resource-updated",
         json!({ "kind": "rssArticle", "resource": result["resource"] }),

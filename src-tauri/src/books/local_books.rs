@@ -344,7 +344,7 @@ async fn persist_parsed_book(
             id: chapter_id,
             title: parsed_chapter.title,
             index,
-            resource: Some(crate::models::ChapterResourceDescriptor::for_chapter(
+            resource: Some(crate::book_files::ChapterResourceDescriptor::for_chapter(
                 &src,
                 content_format,
             )),

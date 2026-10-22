@@ -1,6 +1,5 @@
 //! Vue 唯一写入口：只转发业务操作，并在提交后发送通知。
 use super::{Mutation, ReadingUpdate};
-use crate::application::ApplicationService;
 use serde::Serialize;
 use tauri::{ipc::Channel, Emitter, State};
 
@@ -11,34 +10,41 @@ pub(crate) struct Completion {
 
 #[tauri::command]
 pub(crate) async fn fe_db(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
+    backup: State<'_, std::sync::Arc<crate::backup::state::Operations>>,
+    sources: State<'_, std::sync::Arc<crate::source_catalog::SourceCatalog>>,
+    text: State<'_, std::sync::Arc<crate::main_text::MainText>>,
     operations: Vec<Mutation>,
     completed: Channel<Completion>,
     prepare_current: Option<bool>,
 ) -> Result<(), String> {
-    let service = service.inner().clone();
-    let operation = service.operation_read().await;
+    let backup = backup.inner().clone();
+    let sources = sources.inner().clone();
+    let text = text.inner().clone();
+    let database = database.inner().clone();
+    let resources = resources.inner().clone();
+    let operation = backup.operation_read().await;
     let sources_changed = operations
         .iter()
         .any(|operation| matches!(operation, Mutation::SaveSources { .. }));
     let publication = if sources_changed {
-        Some(service.sources.publication.clone().lock_owned().await)
+        Some(sources.publication.clone().lock_owned().await)
     } else {
         None
     };
-    let pending = service
-        .database
+    let pending = database
         .submit(operations)
         .map_err(|error| error.to_string())?;
-    let epoch = service
+    let epoch = backup
         .restore_epoch
         .load(std::sync::atomic::Ordering::Acquire);
     tauri::async_runtime::spawn(async move {
         let result = pending.await;
         if let Ok(updates) = &result {
             if sources_changed {
-                service.sources.invalidate().await;
+                sources.invalidate().await;
                 let _ = app.emit("sources-updated", ());
             }
             for update in updates {
@@ -61,8 +67,10 @@ pub(crate) async fn fe_db(
                 if !chapter_changed && !prepare_current.unwrap_or(false) {
                     continue;
                 }
-                if let Err(error) = service
+                if let Err(error) = text
                     .prepare_reading_chapters(
+                        &database,
+                        &resources,
                         &book_id,
                         progress.chapter_index as usize,
                         epoch,

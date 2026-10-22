@@ -18,11 +18,11 @@ pub(crate) struct Settings(Files, Arc<Mutex<()>>);
 impl Settings {
     pub(crate) async fn new(root: PathBuf) -> Result<Self, ResourceError> {
         let settings_file = Self(Files::new(root).await?, Arc::new(Mutex::new(())));
-        let mut defaults = serde_json::to_value(crate::models::SettingsDocument::default())
+        let mut defaults = serde_json::to_value(crate::settings::SettingsDocument::default())
             .map_err(|error| ResourceError::new(error.to_string()))?;
         defaults["lastBackupAtMs"] = Value::Null;
         let mut settings = settings_file.read().await.unwrap_or(defaults.clone());
-        crate::models::upgrade_settings_document(&mut settings);
+        crate::settings::upgrade_settings_document(&mut settings);
         if !valid_startup_settings(&settings) {
             settings = defaults;
         }
@@ -80,10 +80,12 @@ async fn read(
 }
 
 fn valid_startup_settings(value: &Value) -> bool {
-    serde_json::from_value::<crate::models::SettingsDocument>(value.clone()).is_ok_and(|settings| {
-        settings.schema_version == crate::models::CURRENT_SCHEMA_VERSION
-            && crate::discovery::home_config::validate_home_document(&settings.home).is_ok()
-    })
+    serde_json::from_value::<crate::settings::SettingsDocument>(value.clone()).is_ok_and(
+        |settings| {
+            settings.schema_version == crate::settings::SCHEMA_VERSION
+                && crate::discovery::home_config::validate_home_document(&settings.home).is_ok()
+        },
+    )
 }
 
 fn set_source_timeout(settings: &Value) {
@@ -116,7 +118,7 @@ pub(crate) fn protected_resources(
     };
     let value = serde_json::from_slice(&bytes)
         .map_err(|error| crate::resources::ResourceError::new(error.to_string()))?;
-    let settings: crate::models::SettingsDocument = serde_json::from_value(value)
+    let settings: crate::settings::SettingsDocument = serde_json::from_value(value)
         .map_err(|error| crate::resources::ResourceError::new(error.to_string()))?;
     Ok(settings
         .reader

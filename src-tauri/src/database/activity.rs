@@ -34,7 +34,7 @@ pub(crate) enum Mutation {
         book_id: String,
     },
     SaveShelf {
-        shelf: crate::models::ShelfDocument,
+        shelf: crate::database::ShelfDocument,
     },
     SaveReplacementRules {
         rules: Vec<crate::reading_tools::DisplayReplacementRule>,
@@ -235,7 +235,7 @@ impl Database {
     pub(crate) fn rss_state(&self) -> Result<crate::rss::RssStateDocument> {
         db::read(self, |s| {
             Ok(crate::rss::RssStateDocument {
-            schema_version:crate::models::CURRENT_SCHEMA_VERSION,
+            schema_version:1,
             subscriptions:s.read("SELECT source_id,filter FROM rss_subscriptions ORDER BY source_id",[],|r|Ok(crate::rss::RssSubscriptionState {source_id:r.get(0)?,filter:r.get(1)?}))?,
             articles:s.read("SELECT source_id,article_id,is_read,is_favorite,updated_at_ms,content_ref FROM rss_articles ORDER BY source_id,article_id",[],|r|Ok(crate::rss::RssArticleState {
                 source_id:r.get(0)?,article_id:r.get(1)?,is_read:r.get(2)?,is_favorite:r.get(3)?,updated_at_ms:r.get(4)?,content_ref:r.get(5)?,
@@ -370,7 +370,7 @@ fn save_bookmark(s: &Session<'_>, book: &str, b: crate::reading_tools::Bookmark)
         params![b.id,book,b.chapter_id,b.chapter_index as i64,b.chapter_title,b.offset,b.page_id,b.anchor,b.note,b.orphaned,b.created_at_ms,b.updated_at_ms])?;
     Ok(())
 }
-fn save_shelf(s: &Session<'_>, shelf: crate::models::ShelfDocument) -> Result<()> {
+fn save_shelf(s: &Session<'_>, shelf: crate::database::ShelfDocument) -> Result<()> {
     s.write("DELETE FROM library_books", [])?;
     s.write("DELETE FROM library_groups", [])?;
     for (position, group) in shelf.groups.into_iter().enumerate() {

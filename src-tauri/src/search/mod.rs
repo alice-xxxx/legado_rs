@@ -1,5 +1,5 @@
 //! 统一搜索入口：所有书源搜索都在此请求 KMP，并使用相同结果结构向 Vue emit。
-use super::ApplicationService;
+
 use crate::{
     source_catalog::SourceRecord,
     source_engine::SourceEngineRequest,
@@ -9,6 +9,29 @@ use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{collections::HashMap, sync::Arc, time::Duration};
+
+pub(crate) struct Search {
+    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
+    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    pub(crate) searches: tokio::sync::Mutex<SearchRegistry>,
+    search_slots: tokio::sync::Semaphore,
+    pub(crate) backup: Arc<crate::backup::state::Operations>,
+}
+impl Search {
+    pub(crate) fn new(
+        sources: Arc<crate::source_catalog::SourceCatalog>,
+        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        backup: Arc<crate::backup::state::Operations>,
+    ) -> Self {
+        Self {
+            sources,
+            executor,
+            backup,
+            searches: Default::default(),
+            search_slots: tokio::sync::Semaphore::new(SEARCH_CONCURRENCY),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -36,18 +59,19 @@ pub(crate) const SEARCH_CONCURRENCY: usize = if cfg!(any(target_os = "ios", targ
 };
 const SEARCH_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
-impl ApplicationService {
+impl Search {
     /// 唯一搜索入口：直接请求 KMP、按精度过滤，每个源完成后立即发送结果。
     /// 通知只携带本次增量；累计、合并、排序和翻页均由 Vue 处理。
-    pub async fn search(
+    pub(crate) async fn search(
         &self,
+        database: &crate::database::Database,
         source_ids: &[String],
         keyword: &str,
         page: u32,
         precision: SearchPrecision,
         emit: Arc<dyn Fn(Value) + Send + Sync>,
     ) -> Result<String, String> {
-        let operation = self.operation_read().await;
+        let operation = self.backup.operation_read().await;
         let keyword = keyword.trim();
         if keyword.is_empty() || page == 0 || page > i32::MAX as u32 {
             return Err("Invalid search keyword or page".into());
@@ -70,7 +94,7 @@ impl ApplicationService {
         let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
         let cancellation = tokio_util::sync::CancellationToken::new();
         let _cancel_on_drop = cancellation.clone().drop_guard();
-        self.database
+        database
             .record_search(keyword.to_owned(), now_ms())
             .map_err(|e| e.to_string())?
             .await
@@ -129,7 +153,7 @@ impl ApplicationService {
             let _operation = tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => break,
-                operation = self.operation_read() => operation,
+                operation = self.backup.operation_read() => operation,
             };
             let mut registry = self.searches.lock().await;
             if cancellation.is_cancelled() {
@@ -182,7 +206,7 @@ impl ApplicationService {
     }
 
     /// 直接取消在途引擎请求；保留已发布结果供 Vue 继续显示。
-    pub async fn stop_search(&self, search_id: &str) -> Result<(), String> {
+    pub(crate) async fn stop_search(&self, search_id: &str) -> Result<(), String> {
         if let Some(token) = self.searches.lock().await.runs.get(search_id) {
             token.cancel();
         }
@@ -190,7 +214,7 @@ impl ApplicationService {
     }
 
     /// 关闭界面时释放会话及私有引擎结果；旧请求不能重新发布已释放的数据。
-    pub async fn release_search_results(&self, search_id: &str) -> Result<(), String> {
+    pub(crate) async fn release_search_results(&self, search_id: &str) -> Result<(), String> {
         let mut registry = self.searches.lock().await;
         if let Some(token) = registry.runs.remove(search_id) {
             token.cancel();
@@ -210,11 +234,8 @@ impl ApplicationService {
     }
 }
 
-impl ApplicationService {
-    pub(in crate::application) async fn read_search_result_cache(
-        &self,
-        result_id: &str,
-    ) -> Result<Value, String> {
+impl Search {
+    pub(crate) async fn read_search_result_cache(&self, result_id: &str) -> Result<Value, String> {
         self.searches
             .lock()
             .await
@@ -228,13 +249,14 @@ impl ApplicationService {
 /// Vue 等待命令结束；期间直接 emit 每个源的过滤结果。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn search(
+pub(crate) async fn search(
+    database: tauri::State<'_, crate::database::Database>,
     app: tauri::AppHandle,
     source_ids: Vec<String>,
     keyword: String,
     page: u32,
     precision: SearchPrecision,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Search>>,
 ) -> Result<String, String> {
     use tauri::Emitter;
     let emitter = app.clone();
@@ -242,7 +264,7 @@ pub async fn search(
         let _ = emitter.emit("search-updated", update);
     });
     let result = service
-        .search(&source_ids, &keyword, page, precision, notify)
+        .search(&database, &source_ids, &keyword, page, precision, notify)
         .await?;
     let _ = app.emit("history-updated", json!({"part":"search"}));
     Ok(result)
@@ -250,24 +272,24 @@ pub async fn search(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn stop_search(
+pub(crate) async fn stop_search(
     search_id: String,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Search>>,
 ) -> Result<(), String> {
     service.stop_search(&search_id).await
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn release_search_results(
+pub(crate) async fn release_search_results(
     search_id: String,
-    service: tauri::State<'_, ApplicationService>,
+    service: tauri::State<'_, Arc<Search>>,
 ) -> Result<(), String> {
     service.release_search_results(&search_id).await
 }
 
 #[cfg(test)]
-#[path = "tests/search_tests.rs"]
+#[path = "tests.rs"]
 mod tests;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -374,4 +396,46 @@ pub(crate) fn source_book_id(source: &SourceRecord, book: &Value) -> String {
     let url = text_at(book, &["bookUrl", "url", "origin"]).unwrap_or_else(|| book.to_string());
     let kind = crate::source_catalog::content_type(&source.source);
     crate::database::online_book_id(&source.id, kind, &url)
+}
+
+impl Search {
+    // 发现与 RSS 的结果仅在此投影和缓存，不在此发起搜索。
+    pub(crate) async fn store_processed_results(
+        &self,
+        keyword: &str,
+        page: u32,
+        source_results: Vec<(SourceRecord, Value)>,
+        errors: Vec<Value>,
+    ) -> Result<Value, String> {
+        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
+        let mut public_results = Vec::with_capacity(source_results.len());
+        let mut private_results = Vec::with_capacity(source_results.len());
+        for (source, book) in source_results {
+            let result_id = source_book_id(&source, &book);
+            let leaf = project_search_result(&result_id, &source, &book);
+            let cache = json!({
+                "searchId": search_id,
+                "sourceId": source.id,
+                "book": book,
+                "result": leaf
+            });
+            public_results.push(serde_json::to_value(leaf).map_err(|error| error.to_string())?);
+            private_results.push((result_id, cache));
+        }
+        self.searches
+            .lock()
+            .await
+            .search_result_documents
+            .extend(private_results);
+        let count = public_results.len();
+        let document = json!({
+            "searchId": search_id,
+            "keyword": keyword,
+            "page": page.max(1),
+            "results": public_results,
+            "errors": errors,
+            "complete": true,
+        });
+        Ok(json!({ "search": document, "bookCount": count, "errors": errors }))
+    }
 }

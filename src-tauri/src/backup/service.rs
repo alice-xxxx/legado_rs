@@ -3,7 +3,7 @@
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use crate::file_access::{pick_file, pick_save_file, write_selected_file};
 use crate::{
-    application::{ApplicationService, RestoreAdmissionGuard},
+    backup::state::{Operations, RestoreAdmissionGuard},
     file_access::PickerFile,
     support::now_ms,
 };
@@ -18,7 +18,7 @@ const WEBDAV_BACKUP_RETRY_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 const WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_WEBDAV_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
 const WEBDAV_BACKUP_FILE_NAME: &str = "legado-rs-backup.zip";
-use crate::models::WebDavBackupConfig;
+use crate::backup::state::WebDavBackupConfig;
 
 async fn temporary_webdav_backup_file() -> Result<PickerFile, String> {
     let directory = std::env::temp_dir()
@@ -183,10 +183,12 @@ pub(crate) fn normalize_webdav_settings(
 }
 
 /// Resource-oriented application service for commands and resource delivery.
-impl ApplicationService {
-    async fn read_webdav_backup_config(&self) -> Result<WebDavBackupConfig, String> {
-        let settings = self
-            .resources
+impl Operations {
+    async fn read_webdav_backup_config(
+        &self,
+        resources: &crate::resources::Resources,
+    ) -> Result<WebDavBackupConfig, String> {
+        let settings = resources
             .settings
             .read()
             .await
@@ -200,18 +202,24 @@ impl ApplicationService {
         .map_err(|error| format!("Cannot parse WebDAV backup settings: {error}"))
     }
 
-    async fn write_webdav_backup_config(&self, config: &WebDavBackupConfig) -> Result<(), String> {
-        let _config = self.webdav_backup_config_gate.lock().await;
-        self.write_webdav_backup_config_locked(config).await
+    async fn write_webdav_backup_config(
+        &self,
+        resources: &crate::resources::Resources,
+        config: &WebDavBackupConfig,
+    ) -> Result<(), String> {
+        let _config = crate::settings::WRITE_GATE.lock().await;
+        self.write_webdav_backup_config_locked(resources, config)
+            .await
     }
 
     async fn write_webdav_backup_config_locked(
         &self,
+        resources: &crate::resources::Resources,
         config: &WebDavBackupConfig,
     ) -> Result<(), String> {
         let value = serde_json::to_value(config)
             .map_err(|error| format!("Cannot encode WebDAV backup settings: {error}"))?;
-        self.resources
+        resources
             .settings
             .update(move |mut settings| {
                 settings["webdavBackup"] = value;
@@ -224,36 +232,47 @@ impl ApplicationService {
 
     async fn record_webdav_backup_success(
         &self,
+        resources: &crate::resources::Resources,
         exported_config: &WebDavBackupConfig,
     ) -> Result<(), String> {
         let _operation = self.operation_read().await;
-        let _config = self.webdav_backup_config_gate.lock().await;
-        let mut current = self.read_webdav_backup_config().await?;
+        let _config = crate::settings::WRITE_GATE.lock().await;
+        let mut current = self.read_webdav_backup_config(resources).await?;
         if current.url == exported_config.url && current.username == exported_config.username {
             current.last_webdav_backup_at_ms = Some(now_ms());
             current.last_auto_attempt_at_ms = None;
-            self.write_webdav_backup_config_locked(&current).await?;
+            self.write_webdav_backup_config_locked(resources, &current)
+                .await?;
         }
         Ok(())
     }
 
-    pub async fn upload_webdav_backup(&self) -> Result<Value, String> {
+    pub(crate) async fn upload_webdav_backup(
+        &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
+    ) -> Result<Value, String> {
         let _upload = self.webdav_backup_upload_gate.clone().lock_owned().await;
         let config = {
             let _operation = self.operation_read().await;
-            self.read_webdav_backup_config().await?
+            self.read_webdav_backup_config(resources).await?
         };
-        self.upload_webdav_backup_locked(config).await
+        self.upload_webdav_backup_locked(database, resources, config)
+            .await
     }
 
-    pub async fn maybe_upload_webdav_backup_due(&self) -> Result<Option<Value>, String> {
+    pub(crate) async fn maybe_upload_webdav_backup_due(
+        &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
+    ) -> Result<Option<Value>, String> {
         let Ok(_upload) = self.webdav_backup_upload_gate.clone().try_lock_owned() else {
             return Ok(None);
         };
         let config = {
             let _operation = self.operation_read().await;
-            let _config = self.webdav_backup_config_gate.lock().await;
-            let mut config = self.read_webdav_backup_config().await?;
+            let _config = crate::settings::WRITE_GATE.lock().await;
+            let mut config = self.read_webdav_backup_config(resources).await?;
             let Some(interval_hours) = config.auto_interval_hours else {
                 return Ok(None);
             };
@@ -278,15 +297,20 @@ impl ApplicationService {
             }
 
             config.last_auto_attempt_at_ms = Some(now);
-            self.write_webdav_backup_config_locked(&config).await?;
+            self.write_webdav_backup_config_locked(resources, &config)
+                .await?;
             config
         };
 
-        self.upload_webdav_backup_locked(config).await.map(Some)
+        self.upload_webdav_backup_locked(database, resources, config)
+            .await
+            .map(Some)
     }
 
     async fn upload_webdav_backup_locked(
         &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
         config: WebDavBackupConfig,
     ) -> Result<Value, String> {
         let directory = webdav_directory_url(&config.url)?;
@@ -294,7 +318,8 @@ impl ApplicationService {
         let temporary_name = format!(".legado-rs-backup-{}.upload", uuid::Uuid::new_v4().simple());
         let temporary_url = webdav_file_url(&directory, &temporary_name)?;
         let staged = temporary_webdav_backup_file().await?;
-        self.create_backup(&staged.path).await?;
+        self.create_backup(database, resources, &staged.path)
+            .await?;
         let archive_size = tokio::fs::metadata(&staged.path)
             .await
             .map_err(|error| format!("Cannot inspect WebDAV backup archive: {error}"))?
@@ -354,10 +379,10 @@ impl ApplicationService {
 
         let mut result = json!({ "uploaded": true });
         let mut warnings = Vec::new();
-        if let Err(error) = self.record_webdav_backup_success(&config).await {
+        if let Err(error) = self.record_webdav_backup_success(resources, &config).await {
             warnings.push(format!("远端备份时间未保存：{error}"));
         }
-        match self.record_backup_success().await {
+        match self.record_backup_success(resources).await {
             Ok(settings) => result["settings"] = settings,
             Err(error) => warnings.push(format!("最近备份时间更新失败：{error}")),
         }
@@ -367,8 +392,11 @@ impl ApplicationService {
         Ok(result)
     }
 
-    async fn download_webdav_backup_archive(&self) -> Result<PickerFile, String> {
-        let config = self.read_webdav_backup_config().await?;
+    async fn download_webdav_backup_archive(
+        &self,
+        resources: &crate::resources::Resources,
+    ) -> Result<PickerFile, String> {
+        let config = self.read_webdav_backup_config(resources).await?;
         let directory = webdav_directory_url(&config.url)?;
         let source_url = webdav_file_url(&directory, WEBDAV_BACKUP_FILE_NAME)?;
         let client = webdav_client()?;
@@ -419,15 +447,22 @@ impl ApplicationService {
         Ok(staged)
     }
 
-    pub async fn restore_webdav_backup(
+    pub(crate) async fn restore_webdav_backup(
         &self,
+        search: &crate::search::Search,
+        information: &crate::information::Information,
+        text: &crate::main_text::MainText,
+        tts: &crate::reading_tools::tts::Tts,
+        login: &crate::source_login::Login,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
         close_readers: impl std::future::Future<Output = ()>,
     ) -> Result<Value, String> {
         // Hold a read admission only while retrieving the remote file. Drop it
         // before calling restore_backup, which acquires the exclusive gate.
         let staged = match async {
             let _operation = self.operation_read().await;
-            self.download_webdav_backup_archive().await
+            self.download_webdav_backup_archive(resources).await
         }
         .await
         {
@@ -439,7 +474,19 @@ impl ApplicationService {
             }
         };
         close_readers.await;
-        let mut bootstrap = match self.restore_backup(&staged.path).await {
+        let mut bootstrap = match self
+            .restore_backup(
+                search,
+                information,
+                text,
+                tts,
+                login,
+                database,
+                resources,
+                &staged.path,
+            )
+            .await
+        {
             Ok(bootstrap) => bootstrap,
             Err(error) => return Ok(restore_error_response(error)),
         };
@@ -455,7 +502,12 @@ impl ApplicationService {
         }))
     }
 
-    pub async fn create_backup(&self, destination: &Path) -> Result<(), String> {
+    pub(crate) async fn create_backup(
+        &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
+        destination: &Path,
+    ) -> Result<(), String> {
         let mut barrier = self.restore_barrier.subscribe();
         loop {
             if *barrier.borrow() {
@@ -477,19 +529,21 @@ impl ApplicationService {
                 continue;
             }
             let result =
-                crate::backup::create_backup(&self.root, &self.database, destination).await;
+                crate::backup::create_backup(resources.root(), database, destination).await;
             drop(exclusive);
             drop(admission);
             return result;
         }
     }
 
-    pub(crate) async fn record_backup_success(&self) -> Result<Value, String> {
+    pub(crate) async fn record_backup_success(
+        &self,
+        resources: &crate::resources::Resources,
+    ) -> Result<Value, String> {
         let _operation = self.operation_read().await;
 
         let timestamp = now_ms();
-        let settings = self
-            .resources
+        let settings = resources
             .settings
             .update(move |mut settings| {
                 if !settings.is_object() {
@@ -505,6 +559,13 @@ impl ApplicationService {
 
     pub(crate) async fn restore_backup(
         &self,
+        search: &crate::search::Search,
+        information: &crate::information::Information,
+        text: &crate::main_text::MainText,
+        tts: &crate::reading_tools::tts::Tts,
+        login: &crate::source_login::Login,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
         archive: &Path,
     ) -> Result<Value, crate::backup::state::TransactionError> {
         self.restore_epoch
@@ -516,18 +577,19 @@ impl ApplicationService {
             .map_err(|_| crate::backup::state::TransactionError::new("Restore epoch exhausted"))?;
         let _restore_serial = self.restore_serial.clone().lock_owned().await;
         self.restore_barrier.send_replace(true);
-        self.end_tts().await;
-        self.cancel_login()
+        tts.end_tts().await;
+        login
+            .cancel_login()
             .await
             .map_err(crate::backup::state::TransactionError::new)?;
-        self.resources.tts.clear();
+        resources.tts.clear();
         let mut admission = RestoreAdmissionGuard {
             barrier: self.restore_barrier.clone(),
             release_on_drop: true,
         };
         let _admission_gate = self.admission_gate.clone().write_owned().await;
         let (webdav_config, mut webdav_config_warning) =
-            match self.read_webdav_backup_config().await {
+            match self.read_webdav_backup_config(resources).await {
                 Ok(config)
                     if config.url.is_empty()
                         && config.username.is_empty()
@@ -541,18 +603,18 @@ impl ApplicationService {
                     Some(format!("无法读取并保留本机 WebDAV 备份设置：{error}")),
                 ),
             };
-        let _ = self.information_cancel.send(None);
-        let _ = self.text_cancel.send(None);
-        self.clear_searches().await;
+        information.cancel_all();
+        text.cancel_all();
+        search.clear_searches().await;
         let _exclusive = self.operation_gate.clone().write_owned().await;
-        if let Err(error) = crate::backup::restore_backup(&self.database, archive).await {
+        if let Err(error) = crate::backup::restore_backup(database, archive).await {
             if error.recovery_required_flag() {
                 admission.release_on_drop = false;
             }
             return Err(error);
         }
-        self.sources.invalidate().await;
-        self.resources.reload_proxy()
+        search.sources.invalidate().await;
+        resources.reload_proxy()
             .await
             .map_err(|error| {
                 admission.release_on_drop = false;
@@ -562,12 +624,12 @@ impl ApplicationService {
                 )
             })?;
         if let Some(config) = webdav_config {
-            if let Err(error) = self.write_webdav_backup_config(&config).await {
+            if let Err(error) = self.write_webdav_backup_config(resources, &config).await {
                 webdav_config_warning =
                     Some(format!("备份已恢复，但无法保留本机 WebDAV 设置：{error}"));
             }
         }
-        let mut bootstrap = self.resources.bootstrap().await.map_err(|error| {
+        let mut bootstrap = resources.bootstrap().await.map_err(|error| {
             admission.release_on_drop = false;
             crate::backup::state::TransactionError::recovery_required(
                 format!("Restored data is active, but app state could not be loaded: {error}"),
@@ -583,16 +645,18 @@ impl ApplicationService {
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn create_backup_from_picker(
+pub(crate) async fn create_backup_from_picker(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Operations>>,
 ) -> Result<Value, String> {
     let Some(destination) = pick_save_file(&app, "ZIP backup", &["zip"]).await? else {
         return Ok(json!({ "cancelled": true }));
     };
     let _backup = service.webdav_backup_upload_gate.clone().lock_owned().await;
     if let Ok(path) = destination.clone().into_path() {
-        service.create_backup(&path).await?;
+        service.create_backup(&database, &resources, &path).await?;
     } else {
         let directory = std::env::temp_dir().join("legado-rs-backup-staging");
         tokio::fs::create_dir_all(&directory)
@@ -602,7 +666,9 @@ pub async fn create_backup_from_picker(
             directory.join(format!("{}.zip", uuid::Uuid::new_v4().simple())),
             None,
         );
-        service.create_backup(&staged.path).await?;
+        service
+            .create_backup(&database, &resources, &staged.path)
+            .await?;
         let bytes = tokio::fs::read(&staged.path)
             .await
             .map_err(|error| error.to_string())?;
@@ -611,7 +677,7 @@ pub async fn create_backup_from_picker(
     // The archive contains the previous successful-export time. Update the
     // live settings only after the user-selected destination is complete.
     let mut response = json!({ "backup": true, "created": true });
-    match service.record_backup_success().await {
+    match service.record_backup_success(&resources).await {
         Ok(settings) => {
             let _ = app.emit(
                 "settings-updated",
@@ -628,11 +694,13 @@ pub async fn create_backup_from_picker(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn upload_webdav_backup(
+pub(crate) async fn upload_webdav_backup(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Operations>>,
 ) -> Result<Value, String> {
-    let result = service.upload_webdav_backup().await?;
+    let result = service.upload_webdav_backup(&database, &resources).await?;
     if let Some(settings) = result.get("settings") {
         let _ = app.emit(
             "settings-updated",
@@ -644,12 +712,28 @@ pub async fn upload_webdav_backup(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn restore_webdav_backup(
+pub(crate) async fn restore_webdav_backup(
+    search: State<'_, std::sync::Arc<crate::search::Search>>,
+    information: State<'_, std::sync::Arc<crate::information::Information>>,
+    text: State<'_, std::sync::Arc<crate::main_text::MainText>>,
+    tts: State<'_, std::sync::Arc<crate::reading_tools::tts::Tts>>,
+    login: State<'_, std::sync::Arc<crate::source_login::Login>>,
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Operations>>,
 ) -> Result<Value, String> {
     let result = service
-        .restore_webdav_backup(crate::database::reader::close(&app))
+        .restore_webdav_backup(
+            &search,
+            &information,
+            &text,
+            &tts,
+            &login,
+            &database,
+            &resources,
+            crate::database::reader::close(&app),
+        )
         .await;
     crate::database::reader::open(&app).await?;
     let result = result?;
@@ -663,9 +747,16 @@ pub async fn restore_webdav_backup(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn restore_backup_from_picker(
+pub(crate) async fn restore_backup_from_picker(
+    search: State<'_, std::sync::Arc<crate::search::Search>>,
+    information: State<'_, std::sync::Arc<crate::information::Information>>,
+    text: State<'_, std::sync::Arc<crate::main_text::MainText>>,
+    tts: State<'_, std::sync::Arc<crate::reading_tools::tts::Tts>>,
+    login: State<'_, std::sync::Arc<crate::source_login::Login>>,
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Operations>>,
 ) -> Result<Value, String> {
     let selected = match pick_file(&app, "Legado backup", &["zip"]).await {
         Ok(selected) => selected,
@@ -679,7 +770,18 @@ pub async fn restore_backup_from_picker(
         return Ok(json!({ "cancelled": true }));
     };
     crate::database::reader::close(&app).await;
-    let restored = service.restore_backup(&path.path).await;
+    let restored = service
+        .restore_backup(
+            &search,
+            &information,
+            &text,
+            &tts,
+            &login,
+            &database,
+            &resources,
+            &path.path,
+        )
+        .await;
     crate::database::reader::open(&app).await?;
     let mut bootstrap = match restored {
         Ok(bootstrap) => bootstrap,

@@ -44,3 +44,5 @@ fn hex_digest(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+const DATA_SCHEMA_VERSION: u32 = 1;

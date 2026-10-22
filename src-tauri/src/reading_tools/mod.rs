@@ -6,9 +6,10 @@
 pub(crate) mod dictionary;
 pub(crate) mod progress;
 
-mod common;
 mod history;
 mod replacements;
 
 pub use history::*;
 pub use replacements::*;
+
+pub(crate) mod tts;

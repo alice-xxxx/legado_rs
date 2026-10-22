@@ -1,5 +1,5 @@
 //! 封面和阅读背景的业务入口，图片文件交给新 cache。
-use crate::{application::ApplicationService, resources::ResourceRef};
+use crate::resources::{ResourceRef, Resources};
 pub(crate) const READER_BACKGROUND_BOOK_ID: &str = "reader-theme-backgrounds";
 
 pub(crate) fn user_reader_background_reference(value: &str) -> Option<ResourceRef> {
@@ -15,7 +15,7 @@ pub(crate) fn user_reader_background_reference(value: &str) -> Option<ResourceRe
 }
 
 pub(crate) async fn cleanup_unreferenced_reader_background_asset(
-    service: &ApplicationService,
+    resources: &Resources,
     previous: Option<String>,
     current: Option<&str>,
 ) {
@@ -25,10 +25,10 @@ pub(crate) async fn cleanup_unreferenced_reader_background_asset(
     let Some(reference) = user_reader_background_reference(&previous) else {
         return;
     };
-    if service.resources.asset_in_use(&reference).unwrap_or(true) {
+    if resources.asset_in_use(&reference).unwrap_or(true) {
         return;
     }
-    if let Err(error) = service.resources.cache.remove_asset(&reference).await {
+    if let Err(error) = resources.cache.remove_asset(&reference).await {
         eprintln!("清理旧阅读背景失败：{error}");
     }
 }
@@ -36,7 +36,7 @@ pub(crate) async fn cleanup_unreferenced_reader_background_asset(
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 async fn pick(
     app: &tauri::AppHandle,
-    service: &ApplicationService,
+    resources: &Resources,
     owner: &str,
     prefix: &str,
     kind: &str,
@@ -80,8 +80,7 @@ async fn pick(
     .await
     .map_err(|e| e.to_string())??;
     let id = format!("{prefix}{}.{}", uuid::Uuid::new_v4().simple(), extension);
-    let reference = service
-        .resources
+    let reference = resources
         .cache
         .save_asset(kind, owner, &id, &bytes)
         .await
@@ -94,29 +93,30 @@ async fn pick(
 pub async fn pick_book_cover(
     app: tauri::AppHandle,
     book_id: String,
-    service: tauri::State<'_, ApplicationService>,
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
 ) -> Result<serde_json::Value, String> {
-    let _operation = service.operation_read().await;
-    let _book = service.book_lock(&book_id).await;
-    service.read_book(&book_id).await?;
-    let kind = crate::book_files::kind(&service.database, &book_id).map_err(|e| e.to_string())?;
-    let Some((id, reference)) = pick(&app, &service, &book_id, "user-cover-", &kind).await? else {
+    let kind = database
+        .book_type(&book_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("书籍不存在")?;
+    let Some((id, reference)) = pick(&app, &resources, &book_id, "user-cover-", &kind).await?
+    else {
         return Ok(serde_json::json!({"cancelled":true}));
     };
     Ok(
-        serde_json::json!({"cancelled":false,"assetId":id,"coverSrc":reference.as_str(),"previewSrc":service.resources.url_for(&reference)}),
+        serde_json::json!({"cancelled":false,"assetId":id,"coverSrc":reference.as_str(),"previewSrc":resources.url_for(&reference)}),
     )
 }
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
 pub async fn pick_reader_background_image(
     app: tauri::AppHandle,
-    service: tauri::State<'_, ApplicationService>,
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
 ) -> Result<serde_json::Value, String> {
-    let _operation = service.operation_read().await;
     let Some((_, reference)) = pick(
         &app,
-        &service,
+        &resources,
         READER_BACKGROUND_BOOK_ID,
         "user-reader-background-",
         "image",
@@ -125,32 +125,32 @@ pub async fn pick_reader_background_image(
     else {
         return Ok(serde_json::json!({"cancelled":true}));
     };
-    Ok(serde_json::json!({"cancelled":false,"image":service.resources.descriptor(&reference)}))
+    Ok(serde_json::json!({"cancelled":false,"image":resources.descriptor(&reference)}))
 }
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
 pub async fn discard_book_cover_asset(
     book_id: String,
     asset_id: String,
-    service: tauri::State<'_, ApplicationService>,
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
 ) -> Result<serde_json::Value, String> {
-    let _operation = service.operation_read().await;
-    let _book = service.book_lock(&book_id).await;
     if !asset_id.starts_with("user-cover-") {
         return Err("只能丢弃临时选择的封面".into());
     }
-    let kind = crate::book_files::kind(&service.database, &book_id).map_err(|e| e.to_string())?;
+    let kind = database
+        .book_type(&book_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("书籍不存在")?;
     let reference = ResourceRef::new(format!("resource://cache/{kind}/{book_id}/{asset_id}"))
         .map_err(|e| e.to_string())?;
-    let in_use = service
-        .resources
+    let in_use = resources
         .asset_in_use(&reference)
         .map_err(|e| e.to_string())?;
     let removed = if in_use {
         false
     } else {
-        service
-            .resources
+        resources
             .cache
             .remove_asset(&reference)
             .await

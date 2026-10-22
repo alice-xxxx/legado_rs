@@ -1,6 +1,5 @@
 //! 正文转换与离线下载；缓存写入只走 resources.cache。
 use crate::{
-    application::ApplicationService,
     resources::ResourceRef,
     source_engine::{SourceEngineRequest, SourceExecutor},
 };
@@ -8,7 +7,7 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
 
 async fn media(
-    service: &ApplicationService,
+    resources: &crate::resources::Resources,
     executor: &dyn SourceExecutor,
     book: &str,
     chapter: &str,
@@ -36,10 +35,7 @@ async fn media(
     let fingerprint =
         serde_json::to_vec(&(book, chapter, url, &headers)).map_err(|e| e.to_string())?;
     let id = format!("chapter-media-{}", crate::support::sha256_hex(&fingerprint));
-    let reference = service
-        .resources
-        .register_proxy(book, &id, url, &headers)
-        .await?;
+    let reference = resources.register_proxy(book, &id, url, &headers).await?;
     let hls = reqwest::Url::parse(url)
         .map_err(|e| e.to_string())?
         .path()
@@ -85,7 +81,8 @@ fn image_urls(body: &str, base: Option<&str>) -> Result<Vec<String>, String> {
 }
 
 pub(crate) async fn chapter_content(
-    service: &ApplicationService,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     executor: &dyn SourceExecutor,
     book: &str,
     chapter_id: &str,
@@ -116,7 +113,7 @@ pub(crate) async fn chapter_content(
             let mut pages = Vec::new();
             for (index, url) in image_urls(body, base.as_deref())?.iter().enumerate() {
                 let (reference, _) =
-                    media(service, executor, book, chapter_id, context, url, None).await?;
+                    media(resources, executor, book, chapter_id, context, url, None).await?;
                 pages.push(json!({"id":format!("p{}",index+1),"url":reference.as_str()}));
             }
             chapter["pages"] = json!(pages);
@@ -126,7 +123,7 @@ pub(crate) async fn chapter_content(
             let (candidates, default, headers) = candidates(body)?;
             let mut sources = Vec::new();
             for (index, (label, url)) in candidates.into_iter().enumerate() {
-                match media(service,executor,book,chapter_id,context,&url,headers.clone()).await {
+                match media(resources, executor,book,chapter_id,context,&url,headers.clone()).await {
                     Ok((reference,protocol)) => sources.push(json!({"src":reference.as_str(),"label":label,"format":protocol,"selected":index==default,"unavailableReason":null})),
                     Err(error) if kind == "audio" => return Err(error),
                     Err(_) => sources.push(json!({"src":null,"label":label,"format":null,"selected":false,"unavailableReason":"清晰度解析失败"})),
@@ -151,8 +148,7 @@ pub(crate) async fn chapter_content(
             (reference, kind)
         }
         _ if crate::support::looks_like_html(body) => {
-            service
-                .database
+            database
                 .bind_book_type(book.to_owned(), "html".into())
                 .map_err(|e| e.to_string())?
                 .await
@@ -176,13 +172,12 @@ pub(crate) async fn chapter_content(
             for escaped in urls {
                 let url = quick_xml::escape::unescape(&escaped).map_err(|e| e.to_string())?;
                 let (reference, _) =
-                    media(service, executor, book, chapter_id, context, &url, None).await?;
+                    media(resources, executor, book, chapter_id, context, &url, None).await?;
                 markup = markup.replace(&escaped, reference.as_str());
             }
             let reference = crate::book_files::content_ref("html", book, chapter_id, &markup, true)
                 .map_err(|e| e.to_string())?;
-            service
-                .resources
+            resources
                 .cache
                 .save_content(&reference, &markup)
                 .await
@@ -190,13 +185,13 @@ pub(crate) async fn chapter_content(
             (reference, "richText")
         }
         _ => (
-            crate::book_files::text(&service.resources, kind, book, chapter_id, body)
+            crate::book_files::text(resources, kind, book, chapter_id, body)
                 .await
                 .map_err(|e| e.to_string())?,
             "text",
         ),
     };
-    chapter["resource"] = json!(crate::models::ChapterResourceDescriptor::for_chapter(
+    chapter["resource"] = json!(crate::book_files::ChapterResourceDescriptor::for_chapter(
         &reference, format
     ));
     Ok(chapter)
@@ -265,12 +260,13 @@ fn candidates(body: &str) -> Result<Candidates, String> {
 
 /// 下载完整依赖后才替换章节引用；取消与失败不会覆盖数据库中的旧章节。
 pub(crate) async fn cache_chapter_files(
-    service: &ApplicationService,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     book: &str,
     chapter_id: &str,
     mut chapter: Value,
 ) -> Result<Value, String> {
-    let kind = crate::book_files::kind(&service.database, book).map_err(|e| e.to_string())?;
+    let kind = crate::book_files::kind(database, book).map_err(|e| e.to_string())?;
     let mut markup = None;
     let mut roots = Vec::new();
     if kind == "image" {
@@ -291,8 +287,7 @@ pub(crate) async fn cache_chapter_files(
     } else if kind == "html" {
         if let Some(url) = chapter["resource"]["resourceId"].as_str() {
             let reference = ResourceRef::new(url).map_err(|e| e.to_string())?;
-            let document = service
-                .resources
+            let document = resources
                 .cache
                 .read_content(&reference)
                 .await
@@ -314,9 +309,7 @@ pub(crate) async fn cache_chapter_files(
     let mut queue = VecDeque::new();
     let mut names = HashMap::new();
     for root in &roots {
-        let url = service
-            .resources
-            .url_for(&ResourceRef::new(root).map_err(|e| e.to_string())?);
+        let url = resources.url_for(&ResourceRef::new(root).map_err(|e| e.to_string())?);
         if names.insert(url.clone(), String::new()).is_none() {
             queue.push_back(url);
         }
@@ -372,7 +365,7 @@ pub(crate) async fn cache_chapter_files(
             "ts"
         };
         let stable = url
-            .strip_prefix(service.resources.base_url())
+            .strip_prefix(resources.base_url())
             .ok_or("离线地址超出本地服务")?;
         let name = format!(
             "{chapter_id}-{}.{}",
@@ -397,7 +390,7 @@ pub(crate) async fn cache_chapter_files(
                     continue;
                 }
                 let child = base.join(raw).map_err(|e| e.to_string())?.to_string();
-                if !child.starts_with(service.resources.base_url()) {
+                if !child.starts_with(resources.base_url()) {
                     return Err("离线依赖超出本地服务".into());
                 }
                 if !names.contains_key(&child) {
@@ -411,8 +404,7 @@ pub(crate) async fn cache_chapter_files(
             }
             playlists.push((name, body, dependencies));
         } else {
-            service
-                .resources
+            resources
                 .cache
                 .save_asset(&kind, book, &name, &bytes)
                 .await
@@ -425,8 +417,7 @@ pub(crate) async fn cache_chapter_files(
         for (raw, child) in dependencies {
             body = body.replace(&raw, &names[&child]);
         }
-        service
-            .resources
+        resources
             .cache
             .save_asset(&kind, book, &name, body.as_bytes())
             .await
@@ -435,9 +426,7 @@ pub(crate) async fn cache_chapter_files(
     }
     let mut replacements = HashMap::new();
     for root in roots {
-        let url = service
-            .resources
-            .url_for(&ResourceRef::new(&root).map_err(|e| e.to_string())?);
+        let url = resources.url_for(&ResourceRef::new(&root).map_err(|e| e.to_string())?);
         let reference = ResourceRef::new(format!("resource://cache/{kind}/{book}/{}", names[&url]))
             .map_err(|e| e.to_string())?;
         replacements.insert(root, reference.to_string());
@@ -469,13 +458,12 @@ pub(crate) async fn cache_chapter_files(
         }
         let reference = crate::book_files::content_ref(&kind, book, chapter_id, &body, true)
             .map_err(|e| e.to_string())?;
-        service
-            .resources
+        resources
             .cache
             .save_content(&reference, &body)
             .await
             .map_err(|e| e.to_string())?;
-        chapter["resource"] = json!(crate::models::ChapterResourceDescriptor::for_chapter(
+        chapter["resource"] = json!(crate::book_files::ChapterResourceDescriptor::for_chapter(
             &reference, "richText"
         ));
     }

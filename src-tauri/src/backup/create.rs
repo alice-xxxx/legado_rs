@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::models::CURRENT_SCHEMA_VERSION;
+use super::DATA_SCHEMA_VERSION;
 
 use super::{
     hex_digest, BackupEntry, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, MANIFEST_PATH,
@@ -80,7 +80,7 @@ fn create_backup_sync(
     let manifest = BackupManifest {
         format: BACKUP_FORMAT.to_owned(),
         backup_version: BACKUP_VERSION,
-        app_schema_version: CURRENT_SCHEMA_VERSION,
+        app_schema_version: DATA_SCHEMA_VERSION,
         files: files
             .iter()
             .map(|file| BackupEntry {

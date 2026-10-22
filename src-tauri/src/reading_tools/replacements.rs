@@ -1,15 +1,14 @@
 //! 展示替换规则文档操作。
 
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 
-use crate::{
-    models::CURRENT_SCHEMA_VERSION,
-};
+use crate::support::validate_id;
 
-use super::common::{current_schema_version, validate_id};
-
+fn current_schema_version() -> u32 {
+    1
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -23,7 +22,7 @@ pub struct ReplacementRuleDocument {
 impl Default for ReplacementRuleDocument {
     fn default() -> Self {
         Self {
-            schema_version: CURRENT_SCHEMA_VERSION,
+            schema_version: 1,
             rules: Vec::new(),
         }
     }
@@ -60,18 +59,23 @@ pub struct DisplayReplacementRuleInput {
 
 /// Parse import data without changing the saved configuration.
 pub fn parse_replacement_import(source_json: &str) -> Result<Value, String> {
-    let rules = parse_replacement_rules_json(source_json)?.into_iter().map(|input| {
-        json!({
-            "id": format!("replacement-{}", uuid::Uuid::new_v4().simple()),
-            "name": input.name, "pattern": input.pattern, "replacement": input.replacement,
-            "enabled": input.enabled, "isRegex": input.is_regex, "scope": input.scope,
+    let rules = parse_replacement_rules_json(source_json)?
+        .into_iter()
+        .map(|input| {
+            json!({
+                "id": format!("replacement-{}", uuid::Uuid::new_v4().simple()),
+                "name": input.name, "pattern": input.pattern, "replacement": input.replacement,
+                "enabled": input.enabled, "isRegex": input.is_regex, "scope": input.scope,
+            })
         })
-    }).collect::<Vec<_>>();
-    Ok(json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "rules": rules }))
+        .collect::<Vec<_>>();
+    Ok(json!({ "schemaVersion": 1, "rules": rules }))
 }
 
 /// Parse and validate a complete display-rule document before importing it.
-fn parse_replacement_rules_json(source_json: &str) -> Result<Vec<DisplayReplacementRuleInput>, String> {
+fn parse_replacement_rules_json(
+    source_json: &str,
+) -> Result<Vec<DisplayReplacementRuleInput>, String> {
     if source_json.len() > 2 * 1024 * 1024 {
         return Err("显示替换规则 JSON 超过 2 MiB 限制".to_owned());
     }
@@ -82,7 +86,7 @@ fn parse_replacement_rules_json(source_json: &str) -> Result<Vec<DisplayReplacem
         Value::Object(object) => {
             if object
                 .get("schemaVersion")
-                .is_some_and(|version| version.as_u64() != Some(u64::from(CURRENT_SCHEMA_VERSION)))
+                .is_some_and(|version| version.as_u64() != Some(1))
             {
                 return Err("显示替换规则 JSON 版本不受支持".to_owned());
             }
@@ -153,17 +157,23 @@ fn validate_replacement_rule_input(
 pub fn validate_replacement_document(value: &Value) -> Result<(), String> {
     let document: ReplacementRuleDocument = serde_json::from_value(value.clone())
         .map_err(|error| format!("Invalid replacement rules JSON: {error}"))?;
-    if document.schema_version != CURRENT_SCHEMA_VERSION {
+    if document.schema_version != 1 {
         return Err("Unsupported replacement rules schema".into());
     }
     let mut ids = HashSet::new();
     for rule in document.rules {
         validate_id(&rule.id, "replacementRuleId")?;
-        if !ids.insert(rule.id.clone()) { return Err("Duplicate replacement rule ID".into()); }
+        if !ids.insert(rule.id.clone()) {
+            return Err("Duplicate replacement rule ID".into());
+        }
         validate_replacement_rule_input(&DisplayReplacementRuleInput {
-            id: Some(rule.id), name: rule.name, pattern: rule.pattern,
-            replacement: rule.replacement, enabled: rule.enabled,
-            is_regex: rule.is_regex, scope: rule.scope,
+            id: Some(rule.id),
+            name: rule.name,
+            pattern: rule.pattern,
+            replacement: rule.replacement,
+            enabled: rule.enabled,
+            is_regex: rule.is_regex,
+            scope: rule.scope,
         })?;
     }
     Ok(())

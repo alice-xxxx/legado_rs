@@ -17,10 +17,10 @@
 | `src/main.ts`、`src/app/RoutesRoot.vue`、`src/router/` | 初始化共享状态、挂载页面及独立功能 host、哈希路由。 |
 | `src/features/` | 页面、阅读器、导入、配置及对应状态。 |
 | `src/api/`、`src/ui/` | 类型化命令与资源接口、共用展示组件。 |
-| `src-tauri/src/application/` | ApplicationService 和 Tauri 命令。 |
-| `src-tauri/src/books/`、`sources/`、`discovery/`、`rss/` | 本地书籍、书源引擎、发现与 RSS。 |
-| `src-tauri/src/resources/`、`backup/`、`models/` | 文件及 HTTP 资源、事务恢复、备份、数据类型。 |
-| `src-tauri/src/reading_tools/`、`search/`、`settings/` | 阅读记录、规则、搜索历史与朗读配置。 |
+| `src-tauri/src/lib.rs` | 初始化独立模块并注册各模块的 Tauri 命令和状态。 |
+| `src-tauri/src/books/`、`sources/`、`discovery/`、`rss/` | 书籍导入、详情与正文、来源引擎与登录、发现和 RSS；类型定义归所属模块。 |
+| `src-tauri/src/resources/`、`backup/` | 文件及 HTTP 资源、备份恢复与操作屏障。 |
+| `src-tauri/src/reading_tools/`、`search/`、`settings/` | 阅读预读、记录、规则与朗读，搜索会话，应用及阅读设置。 |
 | `kotlin/`、`src-tauri/plugins/source-engine/` | KMP 引擎、原生库及移动端插件。 |
 
 ## 持久化
@@ -104,7 +104,7 @@ Rust 解析并持久化，Vue 展示缓存。导入按内容、格式和解析�
 - **CBZ**：缓存为 `image`，图片自然排序，已有 WebP 校验后复用，其他格式转为无损 WebP。存在 ComicInfo.xml 时读取元数据。
 - **PDF**：缓存为 `pdf`，保留原文件和页数，运行时生成页索引。加密文件通过临时令牌重试密码，密码不持久化。
 
-入口为 `src-tauri/src/books/local_books.rs`、`src-tauri/src/application/file_import.rs` 和 `src/features/books/useLocalBookImport.ts`。
+入口为 `src-tauri/src/books/local_books.rs`、`src-tauri/src/books/import.rs` 和 `src/features/books/useLocalBookImport.ts`。
 
 ## 搜索与深度链接
 

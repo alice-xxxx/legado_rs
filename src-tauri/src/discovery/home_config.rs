@@ -1,13 +1,10 @@
-//! 保存发现页首页模块的排序、显隐和来源配置。
-//! Rust-owned home navigation and section configuration.
-//!
-//! The settings resource stores selected IDs and layout; Rust resolves each
-//! source/category ID against its discovery category cache when saving.
+//! 首页分区设置及来源类别检查。
+
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    application::ApplicationService,
+    database::Database,
     discovery::{self, PrivateCategory},
-    models::HomeConfigDocument,
     rss::is_rss_source,
 };
 
@@ -17,21 +14,23 @@ const MAX_TITLE_CHARS: usize = 128;
 
 /// Validate sources and categories when the complete settings document changes home layout.
 pub(crate) async fn validate_home_sources(
-    service: &ApplicationService,
+    database: &Database,
     document: &HomeConfigDocument,
 ) -> Result<(), String> {
+    let sources = crate::source_catalog::SourceCatalog::new(database.clone());
     for tab in &document.tabs {
         for section in &tab.sections {
-            let source = service.sources.get(&section.source_id).await?;
+            let source = sources.get(&section.source_id).await?;
             if !source.enabled {
                 return Err("A home section source is disabled".to_owned());
             }
             if is_rss_source(&source.source) {
                 return Err("RSS subscriptions cannot be used as discovery sections".to_owned());
             }
-            let category: PrivateCategory =
-                discovery::private_category(service, &section.source_id, &section.category_id)
-                    .await?;
+            let category: PrivateCategory = database
+                .discovery_category(&section.source_id, &section.category_id)
+                .map_err(|error| error.to_string())?
+                .ok_or("Unknown or expired discovery category ID")?;
             if category.kind != "engine" || category.url.is_none() {
                 return Err("A home section must use a navigable discovery category".to_owned());
             }
@@ -125,6 +124,47 @@ fn normalize_orders(document: &mut HomeConfigDocument) {
         }
         for (section_index, section) in tab.sections.iter_mut().enumerate() {
             section.sort_order = section_index as u32;
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeConfigDocument {
+    pub tabs: Vec<HomeTab>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeTab {
+    pub id: String,
+    pub title: String,
+    pub sort_order: u32,
+    pub sections: Vec<HomeSection>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HomeSection {
+    pub id: String,
+    pub title: String,
+    pub source_id: String,
+    pub category_id: String,
+    pub style: u8,
+    pub sort_order: u32,
+    #[serde(default)]
+    pub cover_video: bool,
+}
+
+impl Default for HomeConfigDocument {
+    fn default() -> Self {
+        Self {
+            tabs: vec![HomeTab {
+                id: "tab-home".to_owned(),
+                title: "主页".to_owned(),
+                sort_order: 0,
+                sections: Vec::new(),
+            }],
         }
     }
 }

@@ -1,18 +1,11 @@
 //! 配置导入预览与 JSON 获取；提交通过 fe_db，设置单独保存。
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use crate::file_access::pick_file_with_limit;
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use crate::source_catalog::MAX_SOURCE_IMPORT_BODY_BYTES;
-use crate::{application::ApplicationService, models::CURRENT_SCHEMA_VERSION, support::text_at};
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+use crate::support::text_at;
 use serde::Deserialize;
 use serde_json::{json, Value};
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use std::{collections::HashSet, time::Duration};
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-use tauri::State;
 
 pub(crate) fn parse_import(kind: &str, source_json: &str) -> Result<Value, String> {
     let source_json = source_json.strip_prefix('\u{feff}').unwrap_or(source_json);
@@ -87,7 +80,7 @@ pub(crate) fn parse_import(kind: &str, source_json: &str) -> Result<Value, Strin
                 .into_iter()
                 .map(|(_, entry)| entry)
                 .collect::<Vec<_>>();
-            json!({ "schemaVersion": CURRENT_SCHEMA_VERSION, "configs": configs })
+            json!({ "schemaVersion": 1, "configs": configs })
         }
         _ => return Err("Unknown configuration kind".into()),
     };
@@ -109,7 +102,6 @@ pub(crate) fn extract_sources(value: Value) -> Result<Vec<Value>, String> {
     Ok(vec![value])
 }
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) fn parse_http_json_import_url(
     input: &str,
     purpose: &str,
@@ -132,7 +124,6 @@ pub(crate) fn parse_http_json_import_url(
     Ok(url)
 }
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) async fn download_json_url(
     input: &str,
     max_bytes: usize,
@@ -196,7 +187,6 @@ pub(crate) async fn download_json_url(
 }
 
 /// Resolve the original URL / JSON / sourceUrls input contract before preparing an import.
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) async fn resolve_import_json(
     input: &str,
     max_bytes: usize,
@@ -263,13 +253,11 @@ pub(crate) async fn resolve_import_json(
     };
     serde_json::to_string(&value).map_err(|error| error.to_string())
 }
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
 pub async fn prepare_configuration_import(
     app: tauri::AppHandle,
     kind: String,
     source: ConfigurationImportSource,
-    service: State<'_, ApplicationService>,
 ) -> Result<Value, String> {
     let (limit, label) = match kind.as_str() {
         "sources" | "auto" => (MAX_SOURCE_IMPORT_BODY_BYTES, "导入 JSON"),
@@ -310,11 +298,9 @@ pub async fn prepare_configuration_import(
             .await?
         }
     };
-    let _operation = service.operation_read().await;
     parse_import(&kind, &source_json)
 }
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ConfigurationImportSource {
@@ -323,5 +309,4 @@ pub enum ConfigurationImportSource {
     Text { text: String },
 }
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) const MAX_REPLACEMENT_RULE_IMPORT_BODY_BYTES: usize = 2 * 1024 * 1024;

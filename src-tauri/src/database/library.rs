@@ -182,9 +182,10 @@ impl Database {
                     } else {
                         book.content_type.as_str()
                     };
-                    chapter.resource = Some(crate::models::ChapterResourceDescriptor::for_chapter(
-                        &reference, format,
-                    ));
+                    chapter.resource =
+                        Some(crate::book_files::ChapterResourceDescriptor::for_chapter(
+                            &reference, format,
+                        ));
                 }
             }
             Ok(Some(book))

@@ -1,9 +1,17 @@
 //! Rust 后端入口：公开业务模块并启动跨平台 Tauri 宿主。
 
-pub mod application;
+#[path = "books/import.rs"]
+pub(crate) mod book_import;
 pub(crate) mod database;
 mod file_access;
 mod http_client;
+#[path = "books/information.rs"]
+pub(crate) mod information;
+#[path = "books/main_text.rs"]
+pub(crate) mod main_text;
+pub(crate) mod search;
+#[path = "sources/login.rs"]
+pub(crate) mod source_login;
 
 #[path = "settings/mod.rs"]
 mod settings;
@@ -45,10 +53,41 @@ pub(crate) mod chapter_resources;
 pub(crate) mod http_tts_config;
 #[path = "sources/image_ops_host.rs"]
 mod image_ops_host;
-#[path = "models/mod.rs"]
-pub mod models;
 pub mod reading_tools;
 pub mod resources;
+
+// 启动入口负责模块初始化和进程锁，业务服务不持有基础设施。
+#[cfg(any(test, feature = "desktop", feature = "mobile-runtime"))]
+async fn open_data(
+    root: &std::path::Path,
+) -> Result<
+    (
+        database::Database,
+        std::sync::Arc<resources::Resources>,
+        backup::state::AppDataProcessLock,
+    ),
+    String,
+> {
+    let lock = backup::state::AppDataProcessLock::acquire(root).map_err(|e| e.to_string())?;
+    let root = lock.data_root();
+    backup::recover_interrupted_restore(root)?;
+    let database = database::Database::new(root).map_err(|e| e.to_string())?;
+    let resources = std::sync::Arc::new(
+        resources::Resources::open(root, database.clone())
+            .await
+            .map_err(|e| e.to_string())?,
+    );
+    let staged = file_access::picker_import_directory(root);
+    match tokio::fs::remove_dir_all(staged).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("Cannot clear stale picker imports: {error}")),
+    }
+    Ok((database, resources, lock))
+}
+
+#[cfg(test)]
+mod test_support;
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) fn app_data_root<R: tauri::Runtime>(
@@ -161,7 +200,7 @@ pub fn run() {
     };
     #[cfg(mobile)]
     let builder = builder
-        .plugin(application::tts_native_audio())
+        .plugin(reading_tools::tts::tts_native_audio())
         .plugin(tauri_plugin_tts::init());
     let builder = builder
         .plugin(tauri_plugin_deep_link::init())
@@ -209,26 +248,36 @@ pub fn run() {
                 source_engine_dir,
                 resource_dir,
             ));
-            let service = tauri::async_runtime::block_on(
-                application::ApplicationService::open_with_executor(data_dir, executor),
-            )
-            .map_err(std::io::Error::other)?;
-            let service = {
-                let mut service = service;
-                service.set_source_engine_app(app.handle().clone());
-                service
-            };
+            let (database, resources, process_lock) = tauri::async_runtime::block_on(open_data(&data_dir))
+                .map_err(std::io::Error::other)?;
+            let backup = std::sync::Arc::new(backup::state::Operations::new());
+            let sources = std::sync::Arc::new(source_catalog::SourceCatalog::new(database.clone()));
+            let search = std::sync::Arc::new(search::Search::new(sources.clone(), executor.clone(), backup.clone()));
+            let information = std::sync::Arc::new(information::Information::new(sources.clone(), executor.clone(), search.clone()));
+            let text = std::sync::Arc::new(main_text::MainText::new(sources.clone(), executor.clone(), backup.clone()));
+            let mut login = source_login::Login::new(sources.clone(), executor.clone(), backup.clone());
+            login.app = Some(app.handle().clone());
+            let mut tts = reading_tools::tts::Tts::new(executor);
+            tts.app = Some(app.handle().clone());
+            app.manage(sources);
+            app.manage(search);
+            app.manage(information);
+            app.manage(text);
+            app.manage(std::sync::Arc::new(login));
+            app.manage(std::sync::Arc::new(tts));
             tauri::async_runtime::block_on(crate::database::reader::open(
                 app.handle(),
             )).map_err(std::io::Error::other)?;
-            let background_service = service.clone();
+            let background_backup = backup.clone();
+            let backup_database = database.clone();
+            let backup_resources = resources.clone();
             let backup_app = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_secs(300));
                 interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     interval.tick().await;
-                    match background_service.maybe_upload_webdav_backup_due().await {
+                    match background_backup.maybe_upload_webdav_backup_due(&backup_database, &backup_resources).await {
                         Ok(Some(result)) => {
                             if let Some(resource) = result.get("settings") {
                                 let _ = backup_app.emit(
@@ -242,8 +291,10 @@ pub fn run() {
                     }
                 }
             });
-            app.manage(service.resources.clone());
-            app.manage(service);
+            app.manage(process_lock);
+            app.manage(database);
+            app.manage(resources);
+            app.manage(backup);
 
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
             for path in &startup_file_args {
@@ -274,18 +325,18 @@ pub fn run() {
         set_video_orientation,
         set_navigation_gestures,
         resources::app_bootstrap,
-        application::start_tts,
-        application::stop_tts,
-        application::submit_tts,
-        application::login,
-        application::search,
-        application::stop_search,
-        application::release_search_results,
-        application::more_information,
-        application::cancel_more_information,
-        application::main_text,
-        application::cancel_main_text,
-        application::import_book,
+        reading_tools::tts::start_tts,
+        reading_tools::tts::stop_tts,
+        reading_tools::tts::submit_tts,
+        source_login::login,
+        search::search,
+        search::stop_search,
+        search::release_search_results,
+        information::more_information,
+        information::cancel_more_information,
+        main_text::main_text,
+        main_text::cancel_main_text,
+        book_import::import_book,
         database::fe_db::fe_db,
         settings::save_settings,
         settings::appearance::pick_book_cover,
@@ -440,10 +491,15 @@ fn import_external_book<R: tauri::Runtime>(
     use tauri_plugin_dialog::DialogExt;
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let service = app.state::<application::ApplicationService>();
-        if let Err(error) = service
-            .import_selected_book(&app, file, Default::default())
-            .await
+        if let Err(error) = book_import::import_selected_book(
+            &app.state::<std::sync::Arc<backup::state::Operations>>(),
+            &app.state::<database::Database>(),
+            &app.state::<std::sync::Arc<resources::Resources>>(),
+            &app,
+            file,
+            Default::default(),
+        )
+        .await
         {
             app.dialog()
                 .message(error)

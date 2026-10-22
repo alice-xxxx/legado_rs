@@ -1,8 +1,8 @@
 use super::*;
-use crate::application::ApplicationService;
 use crate::source_engine::EngineFuture;
 use crate::source_engine::SourceEngineRequest;
 use crate::source_engine::SourceExecutor;
+use crate::test_support::TestApp;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,7 +43,7 @@ async fn audio_plays_before_later_text_finishes_and_formats_keep_their_own_strea
     let root = tempfile::tempdir().unwrap();
     let (requested, mut requests) = mpsc::unbounded_channel();
     let next = Arc::new(tokio::sync::Semaphore::new(1));
-    let service = ApplicationService::open_with_executor(
+    let service = TestApp::open_with_executor(
         root.path(),
         Arc::new(AudioExecutor {
             requested,
@@ -65,7 +65,9 @@ async fn audio_plays_before_later_text_finishes_and_formats_keep_their_own_strea
         tokio::spawn(async move {
             let mut assets = vec![];
             let result = service
+                .tts
                 .generate_tts_audio(
+                    &service.resources,
                     &config,
                     1.0,
                     vec![TtsText {
@@ -152,7 +154,7 @@ async fn audio_plays_before_later_text_finishes_and_formats_keep_their_own_strea
 async fn ending_pending_synthesis_cancels_the_engine_request() {
     let root = tempfile::tempdir().unwrap();
     let (requested, mut requests) = mpsc::unbounded_channel();
-    let service = ApplicationService::open_with_executor(
+    let service = TestApp::open_with_executor(
         root.path(),
         Arc::new(AudioExecutor {
             requested,
@@ -162,7 +164,7 @@ async fn ending_pending_synthesis_cancels_the_engine_request() {
     .await
     .unwrap();
     let generating =
-        tokio::spawn(async move { service.tts_bytes(&json!({}), "pending", 1.0).await });
+        tokio::spawn(async move { service.tts.tts_bytes(&json!({}), "pending", 1.0).await });
     let (_, token) = requests.recv().await.unwrap();
     assert!(!token.is_cancelled());
     generating.abort();
@@ -174,7 +176,7 @@ async fn ending_pending_synthesis_cancels_the_engine_request() {
 async fn draining_text_keeps_the_session_open_and_stop_waits_for_player_cleanup() {
     let root = tempfile::tempdir().unwrap();
     let (requested, _) = mpsc::unbounded_channel();
-    let service = ApplicationService::open_with_executor(
+    let service = TestApp::open_with_executor(
         root.path(),
         Arc::new(AudioExecutor {
             requested,
@@ -185,11 +187,11 @@ async fn draining_text_keeps_the_session_open_and_stop_waits_for_player_cleanup(
     .unwrap();
     let (input, mut receiver) = mpsc::channel(1);
     let (cancel, mut cancellation) = watch::channel(false);
-    service.tts.send_replace(Some(TtsSession {
+    service.tts.tts.send_replace(Some(TtsSession {
         input: input.clone(),
         cancel,
     }));
-    let input = service.tts.borrow().as_ref().unwrap().input.clone();
+    let input = service.tts.tts.borrow().as_ref().unwrap().input.clone();
     for text in ["first", "later"] {
         let texts = vec![TtsText {
             text: text.into(),
@@ -199,16 +201,16 @@ async fn draining_text_keeps_the_session_open_and_stop_waits_for_player_cleanup(
         input.send(texts).await.unwrap();
         assert_eq!(receiver.recv().await.unwrap()[0].text, text);
         assert!(!*cancellation.borrow());
-        assert!(service.tts.borrow().is_some());
+        assert!(service.tts.tts.borrow().is_some());
     }
     let stopping = tokio::spawn({
         let service = service.clone();
         async move {
-            service.end_tts().await;
+            service.tts.end_tts().await;
         }
     });
     cancellation.wait_for(|cancelled| *cancelled).await.unwrap();
-    assert!(service.tts.borrow().is_none());
+    assert!(service.tts.tts.borrow().is_none());
     assert!(!stopping.is_finished());
     drop(receiver);
     stopping.await.unwrap();

@@ -259,7 +259,7 @@ async fn restore_replaces_snapshot_and_next_write_reconnects() {
         .unwrap();
     resources
         .settings
-        .save(&serde_json::to_value(crate::models::SettingsDocument::default()).unwrap())
+        .save(&serde_json::to_value(crate::settings::SettingsDocument::default()).unwrap())
         .await
         .unwrap();
     database

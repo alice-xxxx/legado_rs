@@ -2,8 +2,7 @@ use serde_json::Value;
 
 use super::SettingsDocument;
 
-/// Upgrade persisted settings before publishing them. Preserve user values and
-/// unknown fields; defaults fill only absent keys, including nested reader keys.
+/// 补齐缺省设置，保留用户值和未知字段。
 pub fn upgrade_settings_document(document: &mut Value) {
     let legacy_theme = document["reader"]["theme"].as_str().map(str::to_owned);
     if let Some(theme) = legacy_theme.as_deref() {

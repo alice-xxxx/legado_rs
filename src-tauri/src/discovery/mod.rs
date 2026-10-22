@@ -11,8 +11,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    application::{project_search_result, source_book_id, ApplicationService},
     rss::{is_legacy_rss_source, is_rss_source},
+    search::Search,
     source_engine::SourceEngineRequest,
 };
 
@@ -39,21 +39,22 @@ pub(crate) struct PrivateCategory {
 }
 
 /// 通过引擎取得分类，展示字段和请求目标一起写入关系表。
-pub async fn list_categories(
-    service: &ApplicationService,
+pub(crate) async fn list_categories(
+    service: &Search,
+    database: &crate::database::Database,
     source_id: &str,
     require_rss: Option<bool>,
 ) -> Result<Value, String> {
     let (public_categories, private_categories) =
         prepare_categories(service, source_id, require_rss).await?;
-    publish_categories(service, source_id, public_categories, private_categories).await
+    publish_categories(database, source_id, public_categories, private_categories).await
 }
 
 /// Evaluate category rules and produce the display/private projections without
 /// writing either resource. RSS uses this split so it can revalidate the
 /// source and publish the result while holding the source mutation guard.
 pub(crate) async fn prepare_categories(
-    service: &ApplicationService,
+    service: &Search,
     source_id: &str,
     require_rss: Option<bool>,
 ) -> Result<(Vec<DiscoveryCategory>, Vec<PrivateCategory>), String> {
@@ -161,7 +162,7 @@ pub(crate) fn stable_category_id(source_id: &str, category_url: &str) -> String 
 }
 
 pub(crate) async fn publish_categories(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
     categories: Vec<DiscoveryCategory>,
     private_categories: Vec<PrivateCategory>,
@@ -171,8 +172,7 @@ pub(crate) async fn publish_categories(
         .iter()
         .filter(|c| c.category_id.is_some())
         .count();
-    service
-        .database
+    database
         .save_discovery_categories(source_id.to_owned(), categories, private_categories)
         .map_err(|e| e.to_string())?
         .await
@@ -184,13 +184,13 @@ pub(crate) async fn publish_categories(
 }
 
 pub(crate) async fn private_category(
-    service: &ApplicationService,
+    database: &crate::database::Database,
     source_id: &str,
     category_id: &str,
 ) -> Result<PrivateCategory, String> {
     validate_source_id(source_id)?;
     validate_category_id(category_id)?;
-    let database = service.database.clone();
+    let database = database.clone();
     let source = source_id.to_owned();
     let category = category_id.to_owned();
     tokio::task::spawn_blocking(move || database.discovery_category(&source, &category))
@@ -203,8 +203,10 @@ pub(crate) async fn private_category(
 /// Fetch one page for a previously returned opaque category ID. The source
 /// engine receives the private URL and returns parsed SearchBook values; only
 /// Rust-projected cards are placed in the browser resource.
-pub async fn list_books(
-    service: &ApplicationService,
+pub(crate) async fn list_books(
+    service: &Search,
+    database: &crate::database::Database,
+    resources: &crate::resources::Resources,
     source_id: &str,
     category_id: &str,
     page: u32,
@@ -220,10 +222,17 @@ pub async fn list_books(
             });
         }
     }
-    let category = private_category(service, source_id, category_id).await?;
+    let category = private_category(database, source_id, category_id).await?;
     if category.kind == "feed" {
-        return crate::rss::list_standard_feed_articles(service, &source, category, page.max(1))
-            .await;
+        return crate::rss::list_standard_feed_articles(
+            service,
+            database,
+            resources,
+            &source,
+            category,
+            page.max(1),
+        )
+        .await;
     }
     let category_url = category
         .url
@@ -280,10 +289,7 @@ pub async fn list_books(
     Ok(result)
 }
 
-async fn enabled_source(
-    service: &ApplicationService,
-    source_id: &str,
-) -> Result<SourceRecord, String> {
+async fn enabled_source(service: &Search, source_id: &str) -> Result<SourceRecord, String> {
     validate_source_id(source_id)?;
     let source = service.sources.get(source_id).await?;
     if !source.enabled {
@@ -346,13 +352,15 @@ use tauri::{Emitter, State};
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn list_discovery_categories(
+pub(crate) async fn list_discovery_categories(
+    database: tauri::State<'_, crate::database::Database>,
     app: tauri::AppHandle,
     source_id: String,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Search>>,
 ) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    let result = crate::discovery::list_categories(&service, &source_id, Some(false)).await?;
+    let _operation = service.backup.operation_read().await;
+    let result =
+        crate::discovery::list_categories(&service, &database, &source_id, Some(false)).await?;
     let _ = app.emit(
         "resource-updated",
         json!({ "kind": "discoveryCategories", "sourceId": source_id }),
@@ -362,16 +370,20 @@ pub async fn list_discovery_categories(
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-pub async fn list_discovery_books(
+pub(crate) async fn list_discovery_books(
+    database: tauri::State<'_, crate::database::Database>,
+    resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
     source_id: String,
     category_id: String,
     page: Option<u32>,
-    service: State<'_, ApplicationService>,
+    service: State<'_, std::sync::Arc<Search>>,
 ) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
+    let _operation = service.backup.operation_read().await;
     let result = crate::discovery::list_books(
         &service,
+        &database,
+        &resources,
         &source_id,
         &category_id,
         page.unwrap_or(1),
@@ -383,48 +395,6 @@ pub async fn list_discovery_books(
         json!({ "kind": "discoveryResults", "sourceId": source_id, "categoryId": category_id }),
     );
     Ok(result)
-}
-
-impl ApplicationService {
-    // 发现与 RSS 的结果仅在此投影和缓存，不在此发起搜索。
-    pub(crate) async fn store_processed_results(
-        &self,
-        keyword: &str,
-        page: u32,
-        source_results: Vec<(SourceRecord, Value)>,
-        errors: Vec<Value>,
-    ) -> Result<Value, String> {
-        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
-        let mut public_results = Vec::with_capacity(source_results.len());
-        let mut private_results = Vec::with_capacity(source_results.len());
-        for (source, book) in source_results {
-            let result_id = source_book_id(&source, &book);
-            let leaf = project_search_result(&result_id, &source, &book);
-            let cache = json!({
-                "searchId": search_id,
-                "sourceId": source.id,
-                "book": book,
-                "result": leaf
-            });
-            public_results.push(serde_json::to_value(leaf).map_err(|error| error.to_string())?);
-            private_results.push((result_id, cache));
-        }
-        self.searches
-            .lock()
-            .await
-            .search_result_documents
-            .extend(private_results);
-        let count = public_results.len();
-        let document = json!({
-            "searchId": search_id,
-            "keyword": keyword,
-            "page": page.max(1),
-            "results": public_results,
-            "errors": errors,
-            "complete": true,
-        });
-        Ok(json!({ "search": document, "bookCount": count, "errors": errors }))
-    }
 }
 
 use crate::source_catalog::SourceRecord;
