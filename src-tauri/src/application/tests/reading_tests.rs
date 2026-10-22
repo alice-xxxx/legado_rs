@@ -44,35 +44,47 @@ async fn fixture_with_content(
             source: json!({"bookSourceName":"Source","bookSourceUrl":"https://example.invalid","bookSourceType":source_type}),
         }]).await.unwrap();
     service
-        .store
+        .database
         .bind_book_type(
-            "book-a",
+            "book-a".to_owned(),
             match source_type {
                 1 => "audio",
                 2 => "image",
                 4 => "video",
                 _ => "text",
-            },
+            }
+            .to_owned(),
         )
+        .unwrap()
         .await
         .unwrap();
     // Media reuse cases exercise one chapter; the supported preload minimum is one.
     let chapter_count = if source_type == 0 { 5 } else { 1 };
-    let chapters: Vec<Value> = (0..chapter_count).map(|index| json!({
-        "id":format!("chapter-{index}"),"title":format!("Chapter {index}"),
-        "engineData":{"url":format!("https://example.invalid/{index}")}
-    })).collect();
+    let chapters: Vec<Value> = (0..chapter_count)
+        .map(|index| {
+            json!({
+                "id":format!("chapter-{index}"),"title":format!("Chapter {index}"),
+                "engineData":{"url":format!("https://example.invalid/{index}")}
+            })
+        })
+        .collect();
     let kind = crate::source_catalog::content_type(&json!({"bookSourceType":source_type}));
-    service.store.database().import_book(serde_json::from_value(json!({"contentType":kind,
-        "id":"book-a","title":"Book","sourceId":"source-a","chapters":chapters,
-        "engine":{"bookUrl":"https://example.invalid/book","name":"Book"}
-    })).unwrap()).unwrap().await.unwrap();
     service
-        .store
-        .write_json_ref(
-            &service.store.settings_ref(),
-            &json!({"reader":{"preloadCount":2}}),
+        .database
+        .import_book(
+            serde_json::from_value(json!({"contentType":kind,
+                "id":"book-a","title":"Book","sourceId":"source-a","chapters":chapters,
+                "engine":{"bookUrl":"https://example.invalid/book","name":"Book"}
+            }))
+            .unwrap(),
         )
+        .unwrap()
+        .await
+        .unwrap();
+    service
+        .resources
+        .settings
+        .save(&json!({"reader":{"preloadCount":2}}))
         .await
         .unwrap();
     (directory, service, calls)
@@ -96,11 +108,7 @@ async fn reading_saves_position_and_prepares_current_plus_configured_chapters() 
         })
         .await
         .unwrap();
-    let book = service
-        .store
-        .read_book("book-a")
-        .await
-        .unwrap();
+    let book = service.read_book("book-a").await.unwrap();
     assert_eq!(book["progress"]["offset"], 3);
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     assert_eq!(published.lock().unwrap().len(), 3);
@@ -129,11 +137,7 @@ async fn reading_saves_position_and_prepares_current_plus_configured_chapters() 
         )
         .await
         .unwrap();
-    let book = service
-        .store
-        .read_book("book-a")
-        .await
-        .unwrap();
+    let book = service.read_book("book-a").await.unwrap();
     assert_eq!(
         book["progress"]["offset"], 4,
         "A late notification must not roll progress back"
@@ -169,7 +173,7 @@ async fn comic_img_list_is_indexed_as_pages_without_a_chapter_json() {
         .main_text("book-a", "chapter-0", false)
         .await
         .unwrap();
-    let book = service.store.read_book("book-a").await.unwrap();
+    let book = service.read_book("book-a").await.unwrap();
     assert_eq!(book["contentType"], "image");
     assert_eq!(book["chapters"][0]["pages"].as_array().unwrap().len(), 2);
     assert!(book["chapters"][0]["url"].is_null());
@@ -183,22 +187,33 @@ async fn comic_img_list_is_indexed_as_pages_without_a_chapter_json() {
 #[tokio::test]
 async fn old_comic_text_cache_is_replaced_by_the_unified_content_request() {
     let (_directory, service, calls) = fixture_with_content(2, COMIC).await;
-    let original = service
-        .store
-        .write_chapter_text("book-a", "chapter-0", COMIC)
-        .await
-        .unwrap();
+    let original =
+        crate::book_files::text(&service.resources, "image", "book-a", "chapter-0", COMIC)
+            .await
+            .unwrap();
     let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(
         &original, "text",
     ))
     .unwrap();
-    service.store.database().save_main_text("book-a".into(),"chapter-0".into(),crate::database::Chapter {title:"Chapter".into(),resource:Some(serde_json::from_value(descriptor).unwrap()),..Default::default()},tokio_util::sync::CancellationToken::new()).unwrap().wait().unwrap();
     service
-        .store
-        .write_json_ref(
-            &service.store.settings_ref(),
-            &json!({"reader":{"preloadCount":1}}),
+        .database
+        .save_main_text(
+            "book-a".into(),
+            "chapter-0".into(),
+            crate::database::Chapter {
+                title: "Chapter".into(),
+                resource: Some(serde_json::from_value(descriptor).unwrap()),
+                ..Default::default()
+            },
+            tokio_util::sync::CancellationToken::new(),
         )
+        .unwrap()
+        .wait()
+        .unwrap();
+    service
+        .resources
+        .settings
+        .save(&json!({"reader":{"preloadCount":1}}))
         .await
         .unwrap();
     service
@@ -213,12 +228,17 @@ async fn old_comic_text_cache_is_replaced_by_the_unified_content_request() {
         })
         .await
         .unwrap();
-    let book = service.store.read_book("book-a").await.unwrap();
+    let book = service.read_book("book-a").await.unwrap();
     assert_eq!(book["contentType"], "image");
     assert!(book["chapters"][0]["url"].is_null());
     assert_eq!(book["chapters"][0]["pages"].as_array().unwrap().len(), 2);
     assert_eq!(
-        service.store.read_json_ref(&original).await.unwrap()["kind"],
+        service
+            .resources
+            .cache
+            .read_content(&original)
+            .await
+            .unwrap()["kind"],
         "text"
     );
     assert_eq!(
@@ -241,9 +261,7 @@ async fn comic_url_lists_become_private_image_resources() {
             .main_text("book-a", "chapter-0", false)
             .await
             .unwrap();
-        let book = service
-            .store
-            .read_book("book-a")
+        let book = service.read_book("book-a")
             .await
             .unwrap();
         assert_eq!(book["contentType"], "image");
@@ -252,9 +270,9 @@ async fn comic_url_lists_become_private_image_resources() {
         assert!(pages.iter().all(|page| page["url"]
             .as_str()
             .unwrap()
-            .starts_with("resource://media/")));
+            .starts_with("resource://proxy/")));
         // 原始地址保留 &，只有 HTML 属性需要实体解码。
-        let mut urls = service.store.database().media().unwrap().into_iter()
+        let mut urls = service.database.media().unwrap().into_iter()
             .map(|media|media.url)
             .collect::<Vec<_>>();
         urls.sort();
@@ -273,18 +291,30 @@ async fn comic_url_lists_become_private_image_resources() {
 async fn changed_source_type_does_not_reuse_an_audio_cache_for_a_comic() {
     let (_directory, service, calls) =
         fixture_with_content(2, "https://images.example.invalid/1.webp").await;
-    let original = ResourceRef::new("resource://media/obsolete-audio").unwrap();
+    let original = ResourceRef::new("resource://proxy/obsolete-audio").unwrap();
     let descriptor = serde_json::to_value(crate::models::ChapterResourceDescriptor::for_chapter(
         &original, "audio",
     ))
     .unwrap();
-    service.store.database().save_main_text("book-a".into(),"chapter-0".into(),crate::database::Chapter {title:"Chapter".into(),resource:Some(serde_json::from_value(descriptor).unwrap()),..Default::default()},tokio_util::sync::CancellationToken::new()).unwrap().wait().unwrap();
     service
-        .store
-        .write_json_ref(
-            &service.store.settings_ref(),
-            &json!({"reader":{"preloadCount":1}}),
+        .database
+        .save_main_text(
+            "book-a".into(),
+            "chapter-0".into(),
+            crate::database::Chapter {
+                title: "Chapter".into(),
+                resource: Some(serde_json::from_value(descriptor).unwrap()),
+                ..Default::default()
+            },
+            tokio_util::sync::CancellationToken::new(),
         )
+        .unwrap()
+        .wait()
+        .unwrap();
+    service
+        .resources
+        .settings
+        .save(&json!({"reader":{"preloadCount":1}}))
         .await
         .unwrap();
     service
@@ -296,7 +326,7 @@ async fn changed_source_type_does_not_reuse_an_audio_cache_for_a_comic() {
         .prepare_reading_chapters("book-a", 0, epoch, |_| {})
         .await
         .unwrap();
-    let book = service.store.read_book("book-a").await.unwrap();
+    let book = service.read_book("book-a").await.unwrap();
     assert_eq!(book["contentType"], "image");
     assert!(book["mediaType"].is_null());
     assert!(book["chapters"][0]["url"].is_null());
@@ -315,21 +345,18 @@ async fn audio_and_video_are_resolved_to_player_resources_and_reused() {
             .main_text("book-a", "chapter-0", false)
             .await
             .unwrap();
-        let book = service
-            .store
-            .read_book("book-a")
-            .await
-            .unwrap();
+        let book = service.read_book("book-a").await.unwrap();
         assert_eq!(book["contentType"], expected);
-        assert!(book["chapters"][0]["url"].as_str().unwrap().starts_with("resource://media/"));
+        assert!(book["chapters"][0]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("resource://proxy/"));
         assert!(book["chapters"][0]["sources"].is_array());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         service
-            .store
-            .write_json_ref(
-                &service.store.settings_ref(),
-                &json!({"reader":{"preloadCount":1}}),
-            )
+            .resources
+            .settings
+            .save(&json!({"reader":{"preloadCount":1}}))
             .await
             .unwrap();
         service

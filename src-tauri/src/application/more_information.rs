@@ -48,14 +48,16 @@ impl ApplicationService {
             let mut raw_book = if let Some(book) = cached {
                 book
             } else {
-                let database = self.store.database().clone();
+                let database = self.database.clone();
                 let id = key.clone();
                 tokio::task::spawn_blocking(move || database.book_engine(&id))
-                .await
-                .map_err(|error| error.to_string())?
-                .map_err(|error| error.to_string())?
-                .map(serde_json::to_value).transpose().map_err(|error|error.to_string())?
-                .unwrap_or_else(|| json!({}))
+                    .await
+                    .map_err(|error| error.to_string())?
+                    .map_err(|error| error.to_string())?
+                    .map(serde_json::to_value)
+                    .transpose()
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or_else(|| json!({}))
             };
             raw_book["bookUrl"] = json!(book_url);
             raw_book["origin"] = source.source["bookSourceUrl"].clone();
@@ -97,8 +99,9 @@ impl ApplicationService {
                 return Err("Book details cancelled".into());
             }
             let book_id = key;
-            self.store
-                .bind_book_type(&book_id, kind)
+            self.database
+                .bind_book_type(book_id.to_owned(), kind.to_owned())
+                .map_err(|e| e.to_string())?
                 .await
                 .map_err(|error| error.to_string())?;
             let chapters = execute(
@@ -118,20 +121,37 @@ impl ApplicationService {
                 .ok_or("Source engine returned an invalid chapter catalog")?
                 .clone();
             {
-                let database = self.store.database().clone();
+                let database = self.database.clone();
                 let token = token.clone();
-                database.save_information({
-                    let metadata=crate::book_metadata::project_book_metadata(&engine_book,&source);
-                    crate::database::Book {
-                        id:book_id,content_type:kind.into(),source_id:Some(source.id),
-                        title:metadata.title,author:metadata.author,intro:metadata.intro,
-                        cover:metadata.cover_src.map(|reference|reference.to_string()),
-                        word_count:metadata.word_count,latest_chapter_title:metadata.latest_chapter,
-                        engine:Some(serde_json::from_value(engine_book).map_err(|error|error.to_string())?),
-                        ..Default::default()
-                    }
-                },serde_json::from_value(serde_json::Value::Array(chapters)).map_err(|error|error.to_string())?,token).map_err(|e|e.to_string())?
-                    .await.map_err(|e|e.to_string())
+                database
+                    .save_information(
+                        {
+                            let metadata =
+                                crate::book_metadata::project_book_metadata(&engine_book, &source);
+                            crate::database::Book {
+                                id: book_id,
+                                content_type: kind.into(),
+                                source_id: Some(source.id),
+                                title: metadata.title,
+                                author: metadata.author,
+                                intro: metadata.intro,
+                                cover: metadata.cover_src.map(|reference| reference.to_string()),
+                                word_count: metadata.word_count,
+                                latest_chapter_title: metadata.latest_chapter,
+                                engine: Some(
+                                    serde_json::from_value(engine_book)
+                                        .map_err(|error| error.to_string())?,
+                                ),
+                                ..Default::default()
+                            }
+                        },
+                        serde_json::from_value(serde_json::Value::Array(chapters))
+                            .map_err(|error| error.to_string())?,
+                        token,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .await
+                    .map_err(|e| e.to_string())
             }?;
             Ok(())
         };

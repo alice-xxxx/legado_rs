@@ -14,14 +14,9 @@ impl ApplicationService {
         updated: impl Fn(Value),
     ) -> Result<(), String> {
         let _operation = self.operation_read().await;
-        let settings = self
-            .store
-            .read_json_ref(&self.store.settings_ref())
-            .await
-            .ok();
+        let settings = self.resources.settings.read().await.ok();
         let count = reader_defaults(settings).preload_count;
         let book = self
-            .store
             .read_book(&book_id)
             .await
             .map_err(|error| error.to_string())?;
@@ -37,7 +32,6 @@ impl ApplicationService {
                 break;
             }
             let current = self
-                .store
                 .read_book(book_id)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -63,11 +57,12 @@ impl ApplicationService {
     pub async fn save_progress(&self, book_id: &str, progress: Value) -> Result<Value, String> {
         validate_id(book_id, "bookId")?;
         let updates = self
-            .store
-            .database()
-            .save_reading_progress(book_id.to_owned(),serde_json::from_value(progress).map_err(|error|error.to_string())?)
+            .database
+            .save_reading_progress(
+                book_id.to_owned(),
+                serde_json::from_value(progress).map_err(|error| error.to_string())?,
+            )
             .map_err(|e| e.to_string())?
-            
             .await
             .map_err(|e| e.to_string())?;
         Ok(json!({"bookId":book_id,"readingUpdate":updates}))

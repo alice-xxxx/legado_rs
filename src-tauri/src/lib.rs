@@ -1,7 +1,6 @@
 //! Rust 后端入口：公开业务模块并启动跨平台 Tauri 宿主。
 
 pub mod application;
-mod configuration;
 pub(crate) mod database;
 mod file_access;
 mod http_client;
@@ -10,10 +9,9 @@ mod http_client;
 mod settings;
 #[path = "sources/catalog.rs"]
 pub(crate) mod source_catalog;
-mod storage_owner;
-mod support;
 #[path = "sources/wire.rs"]
 mod source_wire;
+mod support;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
@@ -39,15 +37,17 @@ mod source_jni;
 mod source_storage;
 
 // 阅读配置、资源服务和持久化模型。
+#[path = "books/files.rs"]
+pub(crate) mod book_files;
+#[path = "books/chapter_resources.rs"]
+pub(crate) mod chapter_resources;
 #[path = "settings/http_tts_config.rs"]
 pub(crate) mod http_tts_config;
-#[path = "resources/image_ops_host.rs"]
+#[path = "sources/image_ops_host.rs"]
 mod image_ops_host;
 #[path = "models/mod.rs"]
 pub mod models;
 pub mod reading_tools;
-#[path = "resources/transactions.rs"]
-pub(crate) mod resource_transactions;
 pub mod resources;
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -242,6 +242,7 @@ pub fn run() {
                     }
                 }
             });
+            app.manage(service.resources.clone());
             app.manage(service);
 
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
@@ -272,27 +273,27 @@ pub fn run() {
         set_reader_fullscreen,
         set_video_orientation,
         set_navigation_gestures,
-        application::service::app_bootstrap,
+        resources::app_bootstrap,
         application::start_tts,
         application::stop_tts,
         application::submit_tts,
         application::login,
         application::search,
         application::stop_search,
+        application::release_search_results,
         application::more_information,
         application::cancel_more_information,
         application::main_text,
         application::cancel_main_text,
-        application::release_search_results,
-        database::fe_db::fe_db,
         application::import_book,
-        resources::appearance::pick_book_cover,
-        resources::appearance::pick_reader_background_image,
-        resources::appearance::discard_book_cover_asset,
-        resources::cache::clear_book_chapter_cache,
-        resources::cache::get_chapter_cache_usage,
+        database::fe_db::fe_db,
         settings::save_settings,
+        settings::appearance::pick_book_cover,
+        settings::appearance::pick_reader_background_image,
+        settings::appearance::discard_book_cover_asset,
         settings::import::prepare_configuration_import,
+        resources::clear_book_chapter_cache,
+        resources::get_chapter_cache_usage,
         backup::service::create_backup_from_picker,
         backup::service::restore_backup_from_picker,
         backup::service::upload_webdav_backup,
@@ -325,8 +326,10 @@ pub fn run() {
                 #[cfg(not(any(target_os = "android", target_os = "ios")))]
                 let resume_resources = matches!(event, tauri::WindowEvent::Focused(true));
                 if label == "main" && resume_resources {
-                    if let Some(service) = _app.try_state::<application::ApplicationService>() {
-                        if let Err(error) = service.resource_server().resume_http() {
+                    if let Some(resources) =
+                        _app.try_state::<std::sync::Arc<resources::Resources>>()
+                    {
+                        if let Err(error) = resources.resume_http() {
                             eprintln!("[resource-listener] foreground resume failed: {error}");
                         }
                     }
@@ -449,4 +452,3 @@ fn import_external_book<R: tauri::Runtime>(
         }
     });
 }
-

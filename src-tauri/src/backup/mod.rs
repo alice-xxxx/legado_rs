@@ -2,6 +2,7 @@
 //! 归档包含公开资源及恢复书源所需的私有记录；可重建缓存和日志留在本机。
 
 pub(crate) mod service;
+pub(crate) mod state;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -9,7 +10,7 @@ use sha2::{Digest, Sha256};
 mod create;
 pub(crate) mod restore;
 
-pub use create::create_backup;
+pub(crate) use create::create_backup;
 pub use restore::recover_interrupted_restore;
 pub(crate) use restore::restore_backup;
 

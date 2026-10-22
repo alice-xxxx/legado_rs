@@ -47,7 +47,7 @@ async fn service(
     )
     .await
     .unwrap();
-    service.bootstrap().await.unwrap();
+    service.resources.bootstrap().await.unwrap();
     service
         .sources
         .replace(&[SourceRecord {

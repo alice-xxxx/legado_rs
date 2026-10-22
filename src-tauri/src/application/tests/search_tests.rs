@@ -226,14 +226,17 @@ async fn shared_writer_keeps_alternative_context_after_search_is_released() {
     receiver.recv().await.unwrap();
     let update = receiver.recv().await.unwrap();
     let result = &update["results"][0];
-    assert_eq!(result["engine"]["variable"], json!({"context":"search-value"}).to_string());
+    assert_eq!(
+        result["engine"]["variable"],
+        json!({"context":"search-value"}).to_string()
+    );
     service
         .more_information("one", "https://one/exact")
         .await
         .unwrap();
     let book_id = crate::database::online_book_id("one", "text", "https://one/exact");
     let candidate_id = crate::database::online_book_id("two", "text", "https://two/exact");
-    service.store.database().submit(serde_json::from_value(json!([
+    service.database.submit(serde_json::from_value(json!([
         {"operation":"saveBooks","books":[{
             "sourceId":"two","bookUrl":"https://two/exact","title":result["title"],"engine":result["engine"]
         }]},
@@ -252,12 +255,18 @@ async fn shared_writer_keeps_alternative_context_after_search_is_released() {
         .await
         .unwrap();
     let book = service
-        .store
-        .database()
-        .book_engine(&crate::database::online_book_id("two", "text", "https://two/exact"))
+        .database
+        .book_engine(&crate::database::online_book_id(
+            "two",
+            "text",
+            "https://two/exact",
+        ))
         .unwrap()
         .unwrap();
-    assert_eq!(serde_json::to_value(book).unwrap()["variable"], json!({"context":"search-value"}).to_string());
+    assert_eq!(
+        serde_json::to_value(book).unwrap()["variable"],
+        json!({"context":"search-value"}).to_string()
+    );
 }
 
 #[tokio::test]
@@ -291,7 +300,7 @@ async fn pages_are_independent_and_history_is_written_by_search() {
             .collect::<Vec<_>>(),
         [1, 7]
     );
-    assert_eq!(service.store.database().test_search_history(), [("凡人".into(), 2)]);
+    assert_eq!(service.database.test_search_history(), [("凡人".into(), 2)]);
 }
 
 #[tokio::test]
@@ -309,7 +318,7 @@ async fn exact_result_can_replace_a_chapter_before_other_sources_finish() {
         .more_information("one", initial["results"][0]["bookUrl"].as_str().unwrap())
         .await
         .unwrap();
-    let document = service.store.read_book(book_id).await.unwrap();
+    let document = service.read_book(book_id).await.unwrap();
     let chapter_id = document["chapters"][0]["id"].as_str().unwrap();
     let (emit, mut receiver) = updates();
     let running = service.clone();
@@ -340,32 +349,46 @@ async fn exact_result_can_replace_a_chapter_before_other_sources_finish() {
         .await
         .unwrap();
     let source_id = result["results"][0]["resultId"].as_str().unwrap();
-    let source = service.store.read_book(source_id).await.unwrap();
+    let source = service.read_book(source_id).await.unwrap();
     let source_chapter = source["chapters"][0]["id"].as_str().unwrap();
     service
         .main_text(source_id, source_chapter, false)
         .await
         .unwrap();
-    let cached = service.store.read_book(source_id).await.unwrap();
-    service.store.database().submit(serde_json::from_value(json!([
-        {"operation":"useChapterContent","bookId":book_id,"chapterId":chapter_id,
-         "contentId":cached["chapters"][0]["contentId"]}
-    ])).unwrap()).unwrap().await.unwrap();
-    let updated = service.store.read_book(book_id).await.unwrap();
-    assert_eq!(
-        updated["chapters"][0]["url"],
-        cached["chapters"][0]["url"]
-    );
-    assert_eq!(updated["sourceId"], document["sourceId"]);
-    assert!(service.indexed_chapter_ready(&updated, 0).await.unwrap(), "{updated:#}");
-    assert!(service.store.read_book(source_id).await.unwrap() == cached);
-    // 生成书切换类型后，借用者继续使用原目录里的正文。
-    service.store.bind_book_type(source_id, "image").await.unwrap();
-    assert!(service.indexed_chapter_ready(&updated, 0).await.unwrap(), "{updated:#}");
-    // 原书清缓存只解除引用，被借用的书源缓存仍可读取。
-    crate::resources::cache::clear_cache(&service.store, book_id)
+    let cached = service.read_book(source_id).await.unwrap();
+    service
+        .database
+        .submit(
+            serde_json::from_value(json!([
+                {"operation":"useChapterContent","bookId":book_id,"chapterId":chapter_id,
+                 "contentId":cached["chapters"][0]["contentId"]}
+            ]))
+            .unwrap(),
+        )
+        .unwrap()
         .await
         .unwrap();
+    let updated = service.read_book(book_id).await.unwrap();
+    assert_eq!(updated["chapters"][0]["url"], cached["chapters"][0]["url"]);
+    assert_eq!(updated["sourceId"], document["sourceId"]);
+    assert!(
+        service.indexed_chapter_ready(&updated, 0).await.unwrap(),
+        "{updated:#}"
+    );
+    assert!(service.read_book(source_id).await.unwrap() == cached);
+    // 生成书切换类型后，借用者继续使用原目录里的正文。
+    service
+        .database
+        .bind_book_type(source_id.to_owned(), "image".to_owned())
+        .unwrap()
+        .await
+        .unwrap();
+    assert!(
+        service.indexed_chapter_ready(&updated, 0).await.unwrap(),
+        "{updated:#}"
+    );
+    // 原书清缓存只解除引用，被借用的书源缓存仍可读取。
+    service.resources.clear_cache(book_id).await.unwrap();
     assert!(service.indexed_chapter_ready(&cached, 0).await.unwrap());
     service.clear_searches().await;
     tokio::time::timeout(Duration::from_secs(2), search)

@@ -415,7 +415,7 @@ fn publish(s: &Session<'_>, book: &str, chapter: &str, kind: &str, body: &Chapte
             params![id, position as i64, uri(kind, book, file)?],
         )?;
     }
-    s.write("INSERT OR IGNORE INTO content_media(content_id,media_id) SELECT ?1,m.id FROM media_requests m JOIN content_assets a ON a.uri='resource://media/'||m.id WHERE a.content_id=?1",[&id])?;
+    s.write("INSERT OR IGNORE INTO content_media(content_id,media_id) SELECT ?1,m.id FROM media_requests m JOIN content_assets a ON a.uri='resource://proxy/'||m.id WHERE a.content_id=?1",[&id])?;
     if s.write(
         "UPDATE chapters SET content_id=?3 WHERE book_id=?1 AND id=?2",
         params![book, chapter, id],

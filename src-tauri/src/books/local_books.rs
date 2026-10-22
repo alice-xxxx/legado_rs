@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     database::{Book, Chapter, Page},
-    resources::ResourceStore,
+    resources::Resources,
 };
 
 const MAX_EPUB_CHAPTERS: usize = 20_000;
@@ -80,8 +80,9 @@ struct ParsedBook {
 /// 直接复制到最终缓存，再按格式处理这份缓存文件。
 pub type ImportProgress = Arc<dyn Fn(&str, u64, u64) + Send + Sync>;
 
-pub async fn import_local_book(
-    store: &ResourceStore,
+pub(crate) async fn import_local_book(
+    database: &crate::database::Database,
+    resources: &Resources,
     mut file: File,
     mut display_path: std::path::PathBuf,
     options: &LocalImportOptions,
@@ -131,7 +132,7 @@ pub async fn import_local_book(
         .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
         && options.toc_regex.is_none()
     {
-        Some(txt_toc_rules::read_document(store).await?)
+        Some(txt_toc_rules::read_document(database).await?)
     } else {
         None
     };
@@ -141,7 +142,13 @@ pub async fn import_local_book(
     let reading_progress = progress.clone();
     let (identity, file) = tokio::task::spawn_blocking(move || {
         let size = file.metadata().map_err(|error| error.to_string())?.len();
-        if size == 0 || size > 512 * 1024 * 1024 {
+        let maximum = match identity_extension.as_str() {
+            "txt" => txt::MAX_FILE_BYTES,
+            "epub" => epub::MAX_FILE_BYTES,
+            "cbz" => cbz::MAX_FILE_BYTES,
+            _ => 512 * 1024 * 1024,
+        };
+        if size == 0 || size > maximum {
             return Err("Unsupported local file size".to_owned());
         }
         let identity = local_identity(
@@ -164,42 +171,61 @@ pub async fn import_local_book(
         "pdf" => "pdf",
         _ => "text",
     };
-    store
-        .bind_book_type(&book_id, content_type)
+    let exists = database
+        .book_type(&book_id)
+        .map_err(|e| e.to_string())?
+        .is_some();
+    let original = format!("{content_type}/{book_id}/original.{original_extension}");
+    if !resources
+        .cache
+        .exists(&original)
         .await
-        .map_err(|error| error.to_string())?;
-    // Re-importing the same file is idempotent. In particular, do not rewrite
-    // the user's progress or cached chapters merely because the picker was
-    // opened again for an already imported file.
-    let exists = store.database().book_type(&book_id).map_err(|e|e.to_string())?.is_some();
-    store
-        .persist_local_original(&book_id, &original_extension, file, progress.clone())
-        .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|e| e.to_string())?
+    {
+        resources
+            .cache
+            .copy_file(&original, file, {
+                let progress = progress.clone();
+                move |copied, total| progress("copy", copied, total)
+            })
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     if exists {
         return Ok(book_id);
     }
     let result = async {
         if original_extension == "pdf" {
             // PDF 只登记原件；实际页数和打开文档由 Vue 阅读器处理。
-            let title = display_path.file_stem().and_then(|name| name.to_str()).unwrap_or("PDF");
+            let title = display_path
+                .file_stem()
+                .and_then(|name| name.to_str())
+                .unwrap_or("PDF");
             progress("save", 0, 1);
-            store.database().import_book(Book {
-                id:book_id.clone(),content_type:"pdf".into(),title:Some(title.into()),author:Some(String::new()),
-                url:Some("original.pdf".into()),original:Some("original.pdf".into()),page_count:Some(0),..Default::default()
-            }).map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
+            database
+                .import_book(Book {
+                    id: book_id.clone(),
+                    content_type: "pdf".into(),
+                    title: Some(title.into()),
+                    author: Some(String::new()),
+                    url: Some("original.pdf".into()),
+                    original: Some("original.pdf".into()),
+                    page_count: Some(0),
+                    ..Default::default()
+                })
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?;
             return Ok(book_id.clone());
         }
         progress("parse", 0, 0);
-        let original = store
-            .root()
-            .join("cache")
-            .join(content_type)
-            .join(&book_id)
-            .join(format!("original.{original_extension}"));
+        let bytes = resources
+            .cache
+            .read_file(&original)
+            .await
+            .map_err(|error| error.to_string())?;
         let extension = original_extension.clone();
         let parsed = tokio::task::spawn_blocking(move || {
-            let bytes = read_selected_file(&original)?;
             parse_selected_file(
                 &display_path,
                 &extension,
@@ -210,21 +236,37 @@ pub async fn import_local_book(
         })
         .await
         .map_err(|error| format!("Local book import worker failed: {error}"))??;
-        persist_parsed_book(store, &book_id, parsed, &original_extension, &progress).await
+        persist_parsed_book(
+            database,
+            resources,
+            &book_id,
+            content_type,
+            parsed,
+            &original_extension,
+            &progress,
+        )
+        .await
     }
     .await;
     match result {
         Ok(book) => Ok(book),
         Err(error) => {
-            let _ = store.remove_book_resources(&book_id).await;
+            let protected = crate::resources::protected_resources(resources.root())
+                .map_err(|e| e.to_string())?;
+            let _ = database
+                .remove_book_assets(book_id.clone(), protected)
+                .map_err(|e| e.to_string())?
+                .await;
             Err(error)
         }
     }
 }
 
 async fn persist_parsed_book(
-    store: &ResourceStore,
+    database: &crate::database::Database,
+    resources: &Resources,
     book_id: &str,
+    content_type: &str,
     parsed: ParsedBook,
     original_extension: &str,
     progress: &ImportProgress,
@@ -233,8 +275,9 @@ async fn persist_parsed_book(
     let total = (parsed.assets.len() + parsed.chapters.len()) as u64;
     for (index, asset) in parsed.assets.iter().enumerate() {
         progress("cache", index as u64, total);
-        let reference = store
-            .write_asset(book_id, &asset.id, &asset.bytes)
+        let reference = resources
+            .cache
+            .save_asset(content_type, book_id, &asset.id, &asset.bytes)
             .await
             .map_err(|error| error.to_string())?;
         if parsed.cover_asset_id.as_deref() == Some(asset.id.as_str()) {
@@ -259,7 +302,11 @@ async fn persist_parsed_book(
                 .assets
                 .iter()
                 .enumerate()
-                .map(|(page_index, asset)|Page {id:format!("p{}",page_index+1),src:asset.id.clone(),..Default::default()})
+                .map(|(page_index, asset)| Page {
+                    id: format!("p{}", page_index + 1),
+                    src: asset.id.clone(),
+                    ..Default::default()
+                })
                 .collect::<Vec<_>>();
             chapters.push(Chapter {
                 id: chapter_id,
@@ -271,17 +318,25 @@ async fn persist_parsed_book(
             continue;
         }
         let src = if let Some(html) = parsed_chapter.html {
-            store
-                .write_local_chapter_rich_text(book_id, &chapter_id, &html)
-                .await
+            crate::book_files::html(
+                resources,
+                content_type,
+                book_id,
+                &chapter_id,
+                &html,
+                None,
+                true,
+            )
+            .await
         } else {
-            store
-                .write_chapter_text(
-                    book_id,
-                    &chapter_id,
-                    parsed_chapter.text.as_deref().unwrap_or_default(),
-                )
-                .await
+            crate::book_files::text(
+                resources,
+                content_type,
+                book_id,
+                &chapter_id,
+                parsed_chapter.text.as_deref().unwrap_or_default(),
+            )
+            .await
         }
         .map_err(|error| error.to_string())?;
         let content_format = if is_rich_text { "richText" } else { "text" };
@@ -299,41 +354,23 @@ async fn persist_parsed_book(
 
     progress("cache", total, total);
     let book = Book {
-        id:book_id.to_owned(),content_type:store.book_type(book_id).map_err(|error|error.to_string())?,
-        title:Some(parsed.title),author:Some(parsed.author),cover:cover_src.map(|reference|reference.to_string()),
-        intro:parsed.intro,chapters,original:Some(format!("original.{original_extension}")),..Default::default()
+        id: book_id.to_owned(),
+        content_type: content_type.to_owned(),
+        title: Some(parsed.title),
+        author: Some(parsed.author),
+        cover: cover_src.map(|reference| reference.to_string()),
+        intro: parsed.intro,
+        chapters,
+        original: Some(format!("original.{original_extension}")),
+        ..Default::default()
     };
     progress("save", 0, 1);
-    store.database().import_book(book).map_err(|error|error.to_string())?.await.map_err(|error|error.to_string())?;
+    database
+        .import_book(book)
+        .map_err(|error| error.to_string())?
+        .await
+        .map_err(|error| error.to_string())?;
     Ok(book_id.to_owned())
-}
-
-fn read_selected_file(path: &Path) -> Result<Vec<u8>, String> {
-    let path = std::fs::canonicalize(path)
-        .map_err(|error| format!("Cannot resolve selected file: {error}"))?;
-    let metadata =
-        std::fs::metadata(&path).map_err(|error| format!("Cannot read selected file: {error}"))?;
-    if !metadata.is_file() {
-        return Err("The selected path is not a file".to_owned());
-    }
-    let extension = path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase();
-    let max_size = match extension.as_str() {
-        "txt" => txt::MAX_FILE_BYTES,
-        "epub" => epub::MAX_FILE_BYTES,
-        "cbz" => cbz::MAX_FILE_BYTES,
-        "pdf" => 512 * 1024 * 1024,
-        _ => return Err("Supported local book formats are TXT, EPUB, CBZ, and PDF".to_owned()),
-    };
-    if metadata.len() == 0 || metadata.len() > max_size {
-        return Err(format!(
-            "Selected file size must be between 1 byte and {max_size} bytes"
-        ));
-    }
-    std::fs::read(&path).map_err(|error| format!("Cannot read selected file: {error}"))
 }
 
 fn parse_selected_file(

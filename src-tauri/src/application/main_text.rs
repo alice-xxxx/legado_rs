@@ -63,7 +63,6 @@ impl ApplicationService {
             validate_id(book_id, "bookId")?;
             validate_id(chapter_id, "chapterId")?;
             let book = self
-                .store
                 .read_book(book_id)
                 .await
                 .map_err(|error| error.to_string())?;
@@ -107,8 +106,8 @@ impl ApplicationService {
             request.cancellation = Some(token.clone());
             let content = self.executor.execute(request.clone()).await?;
 
-            let mut chapter = crate::resources::chapter_content(
-                &self.server,
+            let mut chapter = crate::chapter_resources::chapter_content(
+                self,
                 self.executor.as_ref(),
                 book_id,
                 chapter_id,
@@ -118,20 +117,25 @@ impl ApplicationService {
             )
             .await?;
             if cache {
-                chapter = crate::resources::cache_chapter_files(
-                    &self.server,
-                    book_id,
-                    chapter_id,
-                    chapter,
+                chapter = crate::chapter_resources::cache_chapter_files(
+                    self, book_id, chapter_id, chapter,
                 )
                 .await?;
             }
             // 只提交这一章的缓存字段，不重写目录和进度。
-            let database = self.store.database().clone();
+            let database = self.database.clone();
             let (book_id, chapter_id, token) =
                 (book_id.to_owned(), chapter_id.to_owned(), token.clone());
-            database.save_main_text(book_id,chapter_id,serde_json::from_value(chapter).map_err(|error|error.to_string())?,token).map_err(|e|e.to_string())?
-                .await.map_err(|e|e.to_string())
+            database
+                .save_main_text(
+                    book_id,
+                    chapter_id,
+                    serde_json::from_value(chapter).map_err(|error| error.to_string())?,
+                    token,
+                )
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())
         };
         tokio::select! {
             biased;
@@ -169,11 +173,12 @@ impl ApplicationService {
         };
         for address in addresses {
             let reference = ResourceRef::new(address).map_err(|error| error.to_string())?;
-            let exists = if let Some(id) = reference.path().strip_prefix("media/") {
-                self.server.contains_media(id).await
+            let exists = if let Some(id) = reference.path().strip_prefix("proxy/") {
+                self.resources.proxy.contains(id)
             } else {
-                self.store
-                    .regular_file_exists(&reference)
+                self.resources
+                    .cache
+                    .contains(&reference)
                     .await
                     .map_err(|error| error.to_string())?
             };

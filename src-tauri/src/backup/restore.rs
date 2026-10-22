@@ -9,14 +9,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
+use crate::backup::state::{CommitState, TransactionError};
 use crate::models::CURRENT_SCHEMA_VERSION;
-use crate::resource_transactions::{CommitState, TransactionError};
-use crate::resources::ResourceStore;
 
 use super::create::{is_allowed_snapshot_path, validate_archive_path};
 use super::{
-    hex_digest, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, MANIFEST_PATH,
-    MAX_ARCHIVE_BYTES, MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
+    hex_digest, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, MANIFEST_PATH, MAX_ARCHIVE_BYTES,
+    MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -32,25 +31,23 @@ struct RestoreJournal {
 /// Callers must hold the application's exclusive operation guard for the
 /// duration of restore.
 pub(crate) async fn restore_backup(
-    store: &ResourceStore,
+    database: &crate::database::Database,
     archive_path: impl AsRef<Path>,
 ) -> Result<(), TransactionError> {
-    let database = store.database().clone();
+    let database = database.clone();
     let archive_path = archive_path.as_ref().to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        database.restore_archive(archive_path)
-    })
-    .await
-    .map_err(|error| {
-        TransactionError::recovery_required(
-            format!("Restore worker stopped before reporting its result: {error}"),
-            CommitState::Indeterminate,
-        )
-    })?
+    tokio::task::spawn_blocking(move || database.restore_archive(archive_path))
+        .await
+        .map_err(|error| {
+            TransactionError::recovery_required(
+                format!("Restore worker stopped before reporting its result: {error}"),
+                CommitState::Indeterminate,
+            )
+        })?
 }
 
 /// Finish or roll back a restore interrupted between directory renames. Call
-/// this before opening `ResourceStore`, which otherwise initializes a missing
+/// this before opening `Resources`, which otherwise initializes a missing
 /// root as a new empty library.
 pub fn recover_interrupted_restore(root: impl AsRef<Path>) -> Result<(), String> {
     let requested_root = root.as_ref();
@@ -152,7 +149,10 @@ fn recovery_path_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
-pub(crate) fn restore_backup_sync(root: &Path, archive_path: &Path) -> Result<(), TransactionError> {
+pub(crate) fn restore_backup_sync(
+    root: &Path,
+    archive_path: &Path,
+) -> Result<(), TransactionError> {
     let root = fs::canonicalize(root)
         .map_err(|error| TransactionError::new(format!("Cannot resolve app data root: {error}")))?;
     let archive_path = fs::canonicalize(archive_path).map_err(|error| {
@@ -273,7 +273,7 @@ fn commit_restore(root: &Path, stage: &Path) -> Result<(), TransactionError> {
         ));
     }
 
-    // The active ResourceStore and HTTP server refer to the stable root path,
+    // The active Resources and HTTP server refer to the stable root path,
     // so they immediately read the restored tree after the directory swap.
     // Rebuildable engine caches were copied forward; archived user namespaces
     // replace their existing on-device values.
@@ -483,5 +483,5 @@ fn validate_extracted_snapshot(stage: &Path) -> Result<(), String> {
     if !stage.join("settings.json").is_file() {
         return Err("备份缺少设置文件".into());
     }
-    crate::database::verify_snapshot(stage).map_err(|e|e.to_string())
+    crate::database::verify_snapshot(stage).map_err(|e| e.to_string())
 }

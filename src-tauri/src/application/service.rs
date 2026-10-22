@@ -1,21 +1,12 @@
-//! 应用服务共享状态、操作门闩、资源入口与书架锁。
+//! 应用业务共享状态、操作时序与书架锁。
 
 use super::{login, search, tts};
-use crate::{
-    models::CURRENT_SCHEMA_VERSION,
-    resources::{ResourceServer, ResourceStore},
-    settings::configured_source_http_timeout_seconds,
-    source_engine::SourceExecutor,
-};
-use serde_json::{json, Value};
+use crate::{resources::Resources, source_engine::SourceExecutor};
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     sync::{atomic::AtomicU64, Arc},
 };
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-use tauri::State;
 
 impl ApplicationService {
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -29,48 +20,14 @@ impl ApplicationService {
     ) -> Result<Self, String> {
         let requested_root = root.into();
         let process_lock = Arc::new(
-            crate::resource_transactions::AppDataProcessLock::acquire(&requested_root)
+            crate::backup::state::AppDataProcessLock::acquire(&requested_root)
                 .map_err(|error| error.to_string())?,
         );
         let root = process_lock.data_root().to_path_buf();
         crate::backup::recover_interrupted_restore(&root)?;
-        let store = Arc::new(ResourceStore::open(root.clone()).map_err(|error| error.to_string())?);
-        // Debug previews have no shelf identity and must not survive an app restart.
-        store
-            .remove_book_resources("debug-source")
-            .await
-            .map_err(|error| error.to_string())?;
-        // HTTP TTS audio files are request-scoped cache entries, never backups.
-        store
-            .remove_book_resources("tts-audio")
-            .await
-            .map_err(|error| error.to_string())?;
-        let settings_ref = store.settings_ref();
-        let mut empty_settings = serde_json::to_value(crate::models::SettingsDocument::default())
-            .map_err(|error| error.to_string())?;
-        empty_settings["lastBackupAtMs"] = Value::Null;
-        let mut startup_settings = store
-            .read_json_ref_or_default(&settings_ref, empty_settings.clone())
-            .await
-            .map_err(|error| error.to_string())?;
-        let previous_settings = startup_settings.clone();
-        crate::models::upgrade_settings_document(&mut startup_settings);
-        if !valid_startup_settings(&startup_settings) {
-            startup_settings = empty_settings;
-        }
-        if startup_settings != previous_settings {
-            store
-                .write_json_ref(&settings_ref, &startup_settings)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
-        crate::source_http::set_network_timeout_seconds(configured_source_http_timeout_seconds(
-            Some(&startup_settings),
-        ));
-        let bind = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-        let server = Arc::new(
-            store
-                .start_http(bind)
+        let database = crate::database::Database::new(&root).map_err(|error| error.to_string())?;
+        let resources = Arc::new(
+            Resources::open(&root, database.clone())
                 .await
                 .map_err(|error| error.to_string())?,
         );
@@ -82,16 +39,14 @@ impl ApplicationService {
                 return Err(format!("Cannot clear stale picker imports: {error}"));
             }
         }
-        let root = store.root().to_path_buf();
+        let root = resources.root().to_path_buf();
         let (restore_barrier, _) = tokio::sync::watch::channel(false);
-        Ok(Self {
+        let service = Self {
             root,
             _process_lock: process_lock,
-            sources: Arc::new(crate::source_catalog::SourceCatalog::new(
-                store.database().clone(),
-            )),
-            store,
-            server,
+            sources: Arc::new(crate::source_catalog::SourceCatalog::new(database.clone())),
+            database,
+            resources,
             executor,
             #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
             app: None,
@@ -109,15 +64,12 @@ impl ApplicationService {
             restore_barrier: Arc::new(restore_barrier),
             restore_serial: Arc::new(tokio::sync::Mutex::new(())),
             restore_epoch: Arc::new(AtomicU64::new(0)),
-        })
+        };
+        Ok(service)
     }
 
-    pub fn resource_server(&self) -> &ResourceServer {
-        &self.server
-    }
-
-    pub fn resource_store(&self) -> &ResourceStore {
-        &self.store
+    pub fn resources(&self) -> &Resources {
+        &self.resources
     }
 
     pub fn data_root(&self) -> &Path {
@@ -160,20 +112,13 @@ impl ApplicationService {
     }
 }
 
-fn valid_startup_settings(value: &Value) -> bool {
-    serde_json::from_value::<crate::models::SettingsDocument>(value.clone()).is_ok_and(|settings| {
-        settings.schema_version == CURRENT_SCHEMA_VERSION
-            && crate::discovery::home_config::validate_home_document(&settings.home).is_ok()
-    })
-}
-
-/// Resource-oriented service for source processing and resource delivery.
+/// 应用业务编排与共享状态。
 #[derive(Clone)]
 pub struct ApplicationService {
     pub(crate) root: PathBuf,
-    pub(crate) _process_lock: Arc<crate::resource_transactions::AppDataProcessLock>,
-    pub(crate) store: Arc<ResourceStore>,
-    pub(crate) server: Arc<ResourceServer>,
+    pub(crate) _process_lock: Arc<crate::backup::state::AppDataProcessLock>,
+    pub(crate) database: crate::database::Database,
+    pub(crate) resources: Arc<Resources>,
     pub(crate) executor: Arc<dyn SourceExecutor>,
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
     pub(crate) app: Option<tauri::AppHandle>,
@@ -210,25 +155,4 @@ impl Drop for RestoreAdmissionGuard {
             self.barrier.send_replace(false);
         }
     }
-}
-
-impl ApplicationService {
-    pub async fn bootstrap(&self) -> Result<Value, String> {
-        let settings = self
-            .store
-            .read_json_ref(&self.store.settings_ref())
-            .await
-            .map_err(|error| error.to_string())?;
-        crate::source_http::set_network_timeout_seconds(configured_source_http_timeout_seconds(
-            Some(&settings),
-        ));
-        let base = self.server.url_for(&self.store.settings_ref());
-        Ok(json!({"settings":settings,"assetBaseUrl":base.trim_end_matches("settings.json")}))
-    }
-}
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-pub async fn app_bootstrap(service: State<'_, ApplicationService>) -> Result<Value, String> {
-    let _operation = service.operation_read().await;
-    service.bootstrap().await
 }

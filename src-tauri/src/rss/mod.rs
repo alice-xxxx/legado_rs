@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    application::{ApplicationService},
+    application::ApplicationService,
     discovery::{self, DiscoveryCategory, PrivateCategory},
     resources::ResourceRef,
 };
@@ -319,16 +319,17 @@ pub(crate) async fn list_standard_feed_articles(
             .first()
             .map(|link| link.href.as_str())
             .unwrap_or(feed_url.as_str());
-        let chapter_ref = service
-            .resource_store()
-            .write_chapter_rich_text(
-                &rss_resource_book_id(&source.id),
-                article_id,
-                &content,
-                Some(content_base_url),
-            )
-            .await
-            .map_err(|error| error.to_string())?;
+        let chapter_ref = crate::book_files::html(
+            &service.resources,
+            "html",
+            &rss_resource_book_id(&source.id),
+            article_id,
+            &content,
+            Some(content_base_url),
+            false,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let state = current_articles
             .get(article_id)
             .cloned()
@@ -394,9 +395,10 @@ pub async fn read_standard_feed_article(
     if !is_rss_article_resource_ref(source_id, article_id, &typed_resource) {
         return Err("RSS article has an invalid resource reference".to_owned());
     }
-    let store = service.resource_store();
-    if !store
-        .regular_file_exists(&typed_resource)
+    if !service
+        .resources
+        .cache
+        .contains(&typed_resource)
         .await
         .map_err(|error| error.to_string())?
     {
@@ -406,7 +408,7 @@ pub async fn read_standard_feed_article(
     Ok(json!({
         "sourceId": source_id,
         "articleId": article_id,
-        "resource": service.server.descriptor(&typed_resource),
+        "resource": service.resources.descriptor(&typed_resource),
     }))
 }
 
@@ -414,10 +416,13 @@ async fn ensure_subscription_locked(
     service: &ApplicationService,
     expected_source: &SourceRecord,
 ) -> Result<(), String> {
-    let store = service.resource_store();
+    let database = &service.database;
     let source_id = expected_source.id.clone();
-    store.database().ensure_rss_subscription(source_id).map_err(|e|e.to_string())?
-        .await.map_err(|e|e.to_string())?;
+    database
+        .ensure_rss_subscription(source_id)
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -439,11 +444,22 @@ pub async fn set_article_state(
         return Err("Selected source is not an RSS subscription".to_owned());
     }
     let _source_guard = service.sources.rss_snapshot(&source).await?;
-    let store = service.resource_store();
+    let database = &service.database;
     let source_id = source_id.to_owned();
     let article_id = article_id.to_owned();
-    store.database().save_rss_articles(source_id, vec![crate::database::RssArticlePatch { article_id,is_read,is_favorite,content_ref:None }])
-        .map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
+    database
+        .save_rss_articles(
+            source_id,
+            vec![crate::database::RssArticlePatch {
+                article_id,
+                is_read,
+                is_favorite,
+                content_ref: None,
+            }],
+        )
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -461,7 +477,7 @@ async fn subscription_filter(
 }
 
 async fn read_state(service: &ApplicationService) -> Result<RssStateDocument, String> {
-    service.resource_store().database().rss_state().map_err(|e|e.to_string())
+    service.database.rss_state().map_err(|e| e.to_string())
 }
 
 async fn lookup_article_state(
@@ -485,11 +501,20 @@ async fn register_articles(
     for article_id in article_ids {
         validate_opaque_id(article_id, "articleId")?;
     }
-    let store = service.resource_store();
+    let database = &service.database;
     let source_id = source_id.to_owned();
-    let articles = article_ids.iter().map(|id| crate::database::RssArticlePatch { article_id:id.clone(), ..Default::default() }).collect();
-    store.database().save_rss_articles(source_id,articles).map_err(|e|e.to_string())?
-        .await.map_err(|e|e.to_string())?;
+    let articles = article_ids
+        .iter()
+        .map(|id| crate::database::RssArticlePatch {
+            article_id: id.clone(),
+            ..Default::default()
+        })
+        .collect();
+    database
+        .save_rss_articles(source_id, articles)
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -507,9 +532,20 @@ async fn record_article_resources(
         }
     }
     let source_id = source_id.to_owned();
-    let articles = entries.into_iter().map(|(article_id,reference)|crate::database::RssArticlePatch { article_id, content_ref:Some(reference.as_str().to_owned()), ..Default::default() }).collect();
-    service.resource_store().database().save_rss_articles(source_id,articles).map_err(|e|e.to_string())?
-        .await.map_err(|e|e.to_string())?;
+    let articles = entries
+        .into_iter()
+        .map(|(article_id, reference)| crate::database::RssArticlePatch {
+            article_id,
+            content_ref: Some(reference.as_str().to_owned()),
+            ..Default::default()
+        })
+        .collect();
+    service
+        .database
+        .save_rss_articles(source_id, articles)
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -707,7 +743,10 @@ pub async fn list_rss_categories(
         "resource-updated",
         json!({ "kind": "rssCategories", "sourceId": source_id }),
     );
-    let _ = app.emit("resource-updated", json!({"kind":"rssState","sourceId":source_id}));
+    let _ = app.emit(
+        "resource-updated",
+        json!({"kind":"rssState","sourceId":source_id}),
+    );
     Ok(result)
 }
 

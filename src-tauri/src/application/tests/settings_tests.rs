@@ -18,11 +18,7 @@ async fn startup_persists_complete_settings_and_saves_both_reading_profiles() {
     let service = ApplicationService::open_with_executor(fresh.path(), Arc::new(UnusedExecutor))
         .await
         .unwrap();
-    let settings = service
-        .store
-        .read_json_ref(&service.store.settings_ref())
-        .await
-        .unwrap();
+    let settings = service.resources.settings.read().await.unwrap();
     assert_eq!(settings["theme"], "system");
     assert_eq!(
         settings["reader"]["themes"],
@@ -43,11 +39,7 @@ async fn startup_persists_complete_settings_and_saves_both_reading_profiles() {
     let service = ApplicationService::open_with_executor(legacy.path(), Arc::new(UnusedExecutor))
         .await
         .unwrap();
-    let mut persisted = service
-        .store
-        .read_json_ref(&service.store.settings_ref())
-        .await
-        .unwrap();
+    let mut persisted = service.resources.settings.read().await.unwrap();
     assert_eq!(
         persisted["theme"], "light",
         "Settings remain in their existing JSON file"
@@ -60,11 +52,7 @@ async fn startup_persists_complete_settings_and_saves_both_reading_profiles() {
     persisted["theme"] = json!("dark");
     persisted["reader"]["themes"]["dark"] = json!("paper");
     service.save_settings(persisted).await.unwrap();
-    let saved = service
-        .store
-        .read_json_ref(&service.store.settings_ref())
-        .await
-        .unwrap();
+    let saved = service.resources.settings.read().await.unwrap();
     assert_eq!(saved["theme"], "dark");
     assert_eq!(
         saved["reader"]["themes"],

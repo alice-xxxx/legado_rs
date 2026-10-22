@@ -1,7 +1,7 @@
 import { computed, nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { modifyDatabase } from "../../api/feDb";
-import { readLibrary, assetUrl } from "../../api/database";
+import { readLibrary, assetUrl, storedAssetUrl } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
 import type { AppBootstrap, BookResource, ContentLibrary, ContentPreview, ContentType, ShelfDocument, ShelfSortKey, ShelfSortOrder } from "../../api/types";
 
@@ -61,7 +61,7 @@ function preview(book: BookResource): ContentPreview {
   const value: ContentPreview = { id: book.id, title: book.title };
   if (book.author) value.author = book.author;
   if (book.cover) value.cover = book.cover;
-  else if (book.coverSrc && !book.coverSrc.includes("/r/")) value.cover = book.coverSrc;
+  else if (book.coverSrc) value.cover = storedAssetUrl(book.coverSrc);
   value.total = book.chapterCount;
   if (book.updatedAtMs) value.updatedAt = Math.floor(book.updatedAtMs / 1000);
   if (book.latestChapter) value.latest = book.latestChapter;

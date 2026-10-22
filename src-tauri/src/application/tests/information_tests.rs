@@ -84,40 +84,42 @@ async fn same_details_interface_inserts_then_refreshes_without_resetting_catalog
         .save_progress(&id, json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}))
         .await
         .unwrap();
-    let cached = service
-        .store
-        .read_book(&id)
-        .await
-        .unwrap();
+    let cached = service.read_book(&id).await.unwrap();
     service
         .main_text(&id, cached["chapters"][0]["id"].as_str().unwrap(), false)
         .await
         .unwrap();
-    let before = service.store.read_book(&id).await.unwrap();
+    let before = service.read_book(&id).await.unwrap();
     // 模拟同一本书另一条首次打开请求晚入库，不能覆盖已产生的缓存和进度。
     service
-        .store
-        .database()
+        .database
         .save_information(
-            crate::database::Book {chapters:Vec::new(),..serde_json::from_value(before.clone()).unwrap()},
-            before["chapters"].as_array().unwrap().iter().map(|chapter|serde_json::from_value(chapter["engineData"].clone()).unwrap()).collect(),
+            crate::database::Book {
+                chapters: Vec::new(),
+                ..serde_json::from_value(before.clone()).unwrap()
+            },
+            before["chapters"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|chapter| serde_json::from_value(chapter["engineData"].clone()).unwrap())
+                .collect(),
             tokio_util::sync::CancellationToken::new(),
         )
-        .unwrap().wait().unwrap();
-    assert_eq!(
-        before,
-        service.store.read_book(&id).await.unwrap()
-    );
+        .unwrap()
+        .wait()
+        .unwrap();
+    assert_eq!(before, service.read_book(&id).await.unwrap());
     service
         .more_information("fast", "https://fixture/book")
         .await
         .unwrap();
-    let after = service.store.read_book(&id).await.unwrap();
+    let after = service.read_book(&id).await.unwrap();
     assert_eq!(before["title"], "详情1");
     assert_eq!(after["title"], "详情2");
     assert_eq!(before["chapters"], after["chapters"]);
     assert_eq!(before["progress"], after["progress"]);
-    assert_eq!(before["engine"]["bookUrl"],after["engine"]["bookUrl"]);
+    assert_eq!(before["engine"]["bookUrl"], after["engine"]["bookUrl"]);
     assert_eq!(
         *engine.calls.lock().unwrap(),
         ["bookInfo", "chapters", "content", "bookInfo", "chapters"]
@@ -136,29 +138,22 @@ async fn unified_refresh_updates_catalog_without_tasks_and_preserves_cached_read
         .save_progress(&id, json!({"chapterIndex":0,"offset":37,"updatedAtMs":100}))
         .await
         .unwrap();
-    let cached = service
-        .store
-        .read_book(&id)
-        .await
-        .unwrap();
+    let cached = service.read_book(&id).await.unwrap();
     service
         .main_text(&id, cached["chapters"][0]["id"].as_str().unwrap(), false)
         .await
         .unwrap();
-    let before = service.store.read_book(&id).await.unwrap();
+    let before = service.read_book(&id).await.unwrap();
     engine.catalog.store(1, Ordering::SeqCst);
     service
         .more_information("fast", "https://fixture/book")
         .await
         .unwrap();
-    let after = service.store.read_book(&id).await.unwrap();
+    let after = service.read_book(&id).await.unwrap();
     assert_eq!(after["title"], "详情2");
     assert_eq!(after["chapters"].as_array().unwrap().len(), 3);
     assert_eq!(after["chapters"][1]["id"], before["chapters"][0]["id"]);
-    assert_eq!(
-        after["chapters"][1]["url"],
-        before["chapters"][0]["url"]
-    );
+    assert_eq!(after["chapters"][1]["url"], before["chapters"][0]["url"]);
     assert_eq!(after["progress"]["chapterIndex"], 1);
     assert_eq!(after["progress"]["offset"], 37);
     // 空目录和重复 URL 都不能部分提交详情或清除原有目录。
@@ -168,10 +163,7 @@ async fn unified_refresh_updates_catalog_without_tasks_and_preserves_cached_read
             .more_information("fast", "https://fixture/book")
             .await
             .is_err());
-        assert_eq!(
-            after,
-            service.store.read_book(&id).await.unwrap()
-        );
+        assert_eq!(after, service.read_book(&id).await.unwrap());
     }
 }
 
@@ -183,7 +175,7 @@ async fn cancelling_catalog_request_does_not_commit_partial_details() {
         .await
         .unwrap();
     let id = crate::database::online_book_id("fast", "text", "https://fixture/book");
-    let before = service.store.read_book(&id).await.unwrap();
+    let before = service.read_book(&id).await.unwrap();
     engine.catalog.store(4, Ordering::SeqCst);
     let worker = service.clone();
     let pending = tokio::spawn(async move {
@@ -201,10 +193,7 @@ async fn cancelling_catalog_request_does_not_commit_partial_details() {
         .unwrap()
         .is_err());
     assert!(engine.slow_token.get().unwrap().is_cancelled());
-    assert_eq!(
-        before,
-        service.store.read_book(&id).await.unwrap()
-    );
+    assert_eq!(before, service.read_book(&id).await.unwrap());
 }
 
 #[tokio::test]
@@ -237,15 +226,21 @@ async fn independent_details_finish_while_another_request_is_pending() {
         .contains("cancelled"));
     assert!(engine.slow_token.get().unwrap().is_cancelled());
     assert!(service
-        .store
-        .database()
-        .book_type(&crate::database::online_book_id("slow", "text", "https://fixture/slow"))
+        .database
+        .book_type(&crate::database::online_book_id(
+            "slow",
+            "text",
+            "https://fixture/slow"
+        ))
         .unwrap()
         .is_none());
     assert!(service
-        .store
-        .database()
-        .book_type(&crate::database::online_book_id("fast", "text", "https://fixture/fast"))
+        .database
+        .book_type(&crate::database::online_book_id(
+            "fast",
+            "text",
+            "https://fixture/fast"
+        ))
         .unwrap()
         .is_some());
 }
@@ -297,9 +292,12 @@ async fn cancelling_when_idle_does_not_cancel_the_next_details_request() {
         .await
         .unwrap();
     assert!(service
-        .store
-        .database()
-        .book_type(&crate::database::online_book_id("fast", "text", "https://fixture/book"))
+        .database
+        .book_type(&crate::database::online_book_id(
+            "fast",
+            "text",
+            "https://fixture/book"
+        ))
         .unwrap()
         .is_some());
 }

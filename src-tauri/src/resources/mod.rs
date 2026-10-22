@@ -1,138 +1,109 @@
-//! 资源引用及其模块入口。
-//! 持久化稳定的 resource:// 标识，仅在响应时生成运行时 URL。
-
-pub(crate) mod appearance;
-pub(crate) mod cache;
-mod chapter;
-pub(crate) use chapter::{chapter_content, cache_chapter_files};
-
-use std::fmt;
-
-use serde::Serialize;
+//! 独立资源模块：管理分发、文件与代理生命周期，只调用数据库具名 API。
+mod io;
+mod reference;
+#[cfg(test)]
+mod tests;
+pub(crate) mod validation;
+pub(crate) use io::settings::protected_resources;
+pub(crate) use io::tts::Writer as TtsWriter;
+pub use reference::{ResourceError, ResourceRef};
+use std::path::{Path, PathBuf};
+pub(crate) use validation::check_path_no_symlink;
 
 pub(crate) const CONTENT_TYPES: [&str; 6] = ["text", "image", "audio", "video", "html", "pdf"];
-mod json;
-mod media_proxy;
-mod reader_html;
-mod server;
-mod store;
-mod tts_stream;
-pub(crate) mod validation;
 
-use server::byte_response;
-pub use server::ResourceServer;
-pub use store::ResourceStore;
-pub(crate) use store::ResourceStoreWriterGuard;
-pub use tts_stream::TtsStreamWriter;
-
-pub(crate) use validation::check_path_no_symlink;
-use validation::validate_public_path;
-
-#[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct ResourceRef(String);
-
-/// A browser-safe video choice embedded in a processed chapter. Upstream URLs
-/// and request headers stay in the private media registry; unavailable choices
-/// carry only a fixed, display-safe reason.
-pub(crate) struct ChapterVideoSource {
-    pub label: String,
-    pub media_ref: Option<ResourceRef>,
-    pub media_format: Option<&'static str>,
-    pub unavailable_reason: Option<&'static str>,
-    pub selected: bool,
+pub struct Resources {
+    root: PathBuf,
+    database: crate::database::Database,
+    pub(crate) cache: io::cache::Cache,
+    pub(crate) settings: io::settings::Settings,
+    pub(crate) proxy: io::proxy::Proxy,
+    pub(crate) tts: io::tts::Tts,
+    http: io::LocalHttp,
 }
 
-impl ResourceRef {
-    /// Construct a public stable reference (`resource://...`) or a direct
-    /// external HTTP(S) resource URL. Other URL schemes are never accepted.
-    pub fn new(reference: impl AsRef<str>) -> Result<Self, ResourceError> {
-        let reference = reference.as_ref();
-        if let Some(path) = reference.strip_prefix("resource://") {
-            validate_public_path(path)?;
-            return Ok(Self(format!("resource://{path}")));
-        }
-        let url = reqwest::Url::parse(reference)
-            .map_err(|_| ResourceError::new("Resource URL must be a valid HTTP(S) URL"))?;
-        if !matches!(url.scheme(), "http" | "https")
-            || url.host_str().is_none()
-            || !url.username().is_empty()
-            || url.password().is_some()
-        {
-            return Err(ResourceError::new(
-                "Only credential-free HTTP(S) resource URLs are allowed",
-            ));
-        }
-        Ok(Self(url.to_string()))
+impl Resources {
+    pub(crate) async fn open(
+        root: impl AsRef<Path>,
+        database: crate::database::Database,
+    ) -> Result<Self, ResourceError> {
+        tokio::fs::create_dir_all(root.as_ref()).await?;
+        let root = tokio::fs::canonicalize(root).await?;
+        let cache = io::cache::Cache::new(root.join("cache")).await?;
+        let settings = io::settings::Settings::new(root.clone()).await?;
+        let proxy = io::proxy::Proxy::new()?;
+        let tts = io::tts::Tts::default();
+        let http = io::start(cache.clone(), settings.clone(), proxy.clone(), tts.clone()).await?;
+        let resources = Self {
+            root,
+            database,
+            cache,
+            settings,
+            proxy,
+            tts,
+            http,
+        };
+        resources.reload_proxy().await.map_err(ResourceError::new)?;
+        Ok(resources)
     }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
+    pub fn root(&self) -> &Path {
+        &self.root
     }
-
-    pub fn path(&self) -> &str {
-        // External references have no local filesystem path.
-        self.0.strip_prefix("resource://").unwrap_or("")
+    pub fn base_url(&self) -> &str {
+        &self.http.base_url
     }
-
-    pub fn is_local(&self) -> bool {
-        self.0.starts_with("resource://")
+    pub fn resume_http(&self) -> Result<(), ResourceError> {
+        Ok(self.http.resume()?)
     }
-}
-
-impl fmt::Display for ResourceRef {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl Serialize for ResourceRef {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for ResourceRef {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let value = <String as serde::Deserialize>::deserialize(deserializer)?;
-        Self::new(value).map_err(serde::de::Error::custom)
-    }
-}
-
-#[derive(Debug)]
-pub struct ResourceError {
-    message: String,
-}
-
-impl ResourceError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
+    pub fn url_for(&self, reference: &ResourceRef) -> String {
+        if reference.is_local() {
+            format!(
+                "{}{}",
+                self.base_url(),
+                validation::percent_encode_path(reference.path())
+            )
+        } else {
+            reference.to_string()
         }
     }
-}
-
-impl fmt::Display for ResourceError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+    pub(crate) fn descriptor(&self, reference: &ResourceRef) -> serde_json::Value {
+        let mime = validation::mime_type(reference.path());
+        let format = if mime.starts_with("text/html") {
+            "html"
+        } else if mime.starts_with("text/plain") {
+            "text"
+        } else if mime.starts_with("image/") {
+            "image"
+        } else if mime == "application/pdf" {
+            "pdf"
+        } else {
+            "binary"
+        };
+        serde_json::json!({"resourceId":reference.as_str(),"src":self.url_for(reference),"contentType":mime,"format":format})
     }
 }
 
-impl std::error::Error for ResourceError {}
-
-impl From<std::io::Error> for ResourceError {
-    fn from(error: std::io::Error) -> Self {
-        Self::new(error.to_string())
-    }
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn app_bootstrap(
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
+) -> Result<serde_json::Value, String> {
+    resources.bootstrap().await
 }
 
-impl ResourceRef {
-    pub(super) fn from_validated_path(path: &str) -> Self {
-        Self(format!("resource://{path}"))
-    }
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn clear_book_chapter_cache(
+    book_id: String,
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
+) -> Result<serde_json::Value, String> {
+    resources.clear_cache(&book_id).await
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn get_chapter_cache_usage(
+    resources: tauri::State<'_, std::sync::Arc<Resources>>,
+) -> Result<serde_json::Value, String> {
+    resources.cache_usage().await
 }

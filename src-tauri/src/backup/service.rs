@@ -1,4 +1,4 @@
-﻿//! 备份配置、WebDAV 传输和恢复流程的应用层编排。
+//! 备份配置、WebDAV 传输和恢复流程的应用层编排。
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use crate::file_access::{pick_file, pick_save_file, write_selected_file};
@@ -99,13 +99,11 @@ fn webdav_auth(
     }
 }
 
-pub(crate) fn restore_error_response(
-    error: crate::resource_transactions::TransactionError,
-) -> Value {
+pub(crate) fn restore_error_response(error: crate::backup::state::TransactionError) -> Value {
     let commit_state = match error.commit_state() {
-        crate::resource_transactions::CommitState::NotCommitted => "notCommitted",
-        crate::resource_transactions::CommitState::Committed => "committed",
-        crate::resource_transactions::CommitState::Indeterminate => "indeterminate",
+        crate::backup::state::CommitState::NotCommitted => "notCommitted",
+        crate::backup::state::CommitState::Committed => "committed",
+        crate::backup::state::CommitState::Indeterminate => "indeterminate",
     };
     json!({
         "restored": false,
@@ -188,8 +186,9 @@ pub(crate) fn normalize_webdav_settings(
 impl ApplicationService {
     async fn read_webdav_backup_config(&self) -> Result<WebDavBackupConfig, String> {
         let settings = self
-            .store
-            .read_json_ref(&self.store.settings_ref())
+            .resources
+            .settings
+            .read()
             .await
             .map_err(|error| format!("Cannot read WebDAV backup settings: {error}"))?;
         serde_json::from_value(
@@ -212,8 +211,9 @@ impl ApplicationService {
     ) -> Result<(), String> {
         let value = serde_json::to_value(config)
             .map_err(|error| format!("Cannot encode WebDAV backup settings: {error}"))?;
-        self.store
-            .update_json_ref(&self.store.settings_ref(), move |mut settings| {
+        self.resources
+            .settings
+            .update(move |mut settings| {
                 settings["webdavBackup"] = value;
                 Ok(settings)
             })
@@ -434,7 +434,7 @@ impl ApplicationService {
             Ok(staged) => staged,
             Err(error) => {
                 return Ok(restore_error_response(
-                    crate::resource_transactions::TransactionError::new(error),
+                    crate::backup::state::TransactionError::new(error),
                 ));
             }
         };
@@ -476,7 +476,8 @@ impl ApplicationService {
                 drop(admission);
                 continue;
             }
-            let result = crate::backup::create_backup(&self.store, destination).await;
+            let result =
+                crate::backup::create_backup(&self.root, &self.database, destination).await;
             drop(exclusive);
             drop(admission);
             return result;
@@ -485,11 +486,12 @@ impl ApplicationService {
 
     pub(crate) async fn record_backup_success(&self) -> Result<Value, String> {
         let _operation = self.operation_read().await;
-        let settings_ref = self.store.settings_ref();
+
         let timestamp = now_ms();
         let settings = self
-            .store
-            .update_json_ref(&settings_ref, move |mut settings| {
+            .resources
+            .settings
+            .update(move |mut settings| {
                 if !settings.is_object() {
                     return Err("Settings must be a JSON object".to_owned());
                 }
@@ -504,23 +506,21 @@ impl ApplicationService {
     pub(crate) async fn restore_backup(
         &self,
         archive: &Path,
-    ) -> Result<Value, crate::resource_transactions::TransactionError> {
+    ) -> Result<Value, crate::backup::state::TransactionError> {
         self.restore_epoch
             .try_update(
                 std::sync::atomic::Ordering::SeqCst,
                 std::sync::atomic::Ordering::SeqCst,
                 |epoch| epoch.checked_add(1),
             )
-            .map_err(|_| {
-                crate::resource_transactions::TransactionError::new("Restore epoch exhausted")
-            })?;
+            .map_err(|_| crate::backup::state::TransactionError::new("Restore epoch exhausted"))?;
         let _restore_serial = self.restore_serial.clone().lock_owned().await;
         self.restore_barrier.send_replace(true);
         self.end_tts().await;
         self.cancel_login()
             .await
-            .map_err(crate::resource_transactions::TransactionError::new)?;
-        self.server.clear_tts_streams().await;
+            .map_err(crate::backup::state::TransactionError::new)?;
+        self.resources.tts.clear();
         let mut admission = RestoreAdmissionGuard {
             barrier: self.restore_barrier.clone(),
             release_on_drop: true,
@@ -545,21 +545,20 @@ impl ApplicationService {
         let _ = self.text_cancel.send(None);
         self.clear_searches().await;
         let _exclusive = self.operation_gate.clone().write_owned().await;
-        if let Err(error) = crate::backup::restore_backup(&self.store, archive).await {
+        if let Err(error) = crate::backup::restore_backup(&self.database, archive).await {
             if error.recovery_required_flag() {
                 admission.release_on_drop = false;
             }
             return Err(error);
         }
         self.sources.invalidate().await;
-        self.server
-            .reload_private_media_mappings()
+        self.resources.reload_proxy()
             .await
             .map_err(|error| {
                 admission.release_on_drop = false;
-                crate::resource_transactions::TransactionError::recovery_required(
+                crate::backup::state::TransactionError::recovery_required(
                     format!("Restored data is active, but private media mappings could not be reloaded: {error}"),
-                    crate::resource_transactions::CommitState::Committed,
+                    crate::backup::state::CommitState::Committed,
                 )
             })?;
         if let Some(config) = webdav_config {
@@ -568,11 +567,11 @@ impl ApplicationService {
                     Some(format!("备份已恢复，但无法保留本机 WebDAV 设置：{error}"));
             }
         }
-        let mut bootstrap = self.bootstrap().await.map_err(|error| {
+        let mut bootstrap = self.resources.bootstrap().await.map_err(|error| {
             admission.release_on_drop = false;
-            crate::resource_transactions::TransactionError::recovery_required(
+            crate::backup::state::TransactionError::recovery_required(
                 format!("Restored data is active, but app state could not be loaded: {error}"),
-                crate::resource_transactions::CommitState::Committed,
+                crate::backup::state::CommitState::Committed,
             )
         })?;
         if let Some(warning) = webdav_config_warning {
@@ -672,7 +671,7 @@ pub async fn restore_backup_from_picker(
         Ok(selected) => selected,
         Err(error) => {
             return Ok(restore_error_response(
-                crate::resource_transactions::TransactionError::new(error),
+                crate::backup::state::TransactionError::new(error),
             ));
         }
     };
@@ -698,4 +697,3 @@ pub async fn restore_backup_from_picker(
         "bootstrap": bootstrap,
     }))
 }
-

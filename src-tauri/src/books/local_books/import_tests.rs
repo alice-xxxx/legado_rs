@@ -4,8 +4,8 @@ use super::{
 };
 use crate::{
     application::ApplicationService,
-    source_engine::{EngineFuture, SourceExecutor},
     source_engine::SourceEngineRequest,
+    source_engine::{EngineFuture, SourceExecutor},
 };
 use serde_json::{json, Value};
 use std::{
@@ -57,16 +57,15 @@ async fn import(service: &ApplicationService, file: &Path) -> Value {
 
 fn imported_book(service: &ApplicationService, response: &str) -> Value {
     let id = response;
-    let stored = service
-        .resource_store()
-        .database().book(id)
-        .unwrap().unwrap();
+    let stored = service.database.book(id).unwrap().unwrap();
     serde_json::to_value(stored).unwrap()
 }
 
-async fn chapter(service:&ApplicationService,book: &Value, index: usize) -> String {
-    let reference=crate::resources::ResourceRef::new(book["chapters"][index]["url"].as_str().unwrap()).unwrap();
-    let response = reqwest::get(service.resource_server().url_for(&reference))
+async fn chapter(service: &ApplicationService, book: &Value, index: usize) -> String {
+    let reference =
+        crate::resources::ResourceRef::new(book["chapters"][index]["url"].as_str().unwrap())
+            .unwrap();
+    let response = reqwest::get(service.resources().url_for(&reference))
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -77,7 +76,7 @@ async fn chapter(service:&ApplicationService,book: &Value, index: usize) -> Stri
 async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
     let (dir, service) = fixture().await;
     super::txt_toc_rules::replace_document(
-        service.resource_store(),
+        &service.database,
         &TxtTocRulesDocument {
             schema_version: 1,
             rules: vec![TxtTocRule {
@@ -98,9 +97,9 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
     let id = book["id"].as_str().unwrap();
     assert_eq!(book["chapters"].as_array().unwrap().len(), 3);
     assert_eq!(book["chapters"][1]["title"], "【开场】");
-    assert_eq!(chapter(&service,&book, 1).await, "第一段。");
+    assert_eq!(chapter(&service, &book, 1).await, "第一段。");
     service.save_progress(id, json!({"chapterId": "chapter-00002", "chapterIndex": 1, "offset": 3, "updatedAtMs": 1234})).await.unwrap();
-    service.resource_store().database().submit(serde_json::from_value(json!([
+    service.database.submit(serde_json::from_value(json!([
         {"operation":"saveShelf","shelf":{"schemaVersion":1,"books":[{"id":id,"groups":["本地"]}],"groups":["本地"]}}
     ])).unwrap()).unwrap().await.unwrap();
     let copy = dir.path().join("另一文件名.txt");
@@ -108,19 +107,16 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
     let again = import(&service, &copy).await;
     assert_eq!(again["id"], id);
     assert_eq!(again["progress"]["offset"], 3);
-    service.resource_store().database().assert_shelf(&[id]);
-    service.resource_store().database().assert_shelf_groups(id, &["本地"]);
+    service.database.assert_shelf(&[id]);
+    service.database.assert_shelf_groups(id, &["本地"]);
     assert!(dir
         .path()
         .join("cache/text")
         .join(id)
         .join("original.txt")
         .is_file());
-    let raw = service
-        .resource_store()
-        .database().book(id)
-        .unwrap().unwrap();
-    let raw=serde_json::to_value(raw).unwrap();
+    let raw = service.database.book(id).unwrap().unwrap();
+    let raw = serde_json::to_value(raw).unwrap();
     assert!(!dir
         .path()
         .join("cache/text")
@@ -131,7 +127,10 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
         .as_str()
         .unwrap()
         .ends_with(".txt"));
-    assert!(raw["chapters"][1]["url"].as_str().unwrap().starts_with("resource://cache/text/"));
+    assert!(raw["chapters"][1]["url"]
+        .as_str()
+        .unwrap()
+        .starts_with("resource://cache/text/"));
 }
 
 #[tokio::test]
@@ -149,7 +148,7 @@ async fn txt_without_headings_splits_utf16_and_rejects_blank_input() {
     assert!(book["chapters"].as_array().unwrap().len() > 1);
     let mut actual = String::new();
     for index in 0..book["chapters"].as_array().unwrap().len() {
-        actual.push_str(&chapter(&service,&book, index).await);
+        actual.push_str(&chapter(&service, &book, index).await);
     }
     assert_eq!(actual, text);
     let blank = dir.path().join("空白.txt");
@@ -188,8 +187,8 @@ async fn epub_navigation_splits_shared_xhtml_and_keeps_assets_and_metadata() {
     assert_eq!(book["intro"], "Intro");
     assert_eq!(book["contentType"], "html");
     assert_eq!(book["chapters"].as_array().unwrap().len(), 2);
-    let first = chapter(&service,&book, 0).await;
-    let second = chapter(&service,&book, 1).await;
+    let first = chapter(&service, &book, 0).await;
+    let second = chapter(&service, &book, 1).await;
     assert!(first.contains("<em>emphasis</em>") && !first.contains("Beta"));
     assert!(first.contains("data-legado-chapter-id=\"chapter-00002\""));
     assert!(!first.contains("Shared file") && second.contains("Beta") && !second.contains("bad()"));
@@ -208,12 +207,18 @@ async fn epub_navigation_splits_shared_xhtml_and_keeps_assets_and_metadata() {
             .as_ref(),
         b"asset-fixture"
     );
-    assert!(reqwest::get(service.resource_server().url_for(&service.resource_store().asset_ref(book["id"].as_str().unwrap(), book["cover"].as_str().unwrap().rsplit('/').next().unwrap()).unwrap()))
-        .await
-        .unwrap()
-        .status()
-        .is_success());
-    service.resource_store().database().assert_shelf(&[book["id"].as_str().unwrap()]);
+    assert!(reqwest::get(
+        service
+            .resources()
+            .url_for(&crate::resources::ResourceRef::new(book["cover"].as_str().unwrap()).unwrap())
+    )
+    .await
+    .unwrap()
+    .status()
+    .is_success());
+    service
+        .database
+        .assert_shelf(&[book["id"].as_str().unwrap()]);
 }
 
 #[tokio::test]
@@ -245,8 +250,13 @@ async fn cbz_caches_naturally_ordered_webp_pages_in_one_chapter() {
     {
         let url = pages[index]["url"].as_str().unwrap();
         assert!(url.ends_with(&format!("c001_p{:03}.webp", index + 1)));
-        let reference=crate::resources::ResourceRef::new(url).unwrap();
-        let bytes = reqwest::get(service.resource_server().url_for(&reference)).await.unwrap().bytes().await.unwrap();
+        let reference = crate::resources::ResourceRef::new(url).unwrap();
+        let bytes = reqwest::get(service.resources().url_for(&reference))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
         assert_eq!(
             image::load_from_memory(&bytes)
                 .unwrap()
@@ -273,7 +283,7 @@ async fn malformed_archive_leaves_no_library_entry_or_partial_cache() {
             .await
             .is_err());
     }
-    service.resource_store().database().assert_shelf(&[]);
+    service.database.assert_shelf(&[]);
     for kind in ["html", "image", "pdf"] {
         assert!(std::fs::read_dir(dir.path().join("cache").join(kind))
             .map_or(true, |dir| dir.count() == 0));
@@ -361,11 +371,8 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     let id = book["id"].as_str().unwrap();
     let folder = dir.path().join("cache/pdf").join(id);
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
-    let raw = service
-        .resource_store()
-        .database().book(id)
-        .unwrap().unwrap();
-    let raw=serde_json::to_value(raw).unwrap();
+    let raw = service.database.book(id).unwrap().unwrap();
+    let raw = serde_json::to_value(raw).unwrap();
     assert_eq!(raw["url"], "original.pdf");
     assert_eq!(raw["pageCount"], 0);
     assert!(raw["chapters"].as_array().unwrap().is_empty());
@@ -373,7 +380,14 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     assert_eq!(import(&service, &file).await["id"], id);
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
     let response = reqwest::Client::new()
-        .get(service.resource_server().url_for(&service.resource_store().asset_ref(id,"original.pdf").unwrap()))
+        .get(
+            service.resources().url_for(
+                &crate::resources::ResourceRef::new(format!(
+                    "resource://cache/pdf/{id}/original.pdf"
+                ))
+                .unwrap(),
+            ),
+        )
         .header("Range", "bytes=0-4")
         .send()
         .await
@@ -384,7 +398,7 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     let reopened = ApplicationService::open_with_executor(dir.path(), Arc::new(Offline))
         .await
         .unwrap();
-    reopened.resource_store().database().assert_shelf(&[&id]);
+    reopened.database.assert_shelf(&[&id]);
 }
 
 #[tokio::test]
@@ -407,11 +421,8 @@ async fn encrypted_pdf_is_copied_without_opening_it_or_requesting_a_password() {
         std::fs::read(dir.path().join("cache/pdf").join(id).join("original.pdf")).unwrap(),
         std::fs::read(file).unwrap()
     );
-    let raw = service
-        .resource_store()
-        .database().book(id)
-        .unwrap().unwrap();
-    let raw=serde_json::to_value(raw).unwrap();
+    let raw = service.database.book(id).unwrap().unwrap();
+    let raw = serde_json::to_value(raw).unwrap();
     assert_eq!(raw["pageCount"], 0);
     assert!(book["chapters"].as_array().unwrap().is_empty());
 }
@@ -427,7 +438,8 @@ async fn direct_copy_reports_progress_and_imports_into_the_shelf_without_staging
         sender.send((stage.to_owned(), completed, total)).unwrap();
     });
     let book = super::import_local_book(
-        service.resource_store(),
+        &service.database,
+        service.resources(),
         std::fs::File::open(&source).unwrap(),
         source.clone(),
         &LocalImportOptions::default(),
@@ -454,7 +466,7 @@ async fn direct_copy_reports_progress_and_imports_into_the_shelf_without_staging
         .await
         .unwrap();
     assert_eq!(id, book);
-    service.resource_store().database().assert_shelf(&[&id]);
+    service.database.assert_shelf(&[&id]);
     assert_eq!(
         std::fs::read(dir.path().join("cache/text").join(id).join("original.txt")).unwrap(),
         text.as_bytes()
@@ -475,9 +487,12 @@ async fn concurrent_imports_keep_distinct_books_and_deduplicate_the_same_file() 
     );
     assert_ne!(first["id"], second["id"]);
     assert_eq!(first["id"], duplicate["id"]);
-    assert_eq!(chapter(&service,&first, 0).await, "第一本内容。");
-    assert_eq!(chapter(&service,&second, 0).await, "第二本内容。");
-    service.resource_store().database().assert_shelf(&[first["id"].as_str().unwrap(),second["id"].as_str().unwrap()]);
+    assert_eq!(chapter(&service, &first, 0).await, "第一本内容。");
+    assert_eq!(chapter(&service, &second, 0).await, "第二本内容。");
+    service.database.assert_shelf(&[
+        first["id"].as_str().unwrap(),
+        second["id"].as_str().unwrap(),
+    ]);
     for (book, source) in [(&first, &one), (&second, &two)] {
         let original = dir
             .path()

@@ -52,7 +52,7 @@ struct TtsAudio {
 }
 
 struct TtsStream {
-    writer: crate::resources::TtsStreamWriter,
+    writer: crate::resources::TtsWriter,
     profile: Option<Mp3StreamProfile>,
     boundaries: watch::Sender<Vec<(usize, f64)>>,
     played: oneshot::Receiver<()>,
@@ -90,8 +90,12 @@ impl ApplicationService {
             };
             let reading = async {
                 if let Some(id) = &options.config_id {
-                    let config=self.store.database().tts_config(id).map_err(|e|e.to_string())?.ok_or("朗读配置不存在或已停用")?;
-                    let config=serde_json::to_value(config).map_err(|error|error.to_string())?;
+                    let config = self
+                        .database
+                        .tts_config(id)
+                        .map_err(|e| e.to_string())?
+                        .ok_or("朗读配置不存在或已停用")?;
+                    let config = serde_json::to_value(config).map_err(|error| error.to_string())?;
                     let (sender, receiver) = mpsc::channel(1);
                     tokio::try_join!(
                         self.generate_tts_audio(
@@ -117,7 +121,7 @@ impl ApplicationService {
             };
             player.stop();
             for id in assets.drain(..) {
-                self.server.release_tts_stream(&id).await;
+                self.resources.tts.release(&id);
             }
             if let Err(error) = result {
                 self.tts_progress(json!(error));
@@ -126,7 +130,7 @@ impl ApplicationService {
         player.stop();
         player.close();
         for id in assets {
-            self.server.release_tts_stream(&id).await;
+            self.resources.tts.release(&id);
         }
     }
 
@@ -630,15 +634,16 @@ impl ApplicationService {
                     played.await.map_err(|_| "朗读播放器已关闭")?;
                 }
                 let writer = self
-                    .server
-                    .create_tts_stream(content_type)
+                    .resources
+                    .tts
+                    .create(content_type)
                     .await
                     .map_err(|error| error.to_string())?;
                 assets.push(writer.id.clone());
                 let (boundaries, progress) = watch::channel(vec![]);
                 let (played, completion) = oneshot::channel();
                 let source = TtsAudio {
-                    src: writer.url.clone(),
+                    src: format!("{}tts/{}", self.resources.base_url(), writer.id),
                     boundaries: progress,
                     played,
                 };

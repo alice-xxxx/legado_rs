@@ -70,8 +70,11 @@ impl ApplicationService {
         let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
         let cancellation = tokio_util::sync::CancellationToken::new();
         let _cancel_on_drop = cancellation.clone().drop_guard();
-        self.store.database().record_search(keyword.to_owned(), now_ms())
-            .map_err(|e| e.to_string())?.await.map_err(|e| e.to_string())?;
+        self.database
+            .record_search(keyword.to_owned(), now_ms())
+            .map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?;
         self.searches
             .lock()
             .await

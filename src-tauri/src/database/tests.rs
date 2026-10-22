@@ -253,31 +253,38 @@ fn tts_keeps_relational_headers_and_login_choices() {
 async fn restore_replaces_snapshot_and_next_write_reconnects() {
     let root = tempfile::tempdir().unwrap();
     let archive = tempfile::tempdir().unwrap();
-    let store = crate::resources::ResourceStore::open(root.path()).unwrap();
-    store
-        .database()
+    let database = super::Database::new(root.path()).unwrap();
+    let resources = crate::resources::Resources::open(root.path(), database.clone())
+        .await
+        .unwrap();
+    resources
+        .settings
+        .save(&serde_json::to_value(crate::models::SettingsDocument::default()).unwrap())
+        .await
+        .unwrap();
+    database
         .import_book(fixture("original"))
         .unwrap()
         .await
         .unwrap();
     let path = archive.path().join("backup.zip");
-    crate::backup::create_backup(&store, &path).await.unwrap();
-    store
-        .database()
+    crate::backup::create_backup(root.path(), &database, &path)
+        .await
+        .unwrap();
+    database
         .import_book(fixture("later"))
         .unwrap()
         .await
         .unwrap();
-    crate::backup::restore::restore_backup(&store, &path)
+    crate::backup::restore::restore_backup(&database, &path)
         .await
         .unwrap();
-    assert!(store.database().book("original").unwrap().is_some());
-    assert!(store.database().book("later").unwrap().is_none());
-    store
-        .database()
+    assert!(database.book("original").unwrap().is_some());
+    assert!(database.book("later").unwrap().is_none());
+    database
         .import_book(fixture("after-restore"))
         .unwrap()
         .await
         .unwrap();
-    assert!(store.database().book("after-restore").unwrap().is_some());
+    assert!(database.book("after-restore").unwrap().is_some());
 }

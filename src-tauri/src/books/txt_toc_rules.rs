@@ -6,7 +6,7 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::resources::ResourceStore;
+use crate::database::Database;
 
 pub const SCHEMA_VERSION: u32 = 1;
 
@@ -63,18 +63,26 @@ pub struct TocHeading {
 }
 
 /// 导入器直接读取数据库中的目录规则。
-pub async fn read_document(store: &ResourceStore) -> Result<TxtTocRulesDocument, String> {
-    store.database().txt_toc_rules().map_err(|e|e.to_string())
+pub(crate) async fn read_document(database: &Database) -> Result<TxtTocRulesDocument, String> {
+    database.txt_toc_rules().map_err(|e| e.to_string())
 }
 
 /// Replace the full JSON document with an atomically validated snapshot.
-pub async fn replace_document(
-    store: &ResourceStore,
+pub(crate) async fn replace_document(
+    database: &Database,
     document: &TxtTocRulesDocument,
 ) -> Result<(), String> {
     validate_document(document)?;
-    let operations=serde_json::from_value(serde_json::json!([{"operation":"saveTxtTocRules","rules":document.rules}])).map_err(|e|format!("{e}"))?;
-    store.database().submit(operations).map_err(|e|e.to_string())?.await.map(|_|()).map_err(|e|e.to_string())
+    let operations = serde_json::from_value(
+        serde_json::json!([{"operation":"saveTxtTocRules","rules":document.rules}]),
+    )
+    .map_err(|e| format!("{e}"))?;
+    database
+        .submit(operations)
+        .map_err(|e| e.to_string())?
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 struct ImportedTxtTocRule {
@@ -217,13 +225,22 @@ pub fn parse_import(source_json: &str) -> Result<TxtTocRulesDocument, String> {
             .cmp(&right.priority)
             .then_with(|| left.original_index.cmp(&right.original_index))
     });
-    let rules = imported.into_iter().enumerate().map(|(index, imported)| TxtTocRule {
-        id: format!("txt-toc-{}", uuid::Uuid::new_v4().simple()),
-        name: imported.name, rule: imported.rule,
-        example: imported.example.filter(|example| !example.is_empty()),
-        serial_number: index as i32, enable: imported.enable,
-    }).collect();
-    let document = TxtTocRulesDocument { schema_version: SCHEMA_VERSION, rules };
+    let rules = imported
+        .into_iter()
+        .enumerate()
+        .map(|(index, imported)| TxtTocRule {
+            id: format!("txt-toc-{}", uuid::Uuid::new_v4().simple()),
+            name: imported.name,
+            rule: imported.rule,
+            example: imported.example.filter(|example| !example.is_empty()),
+            serial_number: index as i32,
+            enable: imported.enable,
+        })
+        .collect();
+    let document = TxtTocRulesDocument {
+        schema_version: SCHEMA_VERSION,
+        rules,
+    };
     validate_document(&document)?;
     Ok(document)
 }

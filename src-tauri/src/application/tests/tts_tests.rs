@@ -57,7 +57,7 @@ async fn audio_plays_before_later_text_finishes_and_formats_keep_their_own_strea
     )
     .unwrap()
     .remove(0);
-    let config=config["config"].clone();
+    let config = config["config"].clone();
     let (output, mut sources) = mpsc::channel(1);
     let (input, mut texts) = mpsc::channel(1);
     let generating = {
@@ -144,7 +144,7 @@ async fn audio_plays_before_later_text_finishes_and_formats_keep_their_own_strea
     result.unwrap();
     assert_eq!(assets.len(), 2);
     for id in assets {
-        service.server.release_tts_stream(&id).await;
+        service.resources.tts.release(&id);
     }
 }
 

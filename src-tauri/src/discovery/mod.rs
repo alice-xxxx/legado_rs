@@ -167,10 +167,16 @@ pub(crate) async fn publish_categories(
     private_categories: Vec<PrivateCategory>,
 ) -> Result<Value, String> {
     validate_source_id(source_id)?;
-    let category_count = categories.iter().filter(|c| c.category_id.is_some()).count();
-    service.resource_store().database().save_discovery_categories(
-        source_id.to_owned(), categories, private_categories,
-    ).map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
+    let category_count = categories
+        .iter()
+        .filter(|c| c.category_id.is_some())
+        .count();
+    service
+        .database
+        .save_discovery_categories(source_id.to_owned(), categories, private_categories)
+        .map_err(|e| e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(json!({
         "sourceId": source_id,
         "categoryCount": category_count,
@@ -184,11 +190,13 @@ pub(crate) async fn private_category(
 ) -> Result<PrivateCategory, String> {
     validate_source_id(source_id)?;
     validate_category_id(category_id)?;
-    let database = service.resource_store().database().clone();
+    let database = service.database.clone();
     let source = source_id.to_owned();
     let category = category_id.to_owned();
     tokio::task::spawn_blocking(move || database.discovery_category(&source, &category))
-        .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?
         .ok_or_else(|| "Unknown or expired discovery category ID".to_owned())
 }
 
@@ -312,10 +320,25 @@ pub(crate) fn validate_category_id(category_id: &str) -> Result<(), String> {
 /// scalars cross into the public resource. Do not copy future/raw fields from
 /// an engine object into a browser resource by default.
 fn project_category_style(value: &Value) -> Option<crate::database::CategoryStyle> {
-    let cols=value.get("cols").and_then(Value::as_i64).filter(|value|(1..=4).contains(value));
-    let rows=value.get("rows").and_then(Value::as_i64).filter(|value|(1..=12).contains(value));
-    let width=value.get("layout_flexBasisPercent").and_then(Value::as_f64).filter(|value|value.is_finite() && (0.0..=100.0).contains(value));
-    (cols.is_some() || rows.is_some() || width.is_some()).then_some(crate::database::CategoryStyle {cols,rows,layout_flex_basis_percent:width})
+    let cols = value
+        .get("cols")
+        .and_then(Value::as_i64)
+        .filter(|value| (1..=4).contains(value));
+    let rows = value
+        .get("rows")
+        .and_then(Value::as_i64)
+        .filter(|value| (1..=12).contains(value));
+    let width = value
+        .get("layout_flexBasisPercent")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && (0.0..=100.0).contains(value));
+    (cols.is_some() || rows.is_some() || width.is_some()).then_some(
+        crate::database::CategoryStyle {
+            cols,
+            rows,
+            layout_flex_basis_percent: width,
+        },
+    )
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]

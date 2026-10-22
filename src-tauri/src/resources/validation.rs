@@ -1,227 +1,106 @@
-//! 校验稳定资源路径、标识符和本地文件访问。
-
+//! 路径边界和媒体类型，文件操作共用。
+use super::ResourceError;
 use std::path::{Component, Path};
 
-use super::ResourceError;
-
-pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
-    if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('%') {
-        return Err(ResourceError::new("Invalid resource path"));
-    }
-    let path_components: Vec<&str> = path.split('/').collect();
-    if path_components
-        .iter()
-        .any(|component| component.is_empty() || *component == "." || *component == "..")
-    {
-        return Err(ResourceError::new("Invalid resource path component"));
-    }
-    let path_obj = Path::new(path);
-    if path_obj
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(ResourceError::new("Resource path must be relative"));
-    }
-
-    let valid = match path_components.as_slice() {
-        ["settings.json"] => true,
-        ["dictionary", name] => filename_id(name, ".html").is_some(),
-        ["media", id] => valid_id(id),
-        ["cache", kind, id, name] if super::CONTENT_TYPES.contains(kind) => {
-            valid_id(id) && valid_asset_id(name)
-        }
-        _ => false,
-    };
-    if valid {
-        Ok(())
-    } else {
-        Err(ResourceError::new(
-            "Resource path is outside the public resource set",
-        ))
-    }
-}
-
-fn filename_id<'a>(filename: &'a str, extension: &str) -> Option<&'a str> {
-    let id = filename.strip_suffix(extension)?;
-    valid_id(id).then_some(id)
-}
-
-pub(super) fn valid_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && id != "."
-        && id != ".."
-        && !id.chars().any(|ch| {
-            ch.is_control() || matches!(ch, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|')
-        })
-}
-
 pub(crate) fn validate_id(id: &str) -> Result<(), ResourceError> {
-    if valid_id(id) {
-        Ok(())
-    } else {
-        Err(ResourceError::new("Invalid resource identifier"))
+    if id.is_empty()
+        || id.len() > 255
+        || id == "."
+        || id == ".."
+        || id
+            .chars()
+            .any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
+    {
+        return Err(ResourceError::new("无效资源标识"));
+    }
+    Ok(())
+}
+pub(crate) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
+    let parts: Vec<_> = path.split('/').collect();
+    for part in &parts {
+        validate_id(part)?;
+    }
+    match parts.as_slice() {
+        ["settings.json"] | ["proxy", _] => Ok(()),
+        ["cache", kind, _, _] if super::CONTENT_TYPES.contains(kind) => Ok(()),
+        _ => Err(ResourceError::new("资源不属于公开分发范围")),
     }
 }
-
-pub(crate) fn validate_asset_id(id: &str) -> Result<(), ResourceError> {
-    if valid_asset_id(id) {
-        Ok(())
-    } else {
-        Err(ResourceError::new("Invalid or unsupported asset filename"))
+pub(crate) fn check_path_no_symlink(
+    root: &Path,
+    path: &Path,
+    missing: bool,
+) -> Result<(), ResourceError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ResourceError::new("路径超出根目录"))?;
+    let mut current = root.to_owned();
+    for part in relative.components() {
+        let Component::Normal(part) = part else {
+            return Err(ResourceError::new("路径包含非法分段"));
+        };
+        if part.to_string_lossy().contains(':') {
+            return Err(ResourceError::new("路径含设备或数据流名称"));
+        }
+        current.push(part);
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(ResourceError::new("不允许符号链接"))
+            }
+            Ok(_) => {}
+            Err(error) if missing && error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(error.into()),
+        }
     }
+    Ok(())
 }
-
-fn valid_asset_id(id: &str) -> bool {
-    let extension = id.rsplit_once('.').map(|(_, extension)| extension);
-    valid_id(id)
-        && extension.is_some_and(|extension| {
-            matches!(
-                extension.to_ascii_lowercase().as_str(),
-                "css"
-                    | "flac"
-                    | "txt"
-                    | "html"
-                    | "epub"
-                    | "cbz"
-                    | "m3u8"
-                    | "ts"
-                    | "key"
-                    | "vtt"
-                    | "srt"
-                    | "bmp"
-                    | "png"
-                    | "jpg"
-                    | "jpeg"
-                    | "svg"
-                    | "webp"
-                    | "gif"
-                    | "woff"
-                    | "woff2"
-                    | "ttf"
-                    | "otf"
-                    | "mp3"
-                    | "m4a"
-                    | "aac"
-                    | "wav"
-                    | "ogg"
-                    | "opus"
-                    | "mp4"
-                    | "pdf"
-                    | "webm"
-            )
-        })
-}
-
 pub(crate) fn mime_type(path: &str) -> &'static str {
     let path = path.split(['?', '#']).next().unwrap_or(path);
     match Path::new(path)
         .extension()
-        .and_then(|extension| extension.to_str())
+        .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase()
         .as_str()
     {
         "html" | "xhtml" => "text/html; charset=utf-8",
         "txt" => "text/plain; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
         "m3u8" => "application/vnd.apple.mpegurl",
         "ts" => "video/mp2t",
-        "css" => "text/css; charset=utf-8",
-        "bmp" => "image/bmp",
-        "png" => "image/png",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
         "jpg" | "jpeg" => "image/jpeg",
-        "svg" => "image/svg+xml",
-        "webp" => "image/webp",
+        "png" => "image/png",
         "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "svg" => "image/svg+xml",
+        "mp3" => "audio/mpeg",
+        "aac" => "audio/aac",
+        "m4a" => "audio/mp4",
+        "ogg" => "audio/ogg",
+        "opus" => "audio/opus",
+        "wav" => "audio/wav",
+        "flac" => "audio/flac",
         "woff" => "font/woff",
         "woff2" => "font/woff2",
         "ttf" => "font/ttf",
         "otf" => "font/otf",
-        "mp3" => "audio/mpeg",
-        "m4a" => "audio/mp4",
-        "aac" => "audio/aac",
-        "wav" => "audio/wav",
-        "ogg" | "opus" => "audio/ogg",
-        "flac" => "audio/flac",
-        "mp4" => "video/mp4",
         "pdf" => "application/pdf",
-        "webm" => "video/webm",
         _ => "application/octet-stream",
     }
 }
-
-pub(crate) fn check_path_no_symlink(
-    root: &Path,
-    path: &Path,
-    allow_missing_tail: bool,
-) -> Result<(), ResourceError> {
-    if !path.starts_with(root) {
-        return Err(ResourceError::new("Resource path escaped its storage root"));
-    }
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| ResourceError::new("Resource path escaped its storage root"))?;
-    let mut current = root.to_path_buf();
-    let components: Vec<_> = relative.components().collect();
-    if components
-        .iter()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(ResourceError::new(
-            "Resource path contains an invalid component",
-        ));
-    }
-    for (index, component) in components.iter().enumerate() {
-        let Component::Normal(component) = component else {
-            return Err(ResourceError::new(
-                "Resource path contains an invalid component",
-            ));
-        };
-        current.push(component);
-        match std::fs::symlink_metadata(&current) {
-            Ok(metadata) if metadata.file_type().is_symlink() => {
-                return Err(ResourceError::new(
-                    "Symbolic links are not served as resources",
-                ));
-            }
-            Ok(_) => {}
-            Err(error)
-                if error.kind() == std::io::ErrorKind::NotFound
-                    && allow_missing_tail
-                    && components[index..].iter().all(|_| true) =>
-            {
-                // Once a parent is missing, subsequent paths cannot already be
-                // symlinks. The atomic writer creates these directories below.
-                break;
-            }
-            Err(error) => {
-                return Err(ResourceError::new(format!(
-                    "Cannot inspect resource path: {error}"
-                )));
-            }
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn percent_encode_path(path: &str) -> String {
-    let mut encoded = String::with_capacity(path.len());
+    let mut encoded = String::new();
     for byte in path.bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'/') {
-            encoded.push(char::from(byte));
+        if byte.is_ascii_alphanumeric() || b"-_.~/".contains(&byte) {
+            encoded.push(byte as char);
         } else {
-            encoded.push('%');
-            encoded.push(char::from(hex_digit(byte >> 4)));
-            encoded.push(char::from(hex_digit(byte & 0x0f)));
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded
-}
-
-fn hex_digit(value: u8) -> u8 {
-    match value {
-        0..=9 => b'0' + value,
-        10..=15 => b'A' + value - 10,
-        _ => unreachable!("a hexadecimal nibble is at most 15"),
-    }
 }

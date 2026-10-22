@@ -27,12 +27,22 @@ impl ApplicationService {
         );
         report("read", 0, 0);
         let result = async {
-            let book_id =
-                crate::local_books::import_local_book(&self.store, file, name, &options, report)
-                    .await?;
-            let database = self.store.database().clone();
+            let book_id = crate::local_books::import_local_book(
+                &self.database,
+                &self.resources,
+                file,
+                name,
+                &options,
+                report,
+            )
+            .await?;
+            let database = self.database.clone();
             let id = book_id.clone();
-            database.shelve_import(id).map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
+            database
+                .shelve_import(id)
+                .map_err(|e| e.to_string())?
+                .await
+                .map_err(|e| e.to_string())?;
             Ok::<_, String>(book_id)
         }
         .await;

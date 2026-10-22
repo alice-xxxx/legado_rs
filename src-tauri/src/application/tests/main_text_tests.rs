@@ -56,6 +56,49 @@ impl Drop for Origin {
         self.server.abort();
     }
 }
+
+#[tokio::test]
+async fn proxy_registration_survives_restart_and_archive_restore() {
+    let origin = origin().await;
+    let (directory, service, engine) = fixture().await;
+    set_media(&service, &engine, 1, format!("{}/audio", origin.url)).await;
+    service.main_text("book", "chapter-0", false).await.unwrap();
+    let saved = book(&service).await;
+    let reference = ResourceRef::new(saved["chapters"][0]["url"].as_str().unwrap()).unwrap();
+    let archive = tempfile::tempdir().unwrap();
+    let backup = archive.path().join("resources.zip");
+    service.create_backup(&backup).await.unwrap();
+    drop(service);
+    let reopened = ApplicationService::open_with_executor(directory.path(), engine)
+        .await
+        .unwrap();
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    assert!(client
+        .get(reopened.resources.url_for(&reference))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+    reopened.resources.proxy.clear();
+    assert_eq!(
+        client
+            .get(reopened.resources.url_for(&reference))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        reqwest::StatusCode::NOT_FOUND
+    );
+    reopened.restore_backup(&backup).await.unwrap();
+    assert!(client
+        .get(reopened.resources.url_for(&reference))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .is_success());
+}
 async fn origin() -> Origin {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
@@ -100,15 +143,17 @@ async fn set_media(service: &ApplicationService, engine: &Engine, source_type: u
     source.source["bookSourceType"] = json!(source_type);
     service.sources.replace(&[source]).await.unwrap();
     service
-        .store
+        .database
         .bind_book_type(
-            "book",
+            "book".to_owned(),
             match source_type {
                 1 => "audio",
                 2 => "image",
                 _ => "video",
-            },
+            }
+            .to_owned(),
         )
+        .unwrap()
         .await
         .unwrap();
     engine.content.set(url).unwrap();
@@ -140,9 +185,7 @@ async fn cache_flag_downloads_complete_images_and_audio_with_private_headers() {
         let address = if source_type == 2 {
             saved["chapters"][0]["pages"][0]["url"].as_str().unwrap()
         } else {
-            saved["chapters"][0]["url"]
-                .as_str()
-                .unwrap()
+            saved["chapters"][0]["url"].as_str().unwrap()
         };
         let reference = ResourceRef::new(address).unwrap();
         assert!(reference.path().starts_with("cache/"));
@@ -162,12 +205,7 @@ async fn cache_flag_downloads_hls_playlists_and_all_dependencies() {
     set_media(&service, &engine, 4, format!("{}/master.m3u8", origin.url)).await;
     service.main_text("book", "chapter-0", true).await.unwrap();
     let saved = book(&service).await;
-    let reference = ResourceRef::new(
-        saved["chapters"][0]["url"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
+    let reference = ResourceRef::new(saved["chapters"][0]["url"].as_str().unwrap()).unwrap();
     let path = service.root.join(reference.path());
     let master = std::fs::read_to_string(&path).unwrap();
     let media = master
@@ -208,24 +246,19 @@ async fn text_is_always_saved_and_cache_flag_also_saves_embedded_images() {
     service.main_text("book", "chapter-0", false).await.unwrap();
     assert_eq!(origin.calls.load(Ordering::SeqCst), 0);
     let text = book(&service).await;
-    let reference = ResourceRef::new(
-        text["chapters"][0]["url"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
+    let reference = ResourceRef::new(text["chapters"][0]["url"].as_str().unwrap()).unwrap();
     assert!(service.root.join(reference.path()).is_file());
     service.main_text("book", "chapter-0", true).await.unwrap();
     let cached = book(&service).await;
-    let reference = ResourceRef::new(
-        cached["chapters"][0]["url"]
-            .as_str()
-            .unwrap(),
-    )
-    .unwrap();
-    let document = service.store.read_json_ref(&reference).await.unwrap();
+    let reference = ResourceRef::new(cached["chapters"][0]["url"].as_str().unwrap()).unwrap();
+    let document = service
+        .resources
+        .cache
+        .read_content(&reference)
+        .await
+        .unwrap();
     let markup = document["markup"].as_str().unwrap();
-    assert!(!markup.contains("resource://media/"));
+    assert!(!markup.contains("resource://proxy/"));
     assert!(markup.contains("resource://cache/html/book/"));
     assert_eq!(origin.calls.load(Ordering::SeqCst), 1);
 }
@@ -272,24 +305,33 @@ async fn fixture() -> (tempfile::TempDir, ApplicationService, Arc<Engine>) {
         }])
         .await
         .unwrap();
-    service.store.bind_book_type("book", "text").await.unwrap();
-    service.store.database().import_book(serde_json::from_value(json!({"contentType":"text",
-        "id":"book","title":"书籍","sourceId":"source",
-        "engine":{"bookUrl":"https://fixture/book"},
-        "chapters":[
-            {"id":"chapter-0","title":"第一章","engineData":{"url":"https://fixture/0"}},
-            {"id":"chapter-1","title":"第二章","engineData":{"url":"https://fixture/1"}}
-        ]
-    })).unwrap()).unwrap().await.unwrap();
+    service
+        .database
+        .bind_book_type("book".to_owned(), "text".to_owned())
+        .unwrap()
+        .await
+        .unwrap();
+    service
+        .database
+        .import_book(
+            serde_json::from_value(json!({"contentType":"text",
+                "id":"book","title":"书籍","sourceId":"source",
+                "engine":{"bookUrl":"https://fixture/book"},
+                "chapters":[
+                    {"id":"chapter-0","title":"第一章","engineData":{"url":"https://fixture/0"}},
+                    {"id":"chapter-1","title":"第二章","engineData":{"url":"https://fixture/1"}}
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap()
+        .await
+        .unwrap();
     (directory, service, engine)
 }
 
 async fn book(service: &ApplicationService) -> Value {
-    service
-        .store
-        .read_book("book")
-        .await
-        .unwrap()
+    service.read_book("book").await.unwrap()
 }
 
 #[tokio::test]
@@ -300,10 +342,7 @@ async fn same_request_inserts_then_refreshes_and_invalid_body_preserves_cache() 
     engine.revision.store(1, Ordering::SeqCst);
     service.main_text("book", "chapter-0", false).await.unwrap();
     let refreshed = book(&service).await;
-    assert_ne!(
-        first["chapters"][0]["url"],
-        refreshed["chapters"][0]["url"]
-    );
+    assert_ne!(first["chapters"][0]["url"], refreshed["chapters"][0]["url"]);
     engine.revision.store(2, Ordering::SeqCst);
     assert!(service.main_text("book", "chapter-0", false).await.is_err());
     assert_eq!(book(&service).await, refreshed);
@@ -338,10 +377,7 @@ async fn targeted_cancel_preserves_cache_and_other_chapters_continue() {
     engine.slow.store(false, Ordering::SeqCst);
     engine.revision.store(1, Ordering::SeqCst);
     service.main_text("book", "chapter-0", false).await.unwrap();
-    assert_ne!(
-        book(&service).await["chapters"][0]["url"],
-        cached["url"]
-    );
+    assert_ne!(book(&service).await["chapters"][0]["url"], cached["url"]);
 }
 
 #[tokio::test]
@@ -354,7 +390,7 @@ async fn clearing_cache_cancels_the_previous_inflight_body() {
         service.cancel_main_text("book", "chapter-0");
         tokio::time::timeout(
             Duration::from_secs(2),
-            crate::resources::cache::clear_cache(&service.store, "book"),
+            service.resources.clear_cache("book"),
         )
         .await
         .unwrap()

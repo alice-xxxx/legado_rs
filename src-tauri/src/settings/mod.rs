@@ -1,5 +1,6 @@
 //! 设置文件的读取、校验与保存；设置不属于业务数据库。
 
+pub(crate) mod appearance;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) mod import;
 
@@ -31,10 +32,11 @@ impl ApplicationService {
             serde_json::from_value(home_value.clone())
                 .map_err(|error| format!("Invalid settings home: {error}"))?;
         crate::discovery::home_config::validate_home_document(&home)?;
-        let settings_ref = self.store.settings_ref();
+
         let current = self
-            .store
-            .read_json_ref(&settings_ref)
+            .resources
+            .settings
+            .read()
             .await
             .map_err(|error| error.to_string())?;
         if current.get("home") != Some(&home_value) {
@@ -98,16 +100,17 @@ impl ApplicationService {
             reader.remove("httpTtsConfigId");
         }
         if let Some(src) = reader.get("backgroundImageSrc").and_then(Value::as_str) {
-            let raw = if let Some(path) = src.strip_prefix(self.server.base_url()) {
+            let raw = if let Some(path) = src.strip_prefix(self.resources.base_url()) {
                 format!("resource://{path}")
             } else {
                 src.to_owned()
             };
-            let reference = crate::resources::appearance::user_reader_background_reference(&raw)
+            let reference = crate::settings::appearance::user_reader_background_reference(&raw)
                 .ok_or_else(|| "Invalid reader background resource".to_owned())?;
             if !self
-                .store
-                .regular_file_exists(&reference)
+                .resources
+                .cache
+                .contains(&reference)
                 .await
                 .map_err(|error| error.to_string())?
             {
@@ -122,16 +125,18 @@ impl ApplicationService {
         document["schemaVersion"] = json!(CURRENT_SCHEMA_VERSION);
         let _config = self.webdav_backup_config_gate.lock().await;
         let previous_background = self
-            .store
-            .read_json_ref(&settings_ref)
+            .resources
+            .settings
+            .read()
             .await
             .map_err(|e| e.to_string())?["reader"]
             .get("backgroundImageSrc")
             .and_then(Value::as_str)
             .map(str::to_owned);
         let saved = self
-            .store
-            .update_json_ref(&settings_ref, move |current| {
+            .resources
+            .settings
+            .update(move |current| {
                 // This value is maintained by successful picker exports. Never
                 // accept a stale or client-provided copy from reader settings.
                 let last_backup_at_ms = current.get("lastBackupAtMs").cloned();
@@ -145,8 +150,8 @@ impl ApplicationService {
             })
             .await
             .map_err(|error| error.to_string())?;
-        crate::resources::appearance::cleanup_unreferenced_reader_background_asset(
-            &self.store,
+        crate::settings::appearance::cleanup_unreferenced_reader_background_asset(
+            self,
             previous_background,
             background.as_deref(),
         )
@@ -155,14 +160,6 @@ impl ApplicationService {
         Ok(saved)
     }
 }
-pub(crate) fn configured_source_http_timeout_seconds(settings: Option<&Value>) -> u64 {
-    settings
-        .and_then(|settings| settings.get("sourceHttpTimeoutSeconds"))
-        .and_then(Value::as_u64)
-        .filter(|seconds| [15, 30, 60, 120].contains(seconds))
-        .unwrap_or(15)
-}
-
 pub(crate) fn reader_defaults(settings: Option<Value>) -> ReaderDefaults {
     let Some(mut value) = settings else {
         return ReaderDefaults::default();
@@ -242,12 +239,4 @@ pub async fn save_settings(
     let result = json!({ "requestId": request_id, "resource": resource });
     let _ = app.emit("settings-updated", result.clone());
     Ok(result)
-}
-
-/// 设置拥有的资源交给缓存清理保留，不让数据库解释设置文件。
-pub(crate) fn protected_resources(root:&std::path::Path) -> Result<Vec<String>,crate::resources::ResourceError> {
-    let Some(value)=crate::configuration::read(root,"settings.json")? else {return Ok(Vec::new());};
-    let settings:crate::models::SettingsDocument=serde_json::from_value(value)
-        .map_err(|error|crate::resources::ResourceError::new(error.to_string()))?;
-    Ok(settings.reader.background_image_src.into_iter().map(|reference|reference.to_string()).collect())
 }

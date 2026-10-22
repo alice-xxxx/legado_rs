@@ -28,8 +28,7 @@ pub(crate) async fn fe_db(
         None
     };
     let pending = service
-        .resource_store()
-        .database()
+        .database
         .submit(operations)
         .map_err(|error| error.to_string())?;
     let epoch = service

@@ -9,12 +9,11 @@ use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::models::{CURRENT_SCHEMA_VERSION};
-use crate::resources::ResourceStore;
+use crate::models::CURRENT_SCHEMA_VERSION;
 
 use super::{
-    hex_digest, BackupEntry, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION,
-    MANIFEST_PATH, MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
+    hex_digest, BackupEntry, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, MANIFEST_PATH,
+    MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
 };
 
 #[derive(Clone, Debug)]
@@ -26,19 +25,24 @@ pub(super) struct SnapshotFile {
 }
 
 /// 调用方持有应用独占操作门，归档期间资源文件不变。
-pub async fn create_backup(
-    store: &ResourceStore,
+pub(crate) async fn create_backup(
+    root: &Path,
+    database: &crate::database::Database,
     destination: impl AsRef<Path>,
 ) -> Result<(), String> {
-    let database=store.database().clone();
-    let root = store.root().to_path_buf();
+    let database = database.clone();
+    let root = root.to_path_buf();
     let destination = destination.as_ref().to_path_buf();
     tokio::task::spawn_blocking(move || create_backup_sync(&root, &destination, &database))
         .await
         .map_err(|error| format!("Backup worker failed: {error}"))?
 }
 
-fn create_backup_sync(root: &Path, destination: &Path, database:&crate::database::Database) -> Result<(), String> {
+fn create_backup_sync(
+    root: &Path,
+    destination: &Path,
+    database: &crate::database::Database,
+) -> Result<(), String> {
     let root =
         fs::canonicalize(root).map_err(|error| format!("Cannot resolve app data root: {error}"))?;
     let destination_parent = destination
@@ -57,7 +61,10 @@ fn create_backup_sync(root: &Path, destination: &Path, database:&crate::database
 
     let snapshot = tempfile::tempdir().map_err(|e| e.to_string())?;
     let database_file = snapshot.path().join(crate::database::FILE_NAME);
-    database.backup_file(database_file.clone()).and_then(crate::database::Pending::wait).map_err(|e| e.to_string())?;
+    database
+        .backup_file(database_file.clone())
+        .and_then(crate::database::Pending::wait)
+        .map_err(|e| e.to_string())?;
     let files = collect_snapshot_files(&root, &database_file)?;
     if files.len() > MAX_ENTRIES {
         return Err("Application data contains too many files for one backup".to_owned());
@@ -118,10 +125,20 @@ fn create_backup_sync(root: &Path, destination: &Path, database:&crate::database
 
 fn collect_snapshot_files(root: &Path, database_file: &Path) -> Result<Vec<SnapshotFile>, String> {
     let mut files = Vec::new();
-    add_snapshot_file(&mut files, database_file.parent().unwrap(), database_file, crate::database::FILE_NAME.into())?;
-    add_snapshot_file(&mut files, root, &root.join("settings.json"), "settings.json".into())?;
+    add_snapshot_file(
+        &mut files,
+        database_file.parent().unwrap(),
+        database_file,
+        crate::database::FILE_NAME.into(),
+    )?;
+    add_snapshot_file(
+        &mut files,
+        root,
+        &root.join("settings.json"),
+        "settings.json".into(),
+    )?;
     collect_tree(root, &root.join("cache"), "cache", &mut files)?;
-    files.sort_by(|a,b| a.archive_path.cmp(&b.archive_path));
+    files.sort_by(|a, b| a.archive_path.cmp(&b.archive_path));
     Ok(files)
 }
 
@@ -243,4 +260,3 @@ pub(super) fn validate_archive_path(path: &str) -> Result<(), String> {
     }
     Ok(())
 }
-

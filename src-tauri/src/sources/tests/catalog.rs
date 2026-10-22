@@ -33,7 +33,7 @@ async fn source_catalog_reuses_reads_and_refreshes_after_writes_and_restore() {
         "Edited"
     );
     let revision = service.sources.revision(&source.id).await;
-    service.store.database().submit(serde_json::from_value(json!([{"operation":"saveSources","sources":[{"id":source.id,"definition":json!({"bookSourceName":"From frontend","bookSourceUrl":"https://fixture","enabled":false}).to_string()}]}])).unwrap()).unwrap().await.unwrap();
+    service.database.submit(serde_json::from_value(json!([{"operation":"saveSources","sources":[{"id":source.id,"definition":json!({"bookSourceName":"From frontend","bookSourceUrl":"https://fixture","enabled":false}).to_string()}]}])).unwrap()).unwrap().await.unwrap();
     service.sources.invalidate().await;
     let latest = service.sources.get(&source.id).await.unwrap();
     assert_eq!(latest.name, "From frontend");
@@ -57,16 +57,30 @@ impl SourceExecutor for UnusedExecutor {
 
 #[tokio::test]
 async fn source_tables_preserve_rule_fields_and_large_integer_identity() {
-    let directory=tempfile::tempdir().unwrap();
-    let service=ApplicationService::open_with_executor(directory.path(),Arc::new(UnusedExecutor)).await.unwrap();
-    let source=SourceRecord{id:"source-test".into(),name:"Test".into(),group:None,enabled:true,
-        source:json!({"bookSourceName":"Test","bookSourceUrl":"https://example.invalid","ruleSearch":{"bookList":"x".repeat(100000)},"lastUpdateTime":9007199254740993_u64})};
+    let directory = tempfile::tempdir().unwrap();
+    let service =
+        ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
+            .await
+            .unwrap();
+    let source = SourceRecord {
+        id: "source-test".into(),
+        name: "Test".into(),
+        group: None,
+        enabled: true,
+        source: json!({"bookSourceName":"Test","bookSourceUrl":"https://example.invalid","ruleSearch":{"bookList":"x".repeat(100000)},"lastUpdateTime":9007199254740993_u64}),
+    };
     service.sources.replace(&[source.clone()]).await.unwrap();
-    let records=service.store.database().sources().unwrap();
-    assert_eq!(records[0].definition.last_update_time.unwrap() as u64,9007199254740993_u64);
-    assert_eq!(records[0].definition.rule_search.as_ref().unwrap()["bookList"],source.source["ruleSearch"]["bookList"]);
+    let records = service.database.sources().unwrap();
+    assert_eq!(
+        records[0].definition.last_update_time.unwrap() as u64,
+        9007199254740993_u64
+    );
+    assert_eq!(
+        records[0].definition.rule_search.as_ref().unwrap()["bookList"],
+        source.source["ruleSearch"]["bookList"]
+    );
     service.sources.replace(&[]).await.unwrap();
-    assert!(service.store.database().sources().unwrap().is_empty());
+    assert!(service.database.sources().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -76,7 +90,7 @@ async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file()
         ApplicationService::open_with_executor(directory.path(), Arc::new(UnusedExecutor))
             .await
             .unwrap();
-    service.bootstrap().await.unwrap();
+    service.resources.bootstrap().await.unwrap();
     let source = SourceRecord {
         id: "source-test".into(),
         name: "Original".into(),
@@ -95,7 +109,7 @@ async fn revisions_reject_reverted_edits_and_restores_without_a_persisted_file()
 
     let backup_directory = tempfile::tempdir().unwrap();
     let archive = backup_directory.path().join("backup.zip");
-    crate::backup::create_backup(&service.store, &archive)
+    crate::backup::create_backup(&service.root, &service.database, &archive)
         .await
         .unwrap();
     let mut edited = source.clone();
@@ -134,19 +148,32 @@ impl SourceCatalog {
         if previous.as_slice() == sources {
             return Ok(false);
         }
-        let mut inputs = sources.iter().map(|record| {
-            let mut definition = record.source.clone();
-            definition["bookSourceName"] = json!(record.name);
-            definition["bookSourceGroup"] = json!(record.group);
-            definition["enabled"] = json!(record.enabled);
-            json!({"id":record.id,"definition":definition.to_string(),"removed":false})
-        }).collect::<Vec<_>>();
-        inputs.extend(previous.iter().filter(|old| !sources.iter().any(|s| s.id == old.id))
-            .map(|old| json!({"id":old.id,"removed":true})));
-        self.database.submit(serde_json::from_value(json!([
-            {"operation":"saveSources","sources":inputs}
-        ])).map_err(|e|e.to_string())?).map_err(|e|e.to_string())?
-            .await.map_err(|e|e.to_string())?;
+        let mut inputs = sources
+            .iter()
+            .map(|record| {
+                let mut definition = record.source.clone();
+                definition["bookSourceName"] = json!(record.name);
+                definition["bookSourceGroup"] = json!(record.group);
+                definition["enabled"] = json!(record.enabled);
+                json!({"id":record.id,"definition":definition.to_string(),"removed":false})
+            })
+            .collect::<Vec<_>>();
+        inputs.extend(
+            previous
+                .iter()
+                .filter(|old| !sources.iter().any(|s| s.id == old.id))
+                .map(|old| json!({"id":old.id,"removed":true})),
+        );
+        self.database
+            .submit(
+                serde_json::from_value(json!([
+                    {"operation":"saveSources","sources":inputs}
+                ]))
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+            .await
+            .map_err(|e| e.to_string())?;
         self.invalidate().await;
         Ok(true)
     }

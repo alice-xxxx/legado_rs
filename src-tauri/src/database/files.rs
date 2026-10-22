@@ -177,13 +177,13 @@ impl Database {
     pub(crate) fn restore_archive(
         &self,
         path: PathBuf,
-    ) -> std::result::Result<(), crate::resource_transactions::TransactionError> {
+    ) -> std::result::Result<(), crate::backup::state::TransactionError> {
         let root = self.root.clone();
         db::write(self, WriteMode::Closed, move |_| {
             Ok(crate::backup::restore::restore_backup_sync(&root, &path))
         })
         .and_then(Pending::wait)
-        .map_err(|error| crate::resource_transactions::TransactionError::new(error.to_string()))?
+        .map_err(|error| crate::backup::state::TransactionError::new(error.to_string()))?
     }
 }
 
