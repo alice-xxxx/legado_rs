@@ -8,7 +8,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{application::SourceRecord, resources::ResourceRef};
+use crate::{source_catalog::SourceRecord, resources::ResourceRef};
 
 const MAX_TITLE_CHARS: usize = 512;
 const MAX_AUTHOR_CHARS: usize = 512;
@@ -25,7 +25,8 @@ const MAX_SOURCE_GROUP_CHARS: usize = 512;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ProcessedBookMetadata {
-    pub(crate) title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) author: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -55,8 +56,7 @@ pub(crate) fn project_book_metadata(
     source: &SourceRecord,
 ) -> ProcessedBookMetadata {
     ProcessedBookMetadata {
-        title: text_at(engine_book, &["name", "title"], MAX_TITLE_CHARS, true)
-            .unwrap_or_else(|| "Untitled".to_owned()),
+        title: text_at(engine_book, &["name", "title"], MAX_TITLE_CHARS, true),
         author: text_at(engine_book, &["author"], MAX_AUTHOR_CHARS, true),
         cover_src: text_at(
             engine_book,
@@ -73,7 +73,7 @@ pub(crate) fn project_book_metadata(
         ),
         kind: kind_at(engine_book),
         content_type: source.source.is_object()
-            .then(|| crate::source_metadata::content_type(&source.source).to_owned()),
+            .then(|| crate::source_catalog::content_type(&source.source).to_owned()),
         word_count: word_count_at(engine_book),
         latest_chapter: text_at(
             engine_book,

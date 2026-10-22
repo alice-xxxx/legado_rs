@@ -104,22 +104,17 @@ export type SourceLoginContract = UnwrapNestedRefs<
   Pick<
     ReturnType<typeof useSourceLoginActions>,
     | "openSelectedSourceLogin"
-    | "loadSelectedSourceLoginForm"
+    | "runLogin"
     | "executeSelectedSourceLogin"
-    | "refreshSelectedSourceLogin"
     | "clearSelectedSourceLogin"
-    | "startSelectedSourceWebLogin"
-    | "finishSelectedSourceWebLogin"
-    | "cancelSelectedSourceWebLogin"
     | "closeSourceLogin"
   >
   & {
     sourceLoginTarget: Ref<SourceMetadata | null>;
     sourceLoginBusy: Ref<boolean>;
     sourceHasLoginState: Ref<boolean | null>;
-    sourceLoginError: Ref<string>;
     sourceLoginForm: Ref<SourceLoginForm | null>;
-    sourceLoginWebSessionId: Ref<string>;
+    sourceLoginWebOpen: Ref<boolean>;
     sourceLoginCredentials: Ref<Record<string, string>>;
     sourceLoginFormError: Ref<string>;
     sourceLoginFeedback: Ref<string>;

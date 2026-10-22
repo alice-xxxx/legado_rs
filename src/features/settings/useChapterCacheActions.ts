@@ -204,20 +204,10 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
             break;
           }
           const warning = response.warning?.trim() ?? "";
-          if (response.commitState === "committed") {
-            clearedBooks += 1;
-            clearedChapters += response.clearedCount;
-          } else {
-            failedBooks += 1;
-            const message = response.commitState === "notCommitted" ? response.error?.trim() : "";
-            errors.push({ bookId: book.id, title: book.title, message: message || warning || "章节正文缓存未清除。" });
-          }
-          if (response.commitState === "indeterminate" || response.recoveryRequired) {
-            const title = response.commitState === "indeterminate" ? "章节缓存清除状态未知" : "需要重启应用完成缓存恢复";
-            const detail = response.commitState === "indeterminate"
-              ? `《${book.title}》的章节缓存清除提交状态未知。请重启应用检查书籍状态后再继续。`
-              : `《${book.title}》的章节缓存${response.commitState === "committed" ? "已清除" : "未清除"}，但回滚、清理或恢复尚未完成。请重启应用后再继续。`;
-            lockChapterCacheRecovery(title, `${detail}${warning ? ` ${warning}` : ""}`);
+          clearedBooks += 1;
+          clearedChapters += response.clearedCount;
+          if (warning) {
+            lockChapterCacheRecovery("需要重启应用完成缓存恢复", `《${book.title}》的缓存记录已清除，但文件清理尚未完成：${warning}`);
             stoppedForRecovery = true;
             notStartedBooks += onlineBooks.length - index - 1;
             break;
@@ -274,29 +264,12 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
       }
 
       const warning = response.warning?.trim() ?? "";
-      if (response.commitState === "notCommitted") {
-        if (response.recoveryRequired) {
-          pendingBookClear.value = null;
-          lockChapterCacheRecovery("需要重启应用完成缓存恢复", `《${title}》的章节缓存未清除，但回滚或恢复尚未完成。请重启应用后再继续。${warning ? ` ${warning}` : ""}`);
-          notify("章节缓存未清除；恢复待完成，请重启应用。", "error");
-        } else {
-          bookClearError.value = `《${title}》的章节缓存未清除，可以重试。${response.error || warning || "操作未提交，原缓存仍保留。"}`;
-          notify(bookClearError.value, "error");
-        }
-        return;
-      }
-      if (response.commitState === "indeterminate") {
-        pendingBookClear.value = null;
-        lockChapterCacheRecovery("章节缓存清除状态未知", `《${title}》的章节缓存清除提交状态未知。请重启应用检查书籍状态后再继续。${warning ? ` ${warning}` : ""}`);
-        notify("章节缓存清除状态未知，已暂停书架修改；请重启应用检查。", "error");
-        return;
-      }
-      if (response.recoveryRequired || recoveryRequired.value) {
+      if (warning || recoveryRequired.value) {
         pendingBookClear.value = null;
         if (openedBook.value?.id === bookId) {
           replaceOpenedBook(withoutChapterResources(openedBook.value));
         }
-        if (response.recoveryRequired) lockChapterCacheRecovery("需要重启应用完成缓存恢复", `《${title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
+        if (warning) lockChapterCacheRecovery("需要重启应用完成缓存恢复", `《${title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
         notify(`《${title}》的缓存清理已提交，但当前需要完成恢复；未刷新书籍资源，请重启应用。${warning ? ` ${warning}` : ""}`, "error");
         return;
       }
@@ -304,7 +277,7 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
       pendingBookClear.value = null;
       let bookReadError = "";
       try {
-        await refreshOpenedBook(response.book);
+        await refreshOpenedBook(bookId);
         if (!isCurrent()) return;
       } catch (error) {
         if (!isCurrent()) return;
@@ -317,7 +290,7 @@ export function useChapterCacheActions(options: ChapterCacheActionOptions) {
         const summary = response.clearedCount > 0 ? `已清除 ${response.clearedCount} 章正文缓存，可以重新下载。` : "没有发现已缓存的章节正文。";
         notify(`《${title}》${summary}进度、目录、封面和书签已保留。${warning ? ` ${warning}` : ""}`);
       }
-      if (!response.recoveryRequired && !recoveryRequired.value) await refreshChapterCacheUsage();
+      if (!warning && !recoveryRequired.value) await refreshChapterCacheUsage();
     } catch (error) {
       if (isCurrent()) {
         bookClearError.value = errorText(error);

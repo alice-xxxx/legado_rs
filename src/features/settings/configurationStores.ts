@@ -1,21 +1,21 @@
 import type { TxtTocRulesDocument } from "../../api/settings";
 import { computed, nextTick, ref, type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { modifyDatabase, type DatabaseChange } from "../../api/feDb";
+import { modifyDatabase, type DatabaseOperation } from "../../api/feDb";
 import { readConfiguration } from "../../api/database";
 import type { AppBootstrap, DisplayReplacementRule, HttpTtsConfigResource } from "../../api/types";
 
 type ConfigurationKind = "replacementRules" | "txtTocRules" | "httpTtsConfigs";
-const tables = { replacementRules: "replacement_rules", txtTocRules: "txt_toc_rules", httpTtsConfigs: "http_tts_configs" };
-
-function ruleChange(kind: ConfigurationKind, id: string, rule: unknown, position: number): DatabaseChange {
-  const table = tables[kind];
-  if (!rule) return { action: "delete", table, filter: { id } };
-  const value = rule as Record<string, unknown>;
-  const values = kind === "httpTtsConfigs" ? { id, position, name: value.name, enabled: value.enabled, definition_json: value.config } :
-    kind === "txtTocRules" ? { id, position, name: value.name, rule: value.rule, example: value.example ?? null, serial_number: value.serialNumber ?? null, enabled: value.enable } :
-    { id, position, name: value.name, pattern: value.pattern, replacement: value.replacement, enabled: value.enabled, is_regex: value.isRegex, scope: value.scope };
-  return { action: "upsert", table, keys: ["id"], values };
+function ruleChange(kind: ConfigurationKind, id: string, rule: unknown): DatabaseOperation {
+  if (kind === "replacementRules") return rule
+    ? { operation: "saveReplacementRules", rules: [rule as DisplayReplacementRule] }
+    : { operation: "deleteReplacementRule", id };
+  if (kind === "txtTocRules") return rule
+    ? { operation: "saveTxtTocRules", rules: [rule as TxtTocRulesDocument["rules"][number]] }
+    : { operation: "deleteTxtTocRule", id };
+  if (!rule) return { operation: "deleteHttpTts", id };
+  const config = rule as HttpTtsConfigResource["configs"][number];
+  return { operation: "saveHttpTts", configs: [{ id, name: config.name, enabled: config.enabled, definition: JSON.stringify(config.config) }] };
 }
 
 // Mutations name the changed entry; reading or applying a response never writes it back.
@@ -32,8 +32,12 @@ function configurationStore<T, R extends { id: string }>(kind: ConfigurationKind
       const changes = [...pending];
       pending.clear();
       for (const [ruleId, { id, rule }] of changes) {
-        void modifyDatabase([ruleChange(kind, ruleId, rule, items.value.findIndex(item => item.id === ruleId))])
-          .then(() => updateRule(ruleId, id)).catch(console.error);
+        void modifyDatabase([ruleChange(kind, ruleId, rule)], {
+          onComplete: result => {
+            if (result.error) { console.error(result.error); return; }
+            void updateRule(ruleId, id).catch(console.error);
+          },
+        }).catch(console.error);
       }
     });
     pending.set(ruleId, { id, rule });

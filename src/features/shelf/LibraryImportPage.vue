@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import { shelfBooks as shelf } from "./shelfBooks";
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -24,8 +24,7 @@ const pageDataError = ref("");
 const localBooks = computed(() => shelf.value.books.filter((book) => book.id.startsWith("local-")).slice(0, 12));
 const recoveryRequired = computed(() => shelfBatchRecoveryRequired.value);
 const actionsBlocked = computed(() => localBookImport.localBookImportBusy.value || pageDataLoading.value || !!pageDataError.value
-  || recoveryRequired.value || localBookImport.pdfPasswordPromptOpen.value
-  || localBookImport.externalFileRequestBusy.value || backupBusy.value !== null);
+  || recoveryRequired.value || backupBusy.value !== null);
 let disposed = false;
 const eventUnlisteners: UnlistenFn[] = [];
 
@@ -65,10 +64,6 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   for (const unlisten of eventUnlisteners.splice(0)) unlisten();
-});
-
-watch(localBookImport.pdfPasswordPromptOpen, (open, wasOpen) => {
-  if (wasOpen && !open) void loadShelf();
 });
 
 async function importFile(format: LocalImportFormat): Promise<void> {

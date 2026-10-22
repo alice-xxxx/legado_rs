@@ -2,10 +2,9 @@ import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { computed, ref, watch, type Ref } from "vue";
 import { isTauri } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
-import { cancelPendingPdfImport, discardExternalFile, importExternalFile, listPendingExternalFiles } from "../../api/books";
-import { type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule, type LocalBookImportResponse, type PendingExternalFile } from "../../api/types";
+import { type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule } from "../../api/types";
 import { prepareDeepLinkImport } from "../../api/settings";
 import { readMoreInformation, readSources, readSourceDefinition } from "../../api/database";
 import { moreInformation } from "../../api/moreInformation";
@@ -25,11 +24,7 @@ interface ExternalImportOptions {
   getRestoreRevision: () => number;
   getReaderSession: () => ReaderSession;
   localBookImportBusy: Ref<boolean>;
-  externalFileRequestBusy: Ref<boolean>;
-  openPdfPasswordPrompt: (importToken: string) => void;
-  acceptLocalBookImport: (response: LocalBookImportResponse) => Promise<void>;
   sourceImportOpen: Readonly<Ref<boolean>>;
-  pdfPasswordPromptOpen: Readonly<Ref<boolean>>;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
 }
@@ -46,18 +41,11 @@ export function useExternalImportActions(options: ExternalImportOptions) {
   const importError = ref("");
   const importTitle = computed(() => `导入${deepLinkLabels[importKind.value ?? activeImportLink.value?.kind ?? "auto"]}`);
   let importGeneration = 0;
-  const pendingExternalFiles = ref<PendingExternalFile[]>([]);
-  const externalFileRequestBusy = options.externalFileRequestBusy;
-  let externalFilesInitialReadPending = false;
-  const initialHandledExternalFiles = new Set<string>();
   let disposed = false;
 
-  const externalFileRequestBlocked = computed(() => externalFileRequestBusy.value || options.localBookImportBusy.value
-    || options.pdfPasswordPromptOpen.value || !options.bootstrapped.value || !!backupBusy.value
-    || shelfBatchRecoveryRequired.value);
   const importLinkBlocked = computed(() => importLinkOpening.value || !options.bootstrapped.value || !!backupBusy.value
     || shelfBatchRecoveryRequired.value || options.sourceImportOpen.value || importDialogOpen.value
-    || pendingExternalFiles.value.length > 0 || options.localBookImportBusy.value || options.pdfPasswordPromptOpen.value
+    || options.localBookImportBusy.value
     || options.getReaderSession().readerBusy.value);
 
   async function closeReaderForImport(restoreRevision: number): Promise<boolean> {
@@ -68,95 +56,6 @@ export function useExternalImportActions(options: ExternalImportOptions) {
       if (reader.readerVisible.value || restoreRevision !== options.getRestoreRevision()) return false;
     }
     return restoreRevision === options.getRestoreRevision() && !reader.readerBusy.value;
-  }
-
-  function receiveExternalFile(file: PendingExternalFile): void {
-    if (disposed || initialHandledExternalFiles.has(file.token)
-      || pendingExternalFiles.value.some((entry) => entry.token === file.token)) return;
-    if (pendingExternalFiles.value.length < 8) pendingExternalFiles.value.push(file);
-  }
-
-  async function setupExternalFiles(): Promise<void> {
-    if (!isTauri()) return;
-    externalFilesInitialReadPending = true;
-    try {
-      const unlisten = await listen<PendingExternalFile>("external-file-opened", (event) => receiveExternalFile(event.payload));
-      if (disposed) {
-        unlisten();
-        return;
-      }
-      options.unlisteners.push(unlisten);
-      const result = await listPendingExternalFiles();
-      if (!disposed) for (const file of result.files) receiveExternalFile(file);
-    } catch (error) {
-      if (!disposed) options.notify(`读取外部文件请求失败：${options.errorText(error)}`, "error");
-    } finally {
-      externalFilesInitialReadPending = false;
-      initialHandledExternalFiles.clear();
-    }
-  }
-
-  function removeExternalFileRequest(token: string): void {
-    pendingExternalFiles.value = pendingExternalFiles.value.filter((file) => file.token !== token);
-    if (externalFilesInitialReadPending) initialHandledExternalFiles.add(token);
-  }
-
-  async function acceptExternalFileRequest(): Promise<void> {
-    const file = pendingExternalFiles.value[0];
-    if (!file || externalFileRequestBlocked.value) return;
-    const restoreRevision = options.getRestoreRevision();
-    externalFileRequestBusy.value = true;
-    try {
-      if (!await closeReaderForImport(restoreRevision)) return;
-      if (restoreRevision !== options.getRestoreRevision() || backupBusy.value || shelfBatchRecoveryRequired.value) return;
-      options.localBookImportBusy.value = true;
-      const response = await importExternalFile(file.token);
-      if (restoreRevision !== options.getRestoreRevision()) {
-        if (response.importToken) void cancelPendingPdfImport(response.importToken).catch(() => {});
-        return;
-      }
-      removeExternalFileRequest(file.token);
-      if (response.passwordRequired) {
-        if (!response.importToken) throw new Error("无法继续打开加密文件，请重新打开文件。");
-        options.openPdfPasswordPrompt(response.importToken);
-        return;
-      }
-      if (!response.cancelled) {
-        await router.push({ name: routeNames.shelf });
-        if (restoreRevision !== options.getRestoreRevision()) return;
-        await options.acceptLocalBookImport(response);
-      }
-    } catch (error) {
-      if (restoreRevision !== options.getRestoreRevision()) return;
-      options.notify(`导入外部文件失败：${options.errorText(error)}`, "error");
-      try {
-        const refreshed = await listPendingExternalFiles();
-        if (!refreshed.files.some((entry) => entry.token === file.token)) removeExternalFileRequest(file.token);
-      } catch {
-        removeExternalFileRequest(file.token);
-        options.notify("文件请求状态无法确认，请从系统重新打开文件。", "error");
-      }
-    } finally {
-      options.localBookImportBusy.value = false;
-      externalFileRequestBusy.value = false;
-    }
-  }
-
-  async function ignoreExternalFileRequest(): Promise<void> {
-    const file = pendingExternalFiles.value[0];
-    if (!file || externalFileRequestBusy.value || shelfBatchRecoveryRequired.value) return;
-    const restoreRevision = options.getRestoreRevision();
-    externalFileRequestBusy.value = true;
-    try {
-      await discardExternalFile(file.token);
-      if (restoreRevision === options.getRestoreRevision()) removeExternalFileRequest(file.token);
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`取消文件请求失败：${options.errorText(error)}`, "error");
-      }
-    } finally {
-      externalFileRequestBusy.value = false;
-    }
   }
 
   function receiveImportLinks(urls: string[]): void {
@@ -335,15 +234,7 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     cancelPendingImport, retryPendingImport, savePendingImport,
     pendingImportLinks,
     importLinkOpening,
-    pendingExternalFiles,
-    externalFileRequestBusy,
-    externalFileRequestBlocked,
     importLinkBlocked,
-    receiveExternalFile,
-    setupExternalFiles,
-    removeExternalFileRequest,
-    acceptExternalFileRequest,
-    ignoreExternalFileRequest,
     receiveImportLinks,
     requestLinkImport,
     setupImportLinks,

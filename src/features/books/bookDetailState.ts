@@ -1,6 +1,8 @@
 import { nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { saveBook } from "../../api/books";
+import { moreInformation } from "../../api/moreInformation";
+import type { LoginUpdate } from "../../api/sources";
 import { applyLibraryProgress, clearLibraryProgress, libraryType, refreshContentLibrary } from "./contentLibraryState";
 import { readBook as queryBook, readBookPreview } from "../../api/database";
 import type { AppBootstrap, BookPreview, BookResource, BookIdentity } from "../../api/types";
@@ -9,7 +11,7 @@ export const openedBook = ref<BookResource | null>(null);
 export const openedBookFromShelf = ref(false);
 export const bookPreviews = ref<Record<string, BookPreview>>({});
 type BookReference = string | BookIdentity;
-type BookUpdatedEvent = { requestId: number; resource: BookIdentity };
+
 let requestId = 0;
 let stopWatch: WatchStopHandle = () => {};
 const previewLoads = new Map<string, Promise<void>>();
@@ -93,14 +95,13 @@ function watchBook(): void {
       },
     }).then(async () => {
       if (id !== requestId) return;
-      await updateBook(bookId, id);
+      await updateBook(bookId);
       if (libraryType(bookId)) await refreshContentLibrary();
     }).catch(console.error);
   }, { deep: true });
 }
 
-async function updateBook(reference: BookReference, eventRequestId = 0): Promise<BookResource | null> {
-  if (eventRequestId !== 0 && eventRequestId !== requestId) return null;
+async function updateBook(reference: BookReference): Promise<BookResource | null> {
   const id = referenceId(reference), token = Symbol();
   const current = bookPreviews.value, currentRequest = requestId;
   updates.set(id, token);
@@ -125,6 +126,12 @@ async function updateBook(reference: BookReference, eventRequestId = 0): Promise
 }
 
 export async function initializeBookStore(): Promise<void> {
+  // 登录规则触发详情刷新时，仍走统一详情入口，再从数据库读取。
+  await listen<LoginUpdate>("login", ({ payload }) => {
+    const book = openedBook.value;
+    if (!payload.refreshTargets?.includes("book") || !book?.bookUrl || book.sourceId !== payload.sourceId) return;
+    void moreInformation(payload.sourceId, book.bookUrl).then(() => updateBook(book.id)).catch(console.error);
+  });
   await listen<{ bookId: string; progress: NonNullable<BookResource["progress"]>; read: number }>("reading-progress-updated", ({ payload }) => {
     const { bookId, progress, read } = payload;
     if ((latestProgress.get(bookId)?.updatedAtMs ?? 0) > (progress.updatedAtMs ?? 0)) return;
@@ -134,15 +141,15 @@ export async function initializeBookStore(): Promise<void> {
     if (preview && (preview.progress?.updatedAtMs ?? 0) <= (progress.updatedAtMs ?? 0)) preview.progress = progress;
     applyLibraryProgress(bookId, progress.updatedAtMs ?? 0, read);
   });
-  await listen<BookUpdatedEvent>("book-updated", ({ payload }) => {
-    const id = referenceId(payload.resource);
+  await listen<BookIdentity>("book-updated", ({ payload }) => {
+    const id = referenceId(payload);
     latestProgress.delete(id);
     clearLibraryProgress(id);
     if (libraryType(id)) void refreshContentLibrary().catch(console.error);
     if (openedBook.value?.id === id || bookPreviews.value[id] || previewLoads.has(id)) {
       void (async () => {
         await previewLoads.get(id);
-        await updateBook(payload.resource, payload.requestId);
+        await updateBook(payload);
       })().catch(console.error);
     }
   });

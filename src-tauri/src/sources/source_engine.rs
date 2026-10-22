@@ -1,9 +1,13 @@
 //! 通过稳定请求结构调用 Kotlin/KMP 书源引擎。
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use std::sync::OnceLock;
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    pin::Pin,
+};
 
 #[cfg(all(
     feature = "desktop",
@@ -35,44 +39,7 @@ pub(crate) fn browser_json(request_json: &str) -> String {
     feature = "desktop",
     not(any(target_os = "android", target_os = "ios"))
 ))]
-pub(crate) fn start_source_login_web(
-    app: &tauri::AppHandle,
-    source_id: &str,
-    session_id: &str,
-    source_revision: u64,
-    restore_epoch: u64,
-    login_url: &str,
-    cookie_header: &str,
-) -> Result<(), String> {
-    desktop_browser::start_web_login(
-        app,
-        source_id,
-        session_id,
-        source_revision,
-        restore_epoch,
-        login_url,
-        cookie_header,
-    )
-}
-
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "android", target_os = "ios"))
-))]
-pub(crate) fn complete_source_login_web(
-    source_id: &str,
-    session_id: &str,
-) -> Result<Value, String> {
-    desktop_browser::complete_web_login(source_id, session_id)
-}
-
-#[cfg(all(
-    feature = "desktop",
-    not(any(target_os = "android", target_os = "ios"))
-))]
-pub(crate) fn cancel_source_login_web(source_id: &str, session_id: &str) -> Result<bool, String> {
-    desktop_browser::cancel_web_login(source_id, session_id)
-}
+pub(crate) use desktop_browser::{cancel_web_login, complete_web_login, start_web_login};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -93,6 +60,7 @@ pub struct SourceEngineRequest {
     pub next_chapter_url: Option<String>,
 }
 
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) fn decode_browser_html(url: &str) -> Result<Option<String>, String> {
     let Some(data) = url.strip_prefix("data:") else {
         return Ok(None);
@@ -126,35 +94,18 @@ pub(crate) fn decode_browser_html(url: &str) -> Result<Option<String>, String> {
     Ok(Some(html))
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct EngineRequestWire<'a> {
-    operation: &'a str,
-    source: &'a Value,
-    keyword: Option<&'a str>,
-    credentials: Option<&'a std::collections::HashMap<String, String>>,
-    action_id: Option<usize>,
-    media_url: Option<&'a str>,
-    media_headers: Option<&'a std::collections::HashMap<String, String>>,
-    page: Option<i32>,
-    book: Option<&'a Value>,
-    chapter: Option<&'a Value>,
-    next_chapter_url: Option<&'a str>,
-}
-
-/// 执行桌面书源操作：Rust 通过 JNI 调用 KMP 解析器，并由 Rust Host 提供 HTTP 与存储。
-pub async fn execute(request: SourceEngineRequest, data_dir: PathBuf) -> Result<Value, String> {
-    execute_with_resource_dir(request, data_dir, None).await
-}
-
 /// Prefer the self-contained runtime from Tauri's resource directory; the Kotlin checkout is a
 /// development fallback only and must never be required by an installed desktop package.
-pub async fn execute_with_resource_dir(
+pub async fn execute_desktop(
     request: SourceEngineRequest,
     data_dir: PathBuf,
     resource_dir: Option<PathBuf>,
 ) -> Result<Value, String> {
-    if request.cancellation.as_ref().is_some_and(|token| token.is_cancelled()) {
+    if request
+        .cancellation
+        .as_ref()
+        .is_some_and(|token| token.is_cancelled())
+    {
         return Err("Source execution cancelled".into());
     }
     let bundled_runtime = resource_dir
@@ -227,20 +178,8 @@ pub async fn execute_with_resource_dir(
         .await
         .map_err(|error| format!("Cannot create source-engine data directory: {error}"))?;
 
-    let request_json = serde_json::to_string(&EngineRequestWire {
-        operation: &request.operation,
-        source: &request.source,
-        keyword: request.keyword.as_deref(),
-        credentials: request.credentials.as_ref(),
-        action_id: request.action_id,
-        media_url: request.media_url.as_deref(),
-        media_headers: request.media_headers.as_ref(),
-        page: request.page,
-        book: request.book.as_ref(),
-        chapter: request.chapter.as_ref(),
-        next_chapter_url: request.next_chapter_url.as_deref(),
-    })
-    .map_err(|error| format!("Cannot serialize source-engine input: {error}"))?;
+    let request_json = serde_json::to_string(&request)
+        .map_err(|error| format!("Cannot serialize source-engine input: {error}"))?;
     let quickjs_for_thread = quickjs_library.clone();
     let cancellation = request.cancellation.clone();
     let result = tokio::task::spawn_blocking(move || {
@@ -255,12 +194,7 @@ pub async fn execute_with_resource_dir(
     })
     .await
     .map_err(|error| format!("Embedded source-engine worker failed: {error}"))??;
-    let result: Value = serde_json::from_str(&result)
-        .map_err(|error| format!("Kotlin source engine returned invalid JSON: {error}"))?;
-    if let Some(error) = result.get("__sourceEngineError").and_then(Value::as_str) {
-        return Err(format!("Kotlin source engine failed:\n{error}"));
-    }
-    Ok(result)
+    decode_result(&result)
 }
 
 /// The staged classpath is the development runtime's build stamp. Rebuild it
@@ -523,4 +457,139 @@ fn prepare_source_engine(module_dir: &Path) -> Result<(), String> {
             .rev()
             .collect::<String>(),
     ))
+}
+
+impl SourceEngineRequest {
+    /// 公共请求默认值集中维护，调用方只填写本次操作的参数。
+    pub fn new(operation: &str, source: &Value) -> Self {
+        Self {
+            operation: operation.into(),
+            source: source.clone(),
+            cancellation: None,
+            keyword: None,
+            credentials: None,
+            action_id: None,
+            media_url: None,
+            media_headers: None,
+            page: None,
+            book: None,
+            chapter: None,
+            next_chapter_url: None,
+        }
+    }
+
+    /// 书籍类型由当前源决定；保留本地标记，避免换源时带入旧类型。
+    pub fn with_book(mut self, mut book: Value) -> Self {
+        if book.is_object() {
+            let flags =
+                book["type"].as_u64().unwrap_or_default() & !(8 | 32 | 64 | 128 | 2048 | 4096);
+            // KMP 的 Book.type 是位标记，与书源的单值类型不同。
+            let kind = match self.source["bookSourceType"].as_u64() {
+                Some(1) => 32,
+                Some(2) => 64,
+                Some(3) => 8 | 128,
+                Some(4) => 2048,
+                Some(5) => 4096,
+                _ if crate::rss::is_rss_source(&self.source) => 4096,
+                _ => 8,
+            };
+            book["type"] = serde_json::json!(flags | kind);
+        }
+        self.book = Some(book);
+        self
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+pub struct TauriSourceExecutor {
+    _app: tauri::AppHandle,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    data_dir: PathBuf,
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    resource_dir: Option<PathBuf>,
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl TauriSourceExecutor {
+    pub fn new(app: tauri::AppHandle, _data_dir: PathBuf, _resource_dir: Option<PathBuf>) -> Self {
+        Self {
+            _app: app,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            data_dir: _data_dir,
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            resource_dir: _resource_dir,
+        }
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl SourceExecutor for TauriSourceExecutor {
+    fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
+        Box::pin(async move {
+            #[cfg(any(target_os = "android", target_os = "ios"))]
+            {
+                use tauri_plugin_source_engine::{SourceEngineCall, SourceEngineExt};
+
+                // The plugin bridge waits synchronously for the native call.
+                // Keep it off Tokio's worker lane so search cancellation can run.
+                let app = self._app.clone();
+                let cancellation = request.cancellation.clone();
+                let data_dir = crate::app_data_root(&app)
+                    .map_err(|error| error.to_string())?
+                    .join("source-engine");
+                let response = tokio::task::spawn_blocking(move || {
+                    let mut wire =
+                        serde_json::to_value(&request).map_err(|error| error.to_string())?;
+                    let _execution = crate::source_host_ffi::ExecutionScope::enter(
+                        &mut wire,
+                        data_dir,
+                        cancellation,
+                    )?;
+                    let request_json = wire.to_string();
+                    app.source_engine()
+                        .execute(SourceEngineCall { request_json })
+                        .map_err(|error| error.to_string())
+                })
+                .await
+                .map_err(|error| format!("Native source worker failed: {error}"))??;
+                decode_result(&response.result_json)
+            }
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                execute_desktop(request, self.data_dir.clone(), self.resource_dir.clone()).await
+            }
+        })
+    }
+}
+
+pub type EngineFuture<'a> = Pin<Box<dyn Future<Output = Result<Value, String>> + Send + 'a>>;
+
+/// The boundary for executing a source rule. A source definition is only ever
+/// supplied to this executor by Rust, never by the WebView.
+pub trait SourceExecutor: Send + Sync {
+    fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a>;
+}
+
+fn decode_result(result: &str) -> Result<Value, String> {
+    let result: Value = serde_json::from_str(result)
+        .map_err(|error| format!("Kotlin source engine returned invalid JSON: {error}"))?;
+    if let Some(error) = result.get("__sourceEngineError").and_then(Value::as_str) {
+        return Err(format!("Kotlin source engine failed:\n{error}"));
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn requests_replace_source_type_bits_and_keep_book_flags() {
+        for (source_type, expected) in [(0, 8), (1, 32), (2, 64), (4, 2048)] {
+            let request =
+                SourceEngineRequest::new("content", &json!({"bookSourceType":source_type}))
+                    .with_book(json!({"type":8 | 256 | 16}));
+            assert_eq!(request.book.unwrap()["type"], expected | 256 | 16);
+        }
+    }
 }

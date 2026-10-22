@@ -1,45 +1,35 @@
 import { command } from "./ipc";
-import { modifyDatabase, type DatabaseChange } from "./feDb";
+import { modifyDatabase } from "./feDb";
 import { storedAssetUrl } from "./database";
-import type { BookMetadataUpdate, ChapterResource, BookCoverPickerResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, LocalBookImportResponse, LocalBookImportOptions, PendingExternalFile } from "./types";
+import type { BookMetadataUpdate, ChapterResource, BookCoverPickerResponse, ClearBookChapterCacheResponse, ChapterCacheUsage, ReadingProgress, LocalBookImportOptions } from "./types";
 
 export type LocalImportFormat = "txt" | "epub" | "cbz" | "pdf";
-export const importBookFromPicker = (options: LocalBookImportOptions = {}, format?: LocalImportFormat) =>
-  command<LocalBookImportResponse>("import_book_from_picker", { options, format });
+export const importBook = (format?: LocalImportFormat, options: LocalBookImportOptions = {}) =>
+  command<void>("import_book", { format, options });
 
-export const listPendingExternalFiles = () =>
-  command<{ files: PendingExternalFile[] }>("list_pending_external_files");
-
-export const importExternalFile = (token: string, options: LocalBookImportOptions = {}) =>
-  command<LocalBookImportResponse>("import_external_file", { token, options });
-
-export const discardExternalFile = (token: string) =>
-  command<{ discarded: boolean }>("discard_external_file", { token });
-
-export const importProtectedPdf = (importToken: string, password: string) =>
-  command<LocalBookImportResponse>("import_protected_pdf", { importToken, password });
-
-export const cancelPendingPdfImport = (importToken: string) =>
-  command<{ cancelled: boolean }>("cancel_pending_pdf_import", { importToken });
+export interface BookImportProgress {
+  file: string;
+  stage: "read" | "copy" | "parse" | "cache" | "save" | "done" | "error";
+  completed?: number;
+  total?: number;
+  bookId?: string;
+  error?: string;
+}
 
 export const saveBook = (book: BookMetadataUpdate) => modifyDatabase([{
-  action: "update", table: "books", filter: { id: book.id }, values: {
-    title_override: book.displayOverrides?.title?.trim() || null, author_override: book.displayOverrides?.author?.trim() || null,
-    intro_override: book.displayOverrides?.intro?.trim() || null,
-    cover_override: book.displayOverrides?.coverSrc ? storedAssetUrl(book.displayOverrides.coverSrc) : null,
+  operation: "saveBook", bookId: book.id, changes: {
+    title: book.displayOverrides?.title?.trim() || null,
+    author: book.displayOverrides?.author?.trim() || null,
+    intro: book.displayOverrides?.intro?.trim() || null,
+    cover: book.displayOverrides?.coverSrc ? storedAssetUrl(book.displayOverrides.coverSrc) : null,
   },
-}]);
+}], { wait: true });
 
-/** 只保存 Vue 选择的章节缓存地址，不请求正文。 */
-export const saveChapter = (bookId: string, chapter: ChapterResource) => {
-  const filter = { book_id: bookId, chapter_id: chapter.id };
-  // 保留章节身份和引擎字段，只替换 Vue 选定的缓存地址。
-  const changes: DatabaseChange[] = [{ action: "update", table: "chapters", filter: { book_id: bookId, id: chapter.id },
-    values: { resource_url: chapter.resource?.resourceId ?? null } }, { action: "delete", table: "chapter_pages", filter }];
-  for (const [position, page] of (chapter.pages ?? []).entries()) changes.push({ action: "insert", table: "chapter_pages",
-    values: { ...filter, position, id: page.id, url: storedAssetUrl(page.url ?? page.src) } });
-  return modifyDatabase(changes);
-};
+/** 提交章节缓存引用，关联维护由数据库完成。 */
+export const saveChapter = (bookId: string, chapter: ChapterResource) => modifyDatabase([{
+  operation: "useChapterContent", bookId, chapterId: chapter.id,
+  contentId: chapter.contentId ?? "",
+}], { wait: true });
 
 export const pickBookCover = (bookId: string) =>
   command<BookCoverPickerResponse>("pick_book_cover", { bookId });
@@ -48,7 +38,7 @@ export const discardBookCoverAsset = (bookId: string, assetId: string) =>
   command<{ removed: boolean; inUse: boolean }>("discard_book_cover_asset", { bookId, assetId });
 
 export const resetBookProgress = (bookId: string) =>
-  modifyDatabase([{ action: "delete", table: "reading_progress", filter: { book_id: bookId } }]);
+  modifyDatabase([{ operation: "resetProgress", bookId }], { wait: true });
 
 export const clearBookChapterCache = (bookId: string) =>
   command<ClearBookChapterCacheResponse>("clear_book_chapter_cache", { bookId });
@@ -57,5 +47,6 @@ export const getChapterCacheUsage = () => command<ChapterCacheUsage>("get_chapte
 
 
 /** Progress arrives as a small delta; prepared resources use book-updated. */
-export const notifyReading = (bookId: string, progress: ReadingProgress, refreshMedia = false, prepareCurrent = false) =>
-  command<void>("notify_reading", { bookId, progress, refreshMedia, prepareCurrent });
+export async function notifyReading(bookId: string, progress: ReadingProgress, prepareCurrent = false): Promise<void> {
+  await modifyDatabase([{ operation: "saveProgress", bookId, progress }], { wait: true, prepareCurrent });
+}

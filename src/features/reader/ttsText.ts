@@ -31,6 +31,7 @@ export function collectReaderTtsSegments(
   fromCurrentPosition: boolean,
   viewportFallback: ReaderTtsViewportFallback,
   root?: HTMLElement,
+  includeHidden = false,
 ): ReaderTtsSegment[] {
   const body = root ?? document.body;
   const viewportWidth = Math.max(1, document.documentElement.clientWidth || viewportFallback.width || 1);
@@ -53,7 +54,7 @@ export function collectReaderTtsSegments(
           return NodeFilter.FILTER_REJECT;
         }
         const style = document.defaultView?.getComputedStyle(parent);
-        return style?.display === "none" || style?.visibility === "hidden"
+        return style?.display === "none" || !includeHidden && style?.visibility === "hidden"
           ? NodeFilter.FILTER_REJECT
           : NodeFilter.FILTER_ACCEPT;
       }
@@ -63,7 +64,7 @@ export function collectReaderTtsSegments(
         return NodeFilter.FILTER_REJECT;
       }
       const style = document.defaultView?.getComputedStyle(parent);
-      if (style?.display === "none" || style?.visibility === "hidden") return NodeFilter.FILTER_REJECT;
+      if (style?.display === "none" || !includeHidden && style?.visibility === "hidden") return NodeFilter.FILTER_REJECT;
       const range = document.createRange();
       range.selectNodeContents(text);
       return range.getClientRects().length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;

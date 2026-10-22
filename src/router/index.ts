@@ -13,7 +13,6 @@ export const routeNames = {
   settingsBackup: "settings-backup",
   settingsHistory: "settings-history",
   settingsBookmarks: "settings-bookmarks",
-  settingsTasks: "settings-tasks",
   settingsOther: "settings-other",
   settingsCache: "settings-cache",
   settingsNetwork: "settings-network",
@@ -25,7 +24,7 @@ export const routeNames = {
 
 export type AppRouteName = (typeof routeNames)[keyof typeof routeNames];
 export type AppScreen = "home" | "shelf" | "search" | "sources" | "settings" | "detail";
-export type SettingsSection = "home" | "appearance" | "backup" | "history" | "bookmarks" | "tasks" | "other" | "cache" | "network" | "tts" | "rules" | "home-config" | "txt-toc";
+export type SettingsSection = "home" | "appearance" | "backup" | "history" | "bookmarks" | "other" | "cache" | "network" | "tts" | "rules" | "home-config" | "txt-toc";
 
 export const settingsRouteNames: Record<SettingsSection, AppRouteName> = {
   home: routeNames.settings,
@@ -33,7 +32,6 @@ export const settingsRouteNames: Record<SettingsSection, AppRouteName> = {
   backup: routeNames.settingsBackup,
   history: routeNames.settingsHistory,
   bookmarks: routeNames.settingsBookmarks,
-  tasks: routeNames.settingsTasks,
   other: routeNames.settingsOther,
   cache: routeNames.settingsCache,
   network: routeNames.settingsNetwork,
@@ -64,7 +62,6 @@ export interface AppRouteNamedMap {
   "settings-backup": StaticRoute<typeof routeNames.settingsBackup, "/settings/backup">;
   "settings-history": StaticRoute<typeof routeNames.settingsHistory, "/settings/history">;
   "settings-bookmarks": StaticRoute<typeof routeNames.settingsBookmarks, "/settings/bookmarks">;
-  "settings-tasks": StaticRoute<typeof routeNames.settingsTasks, "/settings/tasks">;
   "settings-other": StaticRoute<typeof routeNames.settingsOther, "/settings/other">;
   "settings-cache": StaticRoute<typeof routeNames.settingsCache, "/settings/other/cache">;
   "settings-network": StaticRoute<typeof routeNames.settingsNetwork, "/settings/other/network">;
@@ -105,7 +102,6 @@ const loadReplacementRules = () => import("../features/settings/ReplacementRules
 // 阅读记录与书签使用独立的完整页面。
 const loadReadingHistoryPage = () => import("../features/settings/ReadingHistoryPage.vue");
 const loadBookmarksPage = () => import("../features/settings/BookmarksPage.vue");
-const loadTaskCenterPage = () => import("../features/tasks/TaskCenterPage.vue");
 
 export const appRoutes = [
   { path: "/", name: routeNames.home, component: loadHomePage, meta: { screen: "home" } },
@@ -133,12 +129,6 @@ export const appRoutes = [
     name: routeNames.settingsBookmarks,
     component: loadBookmarksPage,
     meta: { screen: "settings", settingsSection: "bookmarks" },
-  },
-  {
-    path: "/settings/tasks",
-    name: routeNames.settingsTasks,
-    component: loadTaskCenterPage,
-    meta: { screen: "settings", settingsSection: "tasks" },
   },
   { path: "/settings/other", name: routeNames.settingsOther, component: loadOtherSettings, meta: { screen: "settings", settingsSection: "other" } },
   { path: "/settings/other/cache", name: routeNames.settingsCache, component: loadChapterCacheSettings, meta: { screen: "settings", settingsSection: "cache" } },

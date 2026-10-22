@@ -1,6 +1,8 @@
 //! 唯一详情接口：按源和书籍 URL 请求，取得详情后统一刷新或新建存储。
 
-use super::*;
+use super::{search::source_book_id, ApplicationService};
+use crate::source_engine::SourceEngineRequest;
+use serde_json::json;
 
 impl ApplicationService {
     pub(crate) fn cancel_information(&self, source_id: &str, book_url: &str) {
@@ -31,11 +33,11 @@ impl ApplicationService {
             if book_url.trim().is_empty() {
                 return Err("Book URL is missing".into());
             }
-            let source = self.find_source(source_id).await?;
+            let source = self.sources.get(source_id).await?;
             if !source.enabled {
                 return Err("Book source is disabled".into());
             }
-            let kind = crate::source_metadata::content_type(&source.source);
+            let kind = crate::source_catalog::content_type(&source.source);
             let key = source_book_id(&source, &json!({"bookUrl":book_url}));
             // 搜索已提供的书名等参数可供规则使用，没有时只需书籍 URL。
             let cached = self
@@ -47,14 +49,12 @@ impl ApplicationService {
                 book
             } else {
                 let database = self.store.database().clone();
-                let source_id = source_id.to_owned();
-                let book_url = book_url.to_owned();
-                tokio::task::spawn_blocking(move || {
-                    database.information_seed(&source_id, &book_url, kind)
-                })
+                let id = key.clone();
+                tokio::task::spawn_blocking(move || database.book_engine(&id))
                 .await
                 .map_err(|error| error.to_string())?
                 .map_err(|error| error.to_string())?
+                .map(serde_json::to_value).transpose().map_err(|error|error.to_string())?
                 .unwrap_or_else(|| json!({}))
             };
             raw_book["bookUrl"] = json!(book_url);
@@ -65,19 +65,17 @@ impl ApplicationService {
                 request.cancellation = Some(token.clone());
                 self.executor.execute(request)
             };
-            let info = execute(engine_request(
-                if legacy_rss {
-                    "rssBookInfo"
-                } else {
-                    "bookInfo"
-                },
-                &source.source,
-                None,
-                None,
-                Some(raw_book.clone()),
-                None,
-                None,
-            ))
+            let info = execute(
+                SourceEngineRequest::new(
+                    if legacy_rss {
+                        "rssBookInfo"
+                    } else {
+                        "bookInfo"
+                    },
+                    &source.source,
+                )
+                .with_book(raw_book.clone()),
+            )
             .await?;
             if !info.is_object() {
                 return Err("Source engine returned invalid book details".into());
@@ -95,49 +93,46 @@ impl ApplicationService {
                         .map(|(key, value)| (key.clone(), value.clone())),
                 );
             engine_book["bookUrl"] = json!(book_url);
-            // 先取得详情，再按同一来源和 URL 查库；不由调用方指定刷新或新建。
-            let database = self.store.database().clone();
-            let lookup_source = source_id.to_owned();
-            let lookup_url = book_url.to_owned();
-            let existing = tokio::task::spawn_blocking(move || {
-                database.information_id(&lookup_source, &lookup_url, kind)
-            })
-            .await
-            .map_err(|error| error.to_string())?
-            .map_err(|error| error.to_string())?;
             if token.is_cancelled() {
                 return Err("Book details cancelled".into());
             }
-            let book_id = existing.unwrap_or(key);
+            let book_id = key;
             self.store
                 .bind_book_type(&book_id, kind)
                 .await
                 .map_err(|error| error.to_string())?;
-            let chapters = execute(engine_request(
-                if legacy_rss {
-                    "rssChapters"
-                } else {
-                    "chapters"
-                },
-                &source.source,
-                None,
-                None,
-                Some(engine_book.clone()),
-                None,
-                None,
-            ))
+            let chapters = execute(
+                SourceEngineRequest::new(
+                    if legacy_rss {
+                        "rssChapters"
+                    } else {
+                        "chapters"
+                    },
+                    &source.source,
+                )
+                .with_book(engine_book.clone()),
+            )
             .await?;
             let chapters = chapters
                 .as_array()
-                .ok_or("Source engine returned an invalid chapter catalog")?;
-            self.save_information(
-                &book_id,
-                &source,
-                engine_book,
-                chapters.to_vec(),
-                token.clone(),
-            )
-            .await?;
+                .ok_or("Source engine returned an invalid chapter catalog")?
+                .clone();
+            {
+                let database = self.store.database().clone();
+                let token = token.clone();
+                database.save_information({
+                    let metadata=crate::book_metadata::project_book_metadata(&engine_book,&source);
+                    crate::database::Book {
+                        id:book_id,content_type:kind.into(),source_id:Some(source.id),
+                        title:metadata.title,author:metadata.author,intro:metadata.intro,
+                        cover:metadata.cover_src.map(|reference|reference.to_string()),
+                        word_count:metadata.word_count,latest_chapter_title:metadata.latest_chapter,
+                        engine:Some(serde_json::from_value(engine_book).map_err(|error|error.to_string())?),
+                        ..Default::default()
+                    }
+                },serde_json::from_value(serde_json::Value::Array(chapters)).map_err(|error|error.to_string())?,token).map_err(|e|e.to_string())?
+                    .await.map_err(|e|e.to_string())
+            }?;
             Ok(())
         };
         tokio::select! {
@@ -145,179 +140,6 @@ impl ApplicationService {
             _ = cancelled => Err("Book details cancelled".into()),
             result = operation => result,
         }
-    }
-}
-
-impl ApplicationService {
-    // 新打开和刷新走同一入库逻辑；在事务内读取最新缓存，再合并详情和目录。
-    async fn save_information(
-        &self,
-        book_id: &str,
-        source: &SourceRecord,
-        response: Value,
-        chapters: Vec<Value>,
-        cancellation: tokio_util::sync::CancellationToken,
-    ) -> Result<(), String> {
-        let database = self.store.database().clone();
-        let reference = self
-            .store
-            .book_ref(book_id)
-            .map_err(|error| error.to_string())?;
-        let root = self.store.root().to_path_buf();
-        let book_id = book_id.to_owned();
-        let source = source.clone();
-        tokio::task::spawn_blocking(move || {
-            database.transaction(move |db| {
-                use crate::resources::{content, ResourceError};
-                if cancellation.is_cancelled() { return Err(ResourceError::new("Book details cancelled")); }
-                let current = crate::database::read(db, reference.path())?.unwrap_or_else(||json!({}));
-                let saved = current.get("id").is_some();
-                let mut state = content::source_state(&current);
-                if saved && (state["sourceId"] != source.id || text_at(&state["book"], &["bookUrl","url"]) != text_at(&response, &["bookUrl","url"])) {
-                    return Err(ResourceError::new("Book changed during refresh"));
-                }
-                if !saved {
-                    state["sourceId"] = json!(source.id);
-                    state["bookInstanceId"] = json!(uuid::Uuid::new_v4().simple().to_string());
-                    state["catalogGeneration"] = json!(uuid::Uuid::new_v4().simple().to_string());
-                }
-                let engine_book = state["book"].clone();
-                let response_fields = response
-                    .as_object()
-                    .ok_or_else(|| ResourceError::new("Source engine returned invalid book details"))?;
-                let mut refreshed_fields = engine_book
-                    .as_object()
-                    .cloned()
-                    .unwrap_or_default();
-                // 合并部分字段时保留规则上下文；刷新不能改动已有书籍的来源身份。
-                const CATALOG_IDENTITY_KEYS: [&str; 5] = ["bookUrl", "url", "origin", "articleId", "id"];
-                for (key, value) in response_fields {
-                    if (saved && CATALOG_IDENTITY_KEYS.contains(&key.as_str())) || value.is_null() {
-                        continue;
-                    }
-                    let valid = match key.as_str() {
-                        "name" | "title" | "author" | "coverUrl" | "cover" | "coverSrc" | "intro"
-                        | "introduction" | "lastChapter" | "latestChapter" | "latestChapterTitle" => {
-                            value.as_str().is_some_and(|text| !text.trim().is_empty())
-                        }
-                        "kind" | "category" => {
-                            value.as_str().is_some_and(|text| !text.trim().is_empty())
-                                || value.as_array().is_some_and(|values| {
-                                    values.iter().any(|value| {
-                                        value.as_str().is_some_and(|text| !text.trim().is_empty())
-                                    })
-                                })
-                        }
-                        "wordCount" | "word_count" => {
-                            value.as_number().is_some()
-                                || value.as_str().is_some_and(|text| !text.trim().is_empty())
-                        }
-                        _ => true,
-                    };
-                    if !valid {
-                        continue;
-                    }
-                    refreshed_fields.insert(key.clone(), value.clone());
-                }
-                let refreshed_engine_book = Value::Object(refreshed_fields);
-                let metadata = crate::book_metadata::project_book_metadata(&refreshed_engine_book, &source);
-                let kind = crate::source_metadata::content_type(&source.source);
-                let mut view = if saved { content::book_view(&current, kind)? } else {
-                    json!({"id":book_id,"title":"Untitled","author":"","chapters":[],"progress":ProgressSummary::default()})
-                };
-                crate::book_display_metadata::update_base(&mut view, &metadata).map_err(ResourceError::new)?;
-                let labels = json!(metadata);
-                for key in ["sourceId", "sourceName", "sourceGroup", "wordCount", "contentType"] {
-                    if let Some(value) = labels.get(key) { view[key] = value.clone(); }
-                }
-                if let Some(tag) = metadata.kind.as_ref() { view["tags"] = json!([tag]); }
-                let old_raw = state["chapters"]
-                    .as_array()
-                    .ok_or_else(|| ResourceError::new("Saved catalog is missing"))?;
-                let old_chapters: Vec<ChapterDescriptor> =
-                    serde_json::from_value(view["chapters"].clone())
-                        .map_err(|error| ResourceError::new(error.to_string()))?;
-                let progress: ProgressSummary = serde_json::from_value(view["progress"].clone())
-                    .map_err(|error| ResourceError::new(error.to_string()))?;
-                let cached = old_chapters
-                    .iter()
-                    .filter(|chapter| {
-                        chapter.resource.as_ref().is_some_and(|resource| {
-                            resource.resource_id.is_local()
-                                && root.join(resource.resource_id.path()).is_file()
-                        })
-                    })
-                    .map(|chapter| chapter.id.clone())
-                    .collect();
-                let mut plan = crate::catalog::reconcile_catalog(
-                    &book_id,
-                    old_raw,
-                    &old_chapters,
-                    &chapters,
-                    &progress,
-                    &cached,
-                    now_ms(),
-                )
-                .map_err(ResourceError::new)?;
-                // 保留旧章节身份；新章节沿用本次目录所属的代次，避免误用换源前的缓存。
-                if let Some(generation) = state["catalogGeneration"].as_str().filter(|_|saved) {
-                    for (index, chapter) in plan.chapters.iter_mut().enumerate() {
-                        if !old_chapters.iter().any(|old| old.id == chapter.id) {
-                            let url = text_at(&chapters[index], &["url", "chapterUrl"])
-                                .unwrap_or_else(|| format!("@{index}"));
-                            chapter.id = format!("chapter-{:016x}", stable_hash(&format!("{book_id}\0{generation}\0{url}")));
-                        }
-                    }
-                    if let Some(chapter) = plan.chapters.get(plan.progress.chapter_index) {
-                        plan.progress.chapter_id = Some(chapter.id.clone());
-                    }
-                }
-                let mut next_chapters = json!(plan.chapters);
-                for (index, chapter) in next_chapters
-                    .as_array_mut()
-                    .into_iter()
-                    .flatten()
-                    .enumerate()
-                {
-                    let Some(old) = view["chapters"]
-                        .as_array()
-                        .into_iter()
-                        .flatten()
-                        .find(|old| old["id"] == chapter["id"])
-                    else {
-                        continue;
-                    };
-                    let old_index = old["index"].as_u64().unwrap_or(0) as usize;
-                    if text_at(&old_raw[old_index], &["url", "chapterUrl"])
-                        != text_at(&chapters[index], &["url", "chapterUrl"])
-                    {
-                        continue;
-                    }
-                    // 图片页、媒体地址和下载文件只在章节 URL 未变化时复用。
-                    for key in ["pages", "sources", "protocol", "files", "url", "media"] {
-                        if let Some(value) = old.get(key) {
-                            chapter[key] = value.clone();
-                        }
-                    }
-                    if old["media"].is_object() {
-                        chapter["resource"] = old["resource"].clone();
-                    }
-                }
-                view["chapters"] = next_chapters;
-                view["chapterCount"] = json!(plan.chapters.len());
-                view["latestChapter"] = json!(plan.latest_chapter);
-                // 首次打开不产生阅读记录，刷新才沿用并定位已有阅读进度。
-                view["progress"] = if saved { json!(plan.progress) } else { json!(ProgressSummary::default()) };
-                if old_raw != &chapters {
-                    view["updatedAtMs"] = json!(now_ms());
-                }
-                state["chapters"] = json!(chapters);
-                state["book"] = refreshed_engine_book;
-                let encoded = content::encode_book(&view, Some(&state), &current, kind)?;
-                if cancellation.is_cancelled() { return Err(ResourceError::new("Book details cancelled")); }
-                crate::database::write(db, reference.path(), &encoded)
-            })
-        }).await.map_err(|error|error.to_string())?.map_err(|error|error.to_string())
     }
 }
 
@@ -343,5 +165,5 @@ pub fn cancel_more_information(
 }
 
 #[cfg(test)]
-#[path = "information_tests.rs"]
+#[path = "tests/information_tests.rs"]
 mod tests;

@@ -1,5 +1,4 @@
-//! Replayable chapter audio. Each HTTP reader has its own cursor; the producer
-//! writes to a bounded temporary file rather than handing one socket a receiver.
+//! 将持续投递的 TTS 音频片段通过同一 HTTP 流交给播放器。
 
 use super::{
     server::{empty_response, set_cors_headers, stream_response},
@@ -9,33 +8,12 @@ use axum::{
     body::Body,
     http::{header::*, HeaderMap, Method, Response, StatusCode},
 };
-use serde::Serialize;
 use std::{collections::HashMap, sync::Arc, time::Instant};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{mpsc, watch, Mutex},
 };
 use tokio_stream::wrappers::ReceiverStream;
-
-const MAX_STREAM_BYTES: u64 = 256 * 1024 * 1024;
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TtsStreamProgress {
-    pub boundaries: Vec<TtsStreamBoundary>,
-    pub state: &'static str,
-    pub next_index: usize,
-    pub skipped: usize,
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TtsStreamBoundary {
-    pub index: usize,
-    pub highlight_index: usize,
-    pub end_seconds: f64,
-}
 
 #[derive(Clone, Copy, Default)]
 struct Buffered {
@@ -47,11 +25,11 @@ struct AudioBuffer {
     path: tempfile::TempPath,
     buffered: watch::Sender<Buffered>,
     cancellation: watch::Sender<bool>,
+    content_type: &'static str,
 }
 
 struct Entry {
     audio: Arc<AudioBuffer>,
-    progress: TtsStreamProgress,
     accessed: Instant,
 }
 
@@ -75,11 +53,6 @@ impl TtsStreamWriter {
             ));
         }
         let length = self.audio.buffered.borrow().length + bytes.len() as u64;
-        if length > MAX_STREAM_BYTES {
-            return Err(std::io::Error::other(
-                "HTTP TTS chapter audio exceeds 256 MiB",
-            ));
-        }
         self.file.write_all(bytes).await?;
         self.file.flush().await?;
         self.audio
@@ -101,7 +74,7 @@ impl TtsStreamRegistry {
     pub async fn create(
         &self,
         base_url: &str,
-        progress: TtsStreamProgress,
+        content_type: &'static str,
     ) -> Result<TtsStreamWriter, ResourceError> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         let (buffered, _) = watch::channel(Buffered::default());
@@ -110,6 +83,7 @@ impl TtsStreamRegistry {
             path,
             buffered,
             cancellation,
+            content_type,
         });
         let id = uuid::Uuid::new_v4().simple().to_string();
         let mut entries = self.0.lock().await;
@@ -130,30 +104,16 @@ impl TtsStreamRegistry {
             id.clone(),
             Entry {
                 audio: audio.clone(),
-                progress,
                 accessed: Instant::now(),
             },
         );
         Ok(TtsStreamWriter {
-            url: format!("{base_url}tts-stream/{id}.mp3"),
+            url: format!("{base_url}tts-stream/{id}"),
             id,
             cancellation: receiver,
             audio,
             file: tokio::fs::File::from_std(file),
         })
-    }
-
-    pub async fn progress(&self, id: &str) -> Option<TtsStreamProgress> {
-        let mut entries = self.0.lock().await;
-        let entry = entries.get_mut(id)?;
-        entry.accessed = Instant::now();
-        Some(entry.progress.clone())
-    }
-
-    pub async fn update(&self, id: &str, progress: TtsStreamProgress) {
-        if let Some(entry) = self.0.lock().await.get_mut(id) {
-            entry.progress = progress;
-        }
     }
 
     pub async fn release(&self, id: &str) -> bool {
@@ -188,7 +148,8 @@ impl TtsStreamRegistry {
             Err(_) => return empty_response(StatusCode::NOT_FOUND),
         };
         if state.finished {
-            let mut response = stream_response(file, state.length, headers, "audio/mpeg", "").await;
+            let mut response =
+                stream_response(file, state.length, headers, audio.content_type, "").await;
             if method == Method::HEAD {
                 *response.body_mut() = Body::empty();
             }
@@ -198,7 +159,7 @@ impl TtsStreamRegistry {
         // advertise no seeking while live, and support normal ranges once done.
         let mut response = Response::builder()
             .status(StatusCode::OK)
-            .header(CONTENT_TYPE, "audio/mpeg")
+            .header(CONTENT_TYPE, audio.content_type)
             .header(CACHE_CONTROL, "no-store")
             .header(ACCEPT_RANGES, "none")
             .body(Body::empty())
@@ -252,21 +213,11 @@ mod tests {
     use axum::body::to_bytes;
     use tokio_stream::StreamExt;
 
-    fn progress() -> TtsStreamProgress {
-        TtsStreamProgress {
-            boundaries: vec![],
-            state: "running",
-            next_index: 0,
-            skipped: 0,
-            error: None,
-        }
-    }
-
     #[tokio::test]
     async fn live_readers_can_probe_disconnect_and_reconnect_without_consuming_audio() {
         let registry = TtsStreamRegistry::default();
         let mut writer = registry
-            .create("http://localhost/r/token/", progress())
+            .create("http://localhost/r/token/", "audio/mpeg")
             .await
             .unwrap();
         let id = writer.id.clone();
@@ -312,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn cancellation_unblocks_idle_readers_and_removes_the_temporary_file() {
         let registry = TtsStreamRegistry::default();
-        let mut writer = registry.create("", progress()).await.unwrap();
+        let mut writer = registry.create("", "audio/mpeg").await.unwrap();
         let path = writer.audio.path.to_path_buf();
         let response = registry
             .serve(&writer.id, Method::GET, &HeaderMap::new())
@@ -336,10 +287,16 @@ mod tests {
         let registry = TtsStreamRegistry::default();
         let mut writers = Vec::new();
         for _ in 0..5 {
-            writers.push(registry.create("", progress()).await.unwrap());
+            writers.push(registry.create("", "audio/mpeg").await.unwrap());
         }
         assert!(*writers[0].cancellation.borrow());
-        assert!(registry.progress(&writers[0].id).await.is_none());
+        assert_eq!(
+            registry
+                .serve(&writers[0].id, Method::HEAD, &HeaderMap::new())
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
         registry.clear().await;
         assert!(writers.iter().all(|writer| *writer.cancellation.borrow()));
     }

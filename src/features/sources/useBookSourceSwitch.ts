@@ -297,8 +297,7 @@ export function useBookSourceSwitch({
       const replacement = cached.chapters.find(item => item.id === matches[0]!.id)!;
       await cancelMainText(book.id, chapter.id);
       if (!current()) return;
-      await saveChapter(book.id, { ...chapter, resource: replacement.resource,
-        pages: replacement.pages?.map(page => ({ ...page, src: page.url ?? page.src })) });
+      await saveChapter(book.id, { ...chapter, contentId: replacement.contentId });
       if (!current()) return;
       const updated = await readBook(book.id);
       if (!current()) return;

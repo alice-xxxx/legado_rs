@@ -9,11 +9,11 @@ use std::time::Duration;
 use feed_rs::model::{Entry, Feed};
 use feed_rs::parser;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    application::{ApplicationService, SourceRecord},
+    application::{ApplicationService},
     discovery::{self, DiscoveryCategory, PrivateCategory},
     resources::ResourceRef,
 };
@@ -21,8 +21,6 @@ use crate::{
 const MAX_FEED_BYTES: usize = 8 * 1024 * 1024;
 const FEED_PAGE_SIZE: usize = 50;
 const RSS_FILTER_SCAN_PAGE_LIMIT: u32 = 8;
-const MAX_TRACKED_ARTICLES: usize = 50_000;
-const RSS_STATE_DOCUMENT: &str = "rss-state";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -107,11 +105,11 @@ pub(crate) fn is_standard_feed_source(source: &Value) -> bool {
 }
 
 /// Load a subscription's processed categories as a public JSON resource.
-pub async fn list_rss_categories(
+pub async fn load_rss_categories(
     service: &ApplicationService,
     source_id: &str,
 ) -> Result<Value, String> {
-    let source = service.source_record(source_id).await?;
+    let source = service.sources.get(source_id).await?;
     if !source.enabled {
         return Err("Selected source is disabled".to_owned());
     }
@@ -142,12 +140,11 @@ pub async fn list_rss_categories(
     // revalidated under the short source-mutation guard, so a delayed network
     // response cannot recreate an unsubscribed or deleted source's category
     // map, public categories, or subscription state.
-    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
-    let mut result =
+    let _source_guard = service.sources.rss_snapshot(&source).await?;
+    let result =
         discovery::publish_categories(service, source_id, public_categories, private_categories)
             .await?;
-    let state_ref = ensure_subscription_locked(service, &source).await?;
-    result["rssState"] = service.resource_descriptor(&state_ref);
+    ensure_subscription_locked(service, &source).await?;
     Ok(result)
 }
 
@@ -156,7 +153,7 @@ pub async fn list_rss_categories(
 /// filter, so advance over a small bounded number of empty filtered pages. The
 /// returned page and hasNextPage always describe the engine page we actually
 /// return, allowing the caller to continue after the scan limit.
-pub async fn list_rss_articles(
+pub async fn load_rss_articles(
     service: &ApplicationService,
     source_id: &str,
     category_id: &str,
@@ -165,7 +162,7 @@ pub async fn list_rss_articles(
     let mut current_page = page.max(1);
     let mut result =
         discovery::list_books(service, source_id, category_id, current_page, Some(true)).await?;
-    let source = service.source_record(source_id).await?;
+    let source = service.sources.get(source_id).await?;
     if is_standard_feed_source(&source.source) {
         return Ok(result);
     }
@@ -199,21 +196,10 @@ async fn filter_rule_rss_page(
     category_id: &str,
     mut result: Value,
 ) -> Result<Value, String> {
-    let source = service.source_record(source_id).await?;
-    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
-    let resource_id = result
-        .get("resource")
-        .and_then(|resource| resource.get("resourceId"))
-        .and_then(Value::as_str)
-        .ok_or_else(|| "RSS results resource is missing its ID".to_owned())?;
-    let result_ref = ResourceRef::new(resource_id).map_err(|error| error.to_string())?;
-    let mut document = service
-        .resource_store()
-        .read_json_ref(&result_ref)
-        .await
-        .map_err(|error| error.to_string())?;
+    let source = service.sources.get(source_id).await?;
+    let _source_guard = service.sources.rss_snapshot(&source).await?;
     let filter = subscription_filter(service, source_id).await?;
-    let cards = document
+    let cards = result["search"]
         .get_mut("results")
         .and_then(Value::as_array_mut)
         .ok_or_else(|| "RSS result document is invalid".to_owned())?;
@@ -256,13 +242,6 @@ async fn filter_rule_rss_page(
     });
     let count = cards.len();
     let filtered = json!(count != tracked.len() || filter != "all");
-    document["rssFilter"] = json!(filter);
-    document["filtered"] = filtered.clone();
-    service
-        .resource_store()
-        .write_json_ref(&result_ref, &document)
-        .await
-        .map_err(|error| error.to_string())?;
     result["bookCount"] = json!(count);
     result["filter"] = json!(filter);
     result["filtered"] = filtered;
@@ -282,7 +261,7 @@ pub(crate) async fn list_standard_feed_articles(
     }
     let feed_url = standard_feed_url(&source.source)?;
     let feed = fetch_feed(&feed_url).await?;
-    let _source_guard = service.lock_rss_source_snapshot(source).await?;
+    let _source_guard = service.sources.rss_snapshot(source).await?;
     let page = page.max(1);
     let existing_state = read_state(service).await?;
     let filter = existing_state
@@ -396,7 +375,7 @@ pub async fn read_standard_feed_article(
 ) -> Result<Value, String> {
     discovery::validate_source_id(source_id)?;
     validate_opaque_id(article_id, "articleId")?;
-    let source = service.source_record(source_id).await?;
+    let source = service.sources.get(source_id).await?;
     if !is_standard_feed_source(&source.source) {
         return Err(
             "This subscription uses engine rules; open the article through its book resource"
@@ -409,7 +388,8 @@ pub async fn read_standard_feed_article(
     let state = lookup_article_state(service, source_id, article_id)
         .await?
         .ok_or_else(|| "RSS article is unavailable; refresh the subscription".to_owned())?;
-    let typed_resource = state.content_ref
+    let typed_resource = state
+        .content_ref
         .ok_or_else(|| "RSS article resource is missing; refresh the subscription".to_owned())?;
     if !is_rss_article_resource_ref(source_id, article_id, &typed_resource) {
         return Err("RSS article has an invalid resource reference".to_owned());
@@ -426,176 +406,45 @@ pub async fn read_standard_feed_article(
     Ok(json!({
         "sourceId": source_id,
         "articleId": article_id,
-        "resource": service.resource_descriptor(&typed_resource),
+        "resource": service.server.descriptor(&typed_resource),
     }))
-}
-
-/// Return the browser-readable RSS state resource, initializing its JSON file
-/// on first use.
-pub async fn rss_state_resource(
-    store: &crate::resources::ResourceStore,
-) -> Result<ResourceRef, String> {
-    let reference = store
-        .document_ref(RSS_STATE_DOCUMENT)
-        .map_err(|error| error.to_string())?;
-    store
-        .update_json_ref(&reference, |current| {
-            let mut document = match current {
-                Value::Null => RssStateDocument::default(),
-                value => decode_state(value)?,
-            };
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
 }
 
 async fn ensure_subscription_locked(
     service: &ApplicationService,
     expected_source: &SourceRecord,
-) -> Result<ResourceRef, String> {
+) -> Result<(), String> {
     let store = service.resource_store();
-    let reference = rss_state_resource(store).await?;
     let source_id = expected_source.id.clone();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document = decode_state(current)?;
-            if !document
-                .subscriptions
-                .iter()
-                .any(|subscription| subscription.source_id == source_id)
-            {
-                document.subscriptions.push(RssSubscriptionState {
-                    source_id,
-                    filter: "all".to_owned(),
-                });
-            }
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
+    store.database().ensure_rss_subscription(source_id).map_err(|e|e.to_string())?
+        .await.map_err(|e|e.to_string())?;
+    Ok(())
 }
 
-/// Set the persistent server-side filter for an RSS source.
-pub async fn set_subscription_filter(
-    service: &ApplicationService,
-    source_id: &str,
-    filter: &str,
-) -> Result<ResourceRef, String> {
-    discovery::validate_source_id(source_id)?;
-    validate_filter(filter)?;
-    let source = service.source_record(source_id).await?;
-    if !is_rss_source(&source.source) {
-        return Err("Selected source is not an RSS subscription".to_owned());
-    }
-    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
-    let store = service.resource_store();
-    let reference = rss_state_resource(store).await?;
-    let source_id = source_id.to_owned();
-    let filter = filter.to_owned();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document = decode_state(current)?;
-            if let Some(subscription) = document
-                .subscriptions
-                .iter_mut()
-                .find(|subscription| subscription.source_id == source_id)
-            {
-                subscription.filter = filter;
-            } else {
-                document
-                    .subscriptions
-                    .push(RssSubscriptionState { source_id, filter });
-            }
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-/// Update one article's read/favorite flags. The article must have appeared in
-/// a Rust-produced RSS list first; arbitrary IDs cannot create state records.
+/// 更新已登记文章的阅读和收藏标记。
 pub async fn set_article_state(
     service: &ApplicationService,
     source_id: &str,
     article_id: &str,
     is_read: Option<bool>,
     is_favorite: Option<bool>,
-) -> Result<ResourceRef, String> {
+) -> Result<(), String> {
     discovery::validate_source_id(source_id)?;
     validate_opaque_id(article_id, "articleId")?;
     if is_read.is_none() && is_favorite.is_none() {
         return Err("RSS article state update is empty".to_owned());
     }
-    let source = service.source_record(source_id).await?;
+    let source = service.sources.get(source_id).await?;
     if !is_rss_source(&source.source) {
         return Err("Selected source is not an RSS subscription".to_owned());
     }
-    let _source_guard = service.lock_rss_source_snapshot(&source).await?;
+    let _source_guard = service.sources.rss_snapshot(&source).await?;
     let store = service.resource_store();
-    let reference = rss_state_resource(store).await?;
     let source_id = source_id.to_owned();
     let article_id = article_id.to_owned();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document = decode_state(current)?;
-            let article = document
-                .articles
-                .iter_mut()
-                .find(|article| article.source_id == source_id && article.article_id == article_id)
-                .ok_or_else(|| "RSS article is unavailable; refresh the subscription".to_owned())?;
-            if let Some(is_read) = is_read {
-                article.is_read = is_read;
-            }
-            if let Some(is_favorite) = is_favorite {
-                article.is_favorite = is_favorite;
-            }
-            article.updated_at_ms = now_ms();
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-/// Remove a subscription's read/favorite/filter state, discovery category map,
-/// and only its reserved RSS chapter resource namespace. Callers validate the
-/// source while holding the source-mutation lock before invoking this cleanup.
-pub async fn remove_subscription_data(
-    service: &ApplicationService,
-    source_id: &str,
-) -> Result<ResourceRef, String> {
-    discovery::validate_source_id(source_id)?;
-    let store = service.resource_store();
-    let reference = rss_state_resource(store).await?;
-    let removed_id = source_id.to_owned();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document = decode_state(current)?;
-            document
-                .subscriptions
-                .retain(|subscription| subscription.source_id != removed_id);
-            document
-                .articles
-                .retain(|article| article.source_id != removed_id);
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    discovery::publish_categories(service, source_id, Vec::new(), Vec::new()).await?;
-    store
-        .remove_rss_chapter_resources(source_id)
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
+    store.database().save_rss_articles(source_id, vec![crate::database::RssArticlePatch { article_id,is_read,is_favorite,content_ref:None }])
+        .map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
+    Ok(())
 }
 
 async fn subscription_filter(
@@ -612,13 +461,7 @@ async fn subscription_filter(
 }
 
 async fn read_state(service: &ApplicationService) -> Result<RssStateDocument, String> {
-    let reference = rss_state_resource(service.resource_store()).await?;
-    let value = service
-        .resource_store()
-        .read_json_ref(&reference)
-        .await
-        .map_err(|error| error.to_string())?;
-    decode_state(value)
+    service.resource_store().database().rss_state().map_err(|e|e.to_string())
 }
 
 async fn lookup_article_state(
@@ -643,32 +486,10 @@ async fn register_articles(
         validate_opaque_id(article_id, "articleId")?;
     }
     let store = service.resource_store();
-    let reference = rss_state_resource(store).await?;
     let source_id = source_id.to_owned();
-    let article_ids = article_ids.to_vec();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document = decode_state(current)?;
-            for article_id in article_ids {
-                if document.articles.iter().any(|article| {
-                    article.source_id == source_id && article.article_id == article_id
-                }) {
-                    continue;
-                }
-                if document.articles.len() >= MAX_TRACKED_ARTICLES {
-                    return Err(
-                        "RSS article state limit reached; unsubscribe from old feeds".into(),
-                    );
-                }
-                document
-                    .articles
-                    .push(default_article_state(&source_id, &article_id));
-            }
-            normalize_state(&mut document)?;
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    let articles = article_ids.iter().map(|id| crate::database::RssArticlePatch { article_id:id.clone(), ..Default::default() }).collect();
+    store.database().save_rss_articles(source_id,articles).map_err(|e|e.to_string())?
+        .await.map_err(|e|e.to_string())?;
     Ok(())
 }
 
@@ -685,29 +506,14 @@ async fn record_article_resources(
             return Err("Invalid RSS article resource reference".to_owned());
         }
     }
-    let resource = rss_state_resource(service.resource_store()).await?;
     let source_id = source_id.to_owned();
-    service.resource_store()
-        .update_json_ref(&resource, move |current| {
-            let mut document = decode_state(current)?;
-            for (article_id, reference) in entries {
-                let tracked = document.articles.iter_mut()
-                    .find(|article| article.source_id == source_id && article.article_id == article_id)
-                    .ok_or_else(|| "RSS article state was removed during refresh".to_owned())?;
-                tracked.content_ref = Some(reference);
-            }
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
+    let articles = entries.into_iter().map(|(article_id,reference)|crate::database::RssArticlePatch { article_id, content_ref:Some(reference.as_str().to_owned()), ..Default::default() }).collect();
+    service.resource_store().database().save_rss_articles(source_id,articles).map_err(|e|e.to_string())?
+        .await.map_err(|e|e.to_string())?;
     Ok(())
 }
 
-fn is_rss_article_resource_ref(
-    source_id: &str,
-    article_id: &str,
-    reference: &ResourceRef,
-) -> bool {
+fn is_rss_article_resource_ref(source_id: &str, article_id: &str, reference: &ResourceRef) -> bool {
     if !reference.is_local() {
         return false;
     }
@@ -716,78 +522,16 @@ fn is_rss_article_resource_ref(
         rss_resource_book_id(source_id),
         Sha256::digest(article_id.as_bytes())
     );
-    reference.path().strip_prefix(&prefix)
+    reference
+        .path()
+        .strip_prefix(&prefix)
         .and_then(|content| content.strip_suffix(".html"))
         .is_some_and(|hash| {
             hash.len() == 64
-                && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                && hash
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         })
-}
-
-fn decode_state(value: Value) -> Result<RssStateDocument, String> {
-    let mut document: RssStateDocument = serde_json::from_value(value)
-        .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
-    if document.schema_version != crate::models::CURRENT_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported RSS state schema version {}",
-            document.schema_version
-        ));
-    }
-    normalize_state(&mut document)?;
-    Ok(document)
-}
-
-/// Validate a persisted RSS document using the same limits and schema version
-/// as live reads. Backup validation uses this function as well.
-pub(crate) fn validate_rss_state(value: &Value) -> Result<(), String> {
-    decode_state(value.clone()).map(|_| ())
-}
-
-fn normalize_state(document: &mut RssStateDocument) -> Result<(), String> {
-    if document.schema_version != crate::models::CURRENT_SCHEMA_VERSION {
-        return Err(format!(
-            "Unsupported RSS state schema version {}",
-            document.schema_version
-        ));
-    }
-    if document.articles.len() > MAX_TRACKED_ARTICLES {
-        return Err("RSS article state exceeds the supported limit".to_owned());
-    }
-    let mut subscriptions = std::collections::HashMap::new();
-    for subscription in document.subscriptions.drain(..) {
-        discovery::validate_source_id(&subscription.source_id)?;
-        validate_filter(&subscription.filter)?;
-        subscriptions.insert(subscription.source_id, subscription.filter);
-    }
-    document.subscriptions = subscriptions
-        .into_iter()
-        .map(|(source_id, filter)| RssSubscriptionState { source_id, filter })
-        .collect();
-    document
-        .subscriptions
-        .sort_by(|left, right| left.source_id.cmp(&right.source_id));
-
-    let mut articles = std::collections::HashMap::new();
-    for article in document.articles.drain(..) {
-        discovery::validate_source_id(&article.source_id)?;
-        validate_opaque_id(&article.article_id, "articleId")?;
-        if article.content_ref.as_ref().is_some_and(|reference| {
-            !is_rss_article_resource_ref(&article.source_id, &article.article_id, reference)
-        }) {
-            return Err("RSS article state contains an invalid resource ref".to_owned());
-        }
-        articles.insert(
-            (article.source_id.clone(), article.article_id.clone()),
-            article,
-        );
-    }
-    document.articles = articles.into_values().collect();
-    document.articles.sort_by(|left, right| {
-        left.source_id
-            .cmp(&right.source_id)
-            .then_with(|| left.article_id.cmp(&right.article_id))
-    });
-    Ok(())
 }
 
 fn default_article_state(source_id: &str, article_id: &str) -> RssArticleState {
@@ -808,14 +552,6 @@ fn matches_filter(filter: &str, article: Option<&RssArticleState>) -> bool {
         "read" => article.is_some_and(|article| article.is_read),
         "favorites" => article.is_some_and(|article| article.is_favorite),
         _ => false,
-    }
-}
-
-fn validate_filter(filter: &str) -> Result<(), String> {
-    if matches!(filter, "all" | "unread" | "read" | "favorites") {
-        Ok(())
-    } else {
-        Err("RSS filter must be all, unread, read, or favorites".to_owned())
     }
 }
 
@@ -955,3 +691,61 @@ fn validate_opaque_id(id: &str, field: &str) -> Result<(), String> {
     }
     Ok(())
 }
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+use tauri::{Emitter, State};
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn list_rss_categories(
+    app: tauri::AppHandle,
+    source_id: String,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    let _operation = service.operation_read().await;
+    let result = crate::rss::load_rss_categories(&service, &source_id).await?;
+    let _ = app.emit(
+        "resource-updated",
+        json!({ "kind": "rssCategories", "sourceId": source_id }),
+    );
+    let _ = app.emit("resource-updated", json!({"kind":"rssState","sourceId":source_id}));
+    Ok(result)
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn list_rss_articles(
+    app: tauri::AppHandle,
+    source_id: String,
+    category_id: String,
+    page: Option<u32>,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    let _operation = service.operation_read().await;
+    let result =
+        crate::rss::load_rss_articles(&service, &source_id, &category_id, page.unwrap_or(1))
+            .await?;
+    let _ = app.emit(
+        "resource-updated",
+        json!({ "kind": "rssArticles", "sourceId": source_id, "categoryId": category_id }),
+    );
+    Ok(result)
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn open_rss_article(
+    app: tauri::AppHandle,
+    source_id: String,
+    article_id: String,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    let _operation = service.operation_read().await;
+    let result = crate::rss::read_standard_feed_article(&service, &source_id, &article_id).await?;
+    let _ = app.emit(
+        "resource-updated",
+        json!({ "kind": "rssArticle", "resource": result["resource"] }),
+    );
+    Ok(result)
+}
+
+use crate::source_catalog::SourceRecord;

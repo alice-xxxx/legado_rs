@@ -1,9 +1,7 @@
 //! 校验并保存 HTTP 朗读配置及其安全元数据。
-use std::collections::HashSet;
 
 use serde_json::{json, Value};
 
-const DOCUMENT_SCHEMA_VERSION: u64 = 1;
 pub const MAX_CONFIG_BYTES: usize = 1024 * 1024;
 const MAX_NAME_CHARS: usize = 256;
 const MAX_URL_BYTES: usize = 64 * 1024;
@@ -23,97 +21,6 @@ pub fn import_configs(config_json: &str) -> Result<Vec<(Value, Value)>, String> 
         return Err("HttpTTS import must contain at least one configuration".to_owned());
     }
     configs.into_iter().map(imported_entry).collect()
-}
-
-pub fn list_configs(document: &Value) -> Result<Value, String> {
-    let configs = document_configs(document)?;
-    let items = configs
-        .iter()
-        .map(|entry| {
-            json!({
-                "id": entry["id"],
-                "name": entry["name"],
-                "enabled": true,
-            })
-        })
-        .collect::<Vec<_>>();
-    Ok(json!({ "items": items }))
-}
-
-pub fn validate_document(document: &Value) -> Result<(), String> {
-    if document.get("schemaVersion").and_then(Value::as_u64) != Some(DOCUMENT_SCHEMA_VERSION) {
-        return Err("HttpTTS configuration document has an unsupported schema".to_owned());
-    }
-    document_configs(document).map(|_| ())
-}
-
-pub fn find_config(document: &Value, id: &str) -> Result<Value, String> {
-    let configs = document_configs(document)?;
-    configs
-        .iter()
-        .find(|entry| entry["id"].as_str() == Some(id))
-        .map(|entry| entry["config"].clone())
-        .ok_or_else(|| "HttpTTS configuration was not found".to_owned())
-}
-
-pub fn empty_document() -> Value {
-    json!({
-        "schemaVersion": DOCUMENT_SCHEMA_VERSION,
-        "configs": [],
-    })
-}
-
-fn document_configs(document: &Value) -> Result<&[Value], String> {
-    if document.is_null() {
-        return Ok(&[]);
-    }
-    if document.get("schemaVersion").and_then(Value::as_u64) != Some(DOCUMENT_SCHEMA_VERSION) {
-        return Err("HttpTTS configuration document has an unsupported schema".to_owned());
-    }
-    let configs = document
-        .get("configs")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "HttpTTS configuration document is invalid".to_owned())?;
-    let mut ids = HashSet::with_capacity(configs.len());
-    for entry in configs {
-        validate_entry(entry)?;
-        let id = entry["id"]
-            .as_str()
-            .ok_or_else(|| "HttpTTS configuration ID is invalid".to_owned())?;
-        if !ids.insert(id) {
-            return Err("HttpTTS configuration document contains a duplicate ID".to_owned());
-        }
-    }
-    Ok(configs)
-}
-
-fn validate_entry(entry: &Value) -> Result<(), String> {
-    let id = entry
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "HttpTTS configuration ID is invalid".to_owned())?;
-    if id.len() != 32
-        || !id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        return Err("HttpTTS configuration ID is invalid".to_owned());
-    }
-    if entry.get("enabled") != Some(&Value::Bool(true)) {
-        return Err("HttpTTS configuration enabled state is invalid".to_owned());
-    }
-    let config = entry
-        .get("config")
-        .ok_or_else(|| "HttpTTS configuration payload is missing".to_owned())?;
-    let config_name = validate_raw_config(config)?;
-    let name = entry
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or_else(|| "HttpTTS configuration name is invalid".to_owned())?;
-    if name != config_name {
-        return Err("HttpTTS configuration name does not match its payload".to_owned());
-    }
-    Ok(())
 }
 
 fn validate_raw_config(config: &Value) -> Result<String, String> {

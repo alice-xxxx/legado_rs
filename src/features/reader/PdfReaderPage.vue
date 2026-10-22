@@ -12,11 +12,9 @@ const props = withDefaults(defineProps<{
   src: string;
   pageIndex: number;
   defaultZoom?: PdfZoom;
-  initialPassword?: string;
   findOpen?: boolean;
 }>(), {
   defaultZoom: "page-fit",
-  initialPassword: "",
   findOpen: false,
 });
 
@@ -24,7 +22,6 @@ const emit = defineEmits<{
   loaded: [pageCount: number];
   pageSelected: [pageIndex: number];
   "update:findOpen": [open: boolean];
-  initialPasswordUsed: [];
   closeReader: [];
 }>();
 
@@ -55,7 +52,6 @@ const renderError = ref("");
 let loadingTask: PDFDocumentLoadingTask | null = null;
 let renderTask: RenderTask | null = null;
 let passwordUpdater: ((password: string) => void) | null = null;
-let initialPasswordUsed = false;
 let resizeObserver: ResizeObserver | null = null;
 let disposed = false;
 let renderRevision = 0;
@@ -214,13 +210,6 @@ async function openDocument(): Promise<void> {
     loadingTask = task;
     task.onPassword = (updatePassword: (password: string) => void, reason: number) => {
       if (disposed || loadingTask !== task) return;
-      if (!initialPasswordUsed && props.initialPassword) {
-        const initialPassword = props.initialPassword;
-        initialPasswordUsed = true;
-        emit("initialPasswordUsed");
-        updatePassword(initialPassword);
-        return;
-      }
       passwordUpdater = updatePassword;
       passwordError.value = reason === PasswordResponses.INCORRECT_PASSWORD ? "密码不正确，请再试一次。" : "输入 PDF 密码后继续。";
       passwordInput.value = "";

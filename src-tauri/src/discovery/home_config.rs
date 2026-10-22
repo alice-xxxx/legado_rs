@@ -22,7 +22,7 @@ pub(crate) async fn validate_home_sources(
 ) -> Result<(), String> {
     for tab in &document.tabs {
         for section in &tab.sections {
-            let source = service.source_record(&section.source_id).await?;
+            let source = service.sources.get(&section.source_id).await?;
             if !source.enabled {
                 return Err("A home section source is disabled".to_owned());
             }

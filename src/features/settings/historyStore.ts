@@ -7,14 +7,14 @@ import type { AppBootstrap, BookmarkRecord, HistoryResource, ReadingHistoryResou
 export const history = ref<HistoryResource>({
   schemaVersion: 2,
   reading: { sessions: [], books: [], days: [], totalDurationMs: 0, totalSessions: 0 },
-  search: { entries: [], processedSearchIds: [] }, bookmarks: {},
+  search: { entries: [] }, bookmarks: {},
 });
 let requestId=0, restoreRevision=0, readRevision=0, searchRevision=0, readingRevision=0;
 
 export async function removeHistoryBookmark(bookId:string,bookmarkId:string):Promise<void>{
   const restore=restoreRevision;
   ++requestId;
-  await modifyDatabase([{ action: "delete", table: "bookmarks", filter: { book_id: bookId, id: bookmarkId } }]);
+  await modifyDatabase([{ operation: "deleteBookmark", bookId, id: bookmarkId }], { wait: true });
   if(restore!==restoreRevision)return;
   const next=(history.value.bookmarks[bookId] ?? []).filter(record=>record.id!==bookmarkId);
   if(next.length)history.value.bookmarks[bookId]=next;else delete history.value.bookmarks[bookId];
@@ -22,14 +22,7 @@ export async function removeHistoryBookmark(bookId:string,bookmarkId:string):Pro
 export async function saveHistoryBookmark(bookId:string,bookmark:BookmarkRecord):Promise<void>{
   const restore=restoreRevision;
   ++requestId;
-  const existing = history.value.bookmarks[bookId] ?? [];
-  const position = existing.findIndex(item => item.id === bookmark.id);
-  await modifyDatabase([{ action: "upsert", table: "bookmarks", keys: ["id"], values: {
-    id: bookmark.id, book_id: bookId, position: position < 0 ? existing.length : position,
-    chapter_id: bookmark.chapterId, chapter_index: bookmark.chapterIndex, chapter_title: bookmark.chapterTitle,
-    offset: bookmark.offset ?? null, page_id: bookmark.pageId ?? null, anchor: bookmark.anchor ?? null,
-    note: bookmark.note, orphaned: bookmark.orphaned ?? false, created_at_ms: bookmark.createdAtMs, updated_at_ms: bookmark.updatedAtMs,
-  } }]);
+  await modifyDatabase([{ operation: "saveBookmark", bookId, bookmark }], { wait: true });
   if(restore!==restoreRevision)return;
   const records=history.value.bookmarks[bookId] ??= [];
   const index=records.findIndex(record=>record.id===bookmark.id);
@@ -38,7 +31,7 @@ export async function saveHistoryBookmark(bookId:string,bookmark:BookmarkRecord)
 export async function recordReadingSession(session:ReadingHistoryResource["sessions"][number]):Promise<void>{
   const restore=restoreRevision;
   ++requestId;
-  await modifyDatabase([{ action: "recordSession", session }]);
+  await modifyDatabase([{ operation: "recordSession", session }], { wait: true });
   const revision=++readingRevision;
   const next=await readReadingHistory();
   if(restore===restoreRevision && revision===readingRevision)history.value.reading=next;
@@ -46,7 +39,7 @@ export async function recordReadingSession(session:ReadingHistoryResource["sessi
 export async function removeSearchHistory(query?:string):Promise<void>{
   const restore=restoreRevision;
   ++requestId;
-  await modifyDatabase([{ action: "delete", table: "search_history", filter: query === undefined ? {} : { query } }]);
+  await modifyDatabase([{ operation: "clearSearchHistory", query }], { wait: true });
   if(restore===restoreRevision)await updateHistory("search");
 }
 
@@ -70,8 +63,7 @@ export async function loadHistory():Promise<void>{
     restoreRevision++;requestId++;readingRevision++;searchRevision++;
     void updateHistory().catch(console.error);
   });
-  await listen<{requestId?:number;part?:string}>("history-updated",({payload})=>{
-    // 搜索通知没有 requestId，收到通知后直接刷新对应的历史部分。
-    if(payload.requestId===undefined||payload.requestId===0)void updateHistory(payload.part).catch(console.error);
+  await listen<{part?:string}>("history-updated",({payload})=>{
+    void updateHistory(payload.part).catch(console.error);
   });
 }

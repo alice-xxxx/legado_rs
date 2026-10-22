@@ -1,28 +1,32 @@
 //! 资源引用及其模块入口。
 //! 持久化稳定的 resource:// 标识，仅在响应时生成运行时 URL。
 
+pub(crate) mod appearance;
+pub(crate) mod cache;
+mod chapter;
+pub(crate) use chapter::{chapter_content, cache_chapter_files};
+
 use std::fmt;
 
 use serde::Serialize;
 
+pub(crate) const CONTENT_TYPES: [&str; 6] = ["text", "image", "audio", "video", "html", "pdf"];
 mod json;
-pub(crate) mod content;
 mod media_proxy;
 mod reader_html;
 mod server;
 mod store;
 mod tts_stream;
-mod validation;
+pub(crate) mod validation;
 
-pub(crate) use json::validate_persistable_json_bytes;
-pub use server::ResourceServer;
-pub use tts_stream::{TtsStreamBoundary, TtsStreamProgress};
 use server::byte_response;
+pub use server::ResourceServer;
 pub use store::ResourceStore;
 pub(crate) use store::ResourceStoreWriterGuard;
+pub use tts_stream::TtsStreamWriter;
 
-use validation::validate_public_path;
 pub(crate) use validation::check_path_no_symlink;
+use validation::validate_public_path;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ResourceRef(String);

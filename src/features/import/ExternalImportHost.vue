@@ -1,36 +1,24 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, proxyRefs, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, proxyRefs, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppBootstrap } from "../../api/types";
 import { notify } from "../../app/notifications";
 import { getFrontendRestoreRevision, shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { getReaderSession } from "../reader/readerSession";
 import { useLocalBookImport } from "../books/useLocalBookImport";
-import PdfPasswordPrompt from "../books/PdfPasswordPrompt.vue";
 import router, { routeNames } from "../../router";
 import { useExternalImportActions } from "./useExternalImportActions";
 import { installLocalBookImportSession } from "./localBookImportSession";
 import ImportRequestBanners from "./ImportRequestBanners.vue";
 import DeepLinkImportDialog from "./DeepLinkImportDialog.vue";
 
-type PdfPasswordPromptContext = {
-  pdfPasswordPromptOpen: boolean;
-  pdfPasswordInput: string;
-  pdfPasswordBusy: boolean;
-  pdfPasswordError: string;
-  submitPdfPassword: () => void | Promise<void>;
-  cancelPdfPasswordPrompt: () => void;
-};
-
 const errorText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const bootstrapped = ref(false);
-const externalFileRequestBusy = ref(false);
-const pdfImportPasswords = new Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>();
-const pendingPdfPassword = ref("");
 const currentRoute = router.currentRoute;
 const sourceImportOpen = computed(() => currentRoute.value.name === routeNames.sources
   && (currentRoute.value.query.sourceImport === "url" || currentRoute.value.query.sourceImport === "new"));
 const unlisteners: UnlistenFn[] = [];
+const stages = { read: "读取文件", copy: "复制文件", parse: "解析文件", cache: "生成缓存", save: "登记书架", done: "完成", error: "失败" };
 let disposed = false;
 
 
@@ -39,24 +27,11 @@ function refreshRestoredShelf(_snapshot: AppBootstrap): void {
   bootstrapped.value = true;
 }
 
-const localBookImportFeature = useLocalBookImport({
-  externalFileRequestBusy,
-  getRestoreRevision: getFrontendRestoreRevision,
-  pdfImportPasswords,
-  notify,
-  errorText,
-});
+const localBookImportFeature = useLocalBookImport({ notify });
 const removeLocalBookImportSession = installLocalBookImportSession({
   localBookImportBusy: localBookImportFeature.localBookImportBusy,
-  pdfPasswordPromptOpen: localBookImportFeature.pdfPasswordPromptOpen,
-  pdfPasswordBusy: localBookImportFeature.pdfPasswordBusy,
-  pdfPasswordError: localBookImportFeature.pdfPasswordError,
-  pdfImportPasswords,
-  externalFileRequestBusy,
   importLocalBook: localBookImportFeature.importLocalBook,
   requestLinkImport: text => externalImports.requestLinkImport(text),
-  submitPdfPassword: localBookImportFeature.submitPdfPassword,
-  cancelPdfPasswordPrompt: localBookImportFeature.cancelPdfPasswordPrompt,
 });
 
 const externalImports = proxyRefs(useExternalImportActions({
@@ -65,35 +40,10 @@ const externalImports = proxyRefs(useExternalImportActions({
   getRestoreRevision: getFrontendRestoreRevision,
   getReaderSession,
   localBookImportBusy: localBookImportFeature.localBookImportBusy,
-  externalFileRequestBusy,
-  openPdfPasswordPrompt: localBookImportFeature.openPdfPasswordPrompt,
-  acceptLocalBookImport: localBookImportFeature.acceptLocalBookImport,
   sourceImportOpen,
-  pdfPasswordPromptOpen: localBookImportFeature.pdfPasswordPromptOpen,
   notify,
   errorText,
 }));
-
-const pdfPasswordPromptContext: PdfPasswordPromptContext = {
-  get pdfPasswordPromptOpen() { return localBookImportFeature.pdfPasswordPromptOpen.value; },
-  get pdfPasswordInput() { return pendingPdfPassword.value; },
-  set pdfPasswordInput(value: string) { pendingPdfPassword.value = value; },
-  get pdfPasswordBusy() { return localBookImportFeature.pdfPasswordBusy.value; },
-  get pdfPasswordError() { return localBookImportFeature.pdfPasswordError.value; },
-  submitPdfPassword: () => {
-    const password = pendingPdfPassword.value;
-    pendingPdfPassword.value = "";
-    if (password) void localBookImportFeature.submitPdfPassword(password);
-  },
-  cancelPdfPasswordPrompt: () => {
-    pendingPdfPassword.value = "";
-    void localBookImportFeature.cancelPdfPasswordPrompt();
-  },
-};
-
-watch(localBookImportFeature.pdfPasswordPromptOpen, (open, wasOpen) => {
-  if (open && !wasOpen) pendingPdfPassword.value = "";
-});
 
 function ignorePendingImportLink(): void {
   externalImports.pendingImportLinks.shift();
@@ -105,7 +55,7 @@ onMounted(() => {
       const unlistenAppState = await listen<AppBootstrap>("app-state-updated", (event) => refreshRestoredShelf(event.payload));
       if (disposed) unlistenAppState();
       else unlisteners.push(unlistenAppState);
-      void externalImports.setupExternalFiles();
+      await localBookImportFeature.setupImports();
       void externalImports.setupImportLinks();
       const bootstrapRestoreRevision = getFrontendRestoreRevision();
       if (disposed || bootstrapRestoreRevision !== getFrontendRestoreRevision()) return;
@@ -119,26 +69,25 @@ onMounted(() => {
 onBeforeUnmount(() => {
   disposed = true;
   externalImports.dispose();
-  localBookImportFeature.cancelPendingPdfImportOnUnmount();
+  localBookImportFeature.dispose();
   removeLocalBookImportSession();
-  for (const entry of pdfImportPasswords.values()) clearTimeout(entry.timer);
-  pdfImportPasswords.clear();
   for (const unlisten of unlisteners.splice(0)) unlisten();
 });
 </script>
 
 <template>
+  <aside v-if="Object.keys(localBookImportFeature.importingFiles.value).length" class="file-import-progress" aria-live="polite">
+    <div v-for="item in localBookImportFeature.importingFiles.value" :key="item.file" role="status">
+      <span>{{ item.file }} · {{ stages[item.stage] }}<template v-if="item.total"> {{ Math.floor((item.completed ?? 0) * 100 / item.total) }}%</template></span>
+      <progress v-if="item.total" :value="item.completed" :max="item.total" />
+    </div>
+  </aside>
   <ImportRequestBanners
-    :pending-external-files="externalImports.pendingExternalFiles"
-    :external-file-request-busy="externalImports.externalFileRequestBusy"
-    :external-file-request-blocked="externalImports.externalFileRequestBlocked"
     :pending-import-links="externalImports.pendingImportLinks"
     :import-link-opening="externalImports.importLinkOpening"
     :import-link-blocked="externalImports.importLinkBlocked"
     :recovery-required="shelfBatchRecoveryRequired"
     :source-import-open="sourceImportOpen || externalImports.importDialogOpen"
-    :accept-external-file-request="externalImports.acceptExternalFileRequest"
-    :ignore-external-file-request="externalImports.ignoreExternalFileRequest"
     :open-pending-import-link="externalImports.openPendingImportLink"
     :ignore-pending-import-link="ignorePendingImportLink"
   />
@@ -148,5 +97,10 @@ onBeforeUnmount(() => {
     :entries="externalImports.importEntries" v-model:selected-keys="externalImports.selectedImportKeys"
     @save="externalImports.savePendingImport" @cancel="externalImports.cancelPendingImport()" @retry="externalImports.retryPendingImport"
   />
-  <PdfPasswordPrompt :context="pdfPasswordPromptContext" />
 </template>
+
+<style scoped>
+.file-import-progress { position: fixed; z-index: 60; bottom: max(16px, var(--safe-bottom)); left: 50%; transform: translateX(-50%); width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--app-line); border-radius: 12px; background: var(--app-surface); box-shadow: 0 6px 24px #0002; }
+.file-import-progress span { display: block; overflow-wrap: anywhere; }
+.file-import-progress progress { width: 100%; }
+</style>

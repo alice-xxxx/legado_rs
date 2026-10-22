@@ -3,7 +3,8 @@ use super::{
     LocalImportOptions,
 };
 use crate::{
-    application::{ApplicationService, EngineFuture, SourceExecutor},
+    application::ApplicationService,
+    source_engine::{EngineFuture, SourceExecutor},
     source_engine::SourceEngineRequest,
 };
 use serde_json::{json, Value};
@@ -44,24 +45,28 @@ fn archive(entries: &[(&str, &[u8])]) -> Vec<u8> {
 
 async fn import(service: &ApplicationService, file: &Path) -> Value {
     let response = service
-        .import_local_book(file, LocalImportOptions::default())
+        .import_book_file(
+            std::fs::File::open(file).unwrap(),
+            file.into(),
+            LocalImportOptions::default(),
+        )
         .await
         .unwrap();
-    imported_book(service,&response)
+    imported_book(service, &response)
 }
 
-fn imported_book(service:&ApplicationService,response:&Value)->Value {
-    let id=response["book"]["bookId"].as_str().unwrap();
-    let reference=service.resource_store().book_ref(id).unwrap();
-    let stored=service.resource_store().read_raw_document(&reference).unwrap();
-    let kind=service.resource_store().book_type(id).unwrap();
-    let mut view=crate::resources::content::public_book_view(&stored,&kind).unwrap();
-    service.resource_server().materialize_json(&mut view).unwrap();
-    view
+fn imported_book(service: &ApplicationService, response: &str) -> Value {
+    let id = response;
+    let stored = service
+        .resource_store()
+        .database().book(id)
+        .unwrap().unwrap();
+    serde_json::to_value(stored).unwrap()
 }
 
-async fn chapter(book: &Value, index: usize) -> String {
-    let response = reqwest::get(book["chapters"][index]["resource"]["src"].as_str().unwrap())
+async fn chapter(service:&ApplicationService,book: &Value, index: usize) -> String {
+    let reference=crate::resources::ResourceRef::new(book["chapters"][index]["url"].as_str().unwrap()).unwrap();
+    let response = reqwest::get(service.resource_server().url_for(&reference))
         .await
         .unwrap();
     assert!(response.status().is_success());
@@ -91,41 +96,42 @@ async fn txt_uses_saved_rules_and_reimport_preserves_progress_and_groups() {
     std::fs::write(&file, "前言\n【开场】\n第一段。\n【结尾】\n第二段。").unwrap();
     let book = import(&service, &file).await;
     let id = book["id"].as_str().unwrap();
-    assert_eq!(book["chapterCount"], 3);
+    assert_eq!(book["chapters"].as_array().unwrap().len(), 3);
     assert_eq!(book["chapters"][1]["title"], "【开场】");
-    assert_eq!(chapter(&book, 1).await, "第一段。");
+    assert_eq!(chapter(&service,&book, 1).await, "第一段。");
     service.save_progress(id, json!({"chapterId": "chapter-00002", "chapterIndex": 1, "offset": 3, "updatedAtMs": 1234})).await.unwrap();
-    service
-        .save_shelf(
-            json!({"schemaVersion": 1, "books": [{"id":id,"groups":["本地"]}], "groups":["本地"]}),
-        )
-        .await
-        .unwrap();
+    service.resource_store().database().submit(serde_json::from_value(json!([
+        {"operation":"saveShelf","shelf":{"schemaVersion":1,"books":[{"id":id,"groups":["本地"]}],"groups":["本地"]}}
+    ])).unwrap()).unwrap().await.unwrap();
     let copy = dir.path().join("另一文件名.txt");
     std::fs::copy(&file, &copy).unwrap();
     let again = import(&service, &copy).await;
     assert_eq!(again["id"], id);
     assert_eq!(again["progress"]["offset"], 3);
-    let shelf = service
-        .resource_store()
-        .read_json_ref(&service.resource_store().shelf_ref())
-        .await
-        .unwrap();
-    assert_eq!(shelf["books"].as_array().unwrap().len(), 1);
-    assert_eq!(shelf["books"][0]["groups"], json!(["本地"]));
+    service.resource_store().database().assert_shelf(&[id]);
+    service.resource_store().database().assert_shelf_groups(id, &["本地"]);
     assert!(dir
         .path()
         .join("cache/text")
         .join(id)
         .join("original.txt")
         .is_file());
-    let raw = service.resource_store().read_raw_document(&service.resource_store().book_ref(id).unwrap()).unwrap();
-    assert!(!dir.path().join("cache/text").join(id).join(format!("{id}.json")).exists());
+    let raw = service
+        .resource_store()
+        .database().book(id)
+        .unwrap().unwrap();
+    let raw=serde_json::to_value(raw).unwrap();
+    assert!(!dir
+        .path()
+        .join("cache/text")
+        .join(id)
+        .join(format!("{id}.json"))
+        .exists());
     assert!(raw["chapters"][1]["url"]
         .as_str()
         .unwrap()
         .ends_with(".txt"));
-    assert!(raw["chapters"][1].get("resource").is_none());
+    assert!(raw["chapters"][1]["url"].as_str().unwrap().starts_with("resource://cache/text/"));
 }
 
 #[tokio::test]
@@ -140,16 +146,20 @@ async fn txt_without_headings_splits_utf16_and_rejects_blank_input() {
     .concat();
     std::fs::write(&file, bytes).unwrap();
     let book = import(&service, &file).await;
-    assert!(book["chapterCount"].as_u64().unwrap() > 1);
+    assert!(book["chapters"].as_array().unwrap().len() > 1);
     let mut actual = String::new();
-    for index in 0..book["chapterCount"].as_u64().unwrap() as usize {
-        actual.push_str(&chapter(&book, index).await);
+    for index in 0..book["chapters"].as_array().unwrap().len() {
+        actual.push_str(&chapter(&service,&book, index).await);
     }
     assert_eq!(actual, text);
     let blank = dir.path().join("空白.txt");
     std::fs::write(&blank, " \n\t").unwrap();
     assert!(service
-        .import_local_book(&blank, LocalImportOptions::default())
+        .import_book_file(
+            std::fs::File::open(&blank).unwrap(),
+            blank.clone(),
+            LocalImportOptions::default()
+        )
         .await
         .is_err());
     assert_eq!(
@@ -177,9 +187,9 @@ async fn epub_navigation_splits_shared_xhtml_and_keeps_assets_and_metadata() {
     assert_eq!(book["title"], "Test & Book");
     assert_eq!(book["intro"], "Intro");
     assert_eq!(book["contentType"], "html");
-    assert_eq!(book["chapterCount"], 2);
-    let first = chapter(&book, 0).await;
-    let second = chapter(&book, 1).await;
+    assert_eq!(book["chapters"].as_array().unwrap().len(), 2);
+    let first = chapter(&service,&book, 0).await;
+    let second = chapter(&service,&book, 1).await;
     assert!(first.contains("<em>emphasis</em>") && !first.contains("Beta"));
     assert!(first.contains("data-legado-chapter-id=\"chapter-00002\""));
     assert!(!first.contains("Shared file") && second.contains("Beta") && !second.contains("bad()"));
@@ -198,17 +208,12 @@ async fn epub_navigation_splits_shared_xhtml_and_keeps_assets_and_metadata() {
             .as_ref(),
         b"asset-fixture"
     );
-    assert!(reqwest::get(book["coverSrc"].as_str().unwrap())
+    assert!(reqwest::get(service.resource_server().url_for(&service.resource_store().asset_ref(book["id"].as_str().unwrap(), book["cover"].as_str().unwrap().rsplit('/').next().unwrap()).unwrap()))
         .await
         .unwrap()
         .status()
         .is_success());
-    let shelf = service
-        .resource_store()
-        .read_json_ref(&service.resource_store().shelf_ref())
-        .await
-        .unwrap();
-    assert_eq!(shelf["books"][0]["id"], book["id"]);
+    service.resource_store().database().assert_shelf(&[book["id"].as_str().unwrap()]);
 }
 
 #[tokio::test]
@@ -231,16 +236,17 @@ async fn cbz_caches_naturally_ordered_webp_pages_in_one_chapter() {
     .unwrap();
     let book = import(&service, &file).await;
     assert_eq!(book["contentType"], "image");
-    assert_eq!(book["chapterCount"], 1);
+    assert_eq!(book["chapters"].as_array().unwrap().len(), 1);
     let pages = book["chapters"][0]["pages"].as_array().unwrap();
     assert_eq!(pages.len(), 3);
     for (index, color) in [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255]]
         .iter()
         .enumerate()
     {
-        let url = pages[index]["src"].as_str().unwrap();
+        let url = pages[index]["url"].as_str().unwrap();
         assert!(url.ends_with(&format!("c001_p{:03}.webp", index + 1)));
-        let bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
+        let reference=crate::resources::ResourceRef::new(url).unwrap();
+        let bytes = reqwest::get(service.resource_server().url_for(&reference)).await.unwrap().bytes().await.unwrap();
         assert_eq!(
             image::load_from_memory(&bytes)
                 .unwrap()
@@ -255,20 +261,19 @@ async fn cbz_caches_naturally_ordered_webp_pages_in_one_chapter() {
 #[tokio::test]
 async fn malformed_archive_leaves_no_library_entry_or_partial_cache() {
     let (dir, service) = fixture().await;
-    for extension in ["epub", "cbz", "pdf"] {
+    for extension in ["epub", "cbz"] {
         let file = dir.path().join(format!("broken.{extension}"));
         std::fs::write(&file, b"broken").unwrap();
         assert!(service
-            .import_local_book(&file, LocalImportOptions::default())
+            .import_book_file(
+                std::fs::File::open(&file).unwrap(),
+                file.clone(),
+                LocalImportOptions::default()
+            )
             .await
             .is_err());
     }
-    let shelf = service
-        .resource_store()
-        .read_json_ref(&service.resource_store().shelf_ref())
-        .await
-        .unwrap();
-    assert!(shelf["books"].as_array().unwrap().is_empty());
+    service.resource_store().database().assert_shelf(&[]);
     for kind in ["html", "image", "pdf"] {
         assert!(std::fs::read_dir(dir.path().join("cache").join(kind))
             .map_or(true, |dir| dir.count() == 0));
@@ -351,20 +356,24 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     let file = dir.path().join("pages.pdf");
     pdf_document().save(&file).unwrap();
     let book = import(&service, &file).await;
-    assert_eq!(book["chapterCount"], 2);
-    assert_eq!(book["chapters"][1]["pdfPage"]["pageIndex"], 1);
+    assert_eq!(book["chapters"].as_array().unwrap().len(), 0);
+    assert!(book["chapters"].as_array().unwrap().is_empty());
     let id = book["id"].as_str().unwrap();
     let folder = dir.path().join("cache/pdf").join(id);
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
-    let raw = service.resource_store().read_raw_document(&service.resource_store().book_ref(id).unwrap()).unwrap();
+    let raw = service
+        .resource_store()
+        .database().book(id)
+        .unwrap().unwrap();
+    let raw=serde_json::to_value(raw).unwrap();
     assert_eq!(raw["url"], "original.pdf");
-    assert_eq!(raw["pageCount"], 2);
-    assert!(raw.get("chapters").is_none());
+    assert_eq!(raw["pageCount"], 0);
+    assert!(raw["chapters"].as_array().unwrap().is_empty());
     std::fs::remove_file(folder.join("original.pdf")).unwrap();
     assert_eq!(import(&service, &file).await["id"], id);
     assert_eq!(std::fs::read_dir(&folder).unwrap().count(), 1);
     let response = reqwest::Client::new()
-        .get(book["chapters"][0]["pdfPage"]["src"].as_str().unwrap())
+        .get(service.resource_server().url_for(&service.resource_store().asset_ref(id,"original.pdf").unwrap()))
         .header("Range", "bytes=0-4")
         .send()
         .await
@@ -375,16 +384,11 @@ async fn pdf_keeps_one_original_and_serves_page_index_and_range_requests() {
     let reopened = ApplicationService::open_with_executor(dir.path(), Arc::new(Offline))
         .await
         .unwrap();
-    let shelf = reopened
-        .resource_store()
-        .read_json_ref(&reopened.resource_store().shelf_ref())
-        .await
-        .unwrap();
-    assert_eq!(shelf["books"][0]["id"], id);
+    reopened.resource_store().database().assert_shelf(&[&id]);
 }
 
 #[tokio::test]
-async fn encrypted_pdf_can_retry_password_without_caching_password_or_partial_book() {
+async fn encrypted_pdf_is_copied_without_opening_it_or_requesting_a_password() {
     let (dir, service) = fixture().await;
     let file = dir.path().join("encrypted.pdf");
     let mut doc = pdf_document();
@@ -397,30 +401,92 @@ async fn encrypted_pdf_can_retry_password_without_caching_password_or_partial_bo
     .unwrap();
     doc.encrypt(&state).unwrap();
     doc.save(&file).unwrap();
-    let response = service
-        .import_local_book_with_challenge(
-            crate::application::PickerFile::from_existing_path(file),
+    let book = import(&service, &file).await;
+    let id = book["id"].as_str().unwrap();
+    assert_eq!(
+        std::fs::read(dir.path().join("cache/pdf").join(id).join("original.pdf")).unwrap(),
+        std::fs::read(file).unwrap()
+    );
+    let raw = service
+        .resource_store()
+        .database().book(id)
+        .unwrap().unwrap();
+    let raw=serde_json::to_value(raw).unwrap();
+    assert_eq!(raw["pageCount"], 0);
+    assert!(book["chapters"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn direct_copy_reports_progress_and_imports_into_the_shelf_without_staging() {
+    let (dir, service) = fixture().await;
+    let source = dir.path().join("book.txt");
+    let text = "第一章 开始\n内容。\n第二章 继续\n下一章。";
+    std::fs::write(&source, text).unwrap();
+    let (sender, mut updates) = tokio::sync::mpsc::unbounded_channel();
+    let progress = Arc::new(move |stage: &str, completed: u64, total: u64| {
+        sender.send((stage.to_owned(), completed, total)).unwrap();
+    });
+    let book = super::import_local_book(
+        service.resource_store(),
+        std::fs::File::open(&source).unwrap(),
+        source.clone(),
+        &LocalImportOptions::default(),
+        progress,
+    )
+    .await
+    .unwrap();
+    let stages = std::iter::from_fn(|| updates.try_recv().ok()).collect::<Vec<_>>();
+    assert!(stages
+        .iter()
+        .any(|(stage, completed, total)| stage == "copy"
+            && completed == total
+            && *total == text.len() as u64));
+    assert!(stages
+        .iter()
+        .any(|(stage, completed, total)| stage == "cache" && completed == total && *total > 0));
+    assert_eq!(stages.last().unwrap().0, "save");
+    let id = service
+        .import_book_file(
+            std::fs::File::open(&source).unwrap(),
+            source.clone(),
             LocalImportOptions::default(),
         )
         .await
         .unwrap();
-    assert_eq!(response["passwordRequired"], true);
-    let token = response["importToken"].as_str().unwrap();
-    assert!(service
-        .retry_pending_pdf_import(token, "wrong".into())
-        .await
-        .is_err());
-    let response = service
-        .retry_pending_pdf_import(token, "user-fixture".into())
-        .await
-        .unwrap();
-    let book=imported_book(&service,&response);
-    assert_eq!(book["chapterCount"], 2);
-    let reference = service.resource_store().book_ref(response["book"]["bookId"].as_str().unwrap()).unwrap();
-    let raw = service.resource_store().read_raw_document(&reference).unwrap().to_string();
-    assert!(!raw.contains("user-fixture") && !raw.contains("owner-fixture"));
-    assert!(service
-        .retry_pending_pdf_import(token, "user-fixture".into())
-        .await
-        .is_err());
+    assert_eq!(id, book);
+    service.resource_store().database().assert_shelf(&[&id]);
+    assert_eq!(
+        std::fs::read(dir.path().join("cache/text").join(id).join("original.txt")).unwrap(),
+        text.as_bytes()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_imports_keep_distinct_books_and_deduplicate_the_same_file() {
+    let (dir, service) = fixture().await;
+    let one = dir.path().join("one.txt");
+    let two = dir.path().join("two.txt");
+    std::fs::write(&one, "第一章 开始\n第一本内容。\n第二章 继续\n下一段。").unwrap();
+    std::fs::write(&two, "第一章 开始\n第二本内容。\n第二章 继续\n另一段。").unwrap();
+    let (first, second, duplicate) = tokio::join!(
+        import(&service, &one),
+        import(&service, &two),
+        import(&service, &one)
+    );
+    assert_ne!(first["id"], second["id"]);
+    assert_eq!(first["id"], duplicate["id"]);
+    assert_eq!(chapter(&service,&first, 0).await, "第一本内容。");
+    assert_eq!(chapter(&service,&second, 0).await, "第二本内容。");
+    service.resource_store().database().assert_shelf(&[first["id"].as_str().unwrap(),second["id"].as_str().unwrap()]);
+    for (book, source) in [(&first, &one), (&second, &two)] {
+        let original = dir
+            .path()
+            .join("cache/text")
+            .join(book["id"].as_str().unwrap())
+            .join("original.txt");
+        assert_eq!(
+            std::fs::read(original).unwrap(),
+            std::fs::read(source).unwrap()
+        );
+    }
 }

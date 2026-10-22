@@ -99,18 +99,12 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       await information;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       const saved = await readMoreInformation(result.sourceId, result.bookUrl);
-      // 可换来源的合并和顺序由 Vue 决定，保存仍走统一写库入口。
-      const positions = new Map((saved.alternatives ?? []).map((source, index) => [JSON.stringify([source.sourceId, source.bookUrl]), index]));
-      await modifyDatabase(searchResultSources.value.filter(source => source.sourceId !== saved.sourceId).map(source => {
-        const key = JSON.stringify([source.sourceId, source.bookUrl]);
-        if (!positions.has(key)) positions.set(key, positions.size);
-        return { action: "upsert", table: "alternative_sources", keys: ["book_id", "source_id", "engine_url"], values: {
-          book_id: saved.id, source_id: source.sourceId, engine_url: source.bookUrl, position: positions.get(key),
-          source_name: source.sourceName, title: source.title, author: source.author ?? null,
-          cover: source.coverSrc ?? null, latest: source.latestChapter ?? null,
-          ...(source.engine ? { engine_json: source.engine } : {}),
-        } };
-      }));
+      // 候选身份和关联在一个事务内保存，Vue 不接触数据表。
+      const candidates = searchResultSources.value.filter(source => source.sourceId !== saved.sourceId);
+      await modifyDatabase([
+        { operation: "saveBooks", books: candidates.map(source => ({ sourceId: source.sourceId, bookUrl: source.bookUrl, title: source.title, author: source.author, cover: source.coverSrc, latest: source.latestChapter })) },
+        { operation: "saveBook", bookId: saved.id, changes: { alternatives: candidates.map(source => source.resultId) } },
+      ], { wait: true });
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       const book = await switchOpenedBook(saved.id);
       if (!book) return;

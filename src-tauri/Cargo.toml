@@ -64,7 +64,7 @@ tauri-plugin-fs = { version = "2", default-features = false, optional = true }
 tauri-plugin-source-engine = { path = "plugins/source-engine", optional = true }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.32.1", features = ["bundled"] }
+rusqlite = { version = "0.32.1", features = ["bundled", "column_decltype"] }
 tauri-plugin-sql = { version = "=2.3.1", features = ["sqlite"], optional = true }
 sqlx = { version = "0.8.6", default-features = false, features = ["sqlite", "runtime-tokio"], optional = true }
 base64 = "0.23"
@@ -72,6 +72,7 @@ reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stre
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "net", "io-util", "sync", "time"] }
 tokio-stream = "0.1"
 futures-util = "0.3"
+futures-executor = "0.3"
 tokio-util = { version = "0.7", features = ["io"] }
 axum = "0.8"
 ammonia = "4"
@@ -81,7 +82,6 @@ feed-rs = "2"
 http-range-header = "0.4"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 imageproc = { version = "0.27.0", default-features = false }
-lopdf = { version = "0.45", default-features = false }
 natord = "1.0.9"
 percent-encoding = "2"
 quick-xml = "0.42"
@@ -116,3 +116,6 @@ lto = "thin"
 opt-level = 3
 panic = "abort"
 strip = true
+
+[dev-dependencies]
+lopdf = { version = "0.45", default-features = false }

@@ -1,365 +1,685 @@
-//! HTTP TTS 配置和音频资源准备。
+//! 朗读会话：开始清空队列，投递后顺序朗读，只有结束才关闭会话。
+use super::ApplicationService;
+use crate::source_engine::SourceEngineRequest;
+use base64::Engine as _;
+use serde::Deserialize;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+use serde_json::json;
+use serde_json::Value;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+use std::collections::HashMap;
+#[cfg(mobile)]
+use tauri_plugin_native_audio as _;
+use tokio::sync::{mpsc, oneshot, watch};
 
-use super::*;
-use crate::resources::{TtsStreamBoundary, TtsStreamProgress};
+const MAX_HTTP_TTS_TEXT_CHARS: usize = 20_000;
+const MAX_HTTP_TTS_AUDIO_BYTES: usize = 16 * 1024 * 1024;
+const MAX_HTTP_TTS_AUDIO_BASE64_BYTES: usize = ((MAX_HTTP_TTS_AUDIO_BYTES + 2) / 3) * 4;
 
-#[derive(serde::Deserialize)]
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct HttpTtsStreamChunk {
+pub struct TtsOptions {
+    config_id: Option<String>,
+    voice_id: Option<String>,
+    rate: f32,
+}
+
+#[derive(Deserialize)]
+pub struct TtsText {
     text: String,
-    highlight_index: usize,
+    index: usize,
+}
+
+#[derive(Clone)]
+pub(crate) struct TtsSession {
+    input: mpsc::Sender<Vec<TtsText>>,
+    cancel: watch::Sender<bool>,
+}
+
+impl TtsSession {
+    async fn stop(self) {
+        self.cancel.send_replace(true);
+        self.input.closed().await;
+    }
+}
+
+// 音频边界留在 Rust；播放器只报告实际播放位置，Vue 只收到片段序号。
+struct TtsAudio {
+    src: String,
+    boundaries: watch::Receiver<Vec<(usize, f64)>>,
+    played: oneshot::Sender<()>,
+}
+
+struct TtsStream {
+    writer: crate::resources::TtsStreamWriter,
+    profile: Option<Mp3StreamProfile>,
+    boundaries: watch::Sender<Vec<(usize, f64)>>,
+    played: oneshot::Receiver<()>,
+}
+
+impl TtsStream {
+    async fn finish(self) -> Result<(), String> {
+        drop(self.writer); // 音频写完才发送 EOF；等播放器读完后再切换下一段资源。
+        self.played.await.map_err(|_| "朗读播放器已关闭".into())
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl ApplicationService {
+    fn tts_progress(&self, progress: Value) {
+        use tauri::Emitter;
+        if let Some(app) = &self.app {
+            let _ = app.emit("tts", progress);
+        }
+    }
+
+    async fn run_tts(
+        &self,
+        options: TtsOptions,
+        mut input: mpsc::Receiver<Vec<TtsText>>,
+        mut cancellation: watch::Receiver<bool>,
+        mut player: TtsPlayer,
+    ) {
+        let mut assets = vec![];
+        loop {
+            let texts = tokio::select! {
+                biased;
+                _ = cancellation.wait_for(|cancelled| *cancelled) => break,
+                texts = input.recv() => match texts { Some(texts) => texts, None => break },
+            };
+            let reading = async {
+                if let Some(id) = &options.config_id {
+                    let config=self.store.database().tts_config(id).map_err(|e|e.to_string())?.ok_or("朗读配置不存在或已停用")?;
+                    let config=serde_json::to_value(config).map_err(|error|error.to_string())?;
+                    let (sender, receiver) = mpsc::channel(1);
+                    tokio::try_join!(
+                        self.generate_tts_audio(
+                            &config,
+                            options.rate,
+                            texts,
+                            &mut input,
+                            sender,
+                            &mut assets
+                        ),
+                        self.play_tts_audio(&mut player, receiver),
+                    )?;
+                } else {
+                    self.queue_system_tts(&options, texts, &mut input, &mut player)
+                        .await?;
+                }
+                Ok::<_, String>(())
+            };
+            let result = tokio::select! {
+                biased;
+                _ = cancellation.wait_for(|cancelled| *cancelled) => break,
+                result = reading => result,
+            };
+            player.stop();
+            for id in assets.drain(..) {
+                self.server.release_tts_stream(&id).await;
+            }
+            if let Err(error) = result {
+                self.tts_progress(json!(error));
+            }
+        }
+        player.stop();
+        player.close();
+        for id in assets {
+            self.server.release_tts_stream(&id).await;
+        }
+    }
+
+    async fn play_tts_audio(
+        &self,
+        player: &mut TtsPlayer,
+        mut sources: mpsc::Receiver<TtsAudio>,
+    ) -> Result<(), String> {
+        while let Some(source) = sources.recv().await {
+            while player.events.try_recv().is_ok() {}
+            player.audio(&source.src)?;
+            let mut highlighted = None;
+            while let Some(event) = player.events.recv().await {
+                if event["state"] == "error" {
+                    return Err(event["error"].as_str().unwrap_or("音频播放失败").to_owned());
+                }
+                let ended = event["state"] == "ended";
+                if !ended && event["state"] != "time" {
+                    continue;
+                }
+                // 以播放器实际时间定位片段，不按下载进度或文本长度猜测。
+                let boundaries = source.boundaries.borrow();
+                let index = if ended {
+                    boundaries.last().map(|(index, _)| *index)
+                } else {
+                    let position = event["position"].as_f64().unwrap_or(0.0);
+                    boundaries
+                        .get(boundaries.partition_point(|(_, end)| *end <= position))
+                        .map(|(index, _)| *index)
+                };
+                if index.is_some() && index != highlighted {
+                    highlighted = index;
+                    self.tts_progress(json!(index));
+                }
+                if ended {
+                    break;
+                }
+            }
+            let _ = source.played.send(());
+        }
+        Ok(())
+    }
+}
+
+// 移动端直接驱动原生插件；桌面 WebView 只承担音频输出，不管理朗读队列。
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+struct TtsPlayer {
+    app: tauri::AppHandle,
+    events: mpsc::UnboundedReceiver<Value>,
+    listeners: Vec<tauri::EventId>,
+    #[cfg(mobile)]
+    audio_channel: Option<tauri::ipc::Channel<Value>>,
+    #[cfg(mobile)]
+    http: bool,
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl TtsPlayer {
+    fn new(app: tauri::AppHandle, _http: bool) -> Result<Self, String> {
+        use tauri::Listener;
+        let (sender, events) = mpsc::unbounded_channel();
+        let mut listeners = vec![];
+        #[cfg(mobile)]
+        let audio_channel = if !_http {
+            use tauri_plugin_tts::TtsExt;
+            app.tts()
+                .set_background_behavior(tauri_plugin_tts::SetBackgroundBehaviorRequest {
+                    continue_in_background: true,
+                })
+                .map_err(|error| error.to_string())?;
+            for (name, state) in [
+                ("start", "start"),
+                ("finish", "ended"),
+                ("cancel", "cancel"),
+                ("error", "error"),
+            ] {
+                let sender = sender.clone();
+                listeners.push(app.listen(format!("tts://speech:{name}"), move |event| {
+                    if let Ok(mut data) = serde_json::from_str::<Value>(event.payload()) {
+                        data["state"] = json!(state);
+                        let _ = sender.send(data);
+                    }
+                }));
+            }
+            None
+        } else {
+            let channel = tauri::ipc::Channel::new(move |body| {
+                let mut data: Value = body.deserialize()?;
+                data["position"] = data["currentTime"].clone();
+                data["state"] = json!(if data["status"] == "ended" {
+                    "ended"
+                } else if data["error"].is_string() {
+                    "error"
+                } else if data["isPlaying"] == true {
+                    "time"
+                } else {
+                    "buffering"
+                });
+                let _ = sender.send(data);
+                Ok(())
+            });
+            use tauri::Manager;
+            #[cfg(target_os = "android")]
+            let command = "register_listener";
+            #[cfg(target_os = "ios")]
+            let command = "registerListener";
+            if let Err(error) = app.state::<TtsNativeAudio>().0.run_mobile_plugin::<Value>(
+                command,
+                json!({ "event": "native_audio_state", "handler": channel }),
+            ) {
+                for listener in listeners {
+                    app.unlisten(listener);
+                }
+                return Err(error.to_string());
+            }
+            Some(channel)
+        };
+        #[cfg(not(mobile))]
+        listeners.push(app.listen("tts-playback", move |event| {
+            if let Ok(data) = serde_json::from_str(event.payload()) {
+                let _ = sender.send(data);
+            }
+        }));
+        Ok(Self {
+            app,
+            events,
+            listeners,
+            #[cfg(mobile)]
+            audio_channel,
+            #[cfg(mobile)]
+            http: _http,
+        })
+    }
+
+    fn speak(&self, item: &TtsText, options: &TtsOptions, append: bool) -> Result<String, String> {
+        #[cfg(mobile)]
+        {
+            use tauri_plugin_tts::TtsExt;
+            let response = self
+                .app
+                .tts()
+                .speak(tauri_plugin_tts::SpeakRequest {
+                    text: item.text.clone(),
+                    language: None,
+                    voice_id: options.voice_id.clone(),
+                    rate: options.rate.min(4.0),
+                    pitch: 1.0,
+                    volume: 1.0,
+                    queue_mode: if append {
+                        tauri_plugin_tts::QueueMode::Add
+                    } else {
+                        tauri_plugin_tts::QueueMode::Flush
+                    },
+                })
+                .map_err(|error| error.to_string())?;
+            response
+                .utterance_id
+                .filter(|_| response.success)
+                .ok_or_else(|| "系统语音没有接受文本".into())
+        }
+        #[cfg(not(mobile))]
+        {
+            use tauri::Emitter;
+            let id = uuid::Uuid::new_v4().simple().to_string();
+            self.app.emit("tts-output", json!({ "action": "speak", "text": item.text, "voiceId": options.voice_id, "rate": options.rate, "id": id, "append": append })).map_err(|error| error.to_string())?;
+            Ok(id)
+        }
+    }
+
+    fn audio(&self, src: &str) -> Result<(), String> {
+        #[cfg(mobile)]
+        {
+            use tauri::Manager;
+            let handle = &self.app.state::<TtsNativeAudio>().0;
+            handle
+                .run_mobile_plugin::<Value>("initialize", ())
+                .map_err(|error| error.to_string())?;
+            handle
+                .run_mobile_plugin::<Value>("setSource", json!({ "src": src, "title": "朗读" }))
+                .map_err(|error| error.to_string())?;
+            handle
+                .run_mobile_plugin::<Value>("play", ())
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+        #[cfg(not(mobile))]
+        {
+            use tauri::Emitter;
+            self.app
+                .emit("tts-output", json!({ "action": "audio", "src": src }))
+                .map_err(|error| error.to_string())
+        }
+    }
+
+    fn stop(&self) {
+        #[cfg(mobile)]
+        {
+            use tauri::Manager;
+            use tauri_plugin_tts::TtsExt;
+            if self.http {
+                let _ = self
+                    .app
+                    .state::<TtsNativeAudio>()
+                    .0
+                    .run_mobile_plugin::<Value>("dispose", ());
+            } else {
+                let _ = self.app.tts().stop();
+            }
+        }
+        #[cfg(not(mobile))]
+        {
+            use tauri::Emitter;
+            let _ = self.app.emit("tts-output", json!({ "action": "stop" }));
+        }
+    }
+
+    fn close(&self) {
+        #[cfg(mobile)]
+        {
+            use tauri::Manager;
+            #[cfg(target_os = "android")]
+            let command = "remove_listener";
+            #[cfg(target_os = "ios")]
+            let command = "removeListener";
+            if let Some(channel) = &self.audio_channel {
+                let _ = self
+                    .app
+                    .state::<TtsNativeAudio>()
+                    .0
+                    .run_mobile_plugin::<Value>(
+                        command,
+                        json!({ "event": "native_audio_state", "channelId": channel.id() }),
+                    );
+            }
+        }
+    }
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl Drop for TtsPlayer {
+    fn drop(&mut self) {
+        use tauri::Listener;
+        for listener in &self.listeners {
+            self.app.unlisten(*listener);
+        }
+    }
+}
+
+#[cfg(mobile)]
+struct TtsNativeAudio(tauri::plugin::PluginHandle<tauri::Wry>);
+
+#[cfg(target_os = "ios")]
+tauri::ios_plugin_binding!(init_plugin_native_audio);
+
+#[cfg(mobile)]
+pub fn tts_native_audio() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    // 沿用同一个原生播放器，同时保留句柄供 Rust 直接调用。
+    tauri::plugin::Builder::new("native-audio")
+        .setup(|app, api| {
+            use tauri::Manager;
+            #[cfg(target_os = "android")]
+            let handle =
+                api.register_android_plugin("app.tauri.nativeaudio", "NativeAudioPlugin")?;
+            #[cfg(target_os = "ios")]
+            let handle = api.register_ios_plugin(init_plugin_native_audio)?;
+            app.manage(TtsNativeAudio(handle));
+            Ok(())
+        })
+        .build()
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn start_tts(
+    options: TtsOptions,
+    service: tauri::State<'_, ApplicationService>,
+) -> Result<(), String> {
+    if *service.restore_barrier.borrow() {
+        return Err("正在恢复数据，暂时无法朗读".into());
+    }
+    if !options.rate.is_finite() || !(0.5..=5.0).contains(&options.rate) {
+        return Err("朗读语速必须在 0.5 到 5 之间".into());
+    }
+    let (input, receiver) = mpsc::channel(8);
+    let (cancel, cancellation) = watch::channel(false);
+    let previous = service.tts.send_replace(Some(TtsSession {
+        input,
+        cancel: cancel.clone(),
+    }));
+    // 开始返回前清空旧文本并释放旧播放器；随后投递的内容只属于新会话。
+    if let Some(previous) = previous {
+        previous.stop().await;
+    }
+    if *cancellation.borrow() {
+        return Err("朗读已结束".into());
+    }
+    let player = service
+        .app
+        .clone()
+        .ok_or_else(|| "应用尚未初始化".to_owned())
+        .and_then(|app| TtsPlayer::new(app, options.config_id.is_some()));
+    let player = match player {
+        Ok(player) => player,
+        Err(error) => {
+            service.tts.send_if_modified(|session| {
+                if session
+                    .as_ref()
+                    .is_some_and(|session| session.cancel.same_channel(&cancel))
+                {
+                    *session = None;
+                    true
+                } else {
+                    false
+                }
+            });
+            return Err(error);
+        }
+    };
+    let service = service.inner().clone();
+    tokio::spawn(async move {
+        service
+            .run_tts(options, receiver, cancellation, player)
+            .await;
+    });
+    Ok(())
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn stop_tts(service: tauri::State<'_, ApplicationService>) -> Result<(), String> {
+    service.end_tts().await;
+    Ok(())
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn submit_tts(
+    texts: Vec<TtsText>,
+    service: tauri::State<'_, ApplicationService>,
+) -> Result<(), String> {
+    validate_texts(&texts)?;
+    let session = service.tts.borrow().clone().ok_or("请先开始朗读")?;
+    let mut cancellation = session.cancel.subscribe();
+    tokio::select! {
+        biased;
+        _ = cancellation.wait_for(|cancelled| *cancelled) => Err("朗读已结束".into()),
+        result = session.input.send(texts) => result.map_err(|_| "朗读已结束".into()),
+    }
+}
+
+fn validate_texts(texts: &[TtsText]) -> Result<(), String> {
+    if texts.is_empty()
+        || texts.len() > 2048
+        || texts.iter().map(|item| item.text.len()).sum::<usize>() > 8 * 1024 * 1024
+        || texts.iter().any(|item| {
+            item.text.trim().is_empty()
+                || item.text.chars().count() > MAX_HTTP_TTS_TEXT_CHARS
+                || item
+                    .text
+                    .chars()
+                    .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        })
+    {
+        return Err("朗读文本为空或过长".into());
+    }
+    Ok(())
 }
 
 impl ApplicationService {
-    async fn prepared_http_tts_bytes(&self, result: &Value) -> Result<Vec<u8>, String> {
-        let id = result["audioId"]
-            .as_str()
-            .ok_or("HTTP TTS audio ID is missing")?;
-        let extension = result["resource"]["resourceId"]
-            .as_str()
-            .and_then(|reference| reference.rsplit('.').next())
-            .ok_or("HTTP TTS audio format is missing")?;
-        let bytes = self
-            .store
-            .read_tts_audio(id, extension)
-            .await
-            .map_err(|error| error.to_string());
-        let _ = self.release_http_tts_audio(id).await;
-        bytes
-    }
-
-    pub async fn start_http_tts_stream(
+    // 提前排入原生队列，片段交接由系统完成，不等 finish 后再发 speak。
+    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    async fn queue_system_tts(
         &self,
-        config_id: String,
-        chunks: Vec<HttpTtsStreamChunk>,
-        speech_rate: u32,
-    ) -> Result<Value, String> {
-        if chunks.is_empty() || chunks.len() > 2048 {
-            return Err("HTTP TTS chapter must contain 1–2048 segments".to_owned());
-        }
-        if chunks.iter().any(|chunk| {
-            chunk.text.trim().is_empty()
-                || chunk.text.chars().count() > MAX_HTTP_TTS_TEXT_CHARS
-                || chunk.highlight_index >= chunks.len()
-        }) {
-            return Err("HTTP TTS chapter contains an invalid segment".to_owned());
-        }
-        if chunks.iter().map(|chunk| chunk.text.len()).sum::<usize>() > 8 * 1024 * 1024 {
-            return Err("HTTP TTS chapter text exceeds 8 MiB".to_owned());
-        }
-        let epoch = self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst);
-        let config = {
-            let _lock = self.sources_lock.lock().await;
-            crate::http_tts_config::find_config(&self.read_http_tts_configs().await?, &config_id)?
-        };
-        let mut first_index = 0;
-        let first = loop {
-            let result = self
-                .request_http_tts_audio_for_config(
-                    &config_id,
-                    &chunks[first_index].text,
-                    speech_rate,
-                    Some(&config),
-                )
-                .await?;
-            if result["status"] != "empty" {
-                break result;
-            }
-            first_index += 1;
-            if first_index == chunks.len() {
-                return Ok(json!({ "status": "empty", "skipped": first_index }));
-            }
-        };
-        let fallback =
-            || json!({ "status": "fallback", "firstIndex": first_index, "first": first });
-        if first["contentType"] != "audio/mpeg" {
-            return Ok(fallback());
-        }
-        let first_audio_id = first["audioId"]
-            .as_str()
-            .ok_or("HTTP TTS audio ID is missing")?;
-        let bytes = match self.store.read_tts_audio(first_audio_id, "mp3").await {
-            Ok(bytes) => bytes,
-            Err(_) => return Ok(fallback()),
-        };
-        let Ok((payload, duration, profile)) = mp3_stream_payload(&bytes) else {
-            return Ok(fallback());
-        };
-        let initial = TtsStreamProgress {
-            boundaries: vec![TtsStreamBoundary {
-                index: first_index,
-                highlight_index: chunks[first_index].highlight_index,
-                end_seconds: duration,
-            }],
-            state: "running",
-            next_index: first_index + 1,
-            skipped: first_index,
-            error: None,
-        };
-        let mut writer = match self.server.create_tts_stream(initial.clone()).await {
-            Ok(writer) => writer,
-            Err(_) => return Ok(fallback()),
-        };
-        let stream_id = writer.id.clone();
-        if writer.append(payload).await.is_err() {
-            self.server.release_tts_stream(&stream_id).await;
-            return Ok(fallback());
-        }
-        let _ = self.release_http_tts_audio(first_audio_id).await;
-        if self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
-            self.server.release_tts_stream(&stream_id).await;
-            return Err("HTTP TTS chapter cancelled because app data was restored".into());
-        }
-        let stream_url = writer.url.clone();
-        let service = self.clone();
-        tokio::spawn(async move {
-            let mut progress = initial;
-            for (index, chunk) in chunks.into_iter().enumerate().skip(first_index + 1) {
-                if *writer.cancellation.borrow()
-                    || service
-                        .restore_epoch
-                        .load(std::sync::atomic::Ordering::SeqCst)
-                        != epoch
-                {
-                    service.server.release_tts_stream(&writer.id).await;
-                    return;
-                }
-                let result = tokio::select! {
-                    result = service.request_http_tts_audio_for_config(&config_id, &chunk.text, speech_rate, Some(&config)) => result,
-                    _ = wait_tts_cancel(writer.cancellation.clone()) => return,
-                };
-                let result = match result {
-                    Ok(result) => result,
-                    Err(error) => {
-                        progress.state = "error";
-                        progress.error = Some(error);
-                        break;
+        options: &TtsOptions,
+        texts: Vec<TtsText>,
+        input: &mut mpsc::Receiver<Vec<TtsText>>,
+        player: &mut TtsPlayer,
+    ) -> Result<(), String> {
+        let mut pending = std::collections::VecDeque::from(texts);
+        let mut utterances = HashMap::new();
+        let mut append = false;
+        loop {
+            tokio::select! {
+                biased;
+                Some(event) = player.events.recv() => {
+                    let Some(id) = event["id"].as_str() else { continue; };
+                    let Some(&index) = utterances.get(id) else { continue; };
+                    match event["state"].as_str() {
+                        Some("start") => self.tts_progress(json!(index)),
+                        Some("ended") => {
+                            utterances.remove(id);
+                        },
+                        Some("error" | "cancel") => return Err(event["error"].as_str().unwrap_or("系统朗读中断").to_owned()),
+                        _ => (),
                     }
-                };
-                if result["status"] == "empty" {
-                    progress.skipped += 1;
-                    progress.next_index = index + 1;
-                    service
-                        .server
-                        .update_tts_stream(&writer.id, progress.clone())
-                        .await;
-                    continue;
-                }
-                if result["contentType"] != "audio/mpeg" {
-                    if let Some(id) = result["audioId"].as_str() {
-                        let _ = service.release_http_tts_audio(id).await;
-                    }
-                    progress.state = "fallback";
-                    progress.next_index = index;
-                    break;
-                }
-                let bytes = match service.prepared_http_tts_bytes(&result).await {
-                    Ok(bytes) => bytes,
-                    Err(error) => {
-                        progress.state = "error";
-                        progress.error = Some(error);
-                        break;
-                    }
-                };
-                let Ok((payload, duration, next_profile)) = mp3_stream_payload(&bytes) else {
-                    progress.state = "fallback";
-                    progress.next_index = index;
-                    break;
-                };
-                if next_profile != profile {
-                    progress.state = "fallback";
-                    progress.next_index = index;
-                    break;
-                }
-                if let Err(error) = writer.append(payload).await {
-                    progress.state = "error";
-                    progress.error = Some(error.to_string());
-                    break;
-                }
-                let previous = progress
-                    .boundaries
-                    .last()
-                    .map_or(0.0, |item| item.end_seconds);
-                progress.boundaries.push(TtsStreamBoundary {
-                    index,
-                    highlight_index: chunk.highlight_index,
-                    end_seconds: previous + duration,
-                });
-                progress.next_index = index + 1;
-                service
-                    .server
-                    .update_tts_stream(&writer.id, progress.clone())
-                    .await;
+                },
+                _ = async {}, if !pending.is_empty() => {
+                    let item = pending.pop_front().unwrap();
+                    let id = player.speak(&item, options, append)?;
+                    utterances.insert(id, item.index);
+                    append = true;
+                },
+                texts = input.recv() => match texts { Some(texts) => pending.extend(texts), None => return Ok(()) },
             }
-            if progress.state == "running" {
-                progress.state = "complete";
-            }
-            service.server.update_tts_stream(&writer.id, progress).await;
-            // Dropping the writer closes every HTTP reader after its buffered tail.
-        });
-        Ok(
-            json!({ "status": "stream", "streamId": stream_id, "src": stream_url,
-            "firstIndex": first_index, "skipped": first_index }),
-        )
+        }
     }
 
-    pub async fn get_http_tts_stream_status(&self, id: &str) -> Result<Value, String> {
-        let progress = self
-            .server
-            .tts_stream_progress(id)
-            .await
-            .ok_or("HTTP TTS stream was released")?;
-        serde_json::to_value(progress).map_err(|error| error.to_string())
+    pub(crate) async fn end_tts(&self) {
+        let session = self.tts.send_replace(None);
+        if let Some(session) = session {
+            session.stop().await;
+        }
     }
 
-    pub async fn release_http_tts_stream(&self, id: &str) -> bool {
-        self.server.release_tts_stream(id).await
-    }
-    async fn read_http_tts_configs(&self) -> Result<Value, String> {
-        self.store
-            .read_json_ref(&self.store.http_tts_configs_ref())
-            .await
-            .map_err(|error| error.to_string())
-    }
-
-    pub async fn request_http_tts_audio(
+    // KMP 只执行当前选定的 HTTP 规则；不经过任务系统或临时文件写库。
+    async fn tts_bytes(
         &self,
-        config_id: &str,
+        config: &Value,
         text: &str,
-        speech_rate: u32,
-    ) -> Result<Value, String> {
-        self.request_http_tts_audio_for_config(config_id, text, speech_rate, None)
-            .await
-    }
-
-    async fn request_http_tts_audio_for_config(
-        &self,
-        config_id: &str,
-        text: &str,
-        speech_rate: u32,
-        expected: Option<&Value>,
-    ) -> Result<Value, String> {
-        if text.trim().is_empty()
-            || text.chars().count() > MAX_HTTP_TTS_TEXT_CHARS
-            || text.chars().any(|character| {
-                character == '\0'
-                    || (character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
-            })
-        {
-            return Err(
-                "HTTP TTS text must contain 1–20000 characters without invalid control characters"
-                    .to_owned(),
-            );
-        }
-        if speech_rate > 45 {
-            return Err("HTTP TTS speech rate must be between 0 and 45".to_owned());
-        }
-        let _operation = self.operation_read().await;
-        let mut restore_barrier = self.restore_barrier.subscribe();
-        let restore_epoch = self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst);
-        if *restore_barrier.borrow() {
-            return Err("HTTP TTS request cancelled because app data is being restored".to_owned());
-        }
-        let config = {
-            let _lock = self.sources_lock.lock().await;
-            let document = self.read_http_tts_configs().await?;
-            crate::http_tts_config::find_config(&document, config_id)?
+        rate: f32,
+    ) -> Result<(Vec<u8>, &'static str), String> {
+        let token = tokio_util::sync::CancellationToken::new();
+        let _cancel_on_drop = token.clone().drop_guard();
+        let mut request = SourceEngineRequest {
+            keyword: Some(text.to_owned()),
+            page: Some(((rate - 0.5) * 10.0).round() as i32),
+            ..SourceEngineRequest::new("httpTtsAudio", config)
         };
-        if expected.is_some_and(|expected| expected != &config) {
-            return Err("HTTP TTS configuration changed during chapter playback".into());
-        }
-        let execution = self.executor.execute(engine_request(
-            "httpTtsAudio",
-            &config,
-            Some(text.to_owned()),
-            Some(speech_rate as i32),
-            None,
-            None,
-            None,
-        ));
-        let result = tokio::select! {
-            result = execution => match result {
-                Ok(result) => result,
-                Err(error) if error.contains("HTTP TTS returned an empty audio response") => {
-                    return Ok(json!({ "status": "empty" }));
-                }
-                Err(error) => return Err(error),
-            },
-            _ = restore_barrier.changed() => {
-                return Err("HTTP TTS request cancelled because app data is being restored".to_owned());
+        request.cancellation = Some(token);
+        let result = match self.executor.execute(request).await {
+            Ok(result) => result,
+            Err(error) if error.contains("HTTP TTS returned an empty audio response") => {
+                return Ok((vec![], "audio/mpeg"))
             }
+            Err(error) => return Err(error),
         };
-        if self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst) != restore_epoch
-            || *restore_barrier.borrow()
-        {
-            return Err("HTTP TTS request cancelled because app data is being restored".to_owned());
-        }
-        let encoded = result
-            .get("bytesBase64")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "Source engine returned no HTTP TTS audio".to_owned())?;
+        let encoded = result["bytesBase64"]
+            .as_str()
+            .ok_or("朗读引擎没有返回音频")?;
         if encoded.len() > MAX_HTTP_TTS_AUDIO_BASE64_BYTES {
-            return Err("HTTP TTS audio exceeds the 16 MiB limit".to_owned());
+            return Err("朗读音频超过 16 MiB".into());
         }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(encoded)
-            .map_err(|_| "Source engine returned invalid HTTP TTS audio".to_owned())?;
-        if bytes.is_empty() {
-            return Ok(json!({ "status": "empty" }));
-        }
+            .map_err(|error| error.to_string())?;
         if bytes.len() > MAX_HTTP_TTS_AUDIO_BYTES {
-            return Err("HTTP TTS audio exceeds the 16 MiB limit".to_owned());
+            return Err("朗读音频超过 16 MiB".into());
         }
-        let reported_content_type = result
-            .get("contentType")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let (extension, content_type) = http_tts_audio_type(reported_content_type, &bytes)?;
-        let audio_id = uuid::Uuid::new_v4().simple().to_string();
-        let _config_lock = self.sources_lock.lock().await;
-        let current_document = self.read_http_tts_configs().await?;
-        if crate::http_tts_config::find_config(&current_document, config_id)? != config {
-            return Err(
-                "HTTP TTS configuration was removed while audio was being generated".to_owned(),
-            );
+        if bytes.is_empty() {
+            return Ok((bytes, "audio/mpeg"));
         }
-        if self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst) != restore_epoch
-            || *restore_barrier.borrow()
-        {
-            return Err("HTTP TTS request cancelled because app data is being restored".to_owned());
-        }
-        let resource = self
-            .store
-            .write_tts_audio(&audio_id, extension, &bytes)
-            .await
-            .map_err(|error| error.to_string())?;
-        if self.restore_epoch.load(std::sync::atomic::Ordering::SeqCst) != restore_epoch
-            || *restore_barrier.borrow()
-        {
-            let _ = self.store.remove_tts_audio(&audio_id).await;
-            return Err("HTTP TTS request cancelled because app data is being restored".to_owned());
-        }
-        Ok(json!({
-            "status": "ready",
-            "audioId": audio_id,
-            "resource": self.resource_descriptor(&resource),
-            "contentType": content_type,
-        }))
+        let content_type =
+            http_tts_audio_type(result["contentType"].as_str().unwrap_or_default(), &bytes)?;
+        Ok((bytes, content_type))
     }
 
-    pub async fn release_http_tts_audio(&self, audio_id: &str) -> Result<Value, String> {
-        let _operation = self.operation_read().await;
-        let released = self
-            .store
-            .remove_tts_audio(audio_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(json!({ "released": released }))
+    async fn generate_tts_audio(
+        &self,
+        config: &Value,
+        rate: f32,
+        texts: Vec<TtsText>,
+        input: &mut mpsc::Receiver<Vec<TtsText>>,
+        output: mpsc::Sender<TtsAudio>,
+        assets: &mut Vec<String>,
+    ) -> Result<(), String> {
+        use futures_util::StreamExt;
+        let incoming = futures_util::stream::poll_fn(move |context| input.poll_recv(context))
+            .flat_map(futures_util::stream::iter);
+        let texts = futures_util::stream::iter(texts).chain(incoming);
+        // 提前请求三段，仍按投递顺序拼流；短段落不会逐次等待网络往返。
+        let audio = texts
+            .map(|item| async move {
+                let bytes = self.tts_bytes(config, &item.text, rate).await;
+                (item.index, bytes)
+            })
+            .buffered(3);
+        futures_util::pin_mut!(audio);
+        let mut stream: Option<TtsStream> = None;
+        let mut finishing: Option<oneshot::Receiver<()>> = None;
+        while let Some((index, result)) = audio.next().await {
+            let (bytes, content_type) = result?;
+            if bytes.is_empty() {
+                continue;
+            }
+            let parsed = (content_type == "audio/mpeg")
+                .then(|| mp3_stream_payload(&bytes).ok())
+                .flatten();
+            let (payload, duration, profile) = match parsed {
+                Some((payload, duration, profile)) => (payload, duration, Some(profile)),
+                None => (bytes.as_slice(), f64::INFINITY, None),
+            };
+            if stream
+                .as_ref()
+                .is_some_and(|stream| profile.is_none() || stream.profile != profile)
+            {
+                stream.take().unwrap().finish().await?;
+            }
+            let source = if stream.is_none() {
+                // 下一段已生成，才等待上一段播放完成；非 MP3 也不串行等待请求。
+                if let Some(played) = finishing.take() {
+                    played.await.map_err(|_| "朗读播放器已关闭")?;
+                }
+                let writer = self
+                    .server
+                    .create_tts_stream(content_type)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                assets.push(writer.id.clone());
+                let (boundaries, progress) = watch::channel(vec![]);
+                let (played, completion) = oneshot::channel();
+                let source = TtsAudio {
+                    src: writer.url.clone(),
+                    boundaries: progress,
+                    played,
+                };
+                stream = Some(TtsStream {
+                    writer,
+                    profile,
+                    boundaries,
+                    played: completion,
+                });
+                Some(source)
+            } else {
+                None
+            };
+            let current = stream.as_mut().unwrap();
+            current
+                .writer
+                .append(payload)
+                .await
+                .map_err(|error| error.to_string())?;
+            current.boundaries.send_modify(|items| {
+                let end = items.last().map_or(0.0, |(_, end)| *end) + duration;
+                items.push((index, end));
+            });
+            // 首段就交给播放器，后续音频继续追加到同一条流。
+            if let Some(source) = source {
+                output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
+            }
+            if profile.is_none() {
+                let current = stream.take().unwrap();
+                drop(current.writer);
+                finishing = Some(current.played);
+            }
+        }
+        if let Some(stream) = stream {
+            stream.finish().await?;
+        }
+        if let Some(played) = finishing {
+            played.await.map_err(|_| "朗读播放器已关闭")?;
+        }
+        Ok(())
     }
-}
-
-async fn wait_tts_cancel(mut cancellation: tokio::sync::watch::Receiver<bool>) {
-    while !*cancellation.borrow() && cancellation.changed().await.is_ok() {}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -369,7 +689,7 @@ struct Mp3StreamProfile {
     mono: bool,
 }
 
-/// Locate MPEG Layer III frames and their decoded time; remove per-file tags before joining.
+/// 解析 MP3 帧的实际时长，拼流前移除每段自己的 ID3 和时长标记。
 fn mp3_stream_payload(bytes: &[u8]) -> Result<(&[u8], f64, Mp3StreamProfile), ()> {
     let mut cursor = 0usize;
     if bytes.starts_with(b"ID3") {
@@ -466,171 +786,43 @@ fn mp3_stream_payload(bytes: &[u8]) -> Result<(&[u8], f64, Mp3StreamProfile), ()
     Ok((&bytes[start..cursor], duration, profile.ok_or(())?))
 }
 
-#[cfg(test)]
-mod tts_stream_tests {
-    use super::mp3_stream_payload;
-    use super::{
-        ApplicationService, EngineFuture, HttpTtsStreamChunk, SourceEngineRequest, SourceExecutor,
-    };
-    use base64::Engine;
-    use serde_json::json;
-    use std::sync::{Arc, Mutex};
-
-    struct ChapterExecutor(Arc<Mutex<Vec<String>>>);
-    impl SourceExecutor for ChapterExecutor {
-        fn execute<'a>(&'a self, request: SourceEngineRequest) -> EngineFuture<'a> {
-            Box::pin(async move {
-                assert_eq!(request.operation, "httpTtsAudio");
-                let text = request.keyword.unwrap();
-                self.0.lock().unwrap().push(text.clone());
-                if text == "skip" {
-                    return Err("HTTP TTS returned an empty audio response".into());
-                }
-                let mut bytes = Vec::new();
-                for _ in 0..3 {
-                    let mut frame = vec![0; 417];
-                    frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
-                    bytes.extend(frame);
-                }
-                Ok(
-                    json!({"bytesBase64": base64::engine::general_purpose::STANDARD.encode(bytes), "contentType": "audio/mpeg"}),
-                )
-            })
-        }
-    }
-
-    #[tokio::test]
-    async fn rust_generates_one_chapter_stream_with_ordered_highlight_boundaries() {
-        let directory = tempfile::tempdir().unwrap();
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let service = ApplicationService::open_with_executor(
-            directory.path(),
-            Arc::new(ChapterExecutor(calls.clone())),
-        )
-        .await
-        .unwrap();
-        let (_, entry) = crate::http_tts_config::import_configs(
-            r#"{"name":"Test","url":"https://example.invalid/tts"}"#,
-        )
-        .unwrap()
-        .remove(0);
-        let config_id = entry["id"].as_str().unwrap().to_owned();
-        service
-            .store
-            .write_json_ref(
-                &service.store.http_tts_configs_ref(),
-                &json!({"schemaVersion":1,"configs":[entry]}),
-            )
-            .await
-            .unwrap();
-        let result = service
-            .start_http_tts_stream(
-                config_id,
-                vec![
-                    HttpTtsStreamChunk {
-                        text: "skip".into(),
-                        highlight_index: 1,
-                    },
-                    HttpTtsStreamChunk {
-                        text: "second".into(),
-                        highlight_index: 2,
-                    },
-                    HttpTtsStreamChunk {
-                        text: "third".into(),
-                        highlight_index: 0,
-                    },
-                ],
-                5,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result["status"], "stream");
-        assert_eq!(result["firstIndex"], 1);
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let src = result["src"].as_str().unwrap();
-        let unauthorized = format!(
-            "{}/r/invalid/tts-stream/{}.mp3",
-            src.split("/r/").next().unwrap(),
-            result["streamId"].as_str().unwrap()
-        );
-        assert_eq!(
-            client.get(unauthorized).send().await.unwrap().status(),
-            reqwest::StatusCode::NOT_FOUND
-        );
-        let response = client
-            .get(result["src"].as_str().unwrap())
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), reqwest::StatusCode::OK);
-        let bytes = tokio::time::timeout(std::time::Duration::from_secs(2), response.bytes())
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(bytes.len(), 6 * 417);
-        let replay = client
-            .get(src)
-            .header(reqwest::header::RANGE, "bytes=0-3")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(replay.status(), reqwest::StatusCode::PARTIAL_CONTENT);
-        assert_eq!(
-            replay.bytes().await.unwrap().as_ref(),
-            &[0xff, 0xfb, 0x90, 0x64]
-        );
-        let status = service
-            .get_http_tts_stream_status(result["streamId"].as_str().unwrap())
-            .await
-            .unwrap();
-        assert_eq!(status["state"], "complete");
-        assert_eq!(status["skipped"], 1);
-        assert_eq!(status["boundaries"][0]["highlightIndex"], 2);
-        assert_eq!(status["boundaries"][1]["highlightIndex"], 0);
-        assert!(
-            status["boundaries"][1]["endSeconds"].as_f64().unwrap()
-                > status["boundaries"][0]["endSeconds"].as_f64().unwrap()
-        );
-        assert_eq!(*calls.lock().unwrap(), ["skip", "second", "third"]);
-        service
-            .release_http_tts_stream(result["streamId"].as_str().unwrap())
-            .await;
-    }
-
-    #[test]
-    fn strips_id3_and_counts_mpeg_frames_for_stream_boundaries() {
-        // MPEG-1 Layer III, 128 kb/s, 44.1 kHz: 417 bytes per frame.
-        let mut bytes = b"ID3\x04\0\0\0\0\0\0".to_vec();
-        for _ in 0..3 {
-            let mut frame = vec![0; 417];
-            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
-            bytes.extend(frame);
-        }
-        let (payload, duration, _) = mp3_stream_payload(&bytes).unwrap();
-        assert_eq!(payload.len(), 3 * 417);
-        assert!((duration - 3.0 * 1152.0 / 44100.0).abs() < 0.0001);
-    }
-
-    #[test]
-    fn rejects_container_bytes_that_cannot_be_joined_as_mp3() {
-        assert!(mp3_stream_payload(b"RIFF\0\0\0\0WAVE").is_err());
-        assert!(mp3_stream_payload(b"ID3\x04\0\0\xff\0\0\0").is_err());
-        assert!(mp3_stream_payload(b"ID3\x04\0\0\x7f\x7f\x7f\x7f").is_err());
-    }
-
-    #[test]
-    fn removes_per_file_duration_frames_before_joining_chapter_audio() {
-        let mut bytes = Vec::new();
-        for index in 0..3 {
-            let mut frame = vec![0; 417];
-            frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0x64]);
-            if index == 0 {
-                frame[36..40].copy_from_slice(b"Info");
-            }
-            bytes.extend(frame);
-        }
-        let (payload, duration, _) = mp3_stream_payload(&bytes).unwrap();
-        assert_eq!(payload.len(), 2 * 417);
-        assert!((duration - 2.0 * 1152.0 / 44100.0).abs() < 0.0001);
+fn http_tts_audio_type(content_type: &str, bytes: &[u8]) -> Result<&'static str, String> {
+    let content_type = content_type.trim().to_ascii_lowercase();
+    match content_type.as_str() {
+        "audio/mpeg" | "audio/mp3" | "audio/x-mpeg" | "audio/x-mp3" => Ok("audio/mpeg"),
+        "audio/mp4" | "audio/x-m4a" => Ok("audio/mp4"),
+        "audio/aac" | "audio/aacp" => Ok("audio/aac"),
+        "audio/wav" | "audio/x-wav" | "audio/wave" => Ok("audio/wav"),
+        "audio/ogg" => Ok("audio/ogg"),
+        "audio/opus" => Ok("audio/ogg"),
+        "audio/flac" | "audio/x-flac" => Ok("audio/flac"),
+        "" | "application/octet-stream" => http_tts_audio_type_from_signature(bytes),
+        _ => Err(format!(
+            "Unsupported HTTP TTS audio content type: {content_type}"
+        )),
     }
 }
+
+fn http_tts_audio_type_from_signature(bytes: &[u8]) -> Result<&'static str, String> {
+    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+        Ok("audio/wav")
+    } else if bytes.starts_with(b"OggS") {
+        Ok("audio/ogg")
+    } else if bytes.starts_with(b"fLaC") {
+        Ok("audio/flac")
+    } else if bytes.starts_with(b"ID3") {
+        Ok("audio/mpeg")
+    } else if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
+        Ok("audio/mp4")
+    } else if bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xf6 == 0xf0 {
+        Ok("audio/aac")
+    } else if bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0 {
+        Ok("audio/mpeg")
+    } else {
+        Err("HTTP TTS returned an unsupported audio signature".to_owned())
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/tts_tests.rs"]
+mod tests;

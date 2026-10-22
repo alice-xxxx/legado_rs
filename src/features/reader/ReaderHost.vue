@@ -12,7 +12,6 @@ import {
   getFrontendRestoreRevision,
   lockShelfBatchRecovery,
   shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { getLocalBookImportSession } from "../import/localBookImportSession";
 import { clearOpenedBook } from "../books/bookDetailState";
 import { installReaderBackupSession } from "./readerBackupSession";
 import { installReaderSession } from "./readerSession";
@@ -36,7 +35,6 @@ const route = useRoute();
 
 let disposed = false;
 const unlisteners: UnlistenFn[] = [];
-const readerImportPasswords = getLocalBookImportSession().pdfImportPasswords;
 
 async function showShelfBehindReader(book: BookResource): Promise<void> {
   const currentScreen = route.meta.screen;
@@ -51,7 +49,6 @@ function lockReaderRecovery(title: string, message: string): void {
 }
 
 const readerFeatures = useAppReaderFeatures({
-  pdfImportPasswords: readerImportPasswords,
   getRestoreRevision: getFrontendRestoreRevision,
   notify,
   errorText,
@@ -211,7 +208,6 @@ function onVisibilityChange(): void {
     readerFeatures.handleReaderResize();
     void refreshNativeAudio().then(() => readerFeatures.saveCurrentProgress())
       .catch(error => notify(errorText(error), "error"));
-    void readerFeatures.refreshNativeSpeech();
     void readerFeatures.beginReadingSession();
   }
 }
@@ -228,7 +224,7 @@ watch(screen, (next, previous) => {
 });
 
 onMounted(() => {
-  readerFeatures.setupTts();
+  void readerFeatures.setupTts().catch(error => notify(errorText(error), "error"));
   void setupReaderEvents();
   window.addEventListener("keydown", onGlobalKeydown);
   window.addEventListener("pagehide", onPageHide);
@@ -253,7 +249,6 @@ onBeforeUnmount(() => {
   readerFeatures.clearReaderScrollListeners();
   void readerFeatures.saveCurrentProgress();
   void readerFeatures.finishReadingSession();
-  readerFeatures.cancelPendingPdfImportOnUnmount();
   disposeBookSourceSwitch();
   disposeBackupSession();
   disposeReaderSession();

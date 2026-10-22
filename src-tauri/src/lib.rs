@@ -3,19 +3,22 @@
 pub mod application;
 mod configuration;
 pub(crate) mod database;
+mod file_access;
 mod http_client;
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-mod readonly_sql;
+
+#[path = "settings/mod.rs"]
+mod settings;
+#[path = "sources/catalog.rs"]
+pub(crate) mod source_catalog;
 mod storage_owner;
+mod support;
+#[path = "sources/wire.rs"]
+mod source_wire;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
-#[path = "books/book_display_metadata.rs"]
-pub(crate) mod book_display_metadata;
 #[path = "books/book_metadata.rs"]
 pub(crate) mod book_metadata;
-#[path = "books/catalog.rs"]
-pub(crate) mod catalog;
 #[path = "books/local_books.rs"]
 pub mod local_books;
 
@@ -32,8 +35,6 @@ mod source_host_ffi;
 mod source_http;
 #[path = "sources/source_jni.rs"]
 mod source_jni;
-#[path = "sources/source_metadata.rs"]
-pub(crate) mod source_metadata;
 #[path = "sources/source_storage.rs"]
 mod source_storage;
 
@@ -61,8 +62,6 @@ pub(crate) fn app_data_root<R: tauri::Runtime>(
     let root = root.join("files").join("legado");
     Ok(root)
 }
-#[path = "search/history.rs"]
-pub(crate) mod search_history;
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
@@ -143,18 +142,16 @@ pub fn run() {
     ))]
     let startup_cwd = std::env::current_dir().unwrap_or_default();
 
-    let external_files = application::PendingExternalFileRegistry::new();
-    let builder = tauri::Builder::default().manage(external_files.clone());
+    let builder = tauri::Builder::default();
     #[cfg(all(
         feature = "desktop",
         not(any(target_os = "android", target_os = "ios"))
     ))]
     let builder = {
-        let external_files = external_files.clone();
         builder.plugin(tauri_plugin_single_instance::init(move |app, args, cwd| {
             let cwd = std::path::Path::new(&cwd);
             for argument in args.iter().skip(1) {
-                queue_external_file(app, &external_files, std::path::Path::new(argument), cwd);
+                import_external_file(app, std::path::Path::new(argument), cwd);
             }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
@@ -164,9 +161,8 @@ pub fn run() {
     };
     #[cfg(mobile)]
     let builder = builder
-        .plugin(tauri_plugin_native_audio::init())
+        .plugin(application::tts_native_audio())
         .plugin(tauri_plugin_tts::init());
-    let run_external_files = external_files.clone();
     let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -208,7 +204,7 @@ pub fn run() {
             let data_dir = app_data_root(app.handle())?;
             let source_engine_dir = data_dir.join("source-engine");
             let resource_dir = app.path().resource_dir().ok();
-            let executor = std::sync::Arc::new(application::TauriSourceExecutor::new(
+            let executor = std::sync::Arc::new(source_engine::TauriSourceExecutor::new(
                 app_handle,
                 source_engine_dir,
                 resource_dir,
@@ -222,8 +218,8 @@ pub fn run() {
                 service.set_source_engine_app(app.handle().clone());
                 service
             };
-            tauri::async_runtime::block_on(crate::readonly_sql::open(
-                app.handle(), &service.resource_store().database().file_path(),
+            tauri::async_runtime::block_on(crate::database::reader::open(
+                app.handle(),
             )).map_err(std::io::Error::other)?;
             let background_service = service.clone();
             let backup_app = app.handle().clone();
@@ -250,7 +246,7 @@ pub fn run() {
 
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
             for path in &startup_file_args {
-                queue_external_file(app.handle(), &external_files, path, &startup_cwd);
+                import_external_file(app.handle(), path, &startup_cwd);
             }
             Ok(())
         });
@@ -276,20 +272,11 @@ pub fn run() {
         set_reader_fullscreen,
         set_video_orientation,
         set_navigation_gestures,
-        application::app_bootstrap,
-        application::request_http_tts_audio,
-        application::release_http_tts_audio,
-        application::start_http_tts_stream,
-        application::get_http_tts_stream_status,
-        application::release_http_tts_stream,
-        application::get_source_login_state,
-        application::get_source_login_form,
-        application::login_source,
-        application::run_source_login_action,
-        application::clear_source_login_state,
-        application::start_source_login_web,
-        application::finish_source_login_web,
-        application::cancel_source_login_web,
+        application::service::app_bootstrap,
+        application::start_tts,
+        application::stop_tts,
+        application::submit_tts,
+        application::login,
         application::search,
         application::stop_search,
         application::more_information,
@@ -298,32 +285,24 @@ pub fn run() {
         application::cancel_main_text,
         application::release_search_results,
         database::fe_db::fe_db,
-        application::import_book_from_picker,
-        application::list_pending_external_files,
-        application::import_external_file,
-        application::discard_external_file,
-        application::import_protected_pdf,
-        application::cancel_pending_pdf_import,
-        application::pick_book_cover,
-        application::pick_reader_background_image,
-        application::discard_book_cover_asset,
-        application::notify_reading,
-        application::clear_book_chapter_cache,
-        application::get_chapter_cache_usage,
-        application::save_settings,
-        application::get_rss_state,
-        application::prepare_configuration_import,
-        application::create_backup_from_picker,
-        application::restore_backup_from_picker,
-        application::upload_webdav_backup,
-        application::restore_webdav_backup,
-        application::list_discovery_categories,
-        application::list_discovery_books,
-        application::list_discovery_favorites,
-        application::list_rss_categories,
-        application::list_rss_articles,
-        application::open_rss_article,
-        application::lookup_dictionary,
+        application::import_book,
+        resources::appearance::pick_book_cover,
+        resources::appearance::pick_reader_background_image,
+        resources::appearance::discard_book_cover_asset,
+        resources::cache::clear_book_chapter_cache,
+        resources::cache::get_chapter_cache_usage,
+        settings::save_settings,
+        settings::import::prepare_configuration_import,
+        backup::service::create_backup_from_picker,
+        backup::service::restore_backup_from_picker,
+        backup::service::upload_webdav_backup,
+        backup::service::restore_webdav_backup,
+        discovery::list_discovery_categories,
+        discovery::list_discovery_books,
+        rss::list_rss_categories,
+        rss::list_rss_articles,
+        rss::open_rss_article,
+        reading_tools::dictionary::lookup_dictionary,
     ];
     builder
         .invoke_handler(move |invoke| {
@@ -390,12 +369,7 @@ pub fn run() {
                             .show(|_| {});
                     }
                     for path in supported_paths {
-                        queue_external_file(
-                            _app,
-                            &run_external_files,
-                            path.as_path(),
-                            &current_dir,
-                        );
+                        import_external_file(_app, path.as_path(), &current_dir);
                     }
                 }
             }
@@ -404,12 +378,7 @@ pub fn run() {
             if let tauri::RunEvent::Opened { urls } = event {
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {
-                        queue_external_file(
-                            _app,
-                            &run_external_files,
-                            &path,
-                            std::path::Path::new(""),
-                        );
+                        import_external_file(_app, &path, std::path::Path::new(""));
                     }
                 }
             }
@@ -422,7 +391,7 @@ pub fn run() {
                     #[cfg(target_os = "ios")]
                     let supported_scheme = url.scheme() == "file";
                     if supported_scheme {
-                        queue_external_mobile_url(_app, &run_external_files, url);
+                        import_external_book(_app, tauri_plugin_dialog::FilePath::Url(url));
                     }
                 }
             }
@@ -433,9 +402,8 @@ pub fn run() {
     feature = "desktop",
     not(any(target_os = "android", target_os = "ios"))
 ))]
-fn queue_external_file<R: tauri::Runtime>(
+fn import_external_file<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    registry: &application::PendingExternalFileRegistry,
     path: &std::path::Path,
     current_dir: &std::path::Path,
 ) {
@@ -457,83 +425,28 @@ fn queue_external_file<R: tauri::Runtime>(
         return;
     }
 
-    let app = app.clone();
-    let registry = registry.clone();
-    tauri::async_runtime::spawn(async move {
-        use tauri::Emitter;
-        use tauri_plugin_dialog::{DialogExt, FilePath};
-
-        let queued =
-            match application::stage_external_file(&app, FilePath::Path(selected_path)).await {
-                Ok(file) => registry.enqueue_picker_file(file),
-                Err(error) => Err(error),
-            };
-        match queued {
-            Ok(Some(file)) => {
-                application::schedule_pending_external_file_cleanup(
-                    registry.clone(),
-                    file.token.clone(),
-                );
-                if let Err(error) = app.emit("external-file-opened", file) {
-                    eprintln!("[external-file-open] {error}");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("[external-file-open] {error}");
-                app.dialog()
-                    .message("无法读取该书籍，或待处理文件已满。请从应用的本地导入入口重新选择文件；单文件最多 512 MiB。")
-                    .title("无法打开书籍")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                    .show(|_| {});
-            }
-        }
-    });
+    import_external_book(app, tauri_plugin_dialog::FilePath::Path(selected_path));
 }
 
-#[cfg(any(target_os = "android", target_os = "ios"))]
-fn queue_external_mobile_url<R: tauri::Runtime>(
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+fn import_external_book<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    registry: &application::PendingExternalFileRegistry,
-    url: tauri::Url,
+    file: tauri_plugin_dialog::FilePath,
 ) {
-    use tauri::Emitter;
-    use tauri_plugin_dialog::{DialogExt, FilePath};
-
+    use tauri::Manager;
+    use tauri_plugin_dialog::DialogExt;
     let app = app.clone();
-    let registry = registry.clone();
     tauri::async_runtime::spawn(async move {
-        let file = match application::stage_external_file(&app, FilePath::Url(url)).await {
-            Ok(file) => file,
-            Err(error) => {
-                eprintln!("[external-file-open] {error}");
-                app.dialog()
-                    .message("无法读取系统提供的书籍。请从应用的本地导入入口重新选择文件并授权访问；单文件最多 512 MiB。")
-                    .title("无法打开书籍")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                    .show(|_| {});
-                return;
-            }
-        };
-        match registry.enqueue_picker_file(file) {
-            Ok(Some(file)) => {
-                application::schedule_pending_external_file_cleanup(
-                    registry.clone(),
-                    file.token.clone(),
-                );
-                if let Err(error) = app.emit("external-file-opened", file) {
-                    eprintln!("[external-file-open] {error}");
-                }
-            }
-            Ok(None) => {}
-            Err(error) => {
-                eprintln!("[external-file-open] {error}");
-                app.dialog()
-                    .message("暂时无法接收该书籍。请处理现有导入请求后，从应用的本地导入入口重新选择文件。")
-                    .title("无法打开书籍")
-                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
-                    .show(|_| {});
-            }
+        let service = app.state::<application::ApplicationService>();
+        if let Err(error) = service
+            .import_selected_book(&app, file, Default::default())
+            .await
+        {
+            app.dialog()
+                .message(error)
+                .title("Import failed")
+                .show(|_| {});
         }
     });
 }
+

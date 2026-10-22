@@ -73,9 +73,8 @@ watch(sources, () => {
 const sourceLoginTarget = ref<SourceMetadata | null>(null);
 const sourceLoginBusy = ref(false);
 const sourceHasLoginState = ref<boolean | null>(null);
-const sourceLoginError = ref("");
 const sourceLoginForm = ref<SourceLoginForm | null>(null);
-const sourceLoginWebSessionId = ref("");
+const sourceLoginWebOpen = ref(false);
 const sourceLoginCredentials = ref<Record<string, string>>(Object.create(null) as Record<string, string>);
 const sourceLoginFormError = ref("");
 const sourceLoginFeedback = ref("");
@@ -86,9 +85,8 @@ const sourceLoginActions = useSourceLoginActions({
   sourceLoginTarget,
   sourceLoginBusy,
   sourceHasLoginState,
-  sourceLoginError,
   sourceLoginForm,
-  sourceLoginWebSessionId,
+  sourceLoginWebOpen,
   sourceLoginCredentials,
   sourceLoginFormError,
   sourceLoginFeedback,
@@ -131,9 +129,8 @@ const login = proxyRefs({
   sourceLoginTarget,
   sourceLoginBusy,
   sourceHasLoginState,
-  sourceLoginError,
   sourceLoginForm,
-  sourceLoginWebSessionId,
+  sourceLoginWebOpen,
   sourceLoginCredentials,
   sourceLoginFormError,
   sourceLoginFeedback,
@@ -501,12 +498,12 @@ onBeforeUnmount(() => {
         <p v-if="management.sourceImportBusy" class="source-import-loading">正在下载并导入来源…</p>
       </article>
     </section>
-    <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="!login.sourceLoginBusy && login.closeSourceLogin()"
-      @keydown.esc.stop.prevent="!login.sourceLoginBusy && login.closeSourceLogin()">
+    <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="login.closeSourceLogin()"
+      @keydown.esc.stop.prevent="login.closeSourceLogin()">
       <article class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
         <header class="source-login-heading">
           <div><h2 id="source-login-title">来源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
-          <button type="button" :disabled="login.sourceLoginBusy" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
+          <button type="button" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
         </header>
         <div class="source-login-body">
         <SourceLoginFormView v-if="login.sourceLoginForm?.mode === 'form'"
@@ -514,34 +511,32 @@ onBeforeUnmount(() => {
           v-model="login.sourceLoginCredentials" :busy="login.sourceLoginBusy"
           :disabled="login.sourceLoginBusy || recoveryRequired" @execute="login.executeSelectedSourceLogin" />
         <div v-else-if="login.sourceLoginForm?.mode === 'web'" class="source-login-form">
-          <p v-if="login.sourceLoginWebSessionId" class="source-login-web-hint">在网页中登录，关闭窗口后点「完成」。</p>
+          <p v-if="login.sourceLoginWebOpen" class="source-login-web-hint">在网页中登录后，回到这里点「完成」保存。</p>
           <p v-else-if="!login.sourceLoginFeedback" class="source-login-web-hint">打开网页完成登录。</p>
           <div class="source-login-web-actions">
-            <button v-if="!login.sourceLoginWebSessionId" type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.startSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在打开…' : login.sourceLoginFeedback ? '重新登录' : '打开登录页' }}</button>
+            <button v-if="!login.sourceLoginWebOpen" type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })">{{ login.sourceLoginBusy ? '正在打开…' : login.sourceLoginFeedback ? '重新登录' : '打开登录页' }}</button>
             <template v-else>
-              <button type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.finishSelectedSourceWebLogin">{{ login.sourceLoginBusy ? '正在保存…' : '完成' }}</button>
-              <button type="button" class="button secondary" :disabled="login.sourceLoginBusy" @click="login.cancelSelectedSourceWebLogin">取消</button>
+              <button type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'submit' })">{{ login.sourceLoginBusy ? '正在保存…' : '完成' }}</button>
+              <button type="button" class="button secondary" @click="login.closeSourceLogin">取消</button>
             </template>
           </div>
         </div>
-        <p v-else-if="login.sourceLoginForm?.mode === 'webUnavailable'" class="source-login-note">{{ login.sourceLoginForm.message }}</p>
-        <p v-if="login.sourceLoginFeedback && !login.sourceLoginWebSessionId" class="source-login-feedback" role="status">{{ login.sourceLoginFeedback }}</p>
+        <p v-if="login.sourceLoginFeedback && !login.sourceLoginWebOpen" class="source-login-feedback" role="status">{{ login.sourceLoginFeedback }}</p>
         <p v-if="login.sourceLoginForm && login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
         <div v-if="!login.sourceLoginForm && !login.sourceLoginBusy" class="source-login-load-state">
           <p v-if="login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
-          <button type="button" class="source-login-retry" :disabled="recoveryRequired" @click="login.loadSelectedSourceLoginForm">
+          <button type="button" class="source-login-retry" :disabled="recoveryRequired" @click="login.runLogin({ type: 'open' })">
             <PrototypeIcon name="refresh" />{{ login.sourceLoginFormError ? '重试' : '读取登录方式' }}
           </button>
         </div>
         <div class="source-login-state">
           <span :class="{ saved: login.sourceHasLoginState === true }"></span>
           <p role="status">{{ login.sourceLoginBusy ? '处理中…' : login.sourceHasLoginState === true ? '已保存登录数据' : login.sourceHasLoginState === false ? '暂无登录数据' : '状态未确认' }}</p>
-          <button type="button" aria-label="刷新登录状态" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.refreshSelectedSourceLogin"><PrototypeIcon name="refresh" />刷新</button>
+          <button type="button" aria-label="刷新登录状态" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })"><PrototypeIcon name="refresh" />刷新</button>
         </div>
-        <p v-if="login.sourceLoginError" class="source-login-error" role="alert">{{ login.sourceLoginError }}</p>
         <details v-if="login.sourceHasLoginState === true" class="source-login-storage">
           <summary>管理登录数据</summary>
-          <button type="button" class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebSessionId || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</button>
+          <button type="button" class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebOpen || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</button>
         </details>
         </div>
       </article>

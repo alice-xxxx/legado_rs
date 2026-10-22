@@ -1,147 +1,48 @@
+import { computed, ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { backupBusy } from "../settings/backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { ref, type Ref } from "vue";
-import { cancelPendingPdfImport, importBookFromPicker, importProtectedPdf, type LocalImportFormat } from "../../api/books";
-import { type LocalBookImportResponse } from "../../api/types";
-import { openedBookFromShelf, switchOpenedBook } from "./bookDetailState";
-import { refreshContentLibrary } from "./contentLibraryState";
+import { importBook, type BookImportProgress, type LocalImportFormat } from "../../api/books";
 
-interface LocalBookImportOptions {
-  externalFileRequestBusy: Readonly<Ref<boolean>>;
-  getRestoreRevision: () => number;
-  pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
+/** 导入只等待命令完成；处理进度和完成的书籍 ID 由 Rust 直接 emit。 */
+export function useLocalBookImport(options: {
   notify: (message: string, kind?: "success" | "error") => void;
-  errorText: (error: unknown) => string;
-}
+}) {
+  const importingFiles = ref<Record<string, BookImportProgress>>({});
+  const selecting = ref(false);
+  const localBookImportBusy = computed(() => selecting.value || Object.keys(importingFiles.value).length > 0);
+  let listening: Promise<UnlistenFn> | undefined;
+  let disposed = false;
 
-/** 管理本地文件导入、受保护 PDF 的密码提示及阅读器临时密码。 */
-export function useLocalBookImport(options: LocalBookImportOptions) {
-  const localBookImportBusy = ref(false);
-  const pdfPasswordPromptOpen = ref(false);
-  const pendingPdfImportToken = ref<string | null>(null);
-  const pdfPasswordBusy = ref(false);
-  const pdfPasswordError = ref("");
-
-  function openPdfPasswordPrompt(importToken: string): void {
-    pendingPdfImportToken.value = importToken;
-    pdfPasswordError.value = "";
-    pdfPasswordPromptOpen.value = true;
+  function receive(progress: BookImportProgress): void {
+    if (disposed) return;
+    if (progress.stage !== "done" && progress.stage !== "error") {
+      importingFiles.value[progress.file] = progress;
+      return;
+    }
+    delete importingFiles.value[progress.file];
+    if (progress.bookId) options.notify(`${progress.file} 已导入书架。`);
   }
 
-  async function acceptLocalBookImport(response: LocalBookImportResponse, initialPdfPassword = ""): Promise<void> {
-    if (!response.book) throw new Error("导入完成后没有返回书籍资源。");
-    const restoreRevision = options.getRestoreRevision();
-    try {
-      await refreshContentLibrary();
-      if (restoreRevision !== options.getRestoreRevision() || shelfBatchRecoveryRequired.value) return;
-      const book = await switchOpenedBook(response.book);
-      if (!book) return;
-      if (restoreRevision !== options.getRestoreRevision() || shelfBatchRecoveryRequired.value) return;
-      openedBookFromShelf.value = true;
-
-      if (initialPdfPassword) {
-        const previous = options.pdfImportPasswords.get(book.id);
-        if (previous) clearTimeout(previous.timer);
-        const entry = {
-          password: initialPdfPassword,
-          timer: setTimeout(() => {
-            if (options.pdfImportPasswords.get(book.id) === entry) options.pdfImportPasswords.delete(book.id);
-          }, 5 * 60 * 1000),
-        };
-        options.pdfImportPasswords.set(book.id, entry);
-      }
-      options.notify(`《${book.title}》已导入书架。`);
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`文件已导入，但书籍详情读取失败：${options.errorText(error)}`, "error");
-      }
-    }
+  function setupImports(): Promise<UnlistenFn> {
+    return listening ??= listen<BookImportProgress>("book-import", event => {
+      receive(event.payload);
+    });
   }
 
   async function importLocalBook(format?: LocalImportFormat): Promise<void> {
-    if (localBookImportBusy.value || options.externalFileRequestBusy.value || backupBusy.value
-      || shelfBatchRecoveryRequired.value || pdfPasswordPromptOpen.value) return;
-    const restoreRevision = options.getRestoreRevision();
-    localBookImportBusy.value = true;
+    if (localBookImportBusy.value || backupBusy.value || shelfBatchRecoveryRequired.value) return;
+    selecting.value = true;
     try {
-      const response = await importBookFromPicker({}, format);
-      if (restoreRevision !== options.getRestoreRevision()) {
-        if (response.importToken) void cancelPendingPdfImport(response.importToken).catch(() => {});
-        return;
-      }
-      if (response.cancelled) return;
-      if (response.passwordRequired) {
-        if (!response.importToken) throw new Error("无法继续打开加密文件，请重新选择文件。");
-        openPdfPasswordPrompt(response.importToken);
-        return;
-      }
-      await acceptLocalBookImport(response);
-    } catch (error) {
-      if (restoreRevision === options.getRestoreRevision()) {
-        options.notify(`导入本地书失败：${options.errorText(error)}`, "error");
-      }
-    } finally {
-      localBookImportBusy.value = false;
-    }
+      await setupImports();
+      await importBook(format);
+    } finally { selecting.value = false; }
   }
 
-  async function submitPdfPassword(password: string): Promise<void> {
-    const importToken = pendingPdfImportToken.value;
-    if (!importToken || !password || pdfPasswordBusy.value) return;
-    const restoreRevision = options.getRestoreRevision();
-    pdfPasswordBusy.value = true;
-    pdfPasswordError.value = "";
-    try {
-      const response = await importProtectedPdf(importToken, password);
-      if (restoreRevision !== options.getRestoreRevision() || pendingPdfImportToken.value !== importToken) return;
-      pendingPdfImportToken.value = null;
-      pdfPasswordPromptOpen.value = false;
-      await acceptLocalBookImport(response, password);
-    } catch (error) {
-      if (restoreRevision !== options.getRestoreRevision() || pendingPdfImportToken.value !== importToken) return;
-      const message = options.errorText(error);
-      pdfPasswordError.value = /(?:incorrect.*password|invalid password|password.*incorrect)/i.test(message)
-        ? "密码不正确，请再试一次。"
-        : /expired/i.test(message)
-          ? "文件选择已过期，请重新选择文件。"
-          : "无法打开文件，请检查密码后重试。";
-    } finally {
-      password = "";
-      pdfPasswordBusy.value = false;
-    }
+  function dispose(): void {
+    disposed = true;
+    void listening?.then(unlisten => unlisten());
   }
 
-  async function cancelPdfPasswordPrompt(): Promise<void> {
-    const importToken = pendingPdfImportToken.value;
-    pendingPdfImportToken.value = null;
-    pdfPasswordError.value = "";
-    pdfPasswordPromptOpen.value = false;
-    if (!importToken) return;
-    try {
-      await cancelPendingPdfImport(importToken);
-    } catch (error) {
-      options.notify(`取消导入失败：${options.errorText(error)}`, "error");
-    }
-  }
-
-  // 组件卸载时释放尚未提交的导入令牌；错误由系统文件请求恢复流程处理。
-  function cancelPendingPdfImportOnUnmount(): void {
-    const importToken = pendingPdfImportToken.value;
-    pendingPdfImportToken.value = null;
-    if (importToken) void cancelPendingPdfImport(importToken).catch(() => {});
-  }
-
-  return {
-    localBookImportBusy,
-    pdfPasswordPromptOpen,
-    pendingPdfImportToken,
-    pdfPasswordBusy,
-    pdfPasswordError,
-    importLocalBook,
-    openPdfPasswordPrompt,
-    acceptLocalBookImport,
-    submitPdfPassword,
-    cancelPdfPasswordPrompt,
-    cancelPendingPdfImportOnUnmount,
-  };
+  return { localBookImportBusy, importingFiles, importLocalBook, setupImports, dispose };
 }

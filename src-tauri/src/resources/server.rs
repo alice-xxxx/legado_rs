@@ -1,7 +1,7 @@
 //! 管理 loopback HTTP 服务、私有媒体映射和 HTTP 响应。
 
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::task::Poll;
 
 use axum::body::Body;
@@ -14,8 +14,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use axum::routing::get;
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, SeekFrom};
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::sync::{oneshot, watch, Mutex};
@@ -27,25 +26,9 @@ use http_range_header::parse_range_header;
 
 use super::json::{materialize_html_resource_refs, materialize_json};
 use super::media_proxy::MediaProxyRegistry;
-use super::tts_stream::{TtsStreamProgress, TtsStreamRegistry, TtsStreamWriter};
+use super::tts_stream::{TtsStreamRegistry, TtsStreamWriter};
 use super::validation::{check_path_no_symlink, mime_type, percent_encode_path, valid_id};
 use super::{ResourceError, ResourceRef, ResourceStore};
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PrivateMediaMapping {
-    schema_version: u32,
-    id: String,
-    upstream_url: String,
-    headers: Vec<PrivateMediaHeader>,
-}
-
-#[derive(Deserialize, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PrivateMediaHeader {
-    name: String,
-    value: String,
-}
 
 /// Handle for a running resource server. Dropping it stops the task; callers
 /// that need ordered shutdown can call `shutdown` and await server completion.
@@ -54,8 +37,7 @@ pub struct ResourceServer {
     base_url: String,
     media_proxy: MediaProxyRegistry,
     tts_streams: TtsStreamRegistry,
-    root: PathBuf,
-    store: ResourceStore,
+    pub(super) store: ResourceStore,
     media_update_lock: Mutex<()>,
     listener: watch::Sender<Option<TcpListener>>,
     runtime: tokio::runtime::Handle,
@@ -66,17 +48,9 @@ pub struct ResourceServer {
 impl ResourceServer {
     pub async fn create_tts_stream(
         &self,
-        progress: TtsStreamProgress,
+        content_type: &'static str,
     ) -> Result<TtsStreamWriter, ResourceError> {
-        self.tts_streams.create(&self.base_url, progress).await
-    }
-
-    pub async fn tts_stream_progress(&self, id: &str) -> Option<TtsStreamProgress> {
-        self.tts_streams.progress(id).await
-    }
-
-    pub async fn update_tts_stream(&self, id: &str, progress: TtsStreamProgress) {
-        self.tts_streams.update(id, progress).await;
+        self.tts_streams.create(&self.base_url, content_type).await
     }
 
     pub async fn release_tts_stream(&self, id: &str) -> bool {
@@ -161,19 +135,10 @@ impl ResourceServer {
         let _guard = self.media_update_lock.lock().await;
         let reference =
             MediaProxyRegistry::validate_mapping(opaque_id, upstream_url, private_headers)?;
-        let mapping = PrivateMediaMapping {
-            schema_version: 1,
-            id: opaque_id.to_owned(),
-            upstream_url: upstream_url.to_owned(),
-            headers: private_headers
-                .iter()
-                .map(|(name, value)| PrivateMediaHeader {
-                    name: name.clone(),
-                    value: value.clone(),
-                })
-                .collect(),
-        };
-        self.write_private_media_mapping(book_id, mapping).await?;
+        self.store.database().save_media(crate::database::MediaRequest {
+            id:opaque_id.to_owned(),book_id:book_id.to_owned(),url:upstream_url.to_owned(),
+            headers:private_headers.iter().cloned().collect(),
+        })?.await?;
         self.media_proxy
             .register(opaque_id, upstream_url, private_headers)
             .await?;
@@ -207,8 +172,8 @@ impl ResourceServer {
     pub async fn reload_private_media_mappings(&self) -> Result<(), ResourceError> {
         self.store.reset_content_types();
         let _guard = self.media_update_lock.lock().await;
-        let root = self.root.clone();
-        let mappings = tokio::task::spawn_blocking(move || read_book_media_mappings(&root, true))
+        let database=self.store.database().clone();
+        let mappings = tokio::task::spawn_blocking(move || database.media())
             .await
             .map_err(|error| {
                 ResourceError::new(format!("Private media mapping worker failed: {error}"))
@@ -218,11 +183,10 @@ impl ResourceServer {
             .map(|mapping| {
                 (
                     mapping.id,
-                    mapping.upstream_url,
+                    mapping.url,
                     mapping
                         .headers
                         .into_iter()
-                        .map(|header| (header.name, header.value))
                         .collect(),
                 )
             })
@@ -230,36 +194,8 @@ impl ResourceServer {
         self.media_proxy.replace_mappings(&mappings).await
     }
 
-    async fn write_private_media_mapping(
-        &self,
-        book_id: &str,
-        mapping: PrivateMediaMapping,
-    ) -> Result<(), ResourceError> {
-        let reference = self.store.book_ref(book_id)?;
-        let db = self.store.database().clone();
-        let path = reference.path().to_owned();
-        let book_id = book_id.to_owned();
-        let id = mapping.id;
-        let entry = serde_json::json!({"url":mapping.upstream_url,"headers":mapping.headers.into_iter()
-            .map(|header|(header.name,Value::String(header.value))).collect::<serde_json::Map<String,Value>>()});
-        tokio::task::spawn_blocking(move || db.set_media(&path, &book_id, &id, Some(&entry)))
-            .await
-            .map_err(|e| ResourceError::new(e.to_string()))?
-    }
-
-    async fn delete_private_media_mapping(
-        &self,
-        book_id: &str,
-        opaque_id: &str,
-    ) -> Result<(), ResourceError> {
-        let reference = self.store.book_ref(book_id)?;
-        let db = self.store.database().clone();
-        let path = reference.path().to_owned();
-        let book_id = book_id.to_owned();
-        let id = opaque_id.to_owned();
-        tokio::task::spawn_blocking(move || db.set_media(&path, &book_id, &id, None))
-            .await
-            .map_err(|e| ResourceError::new(e.to_string()))?
+    async fn delete_private_media_mapping(&self, book_id:&str,opaque_id:&str) -> Result<(),ResourceError> {
+        self.store.database().remove_media(book_id.to_owned(),opaque_id.to_owned())?.await
     }
 
     /// Rewrite stable resource refs inside a JSON value to this server's
@@ -388,10 +324,7 @@ async fn get_resource(
     }
     // Session audio is not a persistable filesystem resource. Resolve it after
     // capability authentication, before the public file-path allowlist.
-    if let Some(id) = resource_path
-        .strip_prefix("tts-stream/")
-        .and_then(|name| name.strip_suffix(".mp3"))
-    {
+    if let Some(id) = resource_path.strip_prefix("tts-stream/") {
         if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return empty_response(StatusCode::NOT_FOUND);
         }
@@ -636,9 +569,9 @@ impl ResourceStore {
                 "Resource server must bind to a loopback address",
             ));
         }
-        let mappings_root = self.root().to_path_buf();
+        let database=self.database().clone();
         let mappings =
-            tokio::task::spawn_blocking(move || read_book_media_mappings(&mappings_root, false))
+            tokio::task::spawn_blocking(move || database.media())
                 .await
                 .map_err(|error| {
                     ResourceError::new(format!("Private media mapping worker failed: {error}"))
@@ -649,10 +582,10 @@ impl ResourceStore {
             let headers = mapping
                 .headers
                 .iter()
-                .map(|header| (header.name.clone(), header.value.clone()))
+                .map(|(name,value)| (name.clone(),value.clone()))
                 .collect::<Vec<_>>();
             if let Err(error) = media_proxy
-                .register(&mapping.id, &mapping.upstream_url, &headers)
+                .register(&mapping.id, &mapping.url, &headers)
                 .await
             {
                 // One damaged/obsolete mapping should not prevent the rest of the
@@ -702,7 +635,6 @@ impl ResourceStore {
             base_url,
             media_proxy,
             tts_streams,
-            root: self.root().to_path_buf(),
             store: self.clone(),
             media_update_lock: Mutex::new(()),
             listener: listener_sender,
@@ -712,65 +644,6 @@ impl ResourceStore {
         })
     }
 }
-fn read_book_media_mappings(
-    root: &Path,
-    strict: bool,
-) -> Result<Vec<PrivateMediaMapping>, ResourceError> {
-    let mut mappings = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for (key, value) in crate::database::Database::at(root).media()? {
-        let Some(url) = value["url"].as_str() else {
-            if strict {
-                return Err(ResourceError::new("Private media entry has no URL"));
-            }
-            continue;
-        };
-        let mut private_headers = Vec::new();
-        if let Some(headers) = value.get("headers") {
-            let headers = headers
-                .as_object()
-                .ok_or_else(|| ResourceError::new("Private media headers must be an object"))?;
-            for (name, value) in headers {
-                let value = value
-                    .as_str()
-                    .ok_or_else(|| ResourceError::new("Private media header must be a string"))?;
-                private_headers.push(PrivateMediaHeader {
-                    name: name.clone(),
-                    value: value.to_owned(),
-                });
-            }
-        }
-        let mapping = PrivateMediaMapping {
-            schema_version: 1,
-            id: key.clone(),
-            upstream_url: url.to_owned(),
-            headers: private_headers,
-        };
-        let headers = mapping
-            .headers
-            .iter()
-            .map(|header| (header.name.clone(), header.value.clone()))
-            .collect::<Vec<_>>();
-        if mapping.id != key
-            || mapping.schema_version != 1
-            || MediaProxyRegistry::validate_mapping(&mapping.id, &mapping.upstream_url, &headers)
-                .is_err()
-        {
-            if strict {
-                return Err(ResourceError::new(
-                    "Invalid private media mapping in content document",
-                ));
-            }
-            continue;
-        }
-        if !seen.insert(mapping.id.clone()) {
-            return Err(ResourceError::new("Duplicate media mapping identity"));
-        }
-        mappings.push(mapping);
-    }
-    Ok(mappings)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -806,8 +679,16 @@ mod tests {
         let chapter_url = server.url_for(&chapter);
         let client = client();
         let original = client.get(&url).send().await.unwrap().text().await.unwrap();
-        assert_eq!(original,"chapter text");
-        assert_eq!(client.get(server.url_for(&settings)).send().await.unwrap().status(),StatusCode::NOT_FOUND);
+        assert_eq!(original, "chapter text");
+        assert_eq!(
+            client
+                .get(server.url_for(&settings))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::NOT_FOUND
+        );
 
         for _ in 0..3 {
             // Simulate loss of the listening socket, with the app/service and
@@ -854,18 +735,8 @@ mod tests {
             .start_http("127.0.0.1:0".parse().unwrap())
             .await
             .unwrap();
-        let mut writer = server
-            .create_tts_stream(TtsStreamProgress {
-                boundaries: vec![],
-                state: "running",
-                next_index: 0,
-                skipped: 0,
-                error: None,
-            })
-            .await
-            .unwrap();
+        let mut writer = server.create_tts_stream("audio/mpeg").await.unwrap();
         let url = writer.url.clone();
-        let id = writer.id.clone();
         writer.append(b"before").await.unwrap();
         let client = client();
         let mut response = client.get(&url).send().await.unwrap();
@@ -874,7 +745,6 @@ mod tests {
         writer.append(b"after").await.unwrap();
         assert_eq!(response.chunk().await.unwrap().unwrap().as_ref(), b"after");
         assert!(!*writer.cancellation.borrow());
-        assert!(server.tts_stream_progress(&id).await.is_some());
         drop(writer);
         assert!(response.chunk().await.unwrap().is_none());
         let response = client
@@ -887,4 +757,37 @@ mod tests {
         assert_eq!(response.text().await.unwrap(), "after");
         server.shutdown().await.unwrap();
     }
+}
+
+impl ResourceServer {
+    pub fn descriptor(&self, resource: &ResourceRef) -> Value {
+        json!({
+            "resourceId": resource.as_str(),
+            "src": self.url_for(resource),
+            "contentType": mime_type(resource.as_str()),
+            "format": resource_format(resource.as_str()),
+        })
+    }
+}
+fn resource_format(resource: &str) -> &'static str {
+    match resource_extension(resource).as_str() {
+        "html" | "xhtml" => "html",
+        "txt" => "text",
+        "css" => "stylesheet",
+        "bmp" | "png" | "jpg" | "jpeg" | "svg" | "webp" | "gif" => "image",
+        "woff" | "woff2" | "ttf" | "otf" => "font",
+        "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus" | "flac" => "audio",
+        "mp4" | "webm" => "video",
+        "pdf" => "pdf",
+        _ => "binary",
+    }
+}
+
+fn resource_extension(resource: &str) -> String {
+    let resource = resource.split(['?', '#']).next().unwrap_or(resource);
+    Path::new(resource)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase()
 }

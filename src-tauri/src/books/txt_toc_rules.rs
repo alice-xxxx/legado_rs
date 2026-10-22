@@ -1,9 +1,4 @@
-//! 定义本地 TXT 目录识别规则的读取与保存。
-//! User-managed regular expressions for recognizing local TXT chapter titles.
-//!
-//! These are local import preferences. They are persisted as an ordinary
-//! public JSON resource and are evaluated by Rust; they are not book-source
-//! rules and are never handed to the source engine.
+//! 本地 TXT 目录规则的导入解析与执行，规则存取调用数据库接口。
 
 use std::collections::HashSet;
 
@@ -11,9 +6,8 @@ use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::resources::{ResourceRef, ResourceStore};
+use crate::resources::ResourceStore;
 
-pub const RESOURCE_NAME: &str = "txt-toc-rules";
 pub const SCHEMA_VERSION: u32 = 1;
 
 const MAX_RULES: usize = 64;
@@ -68,25 +62,9 @@ pub struct TocHeading {
     pub body_start: usize,
 }
 
-pub fn resource_ref(store: &ResourceStore) -> Result<ResourceRef, String> {
-    store
-        .document_ref(RESOURCE_NAME)
-        .map_err(|error| error.to_string())
-}
-
-/// Load the user's rules. An absent file is initialized atomically as an empty
-/// versioned JSON document so the resource is immediately available to the UI.
+/// 导入器直接读取数据库中的目录规则。
 pub async fn read_document(store: &ResourceStore) -> Result<TxtTocRulesDocument, String> {
-    let reference = resource_ref(store)?;
-    let default = serde_json::to_value(TxtTocRulesDocument::default())
-        .map_err(|error| format!("Cannot encode TXT TOC rules: {error}"))?;
-    let value = store
-        .read_json_ref_or_default(&reference, default)
-        .await
-        .map_err(|error| error.to_string())?;
-    let document = decode_document(value)?;
-    validate_document(&document)?;
-    Ok(document)
+    store.database().txt_toc_rules().map_err(|e|e.to_string())
 }
 
 /// Replace the full JSON document with an atomically validated snapshot.
@@ -95,10 +73,8 @@ pub async fn replace_document(
     document: &TxtTocRulesDocument,
 ) -> Result<(), String> {
     validate_document(document)?;
-    store
-        .write_serializable(&resource_ref(store)?, document)
-        .await
-        .map_err(|error| error.to_string())
+    let operations=serde_json::from_value(serde_json::json!([{"operation":"saveTxtTocRules","rules":document.rules}])).map_err(|e|format!("{e}"))?;
+    store.database().submit(operations).map_err(|e|e.to_string())?.await.map(|_|()).map_err(|e|e.to_string())
 }
 
 struct ImportedTxtTocRule {
@@ -428,8 +404,4 @@ fn validate_rule_id(id: &str) -> Result<(), String> {
         return Err("TXT TOC rule ID must use ASCII letters, digits, '-' or '_'".to_owned());
     }
     Ok(())
-}
-
-fn decode_document(value: Value) -> Result<TxtTocRulesDocument, String> {
-    serde_json::from_value(value).map_err(|error| format!("Invalid TXT TOC rules JSON: {error}"))
 }

@@ -36,7 +36,7 @@ impl AppDataProcessLock {
         let parent = canonical_root
             .parent()
             .ok_or_else(|| TransactionError::new("App-data root has no parent directory"))?;
-        let hash = hex_digest(canonical_root.to_string_lossy().as_bytes());
+        let hash = crate::support::sha256_hex(canonical_root.to_string_lossy().as_bytes());
         let lock_path = parent.join(format!(".legado-app-data-{hash}.lock"));
         match fs::symlink_metadata(&lock_path) {
             Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {

@@ -81,7 +81,6 @@ pub(super) fn parse_text_file(
         chapters,
         assets: Vec::new(),
         cover_asset_id: None,
-        pdf_asset_id: None,
     })
 }
 
@@ -111,7 +110,6 @@ fn push_text_section(chapters: &mut Vec<ParsedChapter>, title: &str, text: &str,
                 },
                 html: None,
                 text: Some(body.to_owned()),
-                pdf_page_index: None,
             });
             part += 1;
         }

@@ -248,7 +248,6 @@ pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
             title: slice.title,
             html: Some(chapter_html),
             text: None,
-            pdf_page_index: None,
         });
     }
 
@@ -264,7 +263,6 @@ pub(super) fn parse_epub_file(bytes: &[u8]) -> Result<ParsedBook, String> {
         chapters,
         assets: rewritten_assets,
         cover_asset_id,
-        pdf_asset_id: None,
     })
 }
 

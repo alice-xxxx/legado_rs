@@ -35,7 +35,6 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -61,55 +60,7 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         SourceEngineHostRegistry.withHost(host) {
             withContext(SourceEngineHostContext(host)) {
                 when (call.operation) {
-                    "sourceLoginForm" -> encodeSourceLoginForm(decodeBookSource(call))
-
-                    "sourceLoginWebInfo" -> encodeSourceLoginWebInfo(decodeBookSource(call))
-
-                    "sourceLoginImportCookies" -> importSourceLoginCookies(
-                        decodeBookSource(call),
-                        call.keyword,
-                        call.credentials,
-                    )
-
-                    "loginSource" -> withSourceLoginUi {
-                        loginSource(decodeBookSource(call), call.credentials)
-                    }
-
-                    "sourceLoginAction" -> withSourceLoginUi {
-                        runSourceLoginAction(decodeBookSource(call), call.actionId, call.credentials)
-                    }
-
-                    "sourceLoginState" -> {
-                        val source = decodeBookSource(call)
-                        val sourceUrl = source.getKey()
-                        val cookieScope = NetworkUtils.getSubDomain(sourceUrl)
-                        val sourceCache = SourceCacheProviders.impl
-                            ?: error("Source cache is not installed")
-                        val hasLoginHeader = sourceCache.get("loginHeader_$sourceUrl")
-                            ?.isNotBlank() == true
-                        val hasLoginInfo = sourceCache.get("userInfo_$sourceUrl")
-                            ?.isNotBlank() == true
-                        val cookieStore = CookieStoreProviders.get()
-                        val hasStoredCookie = cookieStore?.getCookieNoSession(sourceUrl)
-                            ?.isNotBlank() == true || cookieStore?.getSessionCookie(cookieScope)
-                            ?.isNotBlank() == true
-                        val hasRustCookie = host.storage.hasCookieJarCookies(cookieScope, sourceUrl)
-                        buildJsonObject {
-                            put("hasLoginState", hasLoginHeader || hasLoginInfo || hasStoredCookie || hasRustCookie)
-                        }.toString()
-                    }
-
-                    "clearSourceLoginState" -> {
-                        val source = decodeBookSource(call)
-                        val sourceUrl = source.getKey()
-                        val cookieStore = CookieStoreProviders.get()
-                            ?: error("Source cookie store is not installed")
-                        // Strict removal propagates private storage or Rust Jar failures to the UI.
-                        cookieStore.removeCookieStrict(sourceUrl)
-                        source.removeLoginHeader()
-                        source.removeLoginInfo()
-                        buildJsonObject { put("cleared", true) }.toString()
-                    }
+                    "login" -> sourceLogin(call, host)
 
                     "search" -> {
                         kotlinx.coroutines.withTimeout(10_000L) {
@@ -322,28 +273,101 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
             call.chapterJson ?: error("Missing chapter JSON for ${call.operation}"),
         )
 
+    /** 登录统一执行后读取状态；表单刷新和输入回填在同一次调用内完成。 */
+    private suspend fun sourceLogin(call: SourceEngineCall, host: SourceEngineHost): String {
+        val source = decodeBookSource(call)
+        val loginUrl = source.getLoginJs()?.trim().orEmpty()
+        val web = loginUrl.isAbsoluteWebUrl()
+        val result = when (call.keyword) {
+            "open" -> "{}"
+            "submit" -> if (web) "{}" else withSourceLoginUi { submitLogin(source, call) }
+            "cookies" -> importSourceLoginCookies(source, call.credentials?.get("loginUrl"), call.credentials)
+            "clear" -> {
+                val store = CookieStoreProviders.get() ?: error("Source cookie store is not installed")
+                // 同时移除 Cookie、登录头和表单数据；存储失败必须向上传递。
+                store.removeCookieStrict(source.getKey())
+                source.removeLoginHeader()
+                source.removeLoginInfo()
+                buildJsonObject { put("message", "已清除登录数据。") }.toString()
+            }
+            else -> error("Unknown login action")
+        }.let { KS_JSON.parseToJsonElement(it) as JsonObject }
+        currentCoroutineContext().ensureActive()
+        val sourceUrl = source.getKey()
+        val scope = NetworkUtils.getSubDomain(sourceUrl)
+        val cache = SourceCacheProviders.impl ?: error("Source cache is not installed")
+        val cookies = CookieStoreProviders.get()
+        // 这里只表示有已保存的数据，不表示已通过网站认证。
+        val saved = !cache.get("loginHeader_$sourceUrl").isNullOrBlank()
+            || !cache.get("userInfo_$sourceUrl").isNullOrBlank()
+            || !cookies?.getCookieNoSession(sourceUrl).isNullOrBlank()
+            || !cookies?.getSessionCookie(scope).isNullOrBlank()
+            || host.storage.hasCookieJarCookies(scope, sourceUrl)
+        return buildJsonObject {
+            result.forEach { (key, value) -> put(key, value) }
+            put("hasLoginState", saved)
+            if (call.keyword == "open" || (result["refreshTargets"] as? JsonArray)?.contains(JsonPrimitive("login")) == true) {
+                put("form", KS_JSON.parseToJsonElement(encodeSourceLoginForm(source)))
+            }
+            // 原生窗口能力只传给 Rust，不能透给 Vue。
+            if (web && call.keyword in setOf("open", "submit")) {
+                put("web", buildJsonObject {
+                    put("url", loginUrl)
+                    put("cookieHeader", cookies?.getCookie(loginUrl).orEmpty())
+                })
+            }
+        }.toString()
+    }
+
+    /** 普通登录和表单按钮共享输入校验、错误处理及回填，只在执行脚本处区分。 */
+    private suspend fun submitLogin(source: BookSource, call: SourceEngineCall): String = try {
+        val rows = source.loginUi().orEmpty()
+        val credentials = requireNotNull(validateLoginInputs(source, rows, call.credentials)) {
+            "登录输入与此书源表单不匹配。"
+        }
+        val script = source.getLoginJs().orEmpty()
+        require(!script.trim().isAbsoluteWebUrl()) { "此书源使用网页登录。" }
+        if (call.actionId == null) {
+            require(script.isNotBlank()) { "此书源没有可执行的登录规则。" }
+            if (rows.any { it.type in supportedLoginFieldTypes }) {
+                check(SourceCacheProviders.impl != null) { "登录存储不可用。" }
+                val info = buildJsonObject { credentials.forEach { (name, value) -> put(name, value) } }
+                check(source.putLoginInfo(info.toString())) { "登录信息无法保存。" }
+            }
+            source.login()
+        } else {
+            val button = requireNotNull(rows.getOrNull(call.actionId)?.takeIf {
+                it.type == RowUi.Type.button && !it.action.isNullOrBlank() && !it.action.orEmpty().isAbsoluteWebUrl()
+            }) { "此书源登录操作不可用。" }
+            source.evalJS("$script\n${button.action}") { put("result", HashMap(credentials)) }
+        }
+        currentCoroutineContext().ensureActive()
+        buildJsonObject {
+            put("message", "登录操作已执行。")
+            put("inputUpdates", buildJsonObject {
+                rows.filter { it.type == RowUi.Type.password }.forEach { put(it.name, "") }
+            })
+        }.toString()
+    } catch (error: Throwable) {
+        currentCoroutineContext().ensureActive()
+        buildJsonObject { put("error", error.message?.take(4096) ?: "登录操作失败。") }.toString()
+    }
+
     private fun encodeSourceLoginForm(source: BookSource): String {
         val loginJs = source.getLoginJs()?.trim().orEmpty()
         if (loginJs.isAbsoluteWebUrl()) {
-            return buildJsonObject {
-                put("mode", "web")
-                put("message", "此书源使用网页登录。")
-            }.toString()
+            return buildJsonObject { put("mode", "web") }.toString()
         }
-        val canLogin = loginJs.isNotEmpty() && !loginJs.isAbsoluteWebUrl()
+        val canLogin = loginJs.isNotEmpty()
         val rows = source.loginUi().orEmpty()
-        val actions = if (loginJs.isAbsoluteWebUrl()) {
-            emptyList()
-        } else {
-            rows.mapIndexedNotNull { index, row ->
-                row.takeIf {
-                    it.type == RowUi.Type.button && !it.action.isNullOrBlank()
-                        && !it.action.orEmpty().isAbsoluteWebUrl()
-                }?.let {
-                    buildJsonObject {
-                        put("id", index)
-                        put("label", it.name)
-                    }
+        val actions = rows.mapIndexedNotNull { index, row ->
+            row.takeIf {
+                it.type == RowUi.Type.button && !it.action.isNullOrBlank()
+                    && !it.action.orEmpty().isAbsoluteWebUrl()
+            }?.let {
+                buildJsonObject {
+                    put("id", index)
+                    put("label", it.name)
                 }
             }
         }
@@ -366,25 +390,9 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
             }
         }
 
-        if (!canLogin && actions.isEmpty()) {
-            val message = if (loginJs.isAbsoluteWebUrl()) {
-                "此书源使用网页登录，不是账号密码表单。"
-            } else {
-                "此书源没有可用的账号密码登录表单。"
-            }
-            return buildJsonObject {
-                put("status", "unavailable")
-                put("message", message)
-            }.toString()
-        }
-        if (rows.mapNotNull { row ->
-                row.takeIf { it.type in supportedLoginFieldTypes }?.name
-            }.let { it.size != it.toSet().size }
-        ) {
-            return buildJsonObject {
-                put("status", "unavailable")
-                put("message", "此书源登录表单包含重复字段名称。")
-            }.toString()
+        require(canLogin || actions.isNotEmpty()) { "此书源没有可用的登录表单。" }
+        require(fields.map { it.getValue("name") }.let { it.size == it.toSet().size }) {
+            "此书源登录表单包含重复字段名称。"
         }
         val actionIds = actions.map { it.getValue("id").jsonPrimitive.int }.toSet()
         val layout = rows.mapIndexedNotNull { index, row ->
@@ -423,17 +431,6 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         }.toString()
     }
 
-    /** The URL and existing cookie stay inside the Rust/native login handoff. */
-    private fun encodeSourceLoginWebInfo(source: BookSource): String {
-        val loginUrl = source.getLoginJs()?.trim().orEmpty()
-        check(loginUrl.isAbsoluteWebUrl()) { "This source does not use web login" }
-        val cookies = CookieStoreProviders.get()?.getCookie(loginUrl).orEmpty()
-        return buildJsonObject {
-            put("url", loginUrl)
-            put("cookieHeader", cookies)
-        }.toString()
-    }
-
     /** Import only cookies returned by the native private browser for this source's login URL. */
     private fun importSourceLoginCookies(
         source: BookSource,
@@ -458,64 +455,8 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
         }
         val importedCount = cookieHeader.split(';').count { it.substringBefore('=').isNotBlank() }
         return buildJsonObject {
-            put("status", "executed")
-            put("importedCount", importedCount)
             put("message", if (importedCount == 0) "网页登录已结束，未发现可保存的 Cookie。" else "网页登录 Cookie 已保存。")
         }.toString()
-    }
-
-    private suspend fun loginSource(source: BookSource, input: Map<String, String>?): String {
-        val loginJs = source.getLoginJs()?.trim().orEmpty()
-        if (loginJs.isEmpty() || loginJs.isAbsoluteWebUrl()) {
-            return loginResult(
-                status = "failed",
-                code = "login_unavailable",
-                message = "此书源没有可执行的表单登录规则。",
-            )
-        }
-        val rows = source.loginUi().orEmpty()
-        val credentials = validateLoginInputs(source, rows, input)
-            ?: return loginResult(
-                status = "failed",
-                code = "invalid_credentials",
-                message = "登录输入与此书源表单不匹配。",
-            )
-        if (rows.any { it.type in supportedLoginFieldTypes }) {
-            if (SourceCacheProviders.impl == null) {
-                return loginResult(
-                    status = "failed",
-                    code = "storage_unavailable",
-                    message = "登录信息无法保存，请稍后重试。",
-                )
-            }
-            val info = buildJsonObject {
-                credentials.forEach { (name, value) -> put(name, value) }
-            }.toString()
-            if (!source.putLoginInfo(info)) {
-                return loginResult(
-                    status = "failed",
-                    code = "storage_failed",
-                    message = "登录信息无法保存，请稍后重试。",
-                )
-            }
-        }
-        return try {
-            source.login()
-            currentCoroutineContext().ensureActive()
-            loginResult(
-                status = "executed",
-                code = "login_executed",
-                message = "登录操作已执行。此书源没有提供独立的认证验证。",
-            )
-        } catch (error: Throwable) {
-            currentCoroutineContext().ensureActive()
-            loginResult(
-                status = "failed",
-                code = "login_failed",
-                message = "登录请求执行失败。请检查凭据、网络或书源登录规则后重试。",
-                detail = error.message,
-            )
-        }
     }
 
     /** 注册原版 JS 使用的 UI 能力，浏览器等待及 Cookie 交给各平台宿主。 */
@@ -596,7 +537,10 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
             buildJsonObject {
                 result.forEach { (key, value) -> put(key, value) }
                 if (messages.isNotEmpty()) put("messages", JsonArray(messages.map(::JsonPrimitive)))
-                if (updates.isNotEmpty()) put("inputUpdates", buildJsonObject { updates.forEach { (key, value) -> put(key, value) } })
+                if (updates.isNotEmpty()) put("inputUpdates", buildJsonObject {
+                    (result["inputUpdates"] as? JsonObject)?.forEach { (key, value) -> put(key, value) }
+                    updates.forEach { (key, value) -> put(key, value) }
+                })
                 if (refreshTargets.isNotEmpty()) put("refreshTargets", JsonArray(refreshTargets.map(::JsonPrimitive)))
                 copyText?.let { put("copyText", it) }
             }.toString()
@@ -605,54 +549,6 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
             Toasters.register(previousToast)
             OpenUrlProviders.register(previousOpenUrl)
             JsUiProviders.impl = previousUi
-        }
-    }
-
-    private suspend fun runSourceLoginAction(
-        source: BookSource,
-        actionId: Int?,
-        input: Map<String, String>?,
-    ): String {
-        val rows = source.loginUi().orEmpty()
-        val action = actionId?.let(rows::getOrNull)?.takeIf {
-            it.type == RowUi.Type.button && !it.action.isNullOrBlank()
-                && !it.action.orEmpty().isAbsoluteWebUrl()
-        }
-        if (action == null) {
-            return loginResult(
-                status = "failed",
-                code = "login_action_unavailable",
-                message = "此书源登录操作不可用。",
-            )
-        }
-        val credentials = validateLoginInputs(source, rows, input)
-            ?: return loginResult(
-                status = "failed",
-                code = "invalid_credentials",
-                message = "登录输入与此书源表单不匹配。",
-            )
-        val loginJs = source.getLoginJs().orEmpty()
-        if (loginJs.trim().isAbsoluteWebUrl()) {
-            return loginResult(
-                status = "failed",
-                code = "login_action_unavailable",
-                message = "This source login action is unavailable.",
-            )
-        }
-        return try {
-            source.evalJS("$loginJs\n${action.action}") {
-                put("result", HashMap(credentials))
-            }
-            currentCoroutineContext().ensureActive()
-            loginResult("executed", "login_action_executed", "登录操作已执行。")
-        } catch (error: Throwable) {
-            currentCoroutineContext().ensureActive()
-            loginResult(
-                status = "failed",
-                code = "login_action_failed",
-                message = "登录操作执行失败。请检查网络或书源登录规则后重试。",
-                detail = error.message,
-            )
         }
     }
 
@@ -681,15 +577,6 @@ object WebBookSourceRuleExecutor : SourceRuleExecutor {
             row.name to resolved
         }
     }
-
-    private fun loginResult(status: String, code: String, message: String, detail: String? = null): String =
-        buildJsonObject {
-            put("status", status)
-            put("code", code)
-            put("message", message)
-            detail?.let { put("detail", it.take(4096)) }
-            put("authenticated", JsonNull)
-        }.toString()
 
     private fun String.isAbsoluteWebUrl(): Boolean =
         startsWith("http://", ignoreCase = true) || startsWith("https://", ignoreCase = true)

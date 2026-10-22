@@ -4,15 +4,8 @@ import type { LocalImportFormat } from "../../api/books";
 /** Narrow bridge for the app-owned importer shared by shelf and external-file workflows. */
 export interface LocalBookImportSession {
   localBookImportBusy: Readonly<Ref<boolean>>;
-  pdfPasswordPromptOpen: Readonly<Ref<boolean>>;
-  pdfPasswordBusy: Readonly<Ref<boolean>>;
-  pdfPasswordError: Readonly<Ref<string>>;
-  pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
-  externalFileRequestBusy: Readonly<Ref<boolean>>;
   importLocalBook: (format?: LocalImportFormat) => Promise<void>;
   requestLinkImport: (text: string) => void;
-  submitPdfPassword: (password: string) => Promise<void>;
-  cancelPdfPasswordPrompt: () => Promise<void>;
 }
 
 let activeSession: LocalBookImportSession | null = null;

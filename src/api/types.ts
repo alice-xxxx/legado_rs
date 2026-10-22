@@ -58,29 +58,7 @@ export type SourceLoginForm = {
   layout?: SourceLoginLayoutRow[];
 } | {
   mode: "web";
-  message: string;
-} | {
-  mode: "webUnavailable";
-  message: string;
 };
-
-export interface SourceLoginResult {
-  status: "executed" | "failed";
-  code: string;
-  message: string;
-  authenticated: null;
-  detail?: string;
-  messages?: string[];
-  inputUpdates?: Record<string, string>;
-  refreshTargets?: string[];
-  copyText?: string;
-}
-
-export interface SourceWebLoginResult {
-  status: "executed";
-  importedCount: number;
-  message: string;
-}
 
 export type SearchType = "text" | "audio" | "image" | "video";
 export type ContentType = SearchType | "html" | "pdf";
@@ -118,6 +96,7 @@ export interface ChapterResourceDescriptor extends ResourceDescriptor {
 }
 
 export interface ChapterResource {
+  contentId?: string;
   volume?: boolean;
   id: string;
   title: string;
@@ -255,29 +234,11 @@ export interface ShelfResource {
   books: Array<Pick<BookResource, "id" | "title" | "author" | "coverSrc" | "chapterCount" | "latestChapter" | "progress" | "kind" | "contentType" | "mediaType"> & { groups?: string[]; updatedAt?: number }>;
 }
 
-export type ClearBookChapterCacheResponse =
-  | {
-      commitState: "committed";
-      recoveryRequired: boolean;
-      warning: string | null;
-      clearedCount: number;
-      book: BookIdentity;
-    }
-  | {
-      commitState: "notCommitted";
-      recoveryRequired: boolean;
-      warning: string | null;
-      error?: string;
-      clearedCount: number;
-      book?: never;
-    }
-  | {
-      commitState: "indeterminate";
-      recoveryRequired: boolean;
-      warning: string | null;
-      clearedCount: number;
-      book?: never;
-    };
+/** 请求成功即缓存字段已提交；warning 表示文件清理尚待恢复。 */
+export interface ClearBookChapterCacheResponse {
+  clearedCount: number;
+  warning: string | null;
+}
 
 export interface ChapterCacheUsage {
   chapterResourceCount: number;
@@ -326,11 +287,6 @@ export interface DisplayReplacementRule {
   enabled: boolean;
   isRegex: boolean;
   scope: string;
-}
-
-export interface ReplacementRulesResource {
-  schemaVersion: number;
-  rules: DisplayReplacementRule[];
 }
 
 /** Rust 处理后的单个书源候选；resultId 用于详情、入架和换源操作。 */
@@ -392,7 +348,6 @@ export interface SearchHistoryEntry {
 
 export interface SearchHistoryResource {
   entries: SearchHistoryEntry[];
-  processedSearchIds: string[];
 }
 
 export interface HistoryResource {
@@ -479,24 +434,10 @@ export interface HttpTtsConfigEditorFields {
   enableDangerousApi: boolean | null;
 }
 
-export type HttpTtsAudioResult =
-  | { status: "empty" }
-  | { status: "ready"; audioId: string; resource: ResourceDescriptor; contentType: string };
-
-export type HttpTtsStreamStart =
-  | { status: "empty"; skipped: number }
-  | { status: "fallback"; firstIndex: number; first: HttpTtsAudioResult }
-  | { status: "stream"; streamId: string; src: string; firstIndex: number; skipped: number };
-
-export interface HttpTtsStreamStatus {
-  boundaries: Array<{ index: number; highlightIndex: number; endSeconds: number }>;
-  state: "running" | "complete" | "fallback" | "error";
-  nextIndex: number;
-  skipped: number;
-  error: string | null;
-}
-
 export interface ReadingProgress {
+  pageId?: string | null;
+  anchor?: string | null;
+  quality?: string | null;
   chapterId: string | null;
   chapterIndex: number;
   offset: number;
@@ -520,67 +461,9 @@ export interface AppBootstrap {
   settings: AppSettingsResource;
 }
 
-export interface LocalBookImportResponse {
-  cancelled?: boolean;
-  passwordRequired?: boolean;
-  importToken?: string;
-  book?: BookIdentity;
-  shelf?: MutationAck;
-}
-
 export interface LocalBookImportOptions {
   charset?: string | null;
   tocRegex?: string | null;
-}
-
-export interface PendingExternalFile {
-  token: string;
-  filename: string;
-  format: "txt" | "epub" | "cbz" | "pdf";
-}
-
-export interface AppTask {
-  id: string;
-  kind: string;
-  status: string;
-  searchId?: string;
-  bookId?: string;
-  chapterIds?: string[];
-  downloadSnapshotValid?: boolean;
-  sourceIds?: string[];
-  keyword?: string;
-  page: number;
-  fromIndex: number;
-  total: number;
-  completed: number;
-  createdAtMs: number;
-  updatedAtMs: number;
-  error?: string;
-  result?: {
-    /** 换源候选任务完成后发布的不可变结果版本。 */
-    resource?: MutationAck;
-    bookResourceId?: string;
-    addedCount?: number;
-    movedProgress?: boolean;
-    committed?: boolean;
-    commitState?: "committed" | "notCommitted" | "indeterminate";
-    recoveryRequired?: boolean;
-    /** Transient only: tasks.json has a terminal status, but search publication failed. */
-    publicationFailed?: boolean;
-    persistedTaskStatus?: string;
-    warning?: string;
-  };
-}
-
-export interface TasksResource {
-  schemaVersion: number;
-  tasks: AppTask[];
-}
-
-export interface ClearFinishedTasksResponse {
-  removedCount: number;
-  inUseCount: number;
-  resource: MutationAck;
 }
 
 export interface DiscoveryCategory {
@@ -605,7 +488,6 @@ export interface DiscoveryResponse {
   hasNextPage?: boolean;
   bookCount?: number;
   errors?: Array<{ sourceId?: string; message: string }>;
-  resource: MutationAck;
 }
 
 export interface BackupResponse {
@@ -689,6 +571,3 @@ export interface DictionaryLookupResult {
   sourceUrl: string;
   resource: ResourceDescriptor;
 }
-
-// Full book-source JSON is loaded by ID only while editing or exporting.
-export type SourceDefinition = Record<string, unknown>;

@@ -1,35 +1,19 @@
 <script setup lang="ts">
-import type { PendingExternalFile } from "../../api/types";
 import { deepLinkLabels, type PendingImportLink } from "./deepLinks";
 
 defineProps<{
-  pendingExternalFiles: PendingExternalFile[];
-  externalFileRequestBusy: boolean;
-  externalFileRequestBlocked: boolean;
   pendingImportLinks: PendingImportLink[];
   importLinkOpening: boolean;
   importLinkBlocked: boolean;
   recoveryRequired: boolean;
   sourceImportOpen: boolean;
-  acceptExternalFileRequest: () => void | Promise<void>;
-  ignoreExternalFileRequest: () => void | Promise<void>;
   openPendingImportLink: () => void | Promise<void>;
   ignorePendingImportLink: () => void;
 }>();
 </script>
 
 <template>
-  <div v-if="pendingExternalFiles.length" class="external-import-banner">
-    <span class="external-import-banner__label">
-      打开文件：{{ pendingExternalFiles[0]?.filename }}<span v-if="pendingExternalFiles.length > 1">（待处理 {{ pendingExternalFiles.length }} 个）</span>
-    </span>
-    <button class="button primary small" :disabled="externalFileRequestBlocked" @click="acceptExternalFileRequest">
-      {{ externalFileRequestBusy ? '处理中…' : '导入书架' }}
-    </button>
-    <button class="button secondary small" :disabled="externalFileRequestBusy || recoveryRequired" @click="ignoreExternalFileRequest">忽略</button>
-  </div>
-
-  <div v-if="pendingImportLinks.length && !pendingExternalFiles.length && !sourceImportOpen" class="external-import-banner">
+  <div v-if="pendingImportLinks.length && !sourceImportOpen" class="external-import-banner">
     <span class="external-import-banner__label">
       收到{{ pendingImportLinks[0] ? deepLinkLabels[pendingImportLinks[0].kind] : '' }}链接<span v-if="pendingImportLinks.length > 1">（待处理 {{ pendingImportLinks.length }} 个）</span>
     </span>

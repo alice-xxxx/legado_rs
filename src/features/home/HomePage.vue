@@ -5,6 +5,7 @@ defineOptions({ name: "HomePage" });
 import { computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { listDiscoveryBooks } from "../../api/discovery";
+import type { LoginUpdate } from "../../api/sources";
 
 import { bookContentType } from "../../api/bookContentType";
 import { sources } from "../sources/sourcesStore";
@@ -324,6 +325,16 @@ onMounted(async () => {
   try {
     unlisteners.push(await listen<AppBootstrap>("app-state-updated", () => {
       handleAppStateUpdated();
+    }));
+    // 登录规则要求刷新发现内容时，只重载该源对应的栏目。
+    unlisteners.push(await listen<LoginUpdate>("login", ({ payload }) => {
+      if (!payload.refreshTargets?.includes("explore")) return;
+      for (const section of homeConfig.value.tabs.flatMap(tab => tab.sections)) {
+        if (section.sourceId !== payload.sourceId) continue;
+        delete sectionResources.value[section.id];
+        sectionRequests.delete(section.id);
+        void loadSection(section.id, section.sourceId, section.categoryId);
+      }
     }));
   } catch (error) {
     loadError.value = errorText(error);

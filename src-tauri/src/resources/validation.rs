@@ -2,7 +2,7 @@
 
 use std::path::{Component, Path};
 
-use super::{ResourceError, ResourceRef};
+use super::ResourceError;
 
 pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
     if path.is_empty() || path.starts_with('/') || path.contains('\\') || path.contains('%') {
@@ -24,50 +24,21 @@ pub(super) fn validate_public_path(path: &str) -> Result<(), ResourceError> {
     }
 
     let valid = match path_components.as_slice() {
-        [super::content::LIBRARY_FILE]
-        | ["sources.json"]
-        | ["source-list.json"]
-        | ["settings.json"]
-        | ["http-tts.json"]
-        | ["history.json"]
-        | ["replacement-rules.json"]
-        | ["txt-toc-rules.json"]
-        | ["tasks.json"]
-        | ["rss-state.json"] => true,
-        ["discovery", name] => filename_id(name, ".json").is_some(),
-        ["sources", name] => filename_id(name, ".json").is_some(),
+        ["settings.json"] => true,
         ["dictionary", name] => filename_id(name, ".html").is_some(),
         ["media", id] => valid_id(id),
-        ["cache", kind, id, name] if super::content::CONTENT_TYPES.contains(kind) =>
-            valid_id(id) && (*name == format!("{id}.json") || valid_asset_id(name)),
+        ["cache", kind, id, name] if super::CONTENT_TYPES.contains(kind) => {
+            valid_id(id) && valid_asset_id(name)
+        }
         _ => false,
     };
     if valid {
         Ok(())
     } else {
         Err(ResourceError::new(
-            "Resource path is outside the public JSON/HTML resource set",
+            "Resource path is outside the public resource set",
         ))
     }
-}
-
-pub(super) fn tts_audio_ref(audio_id: &str, extension: &str) -> Result<ResourceRef, ResourceError> {
-    if audio_id.len() != 32
-        || !audio_id
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        || !matches!(
-            extension,
-            "mp3" | "m4a" | "aac" | "wav" | "ogg" | "opus" | "flac"
-        )
-    {
-        return Err(ResourceError::new(
-            "Invalid temporary HTTP TTS audio identifier",
-        ));
-    }
-    ResourceRef::new(format!(
-        "resource://cache/audio/tts-audio/{audio_id}.{extension}"
-    ))
 }
 
 fn filename_id<'a>(filename: &'a str, extension: &str) -> Option<&'a str> {
@@ -85,7 +56,7 @@ pub(super) fn valid_id(id: &str) -> bool {
         })
 }
 
-pub(super) fn validate_id(id: &str) -> Result<(), ResourceError> {
+pub(crate) fn validate_id(id: &str) -> Result<(), ResourceError> {
     if valid_id(id) {
         Ok(())
     } else {
@@ -93,7 +64,7 @@ pub(super) fn validate_id(id: &str) -> Result<(), ResourceError> {
     }
 }
 
-pub(super) fn validate_asset_id(id: &str) -> Result<(), ResourceError> {
+pub(crate) fn validate_asset_id(id: &str) -> Result<(), ResourceError> {
     if valid_asset_id(id) {
         Ok(())
     } else {
@@ -142,7 +113,8 @@ fn valid_asset_id(id: &str) -> bool {
         })
 }
 
-pub(super) fn mime_type(path: &str) -> &'static str {
+pub(crate) fn mime_type(path: &str) -> &'static str {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
     match Path::new(path)
         .extension()
         .and_then(|extension| extension.to_str())
@@ -191,8 +163,13 @@ pub(crate) fn check_path_no_symlink(
         .map_err(|_| ResourceError::new("Resource path escaped its storage root"))?;
     let mut current = root.to_path_buf();
     let components: Vec<_> = relative.components().collect();
-    if components.iter().any(|component| !matches!(component, Component::Normal(_))) {
-        return Err(ResourceError::new("Resource path contains an invalid component"));
+    if components
+        .iter()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ResourceError::new(
+            "Resource path contains an invalid component",
+        ));
     }
     for (index, component) in components.iter().enumerate() {
         let Component::Normal(component) = component else {

@@ -13,11 +13,9 @@ use crate::models::CURRENT_SCHEMA_VERSION;
 use crate::resource_transactions::{CommitState, TransactionError};
 use crate::resources::ResourceStore;
 
-use super::create::{
-    collect_snapshot_files, is_allowed_snapshot_path, validate_archive_path, validate_snapshot_json,
-};
+use super::create::{is_allowed_snapshot_path, validate_archive_path};
 use super::{
-    hex_digest, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, DEVICE_SOURCE_CACHES, MANIFEST_PATH,
+    hex_digest, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION, MANIFEST_PATH,
     MAX_ARCHIVE_BYTES, MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
 };
 
@@ -37,13 +35,10 @@ pub(crate) async fn restore_backup(
     store: &ResourceStore,
     archive_path: impl AsRef<Path>,
 ) -> Result<(), TransactionError> {
-    let root = store.root().to_path_buf();
     let database = store.database().clone();
     let archive_path = archive_path.as_ref().to_path_buf();
     tokio::task::spawn_blocking(move || {
-        database
-            .with_writer_closed(move || restore_backup_sync(&root, &archive_path))
-            .map_err(|error| TransactionError::new(error.to_string()))?
+        database.restore_archive(archive_path)
     })
     .await
     .map_err(|error| {
@@ -157,7 +152,7 @@ fn recovery_path_exists(path: &Path) -> Result<bool, String> {
     }
 }
 
-fn restore_backup_sync(root: &Path, archive_path: &Path) -> Result<(), TransactionError> {
+pub(crate) fn restore_backup_sync(root: &Path, archive_path: &Path) -> Result<(), TransactionError> {
     let root = fs::canonicalize(root)
         .map_err(|error| TransactionError::new(format!("Cannot resolve app data root: {error}")))?;
     let archive_path = fs::canonicalize(archive_path).map_err(|error| {
@@ -183,7 +178,6 @@ fn restore_backup_sync(root: &Path, archive_path: &Path) -> Result<(), Transacti
         })?;
     let stage_path = stage_dir.path().to_path_buf();
     extract_and_validate(&archive_path, &stage_path).map_err(TransactionError::new)?;
-    import_snapshot_database(&root, &stage_path).map_err(TransactionError::new)?;
 
     let stage_path = stage_dir.keep();
     commit_restore(&root, &stage_path)
@@ -486,65 +480,8 @@ fn extract_and_validate(archive_path: &Path, stage: &Path) -> Result<(), String>
 }
 
 fn validate_extracted_snapshot(stage: &Path) -> Result<(), String> {
-    for required in [
-        crate::resources::content::LIBRARY_FILE,
-        "settings.json",
-        "http-tts.json",
-    ] {
-        if !stage.join(required).is_file() {
-            return Err(format!("Backup is missing required app data: {required}"));
-        }
+    if !stage.join("settings.json").is_file() {
+        return Err("备份缺少设置文件".into());
     }
-    let settings_path = stage.join("settings.json");
-    let bytes = fs::read(&settings_path)
-        .map_err(|error| format!("Cannot read restored settings: {error}"))?;
-    let mut settings: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("Invalid restored settings: {error}"))?;
-    crate::models::upgrade_settings_document(&mut settings);
-    let bytes = serde_json::to_vec_pretty(&settings).map_err(|error| error.to_string())?;
-    fs::write(&settings_path, bytes)
-        .map_err(|error| format!("Cannot upgrade restored settings: {error}"))?;
-    let files = collect_snapshot_files(stage)?;
-    validate_snapshot_json(&files)
-}
-
-/// Explicit archive restore imports the validated interchange snapshot. Opening
-/// an ordinary app-data folder never imports legacy JSON files.
-fn import_snapshot_database(current_root: &Path, stage: &Path) -> Result<(), String> {
-    let files = collect_snapshot_files(stage)?;
-    let db = crate::database::Database::open(stage).map_err(|e| e.to_string())?;
-    let current_root = current_root.to_owned();
-    let snapshot = files.clone();
-    db.transaction(move |tx| {
-        // Cache metadata precedes library membership because of foreign keys.
-        let mut ordered = snapshot.iter().collect::<Vec<_>>();
-        ordered.sort_by_key(|file| if file.archive_path.starts_with("cache/") {0} else {1});
-        for file in ordered {
-            if !file.archive_path.ends_with(".json") { continue; }
-            let value: serde_json::Value=serde_json::from_slice(&fs::read(&file.source_path)?).map_err(|e|crate::resources::ResourceError::new(e.to_string()))?;
-            if let Some(namespace)=file.archive_path.strip_prefix("source-engine/storage/").and_then(|name|name.strip_suffix(".json")) {
-                for (key,entry) in value["entries"].as_object().into_iter().flatten() {
-                    tx.execute("INSERT INTO source_kv(namespace,key,value,expires_at_ms) VALUES(?1,?2,?3,?4)",rusqlite::params![namespace,key,entry["value"].as_str(),entry["expiresAtMs"].as_i64()])?;
-                }
-            } else { crate::database::write(tx,&file.archive_path,&value)?; }
-        }
-        // Rebuildable device caches are retained from this device, not restored
-        // from another device's archive.
-        if current_root.join(crate::database::FILE_NAME).is_file() {
-            let current=crate::database::Database::at(&current_root).connect()?;
-            for namespace in DEVICE_SOURCE_CACHES {
-                let mut stmt=current.prepare("SELECT key,value,expires_at_ms FROM source_kv WHERE namespace=?1")?;
-                let rows=stmt.query_map([namespace],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?)))?;
-                for row in rows { let (key,value,expiry)=row?; tx.execute("INSERT OR REPLACE INTO source_kv(namespace,key,value,expires_at_ms) VALUES(?1,?2,?3,?4)",rusqlite::params![namespace,key,value,expiry])?; }
-            }
-        }
-        Ok(())
-    }).map_err(|e|e.to_string())?;
-    for file in files {
-        if file.archive_path.ends_with(".json") && file.archive_path != "settings.json" {
-            fs::remove_file(file.source_path).map_err(|e| e.to_string())?;
-        }
-    }
-    db.with_writer_closed(|| ()).map_err(|e|e.to_string())?;
-    Ok(())
+    crate::database::verify_snapshot(stage).map_err(|e|e.to_string())
 }

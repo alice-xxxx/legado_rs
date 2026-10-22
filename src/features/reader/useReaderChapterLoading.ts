@@ -18,7 +18,6 @@ export interface ReaderChapterLoadingOptions {
     content: Ref<CachedChapterContent | null>;
     pdfPage: Readonly<Ref<PdfPageResource | null>>;
     pdfZoomOverride: Ref<PdfPageResource["defaultZoom"] | null>;
-    pdfInitialPassword: Ref<string>;
     imagePage: Readonly<Ref<boolean>>;
     mediaChapter: Readonly<Ref<boolean>>;
     mediaTimeMs: Ref<number>;
@@ -35,7 +34,6 @@ export interface ReaderChapterLoadingOptions {
     menuOpen: Ref<boolean>;
     busy: Ref<boolean>;
     progressDirty: Ref<boolean>;
-    pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
     getMediaElement: () => ReaderMediaElement | null;
     getExpectedTtsChapter: () => string | null | undefined;
     getLoadRevision: () => number;
@@ -118,7 +116,6 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       }
       if (controller.signal.aborted || actions.isBackupRestoreInProgress()) return;
       reader.content.value = content;
-      reader.pdfInitialPassword.value = reader.pdfPage.value ? reader.pdfImportPasswords.get(book.id)?.password ?? "" : "";
       reader.chapterError.value = "";
       reader.busy.value = false;
       await nextTick();

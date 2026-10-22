@@ -6,8 +6,6 @@ import type { PdfPageResource } from "./readerContent";
 type ReaderNavigationOptions = {
   comicScaleMode: Ref<"fit-width" | "actual-size">;
   readingPdfZoomOverride: Ref<PdfPageResource["defaultZoom"] | null>;
-  readingPdfInitialPassword: Ref<string>;
-  pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
   readerPageIndex: Ref<number>;
   readerPageCount: Readonly<Ref<number>>;
   readerVisible: Readonly<Ref<boolean>>;
@@ -41,16 +39,6 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
 
   function setPdfZoom(mode: PdfPageResource["defaultZoom"]): void {
     options.readingPdfZoomOverride.value = mode;
-  }
-
-  function consumeImportedPdfPassword(): void {
-    const bookId = openedBook.value?.id;
-    if (bookId) {
-      const entry = options.pdfImportPasswords.get(bookId);
-      if (entry) clearTimeout(entry.timer);
-      options.pdfImportPasswords.delete(bookId);
-    }
-    options.readingPdfInitialPassword.value = "";
   }
 
   function setReaderPage(index: number, animate = false, direction: -1 | 1 = 1): void {
@@ -134,7 +122,6 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   return {
     setComicScaleMode,
     setPdfZoom,
-    consumeImportedPdfPassword,
     setReaderPage,
     turnPage,
     selectReaderChapter,

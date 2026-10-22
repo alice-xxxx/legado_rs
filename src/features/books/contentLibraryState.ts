@@ -1,6 +1,6 @@
 import { computed, nextTick, ref, watch, type WatchStopHandle } from "vue";
 import { listen } from "@tauri-apps/api/event";
-import { modifyDatabase, type DatabaseChange } from "../../api/feDb";
+import { modifyDatabase } from "../../api/feDb";
 import { readLibrary, assetUrl } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
 import type { AppBootstrap, BookResource, ContentLibrary, ContentPreview, ContentType, ShelfDocument, ShelfSortKey, ShelfSortOrder } from "../../api/types";
@@ -120,19 +120,14 @@ function installWatch(): void {
     members: contentTypes.map(type => contentLibrary.value[type]?.map(item => item.id) ?? []),
     groups: (contentLibrary.value.groups ?? []).map(group => ({ name: group.name, id: [...group.id] })),
   }), () => {
-    const { books, groups = [] } = libraryPositions.value;
     const id = ++requestId;
     // 只修改书架关系，书籍详情和章节缓存不受影响。
-    const changes: DatabaseChange[] = [
-      { action: "delete", table: "library_books", filter: {} },
-      { action: "delete", table: "library_groups", filter: {} },
-      ...books.map((book, position): DatabaseChange => ({ action: "insert", table: "library_books", values: { book_id: book.id, position } })),
-      ...groups.map((name, position): DatabaseChange => ({ action: "insert", table: "library_groups", values: { name, position } })),
-      ...groups.flatMap(name => books.filter(book => book.groups?.includes(name)).map((book, position): DatabaseChange => ({
-        action: "insert", table: "library_group_books", values: { group_name: name, book_id: book.id, position },
-      }))),
-    ];
-    void modifyDatabase(changes).then(() => { if (id === requestId) return refreshContentLibrary(); }).catch(console.error);
+    void modifyDatabase([{ operation: "saveShelf", shelf: libraryPositions.value }], {
+      onComplete: result => {
+        if (result.error) { console.error(result.error); return; }
+        if (id === requestId) void refreshContentLibrary().catch(console.error);
+      },
+    }).catch(console.error);
   }, { deep: true });
 }
 
@@ -155,7 +150,6 @@ export async function refreshContentLibrary(): Promise<void> {
 
 export async function loadContentLibrary(): Promise<void> {
   initialized = true;
-  contentLibrary.value = await readLibrary();
   await listen("shelf-updated", () => {
     void refreshContentLibrary().catch(console.error);
   });
@@ -164,5 +158,6 @@ export async function loadContentLibrary(): Promise<void> {
     requestId++;
     void refreshContentLibrary().catch(console.error);
   });
+  contentLibrary.value = await readLibrary();
   installWatch();
 }

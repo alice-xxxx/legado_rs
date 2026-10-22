@@ -6,12 +6,10 @@ use std::collections::HashSet;
 
 use crate::{
     models::CURRENT_SCHEMA_VERSION,
-    resources::{ResourceRef, ResourceStore},
 };
 
 use super::common::{current_schema_version, validate_id};
 
-const REPLACEMENTS_PATH: &str = "resource://replacement-rules.json";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -58,13 +56,6 @@ pub struct DisplayReplacementRuleInput {
     pub is_regex: bool,
     #[serde(default = "default_replacement_scope")]
     pub scope: String,
-}
-
-pub async fn replacement_rules_resource(store: &ResourceStore) -> Result<ResourceRef, String> {
-    let reference = replacements_ref();
-    let value=store.read_json_ref(&reference).await.map_err(|e|e.to_string())?;
-    validate_replacement_document(&value)?;
-    Ok(reference)
 }
 
 /// Parse import data without changing the saved configuration.
@@ -176,10 +167,6 @@ pub fn validate_replacement_document(value: &Value) -> Result<(), String> {
         })?;
     }
     Ok(())
-}
-
-fn replacements_ref() -> ResourceRef {
-    ResourceRef::new(REPLACEMENTS_PATH).expect("static replacement resource reference is valid")
 }
 
 fn default_replacement_scope() -> String {

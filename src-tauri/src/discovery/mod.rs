@@ -1,27 +1,20 @@
 //! 处理发现页分类、书目和收藏的资源读写。
 //! Source discovery orchestration over the existing KMP WebBook engine.
 //!
-//! Category rule URLs are kept under source-engine and are addressed from the
-//! WebView only through opaque category IDs. Public resources contain display
-//! metadata and projected search cards, never source definitions or rules.
+//! 分类规则地址保存在数据库中；Vue 使用分类 ID 请求，只读取展示信息。
 
 #[path = "home_config.rs"]
 pub mod home_config;
 
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    application::{ApplicationService, SourceRecord},
-    models::CURRENT_SCHEMA_VERSION,
-    resources::ResourceRef,
+    application::{project_search_result, source_book_id, ApplicationService},
     rss::{is_legacy_rss_source, is_rss_source},
+    source_engine::SourceEngineRequest,
 };
-
-const CATEGORY_CACHE_DIRECTORY: &str = "discovery-categories";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -32,37 +25,7 @@ pub struct DiscoveryCategory {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<Value>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoveryCategoriesDocument {
-    pub schema_version: u32,
-    pub source_id: String,
-    pub categories: Vec<DiscoveryCategory>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoveryFavorite {
-    pub source_id: String,
-    pub category_id: String,
-    pub source_name: String,
-    pub title: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub kind: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub style: Option<Value>,
-    pub position: u32,
-    pub created_at_ms: u64,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DiscoveryFavoritesDocument {
-    pub schema_version: u32,
-    pub favorites: Vec<DiscoveryFavorite>,
+    pub(crate) style: Option<crate::database::CategoryStyle>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -75,141 +38,7 @@ pub(crate) struct PrivateCategory {
     pub(crate) kind: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PrivateCategoryMap {
-    schema_version: u32,
-    pub(crate) source_id: String,
-    pub(crate) categories: Vec<PrivateCategory>,
-}
-
-/// Ensure the public favorites resource exists with the current schema.
-pub async fn favorites_resource(
-    store: &crate::resources::ResourceStore,
-) -> Result<ResourceRef, String> {
-    let reference = store.discovery_favorites_ref();
-    store
-        .update_json_ref(&reference, |current| {
-            let mut document = match current {
-                Value::Null => DiscoveryFavoritesDocument {
-                    schema_version: CURRENT_SCHEMA_VERSION,
-                    favorites: Vec::new(),
-                },
-                value => serde_json::from_value::<DiscoveryFavoritesDocument>(value)
-                    .map_err(|error| format!("Invalid discovery favorites JSON: {error}"))?,
-            };
-            document.schema_version = CURRENT_SCHEMA_VERSION;
-            normalize_favorites(&mut document.favorites);
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-/// Add/remove one processed source category from the persistent favorites.
-/// Category identity is verified through private Rust storage; source rule
-/// URLs and source definitions are never copied into the public JSON.
-pub async fn set_favorite(
-    service: &ApplicationService,
-    source_id: &str,
-    category_id: &str,
-    favorite: bool,
-) -> Result<ResourceRef, String> {
-    validate_source_id(source_id)?;
-    validate_category_id(category_id)?;
-    let metadata = if favorite {
-        let source = service.source_record(source_id).await?;
-        if is_rss_source(&source.source) {
-            return Err("RSS subscription categories cannot be discovery favorites".to_owned());
-        }
-        let private = private_category(service, source_id, category_id).await?;
-        if private.kind != "engine" || private.url.is_none() {
-            return Err("Only navigable discovery categories can be saved".to_owned());
-        }
-        let public_ref = service
-            .resource_store()
-            .discovery_ref(source_id)
-            .map_err(|error| error.to_string())?;
-        let public: DiscoveryCategoriesDocument = serde_json::from_value(
-            service
-                .resource_store()
-                .read_json_ref(&public_ref)
-                .await
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|_| "Discovery category display data is unavailable".to_owned())?;
-        let category = public
-            .categories
-            .into_iter()
-            .find(|category| category.category_id.as_deref() == Some(category_id))
-            .ok_or_else(|| "Discovery category has expired; reload the categories".to_owned())?;
-        Some((source.name, category))
-    } else {
-        None
-    };
-    let store = service.resource_store();
-    let reference = favorites_resource(store).await?;
-    let source_id = source_id.to_owned();
-    let category_id = category_id.to_owned();
-    store
-        .update_json_ref(&reference, move |current| {
-            let mut document: DiscoveryFavoritesDocument = serde_json::from_value(current)
-                .map_err(|error| format!("Invalid discovery favorites JSON: {error}"))?;
-            let existing = document
-                .favorites
-                .iter()
-                .position(|item| item.source_id == source_id && item.category_id == category_id);
-            if let Some((source_name, category)) = metadata {
-                if let Some(index) = existing {
-                    let entry = &mut document.favorites[index];
-                    entry.source_name = source_name;
-                    entry.title = category.title;
-                    entry.kind = category.kind;
-                    entry.style = category.style;
-                } else {
-                    let position = document.favorites.len() as u32;
-                    document.favorites.push(DiscoveryFavorite {
-                        source_id: source_id.to_owned(),
-                        category_id: category_id.to_owned(),
-                        source_name,
-                        title: category.title,
-                        kind: category.kind,
-                        style: category.style,
-                        position,
-                        created_at_ms: now_ms(),
-                    });
-                }
-            } else if let Some(index) = existing {
-                document.favorites.remove(index);
-            }
-            document.schema_version = CURRENT_SCHEMA_VERSION;
-            normalize_favorites(&mut document.favorites);
-            serde_json::to_value(document).map_err(|error| error.to_string())
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(reference)
-}
-
-fn normalize_favorites(favorites: &mut Vec<DiscoveryFavorite>) {
-    let mut seen = std::collections::HashSet::new();
-    favorites.retain(|item| seen.insert((item.source_id.clone(), item.category_id.clone())));
-    favorites.sort_by_key(|item| item.position);
-    for (position, item) in favorites.iter_mut().enumerate() {
-        item.position = position as u32;
-    }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-/// Evaluate discovery categories with the source engine and publish only the
-/// displayable portion. Category URLs stay in the private mapping file.
+/// 通过引擎取得分类，展示字段和请求目标一起写入关系表。
 pub async fn list_categories(
     service: &ApplicationService,
     source_id: &str,
@@ -244,7 +73,8 @@ pub(crate) async fn prepare_categories(
         "exploreKinds"
     };
     let raw = service
-        .execute_source_operation(source_id, operation, None, None, None, None, None)
+        .executor
+        .execute(SourceEngineRequest::new(operation, &source.source))
         .await?;
     let raw_categories = raw
         .as_array()
@@ -337,35 +167,13 @@ pub(crate) async fn publish_categories(
     private_categories: Vec<PrivateCategory>,
 ) -> Result<Value, String> {
     validate_source_id(source_id)?;
-    let private_map = PrivateCategoryMap {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        source_id: source_id.to_owned(),
-        categories: private_categories,
-    };
-    let private_value = serde_json::to_value(private_map).map_err(|error| error.to_string())?;
-    service
-        .write_internal_json(category_map_path(source_id)?, &private_value)
-        .await?;
-
-    let document = DiscoveryCategoriesDocument {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        source_id: source_id.to_owned(),
-        categories,
-    };
-    let resource = service
-        .resource_store()
-        .discovery_ref(source_id)
-        .map_err(|error| error.to_string())?;
-    let public_value = serde_json::to_value(&document).map_err(|error| error.to_string())?;
-    service
-        .resource_store()
-        .write_json_ref(&resource, &public_value)
-        .await
-        .map_err(|error| error.to_string())?;
+    let category_count = categories.iter().filter(|c| c.category_id.is_some()).count();
+    service.resource_store().database().save_discovery_categories(
+        source_id.to_owned(), categories, private_categories,
+    ).map_err(|e|e.to_string())?.await.map_err(|e|e.to_string())?;
     Ok(json!({
         "sourceId": source_id,
-        "categoryCount": document.categories.iter().filter(|category| category.category_id.is_some()).count(),
-        "resource": service.resource_descriptor(&resource),
+        "categoryCount": category_count,
     }))
 }
 
@@ -376,22 +184,11 @@ pub(crate) async fn private_category(
 ) -> Result<PrivateCategory, String> {
     validate_source_id(source_id)?;
     validate_category_id(category_id)?;
-    let mapping = service
-        .read_internal_json(category_map_path(source_id)?)
-        .await?;
-    if mapping.get("sourceId").and_then(Value::as_str) != Some(source_id) {
-        return Err("Discovery category has expired; reload the categories".to_owned());
-    }
-    let categories: Vec<PrivateCategory> = serde_json::from_value(
-        mapping
-            .get("categories")
-            .cloned()
-            .ok_or_else(|| "Discovery category mapping is invalid".to_owned())?,
-    )
-    .map_err(|_| "Discovery category mapping is invalid".to_owned())?;
-    categories
-        .into_iter()
-        .find(|category| category.category_id == category_id)
+    let database = service.resource_store().database().clone();
+    let source = source_id.to_owned();
+    let category = category_id.to_owned();
+    tokio::task::spawn_blocking(move || database.discovery_category(&source, &category))
+        .await.map_err(|e|e.to_string())?.map_err(|e|e.to_string())?
         .ok_or_else(|| "Unknown or expired discovery category ID".to_owned())
 }
 
@@ -430,15 +227,12 @@ pub async fn list_books(
         "explore"
     };
     let raw = service
-        .execute_source_operation(
-            source_id,
-            operation,
-            Some(category_url),
-            Some(page.max(1)),
-            None,
-            None,
-            None,
-        )
+        .executor
+        .execute(SourceEngineRequest {
+            keyword: Some(category_url),
+            page: Some(page.max(1) as i32),
+            ..SourceEngineRequest::new(operation, &source.source)
+        })
         .await?;
     let raw_books = raw
         .get("books")
@@ -452,7 +246,7 @@ pub async fn list_books(
     // keep the mutation lock across the public result write so an unsubscribe
     // cannot race a delayed RSS response into publishing a new result resource.
     let _source_guard = if require_rss == Some(true) {
-        Some(service.lock_rss_source_snapshot(&source).await?)
+        Some(service.sources.rss_snapshot(&source).await?)
     } else {
         None
     };
@@ -483,16 +277,11 @@ async fn enabled_source(
     source_id: &str,
 ) -> Result<SourceRecord, String> {
     validate_source_id(source_id)?;
-    let source = service.source_record(source_id).await?;
+    let source = service.sources.get(source_id).await?;
     if !source.enabled {
         return Err("Selected source is disabled".to_owned());
     }
     Ok(source)
-}
-
-pub(crate) fn category_map_path(source_id: &str) -> Result<std::path::PathBuf, String> {
-    validate_source_id(source_id)?;
-    Ok(Path::new("source-engine").join(CATEGORY_CACHE_DIRECTORY).join(format!("{source_id}.json")))
 }
 
 pub(crate) fn validate_source_id(source_id: &str) -> Result<(), String> {
@@ -522,29 +311,97 @@ pub(crate) fn validate_category_id(category_id: &str) -> Result<(), String> {
 /// ExploreKind.style is presentation metadata, but only its known layout
 /// scalars cross into the public resource. Do not copy future/raw fields from
 /// an engine object into a browser resource by default.
-fn project_category_style(value: &Value) -> Option<Value> {
-    let object = value.as_object()?;
-    let mut projected = serde_json::Map::new();
-    if let Some(cols) = object
-        .get("cols")
-        .and_then(Value::as_u64)
-        .filter(|cols| (1..=4).contains(cols))
-    {
-        projected.insert("cols".to_owned(), json!(cols));
-    }
-    if let Some(rows) = object
-        .get("rows")
-        .and_then(Value::as_u64)
-        .filter(|rows| (1..=12).contains(rows))
-    {
-        projected.insert("rows".to_owned(), json!(rows));
-    }
-    if let Some(width) = object
-        .get("layout_flexBasisPercent")
-        .and_then(Value::as_f64)
-        .filter(|width| width.is_finite() && (0.0..=100.0).contains(width))
-    {
-        projected.insert("layoutFlexBasisPercent".to_owned(), json!(width));
-    }
-    (!projected.is_empty()).then_some(Value::Object(projected))
+fn project_category_style(value: &Value) -> Option<crate::database::CategoryStyle> {
+    let cols=value.get("cols").and_then(Value::as_i64).filter(|value|(1..=4).contains(value));
+    let rows=value.get("rows").and_then(Value::as_i64).filter(|value|(1..=12).contains(value));
+    let width=value.get("layout_flexBasisPercent").and_then(Value::as_f64).filter(|value|value.is_finite() && (0.0..=100.0).contains(value));
+    (cols.is_some() || rows.is_some() || width.is_some()).then_some(crate::database::CategoryStyle {cols,rows,layout_flex_basis_percent:width})
 }
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+use tauri::{Emitter, State};
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn list_discovery_categories(
+    app: tauri::AppHandle,
+    source_id: String,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    let _operation = service.operation_read().await;
+    let result = crate::discovery::list_categories(&service, &source_id, Some(false)).await?;
+    let _ = app.emit(
+        "resource-updated",
+        json!({ "kind": "discoveryCategories", "sourceId": source_id }),
+    );
+    Ok(result)
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
+pub async fn list_discovery_books(
+    app: tauri::AppHandle,
+    source_id: String,
+    category_id: String,
+    page: Option<u32>,
+    service: State<'_, ApplicationService>,
+) -> Result<Value, String> {
+    let _operation = service.operation_read().await;
+    let result = crate::discovery::list_books(
+        &service,
+        &source_id,
+        &category_id,
+        page.unwrap_or(1),
+        Some(false),
+    )
+    .await?;
+    let _ = app.emit(
+        "resource-updated",
+        json!({ "kind": "discoveryResults", "sourceId": source_id, "categoryId": category_id }),
+    );
+    Ok(result)
+}
+
+impl ApplicationService {
+    // 发现与 RSS 的结果仅在此投影和缓存，不在此发起搜索。
+    pub(crate) async fn store_processed_results(
+        &self,
+        keyword: &str,
+        page: u32,
+        source_results: Vec<(SourceRecord, Value)>,
+        errors: Vec<Value>,
+    ) -> Result<Value, String> {
+        let search_id = format!("search-{}", uuid::Uuid::new_v4().simple());
+        let mut public_results = Vec::with_capacity(source_results.len());
+        let mut private_results = Vec::with_capacity(source_results.len());
+        for (source, book) in source_results {
+            let result_id = source_book_id(&source, &book);
+            let leaf = project_search_result(&result_id, &source, &book);
+            let cache = json!({
+                "searchId": search_id,
+                "sourceId": source.id,
+                "book": book,
+                "result": leaf
+            });
+            public_results.push(serde_json::to_value(leaf).map_err(|error| error.to_string())?);
+            private_results.push((result_id, cache));
+        }
+        self.searches
+            .lock()
+            .await
+            .search_result_documents
+            .extend(private_results);
+        let count = public_results.len();
+        let document = json!({
+            "searchId": search_id,
+            "keyword": keyword,
+            "page": page.max(1),
+            "results": public_results,
+            "errors": errors,
+            "complete": true,
+        });
+        Ok(json!({ "search": document, "bookCount": count, "errors": errors }))
+    }
+}
+
+use crate::source_catalog::SourceRecord;

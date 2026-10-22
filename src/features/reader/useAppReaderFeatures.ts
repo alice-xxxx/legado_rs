@@ -22,12 +22,12 @@ import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding } from "./useReaderMediaBinding";
 import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 import { registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
-import { clearOpenedBook, openedBook, switchOpenedBook } from "../books/bookDetailState";
+import { clearOpenedBook, openedBook, refreshOpenedBook, switchOpenedBook } from "../books/bookDetailState";
+import { collectReaderTtsSegments } from "./ttsText";
 
 type ReaderControlsMode = "settings" | "tts" | "appearance" | "search";
 
 interface AppReaderFeatureDependencies {
-  pdfImportPasswords: Map<string, { password: string; timer: ReturnType<typeof setTimeout> }>;
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
@@ -37,7 +37,7 @@ interface AppReaderFeatureDependencies {
 
 /** 组合阅读器状态和阅读相关功能。 */
 export function useAppReaderFeatures(options: AppReaderFeatureDependencies) {
-const { pdfImportPasswords, getRestoreRevision, notify, errorText,
+const { getRestoreRevision, notify, errorText,
   openOtherSettings } = options;
 const readerVisible = ref(false);
 const readingBook = openedBook;
@@ -47,7 +47,6 @@ const readerViewport = ref<HTMLElement | null>(null);
 const readingPdfPage = computed(() => readingContent.value?.kind === "pdfPage" ? readingContent.value : null);
 const readingPdfZoomOverride = ref<PdfPageResource["defaultZoom"] | null>(null);
 const activePdfZoom = computed(() => readingPdfZoomOverride.value ?? readingPdfPage.value?.defaultZoom ?? "page-fit");
-const readingPdfInitialPassword = ref("");
 const readingContentType = computed(() => {
   const content = readingContent.value;
   if (content?.kind === "media") return content.mediaType;
@@ -153,11 +152,16 @@ function getReaderCurrentOffset(): number {
   return readerCurrentOffset.value;
 }
 
-function notifyCurrentReading(refresh = false, prepareCurrent = false): Promise<void> {
+async function notifyCurrentReading(refresh = false, prepareCurrent = false): Promise<void> {
   const book = openedBook.value;
-  if (!book) return Promise.resolve();
-  return notifyReading(book.id, { chapterId: currentChapter.value?.id ?? null,
-    chapterIndex: readingChapterIndex.value, ...currentReaderPosition(), updatedAtMs: Date.now() }, refresh, prepareCurrent);
+  if (!book) return;
+  const chapter = currentChapter.value;
+  await notifyReading(book.id, { chapterId: chapter?.id ?? null,
+    chapterIndex: readingChapterIndex.value, ...currentReaderPosition(), updatedAtMs: Date.now() }, prepareCurrent);
+  if (refresh && chapter) {
+    await mainText(book.id, chapter.id);
+    await refreshOpenedBook(book.id);
+  }
 }
 
 function selectedReaderText(): string {
@@ -196,7 +200,6 @@ function onReaderMediaSleepTimerChange(event: Event): void {
 async function closeReader(discardProgress = false): Promise<void> {
   if (isBackupRestoreInProgress() && !discardProgress) return;
   readerTts.stopTts(false);
-  readerTts.stopHttpTtsAudio(false);
   ttsSelectedText.value = "";
   readerPendingFragment = null;
   if (!discardProgress) {
@@ -223,7 +226,6 @@ async function closeReader(discardProgress = false): Promise<void> {
   clearReaderMediaSleepTimer();
   readingContent.value = null;
   readingPdfZoomOverride.value = null;
-  readingPdfInitialPassword.value = "";
   readerViewport.value = null;
   readerBusy.value = false;
   if (discardProgress) {
@@ -236,11 +238,7 @@ function handleReaderResize(): void {
   readerDisplay.handleReaderResize();
 }
 
-function cancelPendingPdfImportOnUnmount(): void {
-  for (const entry of pdfImportPasswords.values()) clearTimeout(entry.timer);
-  pdfImportPasswords.clear();
-  readingPdfInitialPassword.value = "";
-}
+
 
 let readerNavigationActions!: ReturnType<typeof useReaderNavigationActions>;
 let readerMediaBinding!: ReturnType<typeof useReaderMediaBinding>;
@@ -376,7 +374,6 @@ readerChapterLoading = useReaderChapterLoading({
     content: readingContent,
     pdfPage: readingPdfPage,
     pdfZoomOverride: readingPdfZoomOverride,
-    pdfInitialPassword: readingPdfInitialPassword,
     imagePage: readingImagePage,
     mediaChapter: readingMediaChapter,
     mediaTimeMs: readerMediaTimeMs,
@@ -393,9 +390,8 @@ readerChapterLoading = useReaderChapterLoading({
     menuOpen: readerMenuOpen,
     busy: readerBusy,
     progressDirty: readerProgressDirty,
-    pdfImportPasswords,
     getMediaElement: () => readerMediaElement,
-    getExpectedTtsChapter: () => settings.value.reader.ttsEngine === "http" ? readerTts?.httpTtsExpectedChapterKey.value : readerTts?.ttsExpectedChapterKey.value,
+    getExpectedTtsChapter: () => readerTts?.ttsExpectedChapterKey.value,
     getLoadRevision: () => readerLoadRevision,
     advanceLoadRevision: () => { readerLoadRevision += 1; return readerLoadRevision; },
     advanceProgressRevision: () => { progressRevision += 1; },
@@ -424,7 +420,7 @@ readerChapterLoading = useReaderChapterLoading({
 });
 
 readerNavigationActions = useReaderNavigationActions({
-  comicScaleMode, readingPdfZoomOverride, readingPdfInitialPassword, pdfImportPasswords,
+  comicScaleMode, readingPdfZoomOverride,
   readerPageIndex, readerPageCount, readerVisible, readerBusy, readerDirectoryOpen, readingImagePage, readingMediaChapter,
   readingPdfPage, readingChapterIndex, readerProgressDirty, progressSaveState,
   readerMediaRetrying, shelfBatchRecoveryRequired, notifyCurrentReading,
@@ -470,7 +466,21 @@ readerTts = useReaderTts({
     pdfPage: readingPdfPage, imagePage: readingImagePage, chapterIndex: readingChapterIndex,
     getLoadRevision: () => readerLoadRevision },
   loadSegments: readerTtsActions.waitForReaderTtsSegments,
-  changeChapter,
+  prepareSegments: async index => {
+    const book = openedBook.value;
+    const chapter = book?.chapters.find(chapter => chapter.index === index);
+    if (!book || !chapter) return [];
+    if (!chapter.resource) {
+      await mainText(book.id, chapter.id);
+      await refreshOpenedBook(book.id);
+    }
+    if (!(await readerChapterWindow.prepare(index))) return [];
+    await nextTick();
+    const root = readerChapterWindow.chapterElement(index);
+    if (!root) return [];
+    return collectReaderTtsSegments(root.ownerDocument, false, { width: root.clientWidth, height: root.clientHeight }, root, true);
+  },
+  openChapter: async index => { await readerNavigationActions.selectReaderChapter(index); },
   highlightChunk: readerTtsActions.highlightTtsChunk,
   clearHighlight: readerTtsActions.clearTtsHighlight,
   errorText,
@@ -486,17 +496,13 @@ watch(
     readerTts.ttsSelectedText.value = "";
     if (!visible || recovering || restoring) {
       readerTts.stopTts(false);
-      readerTts.stopHttpTtsAudio(false);
       return;
     }
     const key = `${bookId}:${chapterIndex}`;
-    if (readerTts.httpTtsExpectedChapterKey.value === key) readerTts.httpTtsExpectedChapterKey.value = null;
-    else readerTts.stopHttpTtsAudio(false);
     if (readerTts.ttsExpectedChapterKey.value === key) {
-      readerTts.ttsExpectedChapterKey.value = null;
       return;
     }
-    if (readerTts.ttsPlayback.value !== "idle") readerTts.stopTts(false);
+    if (readerTts.ttsActive.value) readerTts.stopTts(false);
   },
   { flush: "sync" },
 );
@@ -577,7 +583,7 @@ return {
   setReaderChapterPreview: readerChapterWindow.setPreview,
   ...readerTts, ...readerTtsActions, ...readerDictionary,
   ...readerBookmarksAndHistory, ...readerMediaBinding, ...readerNavigationActions, ...readerDisplay,
-  readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom, readingPdfInitialPassword,
+  readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom,
   readingContentType, readingImagePage, readingMediaChapter, readingVideoChapter, readerViewport, readerPageIndex, readerPageCount,
   readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen,
   readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty, progressSaveState,
@@ -588,7 +594,7 @@ return {
   onReaderSurfaceClick, moveReaderFind, handleReaderFindKeydown, isReaderMediaControlBlocked,
   setReaderMediaElement, toggleReaderMediaPlayback, seekReaderMedia, skipReaderMedia,
   clearReaderMediaSleepTimer, setReaderMediaSleepTimer, onReaderMediaSleepTimerChange, closeReader, handleReaderResize,
-  cancelPendingPdfImportOnUnmount, loadReaderChapter, startReading, setReaderPage, turnPage, saveCurrentProgress,
+  loadReaderChapter, startReading, setReaderPage, turnPage, saveCurrentProgress,
   formatReaderMediaTime, openReaderDirectory,
   downloadReaderBook, openReaderControls, openHttpTtsSettings,
   ttsError, selectedReaderText, clearReaderScrollListeners: readerDisplay.clearReaderScrollListeners,

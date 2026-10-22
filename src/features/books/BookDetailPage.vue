@@ -307,33 +307,19 @@ async function clearOpenedBookChapterCache(): Promise<void> {
     const response = await clearBookChapterCacheApi(pending.id);
     if (!isCurrentOperation()) return;
     const warning = response.warning?.trim() ?? "";
-    if (response.commitState === "notCommitted") {
-      if (response.recoveryRequired) {
-        pendingBookChapterCacheClear.value = null;
-        lockShelfBatchRecovery("需要重启应用完成缓存恢复", `《${pending.title}》的章节缓存未清除，但回滚或恢复尚未完成。请重启应用后再继续。${warning ? ` ${warning}` : ""}`);
-      } else {
-        bookChapterCacheClearError.value = response.error || warning || "操作未提交，原缓存仍保留。";
-      }
-      throw new Error(bookChapterCacheClearError.value || shelfBatchRecoveryMessage.value);
-    }
-    if (response.commitState === "indeterminate") {
-      pendingBookChapterCacheClear.value = null;
-      lockShelfBatchRecovery("章节缓存清除状态未知", `《${pending.title}》的章节缓存清除提交状态未知。请重启应用检查书籍状态后再继续。${warning ? ` ${warning}` : ""}`);
-      throw new Error(shelfBatchRecoveryMessage.value);
-    }
-    if (response.recoveryRequired || recoveryRequired.value) {
+    if (warning || recoveryRequired.value) {
       pendingBookChapterCacheClear.value = null;
       if (openedBook.value?.id === pending.id) {
         replaceOpenedBook({ ...openedBook.value, chapters: openedBook.value.chapters.map((chapter) => ({ ...chapter, resource: undefined, pages: undefined, media: undefined })) });
       }
-      if (response.recoveryRequired) lockShelfBatchRecovery("需要重启应用完成缓存恢复", `《${pending.title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
+      if (warning) lockShelfBatchRecovery("需要重启应用完成缓存恢复", `《${pending.title}》的章节缓存已清除，但清理或恢复尚未完成。请重启应用。${warning ? ` ${warning}` : ""}`);
       throw new Error(shelfBatchRecoveryMessage.value || "缓存清理需要完成恢复。");
     }
 
     pendingBookChapterCacheClear.value = null;
     let readError = "";
     try {
-      await refreshOpenedBook(response.book);
+      await refreshOpenedBook(pending.id);
       if (!isCurrentOperation()) return;
     } catch (error) {
       if (!isCurrentOperation()) return;

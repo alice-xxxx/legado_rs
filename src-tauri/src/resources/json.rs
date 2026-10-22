@@ -92,15 +92,6 @@ fn is_resource_url_property(property: &str) -> bool {
     property == "src" || property.ends_with("Src")
 }
 
-/// Validate an encoded public document with the same persistent-reference
-/// rules used by `write_json_ref` and `update_json_ref`.
-pub(crate) fn validate_persistable_json_bytes(bytes: &[u8]) -> Result<(), ResourceError> {
-    let value: Value = serde_json::from_slice(bytes).map_err(|error| {
-        ResourceError::new(format!("Transaction target is not valid JSON: {error}"))
-    })?;
-    validate_embedded_refs(&value)
-}
-
 pub(super) fn validate_embedded_refs(value: &Value) -> Result<(), ResourceError> {
     validate_embedded_refs_with_key(value, None)
 }

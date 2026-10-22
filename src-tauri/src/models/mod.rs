@@ -41,28 +41,11 @@ impl Default for ShelfDocument {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-/// Shelf placement only; book details and progress live in each `book.json`.
+/// 书架顺序和分组；书籍资料、目录和阅读位置使用各自的关系表。
 pub struct ShelfBookPosition {
     pub id: String,
     #[serde(default)]
     pub groups: Vec<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProgressSummary {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub chapter_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub page_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub anchor: Option<String>,
-    #[serde(default)]
-    pub chapter_index: usize,
-    #[serde(default)]
-    pub offset: u64,
-    #[serde(default)]
-    pub updated_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -326,78 +309,12 @@ pub enum BookMediaType {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BookDocument {
-    pub schema_version: u32,
     pub id: String,
     pub title: String,
-    /// Rust-owned source capability projection. Local imports have no private
-    /// engine source and therefore cannot be switched to another source.
-    #[serde(default)]
-    pub can_change_source: bool,
-    #[serde(default)]
     pub author: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub cover_src: Option<ResourceRef>,
-    /// Rust-projected, plain-text description from processed book details.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub intro: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub kind: Option<String>,
-    /// Reader mode projected from the source, independent of genre labels.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub content_type: Option<String>,
-    /// Audio/video playback mode, retained for progress and media resource handling.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub media_type: Option<BookMediaType>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub word_count: Option<String>,
-    /// Public source labels only; raw source definitions stay private.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub source_group: Option<String>,
-    /// Rust-owned processed base values and user display-only overrides.
-    /// Neither field contains a source definition or KMP engine book.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub display_base: Option<BookDisplayBase>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub display_overrides: Option<BookDisplayOverrides>,
-    #[serde(default)]
-    pub chapter_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub latest_chapter: Option<String>,
-    #[serde(default)]
-    pub progress: ProgressSummary,
-    #[serde(default)]
     pub chapters: Vec<ChapterDescriptor>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BookDisplayBase {
-    pub title: String,
-    #[serde(default)]
-    pub author: String,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub intro: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub cover_src: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct BookDisplayOverrides {
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub author: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub intro: Option<String>,
-    /// An empty string explicitly hides the default cover; `None` falls back
-    /// to the current processed base cover.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub cover_src: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

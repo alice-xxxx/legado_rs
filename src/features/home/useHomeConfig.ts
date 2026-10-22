@@ -1,4 +1,6 @@
-import { computed, ref, type ComputedRef } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, type ComputedRef } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { LoginUpdate } from "../../api/sources";
 import { listDiscoveryCategories } from "../../api/discovery";
 import { readCategories } from "../../api/database";
 import { settings as sharedSettings } from "../settings/settingsStore";
@@ -24,6 +26,20 @@ export function useHomeConfig(options: HomeConfigOptions) {
   const homeEditorCategoryErrors = ref<Record<string, string>>({});
   const homeEditorCategoryLoads = new Map<string, Promise<void>>();
   let editorRequestRevision = 0;
+  let unlisten: UnlistenFn | undefined;
+  let disposed = false;
+
+  onMounted(async () => {
+    const stop = await listen<LoginUpdate>("login", async ({ payload }) => {
+      if (!payload.refreshTargets?.includes("explore")) return;
+      await homeEditorCategoryLoads.get(payload.sourceId);
+      if (disposed) return;
+      delete homeEditorCategories.value[payload.sourceId];
+      await loadHomeEditorCategories(payload.sourceId);
+    });
+    if (disposed) stop(); else unlisten = stop;
+  });
+  onBeforeUnmount(() => { disposed = true; unlisten?.(); });
 
   function isEnabledSource(sourceId: string): boolean {
     return options.enabledSources.value.some(

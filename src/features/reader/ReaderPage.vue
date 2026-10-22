@@ -530,11 +530,11 @@ export default defineComponent({
       <div
         v-if="readerControlsMode === 'tts' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="reader-tts-panel">
-        <div class="reader-tts-description"><label for="reader-tts-engine">朗读引擎</label><small v-if="ttsControlStatus">{{
-            ttsControlStatus }}</small><small v-if="ttsControlPlayback !== 'idle' && ttsControlProgress">片段 {{
-              ttsControlProgress.current }} / {{ ttsControlProgress.total }}</small></div>
+        <div class="reader-tts-description"><label for="reader-tts-engine">朗读引擎</label><small v-if="ttsNotice">{{
+            ttsNotice }}</small><small v-if="ttsActive && ttsChunkProgress">片段 {{
+              ttsChunkProgress.current }} / {{ ttsChunkProgress.total }}</small></div>
         <select id="reader-tts-engine" :value="ttsEngineSelection"
-          :disabled="ttsControlPlayback !== 'idle' || readerBusy"
+          :disabled="ttsActive || readerBusy"
           @change="selectTtsEngine(($event.target as HTMLSelectElement).value)">
           <optgroup label="本地语音">
             <option value="system:">系统默认语音</option>
@@ -565,26 +565,19 @@ export default defineComponent({
             type="range" min="0.5" :max="ctx.nativePlayback && settings.reader.ttsEngine === 'system' ? 4 : 5" step="0.1" :value="settings.reader.ttsRate"
             @input="setTtsRate(Number(($event.target as HTMLInputElement).value))" /><small>{{
               settings.reader.ttsRate.toFixed(1) }}×</small></div>
-        <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox"
+        <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox" :disabled="ttsActive"
             @change="settings.reader.ttsContinueAcrossChapters = ($event.target as HTMLInputElement).checked" />连续朗读并自动进入下一章</label>
-        <div v-if="settings.reader.ttsEngine === 'system'" class="reader-tts-selection"><small>{{ ttsSelectedText ? `已选中
-            ${ttsSelectedText.length} 个字` : '先在正文中选中文字' }}</small><button v-if="ttsControlPlayback === 'idle'"
+        <div class="reader-tts-selection"><small>{{ ttsSelectedText ? `已选中
+            ${ttsSelectedText.length} 个字` : '先在正文中选中文字' }}</small><button v-if="!ttsActive"
             type="button" class="button secondary small" :disabled="!ttsCanStart || !ttsSelectedText"
             @click="startSelectedTextTts">朗读选中文字</button></div>
         <div class="reader-tts-actions">
-          <button type="button" class="button secondary small"
-            :disabled="ttsControlPlayback === 'loading' || (ttsControlPlayback === 'idle' && !ttsControlCanStart)"
-            @click="ttsControlPlayback === 'speaking' ? pauseSelectedTts() : ttsControlPlayback === 'paused' ? resumeSelectedTts() : startSelectedTts()">{{
-              ttsControlPlayback === 'loading' ? '准备中…' : ttsControlPlayback === 'speaking' ? '暂停' : ttsControlPlayback
-                === 'paused' ? '继续' : '开始朗读' }}</button>
-          <button v-if="ttsControlPlayback !== 'idle'" type="button" class="button secondary small"
-            @click="stopSelectedTts()">停止</button>
+          <button v-if="!ttsActive" type="button" class="button secondary small"
+            :disabled="!ttsCanStart" @click="startTts()">开始朗读</button>
+          <button v-if="ttsActive" type="button" class="button secondary small"
+            @click="stopTts()">停止</button>
         </div>
-        <p v-if="settings.reader.ttsEngine === 'system' && ttsError">{{ ttsError }}</p>
-        <p v-else-if="settings.reader.ttsEngine === 'http' && ttsControlError">{{ ttsControlError }}</p>
-        <button
-          v-if="settings.reader.ttsEngine === 'system' && ttsControlPlayback === 'idle' && ttsAvailability !== 'ready'"
-          type="button" class="button secondary small" @click="retryTtsAvailability">重新检测系统语音</button>
+        <p v-if="ttsError">{{ ttsError }}</p>
       </div>
       <div v-if="readerControlsMode === 'settings' && currentBookmark" class="reader-current-bookmark">
         <span>{{ ctx.readingMediaChapter ? (ctx.readingVideoChapter ? '当前视频位置已添加书签' : '当前音频位置已添加书签') : '当前页已添加书签'
@@ -676,10 +669,6 @@ export default defineComponent({
       </div>
     </aside>
     </div>
-    <!-- 播放器放在弹窗外，关闭朗读面板时不要卸载正在播放的音频。 -->
-    <audio v-if="!ctx.nativePlayback && settings.reader.ttsEngine === 'http' && httpTtsAudioResource" :ref="setHttpTtsAudioElement"
-      preload="none" :src="httpTtsAudioResource.src" class="reader-audio-element" @play="onHttpTtsAudioPlay"
-      @pause="onHttpTtsAudioPause" @timeupdate="onHttpTtsAudioTimeUpdate" @ended="onHttpTtsAudioEnded" @error="onHttpTtsAudioError"></audio>
   </section>
 
   <section v-if="ctx.readerVisible && ctx.dictionaryOpen" class="modal-backdrop reader-dictionary-backdrop"

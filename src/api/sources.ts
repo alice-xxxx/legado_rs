@@ -1,23 +1,22 @@
 import { command } from "./ipc";
-import type {
-  SourceLoginForm,
-  SourceLoginResult,
-  SourceWebLoginResult,
-} from "./types";
+import type { SourceLoginForm } from "./types";
 
-export const loginSource = (sourceId: string, credentials: Record<string, string>) =>
-  command<SourceLoginResult>("login_source", { sourceId, credentials });
-export const runSourceLoginAction = (sourceId: string, actionId: number, credentials: Record<string, string>) =>
-  command<SourceLoginResult>("run_source_login_action", { sourceId, actionId, credentials });
-export const clearSourceLoginState = (sourceId: string) => command<{ cleared: boolean }>("clear_source_login_state", { sourceId });
-export const startSourceLoginWeb = (sourceId: string) => command<{ sessionId: string }>("start_source_login_web", { sourceId });
-export const finishSourceLoginWeb = (sourceId: string, sessionId: string) =>
-  command<SourceWebLoginResult>("finish_source_login_web", { sourceId, sessionId });
-export const cancelSourceLoginWeb = (sourceId: string, sessionId: string) =>
-  command<{ cancelled: boolean }>("cancel_source_login_web", { sourceId, sessionId });
+export type LoginAction =
+  | { type: "open" | "cancel" | "clear" }
+  | { type: "submit"; fields?: Record<string, string>; button?: number };
 
-export const getSourceLoginState = (sourceId: string) =>
-  command<{ hasLoginState: boolean }>("get_source_login_state", { sourceId });
+/** 只包含当前界面需要更新的内容；Cookie、规则和窗口会话不传入 Vue。 */
+export interface LoginUpdate {
+  sourceId: string;
+  form?: SourceLoginForm;
+  hasLoginState?: boolean;
+  webOpen?: boolean;
+  message?: string;
+  error?: string;
+  inputUpdates?: Record<string, string>;
+  refreshTargets?: string[];
+  copyText?: string;
+}
 
-export const getSourceLoginForm = (sourceId: string) =>
-  command<SourceLoginForm>("get_source_login_form", { sourceId });
+export const login = (sourceId: string, action: LoginAction) =>
+  command<void>("login", { sourceId, action });

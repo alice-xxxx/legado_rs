@@ -1,51 +1,44 @@
-//! 收集公开资源、校验快照并创建备份归档。
+//! 归档数据库快照、设置和资源文件。
 
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use atomicwrites::{AllowOverwrite, AtomicFile};
-use serde::Deserialize;
-use serde_json::Value;
 use sha2::{Digest, Sha256};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
-use crate::models::{
-    CURRENT_SCHEMA_VERSION, SettingsDocument,
-};
+use crate::models::{CURRENT_SCHEMA_VERSION};
 use crate::resources::ResourceStore;
 
 use super::{
-    BACKED_SOURCE_STORAGE, BACKUP_FORMAT, BACKUP_VERSION, BackupEntry, BackupManifest,
-    MANIFEST_PATH, MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES, hex_digest,
+    hex_digest, BackupEntry, BackupManifest, BACKUP_FORMAT, BACKUP_VERSION,
+    MANIFEST_PATH, MAX_ENTRIES, MAX_FILE_BYTES, MAX_MANIFEST_BYTES, MAX_TOTAL_BYTES,
 };
 
 #[derive(Clone, Debug)]
 pub(super) struct SnapshotFile {
     pub(super) archive_path: String,
     pub(super) source_path: PathBuf,
-    inline_bytes: Option<Vec<u8>>,
     size: u64,
     sha256: String,
 }
 
-/// Write a consistent JSON/resource snapshot atomically to a user-selected
-/// destination. Callers must hold the application's exclusive operation guard
-/// so state cannot change between the file scan and archive write.
+/// 调用方持有应用独占操作门，归档期间资源文件不变。
 pub async fn create_backup(
     store: &ResourceStore,
     destination: impl AsRef<Path>,
 ) -> Result<(), String> {
+    let database=store.database().clone();
     let root = store.root().to_path_buf();
     let destination = destination.as_ref().to_path_buf();
-    tokio::task::spawn_blocking(move || create_backup_sync(&root, &destination))
+    tokio::task::spawn_blocking(move || create_backup_sync(&root, &destination, &database))
         .await
         .map_err(|error| format!("Backup worker failed: {error}"))?
 }
 
-fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
+fn create_backup_sync(root: &Path, destination: &Path, database:&crate::database::Database) -> Result<(), String> {
     let root =
         fs::canonicalize(root).map_err(|error| format!("Cannot resolve app data root: {error}"))?;
     let destination_parent = destination
@@ -62,7 +55,10 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
         return Err("Backup destination must be outside the application data folder".to_owned());
     }
 
-    let files = collect_snapshot_files(&root)?;
+    let snapshot = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let database_file = snapshot.path().join(crate::database::FILE_NAME);
+    database.backup_file(database_file.clone()).and_then(crate::database::Pending::wait).map_err(|e| e.to_string())?;
+    let files = collect_snapshot_files(&root, &database_file)?;
     if files.len() > MAX_ENTRIES {
         return Err("Application data contains too many files for one backup".to_owned());
     }
@@ -73,7 +69,6 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
             return Err("Application data exceeds the supported backup size limit".to_owned());
         }
     }
-    validate_snapshot_json(&files)?;
 
     let manifest = BackupManifest {
         format: BACKUP_FORMAT.to_owned(),
@@ -105,13 +100,8 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
             writer.write_all(&manifest_bytes)?;
             for entry in &files {
                 writer.start_file(&entry.archive_path, options)?;
-                let copied = if let Some(bytes) = &entry.inline_bytes {
-                    writer.write_all(bytes)?;
-                    bytes.len() as u64
-                } else {
-                    let mut input = File::open(&entry.source_path)?;
-                    std::io::copy(&mut input, &mut writer)?
-                };
+                let mut input = File::open(&entry.source_path)?;
+                let copied = std::io::copy(&mut input, &mut writer)?;
                 if copied != entry.size {
                     return Err(std::io::Error::other(
                         "Application data changed while backup was being written",
@@ -126,88 +116,13 @@ fn create_backup_sync(root: &Path, destination: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub(super) fn collect_snapshot_files(root: &Path) -> Result<Vec<SnapshotFile>, String> {
-    if root.join(crate::database::FILE_NAME).is_file() { return collect_database_snapshot(root); }
+fn collect_snapshot_files(root: &Path, database_file: &Path) -> Result<Vec<SnapshotFile>, String> {
     let mut files = Vec::new();
-    for required in [crate::resources::content::LIBRARY_FILE, "settings.json", "http-tts.json", "history.json"] {
-        let path = root.join(required);
-        if !path.is_file() {
-            return Err(format!("Required app data file is missing: {required}"));
-        }
-        add_snapshot_file(&mut files, root, &path, required.to_owned())?;
-    }
-    for required in [
-        "sources.json",
-        "replacement-rules.json",
-        "txt-toc-rules.json",
-        "tasks.json",
-        "rss-state.json",
-    ] {
-        let path = root.join(required);
-        match fs::symlink_metadata(&path) {
-            Ok(_) => add_snapshot_file(&mut files, root, &path, required.to_owned())?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Cannot inspect optional app data file {required}: {error}"
-                ));
-            }
-        }
-    }
-    for directory in ["cache"] {
-        collect_tree(root, &root.join(directory), directory, &mut files)?;
-    }
-
-    let source_engine = root.join("source-engine");
-    ensure_regular_directory_if_present(root, &source_engine, "source-engine")?;
-    collect_tree(
-        root,
-        &source_engine.join("discovery-categories"),
-        "source-engine/discovery-categories",
-        &mut files,
-    )?;
-    let storage_dir = source_engine.join("storage");
-    ensure_regular_directory_if_present(root, &storage_dir, "source-engine/storage")?;
-    for namespace in BACKED_SOURCE_STORAGE {
-        let path = storage_dir.join(format!("{namespace}.json"));
-        match fs::symlink_metadata(&path) {
-            Ok(_) => add_snapshot_file(
-                &mut files,
-                root,
-                &path,
-                format!("source-engine/storage/{namespace}.json"),
-            )?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                return Err(format!(
-                    "Cannot inspect source storage {namespace}: {error}"
-                ));
-            }
-        }
-    }
-    files.sort_by(|left, right| left.archive_path.cmp(&right.archive_path));
+    add_snapshot_file(&mut files, database_file.parent().unwrap(), database_file, crate::database::FILE_NAME.into())?;
+    add_snapshot_file(&mut files, root, &root.join("settings.json"), "settings.json".into())?;
+    collect_tree(root, &root.join("cache"), "cache", &mut files)?;
+    files.sort_by(|a,b| a.archive_path.cmp(&b.archive_path));
     Ok(files)
-}
-
-fn ensure_regular_directory_if_present(
-    root: &Path,
-    path: &Path,
-    label: &str,
-) -> Result<(), String> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata)
-            if metadata.file_type().is_symlink()
-                || !metadata.is_dir()
-                || !path.starts_with(root) =>
-        {
-            Err(format!(
-                "App data folder is not a regular in-root directory: {label}"
-            ))
-        }
-        Ok(_) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(format!("Cannot inspect app data folder {label}: {error}")),
-    }
 }
 
 fn collect_tree(
@@ -234,12 +149,6 @@ fn collect_tree(
             .file_name()
             .into_string()
             .map_err(|_| "App data contains a non-UTF-8 filename".to_owned())?;
-        if archive_prefix == "search"
-            && name.starts_with("search-snapshot-")
-            && name.ends_with(".json")
-        {
-            continue;
-        }
         let path = entry.path();
         let archive_path = format!("{archive_prefix}/{name}");
         let metadata = fs::symlink_metadata(&path)
@@ -248,12 +157,8 @@ fn collect_tree(
             return Err(format!("App data contains a symbolic link: {archive_path}"));
         }
         if metadata.is_dir() {
-            if archive_prefix == "books" && matches!(name.as_str(), "debug-source" | "tts-audio") {
-                continue;
-            }
             collect_tree(root, &path, &archive_path, files)?;
         } else if metadata.is_file() {
-            if root.join(crate::database::FILE_NAME).is_file() && archive_path.ends_with(".json") { continue; }
             add_snapshot_file(files, root, &path, archive_path)?;
         } else {
             return Err(format!(
@@ -287,7 +192,6 @@ fn add_snapshot_file(
     files.push(SnapshotFile {
         archive_path,
         source_path: path.to_path_buf(),
-        inline_bytes: None,
         size,
         sha256,
     });
@@ -314,177 +218,8 @@ fn hash_file(path: &Path) -> Result<(u64, String), String> {
     Ok((size, hex_digest(&digest)))
 }
 
-pub(super) fn validate_snapshot_json(files: &[SnapshotFile]) -> Result<(), String> {
-    for file in files {
-        let bytes = file.inline_bytes.clone().map(Ok).unwrap_or_else(||fs::read(&file.source_path)).map_err(|error| {
-            format!("Cannot read {} for validation: {error}", file.archive_path)
-        })?;
-        match file.archive_path.as_str() {
-            crate::resources::content::LIBRARY_FILE => {
-                let library: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                crate::resources::content::validate_library(&library).map_err(|error| error.to_string())?;
-            }
-            "settings.json" => {
-                let document: SettingsDocument = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid settings JSON: {error}"))?;
-                crate::discovery::home_config::validate_home_document(&document.home)?;
-            }
-            "history.json" => {
-                let document: Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
-                crate::reading_tools::validate_history_document(&document)
-                    .map_err(|error| format!("Invalid history JSON: {error}"))?;
-            }
-            "replacement-rules.json" => {
-                let _: crate::reading_tools::ReplacementRuleDocument =
-                    serde_json::from_slice(&bytes)
-                        .map_err(|error| format!("Invalid replacement rules JSON: {error}"))?;
-            }
-            "txt-toc-rules.json" => {
-                let document: crate::local_books::txt_toc_rules::TxtTocRulesDocument =
-                    serde_json::from_slice(&bytes)
-                        .map_err(|error| format!("Invalid TXT TOC rules JSON: {error}"))?;
-                crate::local_books::txt_toc_rules::validate_document(&document)?;
-            }
-            "rss-state.json" => {
-                let document: Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid RSS state JSON: {error}"))?;
-                crate::rss::validate_rss_state(&document)?;
-            }
-            "sources.json" => {
-                let records: Vec<crate::application::SourceRecord> = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid source JSON: {error}"))?;
-                crate::application::validate_source_records(&records)?;
-            }
-            path if crate::resources::content::is_content_document(path) => {
-                let document: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                let (kind, id, _) = crate::resources::content::content_path(path).ok_or("Invalid content path")?;
-                if document["id"].as_str() != Some(id) { return Err(format!("Content ID does not match path: {path}")); }
-                crate::resources::content::book_view(&document, kind).map_err(|error| error.to_string())?;
-                crate::resources::validate_persistable_json_bytes(&bytes).map_err(|error| error.to_string())?;
-            }
-            "tasks.json" => {
-                let document: Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid tasks JSON: {error}"))?;
-                if !document["tasks"].is_array() || document["schemaVersion"].as_u64() != Some(CURRENT_SCHEMA_VERSION as u64) {
-                    return Err("Invalid tasks document".into());
-                }
-            }
-            "http-tts.json" => {
-                let value: serde_json::Value = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("Invalid HTTP TTS configuration: {error}"))?;
-                if !value.is_object() {
-                    return Err("HTTP TTS configuration must be a JSON object".to_owned());
-                }
-                crate::http_tts_config::list_configs(&value)?;
-            }
-            path if path.starts_with("source-engine/discovery-categories/") && path.ends_with(".json") => {
-                let value: Value = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
-                if !value.is_object() { return Err(format!("Invalid discovery categories: {path}")); }
-            }
-            path if crate::resources::content::content_path(path).is_some() => {
-                if path.ends_with(".txt") || path.ends_with(".html") || path.ends_with(".m3u8") {
-                    std::str::from_utf8(&bytes).map_err(|_| format!("Native text is not UTF-8: {path}"))?;
-                }
-            }
-            path if path.starts_with("source-engine/storage/") && path.ends_with(".json") => {
-                #[derive(Deserialize)]
-                #[serde(deny_unknown_fields)]
-                struct StorageSnapshot {
-                    entries: HashMap<String, StorageSnapshotEntry>,
-                }
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase", deny_unknown_fields)]
-                struct StorageSnapshotEntry {
-                    value: String,
-                    #[serde(default)]
-                    expires_at_ms: Option<u64>,
-                }
-                let snapshot: StorageSnapshot =
-                    serde_json::from_slice(&bytes).map_err(|error| {
-                        format!("Invalid private source storage at {path}: {error}")
-                    })?;
-                if snapshot.entries.keys().any(|key| key.len() > 16_384) {
-                    return Err(format!(
-                        "Private source storage entry exceeds its limit: {path}"
-                    ));
-                }
-                let _stored_value_bytes = snapshot
-                    .entries
-                    .values()
-                    .map(|entry| entry.value.len())
-                    .sum::<usize>();
-                let _expiry_records = snapshot
-                    .entries
-                    .values()
-                    .filter_map(|entry| entry.expires_at_ms)
-                    .count();
-            }
-            _ => {
-                return Err(format!(
-                    "Unsupported app data file in backup: {}",
-                    file.archive_path
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
 pub(super) fn is_allowed_snapshot_path(path: &str) -> bool {
-    if crate::resources::content::content_path(path).is_some_and(|(_, id, _)| id == "debug-source" || id == "tts-audio")
-    {
-        return false;
-    }
-    if matches!(
-        path,
-        crate::resources::content::LIBRARY_FILE
-            | "settings.json"
-            | "http-tts.json"
-            | "history.json"
-            | "replacement-rules.json"
-            | "sources.json"
-            | "txt-toc-rules.json"
-            | "tasks.json"
-            | "rss-state.json"
-    ) {
-        return true;
-    }
-    let parts = path.split('/').collect::<Vec<_>>();
-    match parts.as_slice() {
-        ["cache", kind, id, name] => crate::resources::content::CONTENT_TYPES.contains(kind)
-            && valid_resource_id(id)
-            && (name == &format!("{id}.json") || crate::resources::ResourceRef::new(format!("resource://{path}")).is_ok()),
-        ["source-engine", "discovery-categories", source_file] => source_file
-            .strip_suffix(".json").is_some_and(valid_source_record_id),
-        ["source-engine", "storage", storage_file] => BACKED_SOURCE_STORAGE
-            .iter()
-            .any(|namespace| storage_file == &format!("{namespace}.json")),
-        _ => false,
-    }
-}
-
-fn valid_resource_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 255
-        && id != "."
-        && id != ".."
-        && !id.chars().any(|character| {
-            character.is_control()
-                || matches!(
-                    character,
-                    '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
-                )
-        })
-}
-
-fn valid_source_record_id(id: &str) -> bool {
-    id.strip_prefix("source-").is_some_and(|suffix| {
-        suffix.len() == 16
-            && suffix
-                .bytes()
-                .all(|character| character.is_ascii_digit() || (b'a'..=b'f').contains(&character))
-    })
+    path == crate::database::FILE_NAME || path == "settings.json" || path.starts_with("cache/")
 }
 
 pub(super) fn validate_archive_path(path: &str) -> Result<(), String> {
@@ -509,38 +244,3 @@ pub(super) fn validate_archive_path(path: &str) -> Result<(), String> {
     Ok(())
 }
 
-// JSON is an archive interchange format. Runtime state is read from a single
-// database snapshot, including WAL commits; the live database file is not copied.
-fn collect_database_snapshot(root: &Path) -> Result<Vec<SnapshotFile>,String> {
-    let db = crate::database::Database::at(root);
-    let mut connection = db.connect().map_err(|e|e.to_string())?;
-    let tx = connection.transaction().map_err(|e|e.to_string())?;
-    let mut files = Vec::new();
-    let mut paths = crate::database::paths(&tx).map_err(|e|e.to_string())?;
-    paths.push("settings.json".into());
-    for path in paths {
-        if !is_allowed_snapshot_path(&path) { continue; }
-        let value = crate::database::read(&tx,&path).map_err(|e|e.to_string())?.ok_or("Snapshot document disappeared")?;
-        add_inline_snapshot(&mut files,path,&value)?;
-    }
-    for namespace in BACKED_SOURCE_STORAGE {
-        let mut stmt = tx.prepare("SELECT key,value,expires_at_ms FROM source_kv WHERE namespace=?1 ORDER BY key").map_err(|e|e.to_string())?;
-        let rows = stmt.query_map([namespace],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?,row.get::<_,Option<i64>>(2)?))).map_err(|e|e.to_string())?;
-        let mut entries = serde_json::Map::new();
-        for row in rows { let (key,value,expiry)=row.map_err(|e|e.to_string())?; entries.insert(key,serde_json::json!({"value":value,"expiresAtMs":expiry})); }
-        add_inline_snapshot(&mut files,format!("source-engine/storage/{namespace}.json"),&serde_json::json!({"entries":entries}))?;
-    }
-    tx.commit().map_err(|e|e.to_string())?;
-    for required in [crate::resources::content::LIBRARY_FILE,"settings.json","http-tts.json","history.json"] {
-        if !files.iter().any(|file|file.archive_path==required) { return Err(format!("Required app data is missing: {required}")); }
-    }
-    collect_tree(root,&root.join("cache"),"cache",&mut files)?;
-    files.sort_by(|left,right|left.archive_path.cmp(&right.archive_path));
-    Ok(files)
-}
-
-fn add_inline_snapshot(files: &mut Vec<SnapshotFile>,archive_path: String,value: &Value) -> Result<(),String> {
-    let bytes=serde_json::to_vec(value).map_err(|e|e.to_string())?;
-    files.push(SnapshotFile { archive_path,source_path:PathBuf::new(),size:bytes.len() as u64,sha256:hex_digest(&Sha256::digest(&bytes)),inline_bytes:Some(bytes) });
-    Ok(())
-}

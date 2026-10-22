@@ -12,7 +12,6 @@ type Item = {
 const contentItems: Item[] = [
   { destination: "history", icon: "history", title: "历史" },
   { destination: "bookmarks", icon: "bookmark", title: "书签" },
-  { destination: "tasks", icon: "download", title: "历史记录" },
   { destination: "sources", icon: "source", title: "内容引擎" },
 ];
 

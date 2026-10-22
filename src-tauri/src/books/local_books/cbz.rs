@@ -109,7 +109,6 @@ pub(super) fn parse_cbz_file(path: &Path, bytes: &[u8]) -> Result<ParsedBook, St
         title: chapter_title,
         html: None,
         text: None,
-        pdf_page_index: None,
     }];
 
     Ok(ParsedBook {
@@ -125,7 +124,6 @@ pub(super) fn parse_cbz_file(path: &Path, bytes: &[u8]) -> Result<ParsedBook, St
         chapters,
         assets,
         cover_asset_id,
-        pdf_asset_id: None,
     })
 }
 

@@ -1,9 +1,9 @@
-import { type Ref } from "vue";
-import { emit } from "@tauri-apps/api/event";
+import { onBeforeUnmount, type Ref } from "vue";
+import { listen } from "@tauri-apps/api/event";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
-import { getSourceLoginForm, getSourceLoginState, loginSource, runSourceLoginAction, clearSourceLoginState, startSourceLoginWeb, finishSourceLoginWeb, cancelSourceLoginWeb } from "../../api/sources";
+import { login, type LoginAction, type LoginUpdate } from "../../api/sources";
 import { sources } from "./sourcesStore";
-import { type SourceLoginField, type SourceLoginForm, type SourceMetadata } from "../../api/types";
+import type { SourceLoginField, SourceLoginForm, SourceMetadata } from "../../api/types";
 
 interface SourceLoginActionDependencies {
   selectedSourceRows: Ref<string[]>;
@@ -12,9 +12,8 @@ interface SourceLoginActionDependencies {
   sourceLoginTarget: Ref<SourceMetadata | null>;
   sourceLoginBusy: Ref<boolean>;
   sourceHasLoginState: Ref<boolean | null>;
-  sourceLoginError: Ref<string>;
   sourceLoginForm: Ref<SourceLoginForm | null>;
-  sourceLoginWebSessionId: Ref<string>;
+  sourceLoginWebOpen: Ref<boolean>;
   sourceLoginCredentials: Ref<Record<string, string>>;
   sourceLoginFormError: Ref<string>;
   sourceLoginFeedback: Ref<string>;
@@ -22,274 +21,112 @@ interface SourceLoginActionDependencies {
   errorText: (error: unknown) => string;
 }
 
-/** 管理选中书源的登录表单、Cookie 状态和私有网页登录会话。 */
+/** Vue 只维护输入和显示；所有登录动作都调用同一个 Rust 入口。 */
 export function useSourceLoginActions({
-  selectedSourceRows,
-  sourceBatchBusy,
-  sourceExportBusy,
-  sourceLoginTarget,
-  sourceLoginBusy,
-  sourceHasLoginState,
-  sourceLoginError,
-  sourceLoginForm,
-  sourceLoginWebSessionId,
-  sourceLoginCredentials,
-  sourceLoginFormError,
-  sourceLoginFeedback,
-  notify,
-  errorText,
+  selectedSourceRows, sourceBatchBusy, sourceExportBusy, sourceLoginTarget,
+  sourceLoginBusy, sourceHasLoginState, sourceLoginForm,
+  sourceLoginWebOpen, sourceLoginCredentials, sourceLoginFormError,
+  sourceLoginFeedback, notify, errorText,
 }: SourceLoginActionDependencies) {
-  // 每次切换或关闭登录对象都会递增代次，丢弃旧请求的迟到结果。
-  let sourceLoginGeneration = 0;
+  let generation = 0;
+  let listening: ReturnType<typeof listen<LoginUpdate>> | undefined;
+  let cancelling = Promise.resolve();
 
-  function isCurrentSourceLogin(sourceId: string, generation: number): boolean {
-    return sourceLoginGeneration === generation && sourceLoginTarget.value?.id === sourceId;
+  function makeCredentials(fields: SourceLoginField[], previous: Record<string, string> = {}) {
+    return Object.fromEntries(fields.map(field => [field.name,
+      Object.prototype.hasOwnProperty.call(previous, field.name) ? previous[field.name]
+        : field.type === "toggle" ? "false" : field.choices?.[0] ?? "",
+    ]));
   }
 
-  function makeSourceLoginCredentials(
-    fields: SourceLoginField[],
-    previous: Record<string, string> = Object.create(null) as Record<string, string>,
-  ): Record<string, string> {
-    const credentials = Object.create(null) as Record<string, string>;
-    for (const field of fields) {
-      const hasPrevious = Object.prototype.hasOwnProperty.call(previous, field.name);
-      credentials[field.name] = hasPrevious
-        ? previous[field.name]
-        : field.type === "toggle" ? "false" : field.choices?.[0] ?? "";
+  async function display(update: LoginUpdate) {
+    if (update.sourceId !== sourceLoginTarget.value?.id) return;
+    if (update.form) {
+      sourceLoginForm.value = update.form;
+      sourceLoginCredentials.value = makeCredentials(
+        update.form.mode === "form" ? update.form.fields : [], sourceLoginCredentials.value,
+      );
     }
-    return credentials;
+    if (update.hasLoginState !== undefined) sourceHasLoginState.value = update.hasLoginState;
+    if (update.webOpen !== undefined) sourceLoginWebOpen.value = update.webOpen;
+    sourceLoginFeedback.value = update.message ?? "";
+    sourceLoginFormError.value = update.error ?? "";
+    for (const name of Object.keys(sourceLoginCredentials.value)) {
+      const value = update.inputUpdates?.[name];
+      if (value !== undefined) sourceLoginCredentials.value[name] = value;
+    }
+    if (update.copyText !== undefined) {
+      try { await navigator.clipboard.writeText(update.copyText); }
+      catch (error) { notify(`复制失败：${errorText(error)}`, "error"); }
+    }
+  }
+
+  async function run(action: LoginAction): Promise<void> {
+    const source = sourceLoginTarget.value;
+    if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
+    const current = generation;
+    sourceLoginBusy.value = true;
+    sourceLoginFormError.value = "";
+    sourceLoginFeedback.value = "";
+    try {
+      // 先装好监听再调用，避免同步规则的结果先于监听到达。
+      await (listening ??= listen<LoginUpdate>("login", event => { void display(event.payload); }));
+      await cancelling;
+      if (current !== generation) return;
+      await login(source.id, action);
+    } catch (error) {
+      if (current === generation) sourceLoginFormError.value = errorText(error);
+    } finally {
+      if (current === generation) {
+        sourceLoginBusy.value = false;
+        if (action.type === "submit" && sourceLoginForm.value?.mode === "web") sourceLoginWebOpen.value = false;
+      }
+    }
   }
 
   async function openSelectedSourceLogin(): Promise<void> {
     if (selectedSourceRows.value.length !== 1 || sourceBatchBusy.value || sourceExportBusy.value || shelfBatchRecoveryRequired.value) return;
-    const source = sources.value.find((entry) => entry.id === selectedSourceRows.value[0]);
+    const source = sources.value.find(entry => entry.id === selectedSourceRows.value[0]);
     if (!source) return;
-    if (source.isRss) {
-      notify("当前登录状态管理适用于普通源。", "error");
-      return;
-    }
-
-    const generation = ++sourceLoginGeneration;
-    sourceLoginBusy.value = false;
+    if (source.isRss) { notify("当前登录状态管理适用于普通源。", "error"); return; }
+    closeSourceLogin();
     sourceLoginTarget.value = source;
-    sourceHasLoginState.value = null;
-    sourceLoginError.value = "";
-    sourceLoginForm.value = null;
-    sourceLoginWebSessionId.value = "";
-    sourceLoginCredentials.value = Object.create(null) as Record<string, string>;
-    sourceLoginFormError.value = "";
-    sourceLoginFeedback.value = "";
-
-    await refreshSelectedSourceLogin();
-    if (!isCurrentSourceLogin(source.id, generation)) return;
-    await loadSelectedSourceLoginForm();
+    await run({ type: "open" });
   }
 
-  async function loadSelectedSourceLoginForm(): Promise<void> {
-    const source = sourceLoginTarget.value;
-    if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
-    sourceLoginBusy.value = true;
-    sourceLoginFormError.value = "";
-    try {
-      const form = await getSourceLoginForm(source.id);
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      sourceLoginForm.value = form;
-      sourceLoginWebSessionId.value = "";
-      sourceLoginCredentials.value = makeSourceLoginCredentials(
-        form.mode === "form" ? form.fields : [],
-        sourceLoginCredentials.value,
-      );
-    } catch (error) {
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      sourceLoginForm.value = null;
-      sourceLoginFormError.value = errorText(error);
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
-  }
-
-  async function executeSelectedSourceLogin(actionId?: number): Promise<void> {
-    const source = sourceLoginTarget.value;
-    const form = sourceLoginForm.value;
-    if (!source || !form || form.mode !== "form" || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
-    sourceLoginBusy.value = true;
-    sourceLoginFeedback.value = "";
-    sourceLoginFormError.value = "";
-    try {
-      const credentials = Object.assign(Object.create(null), sourceLoginCredentials.value) as Record<string, string>;
-      const result = actionId === undefined
-        ? await loginSource(source.id, credentials)
-        : await runSourceLoginAction(source.id, actionId, credentials);
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      if (!("status" in result)) throw new Error("Source login returned an invalid response");
-      if (result.status === "failed") sourceLoginFormError.value = result.message + ("detail" in result && result.detail ? `\n${result.detail}` : "");
-      else sourceLoginFeedback.value = "messages" in result && result.messages?.length ? result.messages[result.messages.length - 1] : result.message;
-      if (result.status === "executed") {
-        for (const field of form.fields) {
-          if (field.password || field.type === "password") sourceLoginCredentials.value[field.name] = "";
-        }
-      }
-      if ("inputUpdates" in result) {
-        for (const field of form.fields) {
-          const value = result.inputUpdates?.[field.name];
-          if (value !== undefined) sourceLoginCredentials.value[field.name] = value;
-        }
-      }
-      if ("refreshTargets" in result && result.refreshTargets) {
-        if (result.refreshTargets.includes("login")) {
-          const nextForm = await getSourceLoginForm(source.id);
-          if (!isCurrentSourceLogin(source.id, generation)) return;
-          sourceLoginForm.value = nextForm;
-          sourceLoginCredentials.value = makeSourceLoginCredentials(nextForm.mode === "form" ? nextForm.fields : [], sourceLoginCredentials.value);
-        }
-        for (const target of result.refreshTargets) void emit("source-ui-refresh", { sourceId: source.id, target });
-      }
-      if ("copyText" in result && result.copyText !== undefined) await navigator.clipboard.writeText(result.copyText);
-      const state = await getSourceLoginState(source.id);
-      if (isCurrentSourceLogin(source.id, generation)) sourceHasLoginState.value = state.hasLoginState;
-    } catch {
-      if (isCurrentSourceLogin(source.id, generation)) {
-        sourceLoginFormError.value = "登录操作或状态读取失败，请检查登录信息后重试。";
-        sourceHasLoginState.value = null;
-      }
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
-  }
-
-  async function refreshSelectedSourceLogin(): Promise<void> {
-    const source = sourceLoginTarget.value;
-    if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
-    sourceLoginBusy.value = true;
-    sourceLoginError.value = "";
-    try {
-      const result = await getSourceLoginState(source.id);
-      if (isCurrentSourceLogin(source.id, generation)) sourceHasLoginState.value = result.hasLoginState;
-    } catch (error) {
-      if (isCurrentSourceLogin(source.id, generation)) {
-        sourceHasLoginState.value = null;
-        sourceLoginError.value = `读取登录状态失败：${errorText(error)}`;
-      }
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
+  function executeSelectedSourceLogin(button?: number): Promise<void> {
+    return run({ type: "submit", fields: { ...sourceLoginCredentials.value }, button });
   }
 
   async function clearSelectedSourceLogin(): Promise<void> {
     const source = sourceLoginTarget.value;
-    if (!source || sourceLoginBusy.value || sourceHasLoginState.value === null || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
+    if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他源也可能需要重新登录。`)) return;
-    if (!isCurrentSourceLogin(source.id, generation) || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    sourceLoginBusy.value = true;
-    sourceLoginError.value = "";
-    try {
-      const result = await clearSourceLoginState(source.id);
-      if (!("cleared" in result)) throw new Error("Source login state returned an invalid response");
-      if (!result.cleared) throw new Error("没有收到登录状态清除完成结果。");
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      sourceLoginCredentials.value = makeSourceLoginCredentials(
-        sourceLoginForm.value?.mode === "form" ? sourceLoginForm.value.fields : [],
-      );
-      sourceLoginFeedback.value = "";
-      sourceLoginFormError.value = "";
-      const state = await getSourceLoginState(source.id);
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      sourceHasLoginState.value = state.hasLoginState;
-      notify("已清除登录状态。");
-    } catch (error) {
-      if (isCurrentSourceLogin(source.id, generation)) {
-        sourceHasLoginState.value = null;
-        sourceLoginError.value = `清除或重新读取登录状态失败：${errorText(error)}。请重新读取状态后再操作。`;
-      }
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
-  }
-
-  async function startSelectedSourceWebLogin(): Promise<void> {
-    const source = sourceLoginTarget.value;
-    if (!source || sourceLoginForm.value?.mode !== "web" || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
-    sourceLoginBusy.value = true;
-    sourceLoginFeedback.value = "";
-    sourceLoginFormError.value = "";
-    try {
-      const result = await startSourceLoginWeb(source.id);
-      if (!("sessionId" in result)) throw new Error("Source web login returned no session ID");
-      if (!isCurrentSourceLogin(source.id, generation)) {
-        // 界面已切换时，关闭迟到创建的浏览器会话，避免留下孤立登录窗口。
-        void cancelSourceLoginWeb(source.id, result.sessionId).catch(() => undefined);
-        return;
-      }
-      sourceLoginWebSessionId.value = result.sessionId;
-    } catch (error) {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginFormError.value = errorText(error);
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
-  }
-
-  async function finishSelectedSourceWebLogin(): Promise<void> {
-    const source = sourceLoginTarget.value;
-    const sessionId = sourceLoginWebSessionId.value;
-    if (!source || !sessionId || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    const generation = sourceLoginGeneration;
-    sourceLoginBusy.value = true;
-    sourceLoginFormError.value = "";
-    try {
-      const result = await finishSourceLoginWeb(source.id, sessionId);
-      if (!("importedCount" in result)) throw new Error("Source web login returned an invalid response");
-      if (!isCurrentSourceLogin(source.id, generation)) return;
-      sourceLoginWebSessionId.value = "";
-      sourceLoginFeedback.value = result.importedCount > 0 ? "Cookie 已保存。" : "未获取到 Cookie。";
-      const state = await getSourceLoginState(source.id);
-      if (isCurrentSourceLogin(source.id, generation)) sourceHasLoginState.value = state.hasLoginState;
-    } catch (error) {
-      if (isCurrentSourceLogin(source.id, generation)) {
-        sourceLoginWebSessionId.value = "";
-        sourceLoginFormError.value = errorText(error);
-      }
-    } finally {
-      if (isCurrentSourceLogin(source.id, generation)) sourceLoginBusy.value = false;
-    }
-  }
-
-  function cancelSelectedSourceWebLogin(): void {
-    const source = sourceLoginTarget.value;
-    const sessionId = sourceLoginWebSessionId.value;
-    sourceLoginWebSessionId.value = "";
-    if (source && sessionId) {
-      void cancelSourceLoginWeb(source.id, sessionId).catch(() => undefined);
-    }
+    sourceLoginCredentials.value = makeCredentials(sourceLoginForm.value?.mode === "form" ? sourceLoginForm.value.fields : []);
+    await run({ type: "clear" });
   }
 
   function closeSourceLogin(): void {
-    if (sourceLoginBusy.value && sourceLoginWebSessionId.value) return;
-    cancelSelectedSourceWebLogin();
-    sourceLoginGeneration += 1;
+    const source = sourceLoginTarget.value;
+    ++generation;
     sourceLoginTarget.value = null;
     sourceLoginBusy.value = false;
     sourceHasLoginState.value = null;
-    sourceLoginError.value = "";
-    sourceLoginCredentials.value = Object.create(null) as Record<string, string>;
+    sourceLoginWebOpen.value = false;
+    sourceLoginCredentials.value = {};
     sourceLoginForm.value = null;
     sourceLoginFormError.value = "";
     sourceLoginFeedback.value = "";
+    if (source) cancelling = login(source.id, { type: "cancel" }).catch(error => notify(errorText(error), "error"));
   }
+
+  onBeforeUnmount(() => { void listening?.then(unlisten => unlisten()); });
 
   return {
     openSelectedSourceLogin,
-    loadSelectedSourceLoginForm,
+    runLogin: run,
     executeSelectedSourceLogin,
-    refreshSelectedSourceLogin,
     clearSelectedSourceLogin,
-    startSelectedSourceWebLogin,
-    finishSelectedSourceWebLogin,
-    cancelSelectedSourceWebLogin,
     closeSourceLogin,
   };
 }

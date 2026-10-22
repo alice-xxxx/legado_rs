@@ -175,6 +175,8 @@ export function useReaderChapterWindow(options: {
     });
     return true;
   }
-  return { continuousChapters, previewChapters, onScroll, turn, chapterPreview, commitChapterTurn,
+  return { continuousChapters, previewChapters, onScroll, turn, chapterPreview, commitChapterTurn, prepare,
+    chapterElement: (index: number) => options.viewport.value?.querySelector<HTMLElement>(`.chapter-content[data-reader-chapter="${index}"]`)
+      ?? previews.get(index)?.querySelector<HTMLElement>(`.chapter-content[data-reader-chapter="${index}"]`),
     setPreview: (index: number, element: HTMLElement | null) => { if (element) previews.set(index, element); else previews.delete(index); } };
 }

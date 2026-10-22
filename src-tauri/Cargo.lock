@@ -2932,6 +2932,7 @@ dependencies = [
  "base64 0.23.1",
  "encoding_rs",
  "feed-rs",
+ "futures-executor",
  "futures-util",
  "http-range-header",
  "image",

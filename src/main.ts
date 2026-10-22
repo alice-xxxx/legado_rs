@@ -16,7 +16,6 @@ import { initializeBookStore } from "./features/books/bookDetailState";
 import { initializeDatabase } from "./api/database";
 import { loadShelf } from "./features/shelf/shelfStore";
 import { loadSources } from "./features/sources/sourcesStore";
-import { initializeTaskStore, disposeTaskStore } from "./features/tasks/tasksStore";
 import "./style.css";
 
 const mountedApps: Array<{ unmount: () => void }> = [];
@@ -85,7 +84,6 @@ void appBootstrap().then((bootstrap) => { initializeDatabase(bootstrap); return 
   loadSources(),
   loadConfigurations(),
   initializeBookStore(),
-  initializeTaskStore(),
 ]); }).then(() => {
   if (startupDisposed) return;
   // The import host installs its session before ReaderHost consumes it.
@@ -118,7 +116,6 @@ if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     startupDisposed = true;
     disposeTheme();
-    disposeTaskStore();
     window.removeEventListener("gesturestart", preventIosZoomGesture);
     window.removeEventListener("gesturechange", preventIosZoomGesture);
     window.removeEventListener("unhandledrejection", onUnhandledRejection);
