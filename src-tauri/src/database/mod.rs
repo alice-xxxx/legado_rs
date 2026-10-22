@@ -11,6 +11,7 @@ mod db;
 pub(crate) mod fe_db;
 mod files;
 mod library;
+mod reading;
 mod types;
 pub(crate) use activity::{storage, Mutation};
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -18,6 +19,7 @@ pub(crate) use db::reader;
 pub(crate) use db::Pending;
 use db::{params, Session, WriteMode};
 pub(crate) use files::verify_snapshot;
+pub(crate) use reading::ChapterContext;
 pub(crate) use types::*;
 pub(crate) const FILE_NAME: &str = "library.sqlite3";
 type Result<T> = std::result::Result<T, ResourceError>;

@@ -1039,11 +1039,11 @@ loading="lazy" decoding="async"/>
   }
 
   .book-detail-content {
-    padding: 22px 13px calc(66px + var(--safe-bottom));
+    padding: 22px 13px calc(22px + var(--safe-bottom));
   }
 
   .book-detail-content--catalog {
-    padding: 0 13px calc(66px + var(--safe-bottom));
+    padding: 0 13px var(--safe-bottom);
   }
 
   .book-info-view {

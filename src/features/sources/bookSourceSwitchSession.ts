@@ -6,6 +6,7 @@ export type BookSourceSwitchSession = Pick<
   | "bookSourceSwitchOpen"
   | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
+  | "bookSourceCheckBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceError"
   | "bookSourceSearchBusy"
@@ -30,6 +31,7 @@ export type BookSourceSwitchSession = Pick<
   | "stopBookSourceCandidateSearch"
   | "selectBookSourceCandidate"
   | "chooseBookSourceCandidate"
+  | "checkBookSourceUpdates"
   | "replaceCurrentChapterFromCandidate"
   | "confirmBookSourceChange"
 >;

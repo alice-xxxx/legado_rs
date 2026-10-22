@@ -10,6 +10,7 @@ export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   | "bookSourceSwitchOpen"
   | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
+  | "bookSourceCheckBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceError"
   | "bookSourceSearchBusy"
@@ -34,6 +35,7 @@ export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   | "stopBookSourceCandidateSearch"
   | "selectBookSourceCandidate"
   | "chooseBookSourceCandidate"
+  | "checkBookSourceUpdates"
   | "replaceCurrentChapterFromCandidate"
   | "confirmBookSourceChange"
 >>;

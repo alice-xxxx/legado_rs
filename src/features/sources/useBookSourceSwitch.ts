@@ -1,4 +1,4 @@
-import { replaceLibraryContent, libraryType } from "../books/contentLibraryState";
+import { replaceLibraryContent, libraryType, refreshContentLibrary } from "../books/contentLibraryState";
 import { computed, ref, shallowRef, type Ref } from "vue";
 import { bookSourceCandidates } from "./sourcesStore";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -6,12 +6,12 @@ import { search, stopSearch, releaseSearchResults } from "../../api/search";
 import { mainText, cancelMainText } from "../../api/mainText";
 import { saveChapter } from "../../api/books";
 import { moreInformation } from "../../api/moreInformation";
-import { readBook, readMoreInformation } from "../../api/database";
+import { readChapter, readMoreInformation } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
 import { presentSearchResults } from "../discovery/searchPresentation";
 import { type BookResource, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
-import { replaceOpenedBook, switchOpenedBook, openedBook } from "../books/bookDetailState";
+import { refreshOpenedBook, refreshOpenedChapter, replaceOpenedBook, openedBook } from "../books/bookDetailState";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
@@ -47,6 +47,7 @@ export function useBookSourceSwitch({
   const bookSourceSwitchOpen = ref(false);
   const bookSourceSwitchInline = ref(false);
   const bookSourceSwitchBusy = ref(false);
+  const bookSourceCheckBusy = ref(false);
   const chapterSourceBusyResultId = ref<string | null>(null);
   const chapterSourceError = ref("");
   const bookSourceSearchBusy = ref(false);
@@ -128,7 +129,7 @@ export function useBookSourceSwitch({
     restoreRevision: number,
     inline = false,
   ): Promise<void> {
-    if (!book || book.canChangeSource !== true || bookSourceSwitchBusy.value || candidateRetryBusy.value) return;
+    if (!book || book.canChangeSource !== true || bookSourceSwitchBusy.value || bookSourceCheckBusy.value || candidateRetryBusy.value) return;
     if (bookSourceSwitchOpen.value && bookSourceSwitchBookId.value === book.id
       && bookSourceSwitchFromReader.value === fromReader && bookSourceChapterTargetId.value === (chapterTarget?.id ?? null)) {
       bookSourceSwitchInline.value = inline;
@@ -180,6 +181,7 @@ export function useBookSourceSwitch({
     bookSourceSearchGeneration += 1;
     bookSourceSearchId.value = null;
     bookSourceSwitchOpen.value = false;
+    bookSourceCheckBusy.value = false;
     bookSourceSwitchInline.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceChapterTargetId.value = null;
@@ -194,7 +196,7 @@ export function useBookSourceSwitch({
   async function startBookSourceCandidateSearch(): Promise<void> {
     if (shelfBatchRecoveryRequired.value) return;
     const book = bookSourceSwitchBook.value;
-    if (!book || book.canChangeSource !== true || bookSourceSearchBusy.value || bookSourceSwitchBusy.value) return;
+    if (!book || book.canChangeSource !== true || bookSourceSearchBusy.value || bookSourceSwitchBusy.value || bookSourceCheckBusy.value) return;
     const restoreRevision = getRestoreRevision();
     const generation = ++bookSourceSearchGeneration;
     const sourceIds = bookSourceEligibleSources.value.map((source) => source.id);
@@ -266,14 +268,44 @@ export function useBookSourceSwitch({
   }
 
   async function chooseBookSourceCandidate(candidate: SearchBookResult): Promise<void> {
-    if (shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value) return;
+    if (shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value || bookSourceCheckBusy.value) return;
     selectBookSourceCandidate(candidate);
     await confirmBookSourceChange();
   }
 
+  async function checkBookSourceUpdates(): Promise<void> {
+    const book = bookSourceSwitchBook.value;
+    if (!book?.sourceId || !book.bookUrl || shelfBatchRecoveryRequired.value
+      || bookSourceCheckBusy.value || bookSourceSwitchBusy.value) return;
+    const revision = getRestoreRevision(), generation = bookSourceSearchGeneration;
+    const current = () => currentRestore(revision) && generation === bookSourceSearchGeneration
+      && bookSourceSwitchOpen.value && openedBook.value?.id === book.id;
+    const previous = new Set(book.chapters.map(chapter => chapter.id));
+    bookSourceCheckBusy.value = true;
+    bookSourceSwitchError.value = "";
+    try {
+      information = moreInformation(book.sourceId, book.bookUrl);
+      await information;
+      if (!current()) return;
+      const updated = await refreshOpenedBook(book.id);
+      if (!current() || !updated) return;
+      if (readerVisible.value && readingBook.value?.id === book.id) {
+        readingChapterIndex.value = updated.progress?.chapterIndex ?? readingChapterIndex.value;
+      }
+      if (libraryType(book.id)) await refreshContentLibrary();
+      if (!current()) return;
+      const added = updated.chapters.filter(chapter => !chapter.volume && !previous.has(chapter.id)).length;
+      notify(added ? `发现 ${added} 个新章节，目录已更新。` : "暂无新章节。");
+    } catch (error) {
+      if (current()) bookSourceSwitchError.value = `检查内容更新失败：${errorText(error)}`;
+    } finally {
+      if (currentRestore(revision) && generation === bookSourceSearchGeneration) bookSourceCheckBusy.value = false;
+    }
+  }
+
   async function replaceCurrentChapterFromCandidate(candidate: SearchBookResult): Promise<void> {
     const book = bookSourceSwitchBook.value, chapter = bookSourceCurrentChapter.value;
-    if (!book || !chapter || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value) return;
+    if (!book || !chapter || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value || bookSourceCheckBusy.value) return;
     const revision = getRestoreRevision(), generation = bookSourceSearchGeneration;
     const current = () => currentRestore(revision) && generation === bookSourceSearchGeneration && bookSourceSwitchOpen.value;
     chapterSourceBusyResultId.value = candidate.resultId;
@@ -292,18 +324,16 @@ export function useBookSourceSwitch({
       text = mainText(source.id, matches[0]!.id);
       await text;
       if (!current()) return;
-      const cached = await readBook(source.id);
+      const replacement = await readChapter(source, matches[0]!.id);
       if (!current()) return;
-      const replacement = cached.chapters.find(item => item.id === matches[0]!.id)!;
+      if (!replacement?.chapter.contentId) throw new Error("候选章节正文尚未缓存。");
       await cancelMainText(book.id, chapter.id);
       if (!current()) return;
-      await saveChapter(book.id, { ...chapter, contentId: replacement.contentId });
+      await saveChapter(book.id, { ...chapter, contentId: replacement.chapter.contentId });
       if (!current()) return;
-      const updated = await readBook(book.id);
+      await refreshOpenedChapter(book.id, chapter.id);
       if (!current()) return;
-      if (openedBook.value?.id === book.id) replaceOpenedBook(updated);
       if (readingBook.value?.id === book.id) {
-        readingBook.value = updated;
         if (readerVisible.value && readingChapterIndex.value === chapter.index) {
           readingContent.value = null;
           await loadReaderChapter(chapter.index);
@@ -326,7 +356,7 @@ export function useBookSourceSwitch({
 
   async function confirmBookSourceChange(): Promise<void> {
     const book = bookSourceSwitchBook.value, candidate = selectedBookSourceCandidate.value;
-    if (!book || !candidate || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value) return;
+    if (!book || !candidate || shelfBatchRecoveryRequired.value || bookSourceSwitchBusy.value || bookSourceCheckBusy.value) return;
     const revision = getRestoreRevision(), generation = bookSourceSearchGeneration;
     const current = () => currentRestore(revision) && generation === bookSourceSearchGeneration && bookSourceSwitchOpen.value;
     const readerWasOpen = bookSourceSwitchFromReader.value && readerVisible.value && readingBook.value?.id === book.id;
@@ -345,7 +375,7 @@ export function useBookSourceSwitch({
       if (!current()) return;
       // 整书换源只替换书架条目，书架现有监听负责持久化；两本书的缓存各自保留。
       if (libraryType(book.id)) replaceLibraryContent(book.id, cached);
-      if (openedBook.value?.id === book.id) await switchOpenedBook({ bookId: cached.id });
+      if (openedBook.value?.id === book.id) replaceOpenedBook(cached);
       if (!current()) return;
       if (readerWasOpen) {
         readingBook.value = cached;
@@ -371,6 +401,7 @@ export function useBookSourceSwitch({
     bookSourceSwitchInline.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceSwitchBusy.value = false;
+    bookSourceCheckBusy.value = false;
     chapterSourceBusyResultId.value = null;
     chapterSourceError.value = "";
     bookSourceSearchBusy.value = false;
@@ -394,6 +425,7 @@ export function useBookSourceSwitch({
     bookSourceSwitchOpen,
     bookSourceSwitchInline,
     bookSourceSwitchBusy,
+    bookSourceCheckBusy,
     chapterSourceBusyResultId,
     chapterSourceError,
     bookSourceSearchBusy,
@@ -419,6 +451,7 @@ export function useBookSourceSwitch({
     stopBookSourceCandidateSearch,
     selectBookSourceCandidate,
     chooseBookSourceCandidate,
+    checkBookSourceUpdates,
     replaceCurrentChapterFromCandidate,
     confirmBookSourceChange,
   };

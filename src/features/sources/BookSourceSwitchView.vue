@@ -13,7 +13,9 @@ defineProps<{ session: BookSourceSwitchSession; locked: boolean }>();
     </header>
     <main class="source-page-content">
       <BookSourcesPanel :book="session.bookSourceSwitchBook" :candidates="session.bookSourceCandidateResults" :session="session" :locked="locked"
-        @select="session.chooseBookSourceCandidate" @search="session.startBookSourceCandidateSearch" />
+        :can-check="session.bookSourceSwitchBook.canChangeSource === true && !!session.bookSourceSwitchBook.sourceId && !!session.bookSourceSwitchBook.bookUrl"
+        :check-busy="session.bookSourceCheckBusy"
+        @select="session.chooseBookSourceCandidate" @search="session.startBookSourceCandidateSearch" @check="session.checkBookSourceUpdates" />
     </main>
   </section>
   <section v-if="session.bookSourceSwitchConfirmOpen && session.selectedBookSourceCandidate" class="modal-backdrop source-confirm-backdrop"

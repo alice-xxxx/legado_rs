@@ -3,7 +3,7 @@ use super::*;
 use crate::{resources::ResourceRef, source_wire::TextOr};
 use std::collections::{BTreeMap, HashMap};
 
-fn engine_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineBook> {
+pub(super) fn engine_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineBook> {
     Ok(EngineBook {
         book_url: r.get("book_url")?,
         toc_url: r.get("engine_toc_url")?,
@@ -23,7 +23,7 @@ fn engine_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineBook> {
         variable: None,
     })
 }
-fn chapter_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chapter> {
+pub(super) fn chapter_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chapter> {
     Ok(Chapter {
         id: r.get("id")?,
         title: r.get("title")?,
@@ -232,7 +232,8 @@ impl Database {
                     ..Default::default()
                 });
             }
-            if changed {
+            // 首次保存空目录也标记详情已获取，避免再次进入时重复联网。
+            if changed || previous.is_empty() {
                 book.updated_at_ms = Some(crate::support::now_ms() as i64);
             }
             save_record(s, &book)?;

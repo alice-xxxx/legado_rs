@@ -1,10 +1,13 @@
 //! 正文统一入口：请求后入库，缓存没有就新增，有就更新。
 use std::sync::Arc;
 
-use crate::{
-    source_engine::SourceEngineRequest,
-    support::{text_at, validate_id},
-};
+use crate::{source_engine::SourceEngineRequest, support::validate_id};
+
+pub(crate) enum ChapterPreparation {
+    Updated,
+    Cached,
+    Stale,
+}
 
 pub(crate) struct MainText {
     pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
@@ -26,7 +29,6 @@ impl MainText {
         }
     }
 }
-
 
 /// 文本始终缓存；cache 仅决定是否下载完整图片和音视频。Vue 等待完成后读取缓存。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -70,6 +72,20 @@ impl MainText {
         chapter_id: &str,
         cache: bool,
     ) -> Result<(), String> {
+        self.prepare_chapter(database, resources, book_id, chapter_id, cache, None)
+            .await
+            .map(|_| ())
+    }
+
+    pub(crate) async fn prepare_chapter(
+        &self,
+        database: &crate::database::Database,
+        resources: &crate::resources::Resources,
+        book_id: &str,
+        chapter_id: &str,
+        cache: bool,
+        reading_index: Option<usize>,
+    ) -> Result<ChapterPreparation, String> {
         let token = tokio_util::sync::CancellationToken::new();
         let _cancel_on_drop = token.clone().drop_guard();
         let mut cancellation = self.text_cancel.subscribe();
@@ -85,36 +101,39 @@ impl MainText {
         let operation = async {
             validate_id(book_id, "bookId")?;
             validate_id(chapter_id, "chapterId")?;
-            let book = crate::book_files::read_book(database, book_id)
+            let db = database.clone();
+            let (book, chapter) = (book_id.to_owned(), chapter_id.to_owned());
+            let context = tokio::task::spawn_blocking(move || db.chapter_context(&book, &chapter))
                 .await
-                .map_err(|error| error.to_string())?;
-            let index = book["chapters"]
-                .as_array()
-                .and_then(|chapters| {
-                    chapters
-                        .iter()
-                        .position(|chapter| chapter["id"] == chapter_id)
-                })
+                .map_err(|error| error.to_string())?
+                .map_err(|error| error.to_string())?
                 .ok_or("Chapter is no longer in the book directory")?;
-            if book["chapters"][index]["volume"] == true {
-                return Ok(());
+            if reading_index.is_some_and(|index| context.progress_index != Some(index)) {
+                return Ok(ChapterPreparation::Stale);
             }
-            let Some(source_id) = book["sourceId"].as_str() else {
-                return if crate::book_files::indexed_chapter_ready(resources, &book, index).await? {
-                    Ok(())
-                } else {
-                    Err("Local chapter resource is missing; re-import the original file".into())
-                };
+            if context.chapter.volume {
+                return Ok(ChapterPreparation::Cached);
+            }
+            if (reading_index.is_some() || context.source_id.is_none())
+                && crate::book_files::chapter_ready(resources, &context).await?
+            {
+                return Ok(ChapterPreparation::Cached);
+            }
+            let Some(source_id) = context.source_id.as_deref() else {
+                return Err(
+                    "Local chapter resource is missing; re-import the original file".into(),
+                );
             };
             let source = self.sources.get(source_id).await?;
             if !source.enabled {
                 return Err("Book source is disabled".into());
             }
             let mut request = SourceEngineRequest {
-                chapter: Some(book["chapters"][index]["engineData"].clone()),
-                next_chapter_url: book["chapters"]
-                    .get(index + 1)
-                    .and_then(|chapter| text_at(&chapter["engineData"], &["url"])),
+                chapter: Some(
+                    serde_json::to_value(&context.chapter.engine_data)
+                        .map_err(|error| error.to_string())?,
+                ),
+                next_chapter_url: context.next_chapter_url,
                 ..SourceEngineRequest::new(
                     if crate::rss::is_legacy_rss_source(&source.source) {
                         "rssContent"
@@ -124,7 +143,7 @@ impl MainText {
                     &source.source,
                 )
             }
-            .with_book(book["engine"].clone());
+            .with_book(serde_json::to_value(context.engine).map_err(|error| error.to_string())?);
             request.cancellation = Some(token.clone());
             let content = self.executor.execute(request.clone()).await?;
 
@@ -136,7 +155,7 @@ impl MainText {
                 chapter_id,
                 &request,
                 content,
-                book["chapters"][index].clone(),
+                serde_json::to_value(context.chapter).map_err(|error| error.to_string())?,
             )
             .await?;
             if cache {
@@ -158,7 +177,8 @@ impl MainText {
                 )
                 .map_err(|e| e.to_string())?
                 .await
-                .map_err(|e| e.to_string())
+                .map_err(|e| e.to_string())?;
+            Ok(ChapterPreparation::Updated)
         };
         tokio::select! {
             biased;
@@ -171,5 +191,91 @@ impl MainText {
 impl MainText {
     pub(crate) fn cancel_all(&self) {
         let _ = self.text_cancel.send(None);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::{Book, Chapter, Database, Mutation, ProgressInput};
+
+    struct NoNetwork;
+    impl crate::source_engine::SourceExecutor for NoNetwork {
+        fn execute<'a>(&'a self, _: SourceEngineRequest) -> crate::source_engine::EngineFuture<'a> {
+            panic!("cached or stale chapters must not execute source rules");
+        }
+    }
+
+    #[tokio::test]
+    async fn cached_and_stale_chapters_do_not_request_content() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::new(root.path()).unwrap();
+        let reference =
+            crate::resources::ResourceRef::new("resource://cache/text/book/c0.txt").unwrap();
+        database
+            .import_book(Book {
+                id: "book".into(),
+                content_type: "text".into(),
+                chapters: vec![
+                    Chapter {
+                        id: "c0".into(),
+                        url: Some(reference.to_string()),
+                        ..Default::default()
+                    },
+                    Chapter {
+                        id: "c1".into(),
+                        index: 1,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            })
+            .unwrap()
+            .await
+            .unwrap();
+        database
+            .submit(vec![Mutation::SaveProgress {
+                book_id: "book".into(),
+                progress: ProgressInput::default(),
+            }])
+            .unwrap()
+            .await
+            .unwrap();
+        let resources = crate::resources::Resources::open(root.path(), database.clone())
+            .await
+            .unwrap();
+        resources
+            .cache
+            .save_content(&reference, "cached text")
+            .await
+            .unwrap();
+        let service = MainText::new(
+            Arc::new(crate::source_catalog::SourceCatalog::new(database.clone())),
+            Arc::new(NoNetwork),
+            Arc::new(crate::backup::state::Operations::new()),
+        );
+        assert!(matches!(
+            service
+                .prepare_chapter(&database, &resources, "book", "c0", false, Some(0))
+                .await
+                .unwrap(),
+            ChapterPreparation::Cached
+        ));
+        assert!(matches!(
+            service
+                .prepare_chapter(&database, &resources, "book", "c0", false, Some(1))
+                .await
+                .unwrap(),
+            ChapterPreparation::Stale
+        ));
+        service
+            .main_text(&database, &resources, "book", "c0", false)
+            .await
+            .unwrap();
+        assert!(service
+            .main_text(&database, &resources, "book", "c1", false)
+            .await
+            .unwrap_err()
+            .contains("Local chapter resource is missing"));
     }
 }

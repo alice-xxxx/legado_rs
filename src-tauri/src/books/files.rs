@@ -114,50 +114,29 @@ pub(crate) async fn html(
     Ok(reference)
 }
 
-pub(crate) async fn read_book(
-    database: &crate::database::Database,
-    id: &str,
-) -> Result<Value, String> {
-    let database = database.clone();
-    let id = id.to_owned();
-    tokio::task::spawn_blocking(move || {
-        let book = database
-            .book(&id)
-            .map_err(|error| error.to_string())?
-            .ok_or("书籍不存在")?;
-        serde_json::to_value(book).map_err(|error| error.to_string())
-    })
-    .await
-    .map_err(|error| error.to_string())?
-}
-
 /// 阅读预加载先检查缓存；显式正文请求则直接刷新。
-pub(crate) async fn indexed_chapter_ready(
+pub(crate) async fn chapter_ready(
     resources: &crate::resources::Resources,
-    book: &Value,
-    index: usize,
+    context: &crate::database::ChapterContext,
 ) -> Result<bool, String> {
-    let chapter = &book["chapters"][index];
-    let kind = book["contentType"].as_str().unwrap_or("text");
-    let addresses = match kind {
+    let chapter = &context.chapter;
+    let addresses = match context.content_type.as_str() {
         "image" => {
-            let Some(pages) = chapter["pages"]
-                .as_array()
-                .filter(|pages| !pages.is_empty())
-            else {
+            if chapter.pages.is_empty() {
                 return Ok(false);
-            };
-            pages
-                .iter()
-                .map(|page| page["url"].as_str())
-                .collect::<Option<Vec<_>>>()
+            }
+            chapter.pages.iter().map(|page| page.src.as_str()).collect()
         }
-        "pdf" => book["url"].as_str().map(|src| vec![src]),
-        _ => chapter["url"].as_str().map(|src| vec![src]),
+        "pdf" => context
+            .file_url
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        _ => chapter.url.iter().map(String::as_str).collect(),
     };
-    let Some(addresses) = addresses else {
+    if addresses.is_empty() {
         return Ok(false);
-    };
+    }
     for address in addresses {
         let reference = ResourceRef::new(address).map_err(|error| error.to_string())?;
         let exists = if let Some(id) = reference.path().strip_prefix("proxy/") {

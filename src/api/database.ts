@@ -1,5 +1,5 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { AppBootstrap, BookPreview, BookResource, ChapterResource, ContentLibrary, ContentType, DiscoveryCategoriesResource, HistoryResource, ReadingHistoryResource, SourceMetadata } from "./types";
+import type { AppBootstrap, BookPreview, BookResource, ChapterResource, ContentAlternative, ContentLibrary, ContentType, DiscoveryCategoriesResource, HistoryResource, ReadingHistoryResource, SourceMetadata } from "./types";
 
 // Rust 在 WebView 启动前安装只读连接，前端只调用 select。
 const database = Database.get("sqlite:library-reader");
@@ -133,12 +133,59 @@ export async function readLibrary(): Promise<ContentLibrary> {
   return library;
 }
 
+const chapterFields = "id content_id:contentId position:index title volume url duration_ms:durationMs protocol";
+const pageFields = "chapter_id:chapterId id url width height";
+const streamFields = "chapter_id:chapterId label url protocol";
+
+function chapterDescriptor(type: ContentType, id: string, url: string) {
+  return { resourceId: url.startsWith("resource://") || /^https?:/.test(url) ? url : `resource://cache/${type}/${id}/${url}`, src: assetUrl(type, id, url),
+    contentType: type === "html" ? "text/html" : type === "pdf" ? "application/pdf" : "text/plain", format: type === "html" ? "html" : type, contentFormat: type === "html" ? "richText" : type };
+}
+
+function chapterResources(book: Pick<BookResource, "id" | "contentType" | "progress">, chapters: Row[], pages: Row[], streams: Row[]): ChapterResource[] {
+  const { id, progress } = book, type = book.contentType ?? "text";
+  const byChapter = (values: Row[]) => { const map = new Map<string, Row[]>(); for (const value of values) { const entries = map.get(value.chapterId) ?? []; entries.push(value); map.set(value.chapterId, entries); } return map; };
+  const pageMap = byChapter(pages), streamMap = byChapter(streams);
+  return chapters.map(chapter => {
+    const next: Row = { ...optional(chapter), volume: !!chapter.volume };
+    if (chapter.url) next.resource = chapterDescriptor(type, id, chapter.url);
+    if (pageMap.has(chapter.id)) next.pages = pageMap.get(chapter.id)!.map(page => ({ ...optional(page), url: chapterDescriptor(type, id, page.url).resourceId, src: assetUrl(type, id, page.url) }));
+    if (type === "audio" || type === "video") {
+      const sources = streamMap.get(chapter.id) ?? [];
+      const selected = progress?.chapterId === chapter.id ? sources.find(source => source.label === progress?.quality && source.url) : undefined;
+      const selectedUrl = selected?.url ?? chapter.url;
+      if (selectedUrl) next.media = { schemaVersion: 1, kind: "media", mediaType: type, src: assetUrl(type, id, selectedUrl), format: selected?.protocol ?? chapter.protocol ?? "direct",
+        sources: sources.map(source => ({ label: source.label, src: source.url ? assetUrl(type, id, source.url) : undefined, format: source.protocol ?? "direct", selected: source.url === selectedUrl })) };
+    }
+    return next as ChapterResource;
+  });
+}
+
+/** 缓存变化只读这一章，图片和媒体地址与章节共享同一快照。 */
+export async function readChapter(book: Pick<BookResource, "id" | "contentType" | "progress">, chapterId: string): Promise<{ contentType: ContentType; chapter: ChapterResource } | null> {
+  const [metadata, chapters, pages, streams] = await tables([
+    { table: "books", fields: "content_type:kind", where: "WHERE id=$1" },
+    { table: "chapter_records", fields: chapterFields, where: "WHERE book_id=$1 AND id=$2" },
+    { table: "chapter_pages", fields: pageFields, where: "WHERE book_id=$1 AND chapter_id=$2 ORDER BY position" },
+    { table: "chapter_streams", fields: streamFields, where: "WHERE book_id=$1 AND chapter_id=$2 ORDER BY position" },
+  ], [book.id, chapterId]);
+  const contentType = metadata![0]?.kind as ContentType | undefined;
+  if (!contentType) return null;
+  const chapter = chapterResources({ ...book, contentType }, chapters!, pages!, streams!)[0];
+  return chapter ? { contentType, chapter } : null;
+}
+
+export async function readBookAlternatives(id: string): Promise<ContentAlternative[]> {
+  const [rows] = await tables([{ table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" }], [id]);
+  return rows!.map(optional) as ContentAlternative[];
+}
+
 export async function readBook(id: string): Promise<BookResource> {
   const [metadata, chapters, pages, streams, tags, alternatives, progressRows] = await tables([
     { table: "book_records", fields: "id content_type:kind title author intro cover source_id:sourceId source_name:sourceName source_group:sourceGroup book_url:bookUrl word_count:wordCount original page_count:pageCount url updated_at_ms:updatedAtMs chapter_count:chapterCount latest_title:latestChapter title_override:titleOverride author_override:authorOverride intro_override:introOverride cover_override:coverOverride (book_url!=char(0)):hasEngine", where: "WHERE id=$1" },
-    { table: "chapter_records", fields: "id content_id:contentId position:index title volume url duration_ms:durationMs protocol", where: "WHERE book_id=$1 ORDER BY position" },
-    { table: "chapter_pages", fields: "chapter_id:chapterId id url width height", where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
-    { table: "chapter_streams", fields: "chapter_id:chapterId label url protocol", where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
+    { table: "chapter_records", fields: chapterFields, where: "WHERE book_id=$1 ORDER BY position" },
+    { table: "chapter_pages", fields: pageFields, where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
+    { table: "chapter_streams", fields: streamFields, where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
     { table: "book_tags", fields: "tag", where: "WHERE book_id=$1 ORDER BY position" },
     { table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" },
     { table: "book_previews", fields: previewFields, where: "WHERE id=$1" },
@@ -147,30 +194,11 @@ export async function readBook(id: string): Promise<BookResource> {
   const row = metadata![0];
   if (!row) throw new Error("书籍不存在");
   const type = row.kind as ContentType;
-  const byChapter = (values: Row[]) => { const map = new Map<string, Row[]>(); for (const value of values) { const entries = map.get(value.chapterId) ?? []; entries.push(value); map.set(value.chapterId, entries); } return map; };
-  const pageMap = byChapter(pages!), streamMap = byChapter(streams!);
   const snapshot = progressRows![0];
   const progress = snapshot ? preview(snapshot).progress! : { chapterIndex: 0, offset: 0, updatedAtMs: 0 };
-  function descriptor(url: string) {
-    const src = assetUrl(type, id, url);
-    return { resourceId: url.startsWith("resource://") || /^https?:/.test(url) ? url : `resource://cache/${type}/${id}/${url}`, src,
-      contentType: type === "html" ? "text/html" : type === "pdf" ? "application/pdf" : "text/plain", format: type === "html" ? "html" : type, contentFormat: type === "html" ? "richText" : type };
-  }
-  const catalog = chapters!.map(chapter => {
-    const next: Row = { ...optional(chapter), volume: !!chapter.volume };
-    if (chapter.url) next.resource = descriptor(chapter.url);
-    if (pageMap.has(chapter.id)) next.pages = pageMap.get(chapter.id)!.map(page => ({ ...optional(page), url: descriptor(page.url).resourceId, src: assetUrl(type, id, page.url) }));
-    if (type === "audio" || type === "video") {
-      const sources = streamMap.get(chapter.id) ?? [];
-      const selected = progress.chapterId === chapter.id ? sources.find(source => source.label === progress.quality && source.url) : undefined;
-      const selectedUrl = selected?.url ?? chapter.url;
-      if (selectedUrl) next.media = { schemaVersion: 1, kind: "media", mediaType: type, src: assetUrl(type, id, selectedUrl), format: selected?.protocol ?? chapter.protocol ?? "direct",
-        sources: sources.map(source => ({ label: source.label, src: source.url ? assetUrl(type, id, source.url) : undefined, format: source.protocol ?? "direct", selected: source.url === selectedUrl })) };
-    }
-    return next as ChapterResource;
-  });
+  const catalog = chapterResources({ id, contentType: type, progress }, chapters!, pages!, streams!);
   if (type === "pdf" && row.url) for (let index = 0; index < Math.max(row.pageCount ?? 0, 1); index++) catalog.push({ id: `page-${index + 1}`, title: String(index + 1), index,
-    resource: descriptor(row.url) as ChapterResource["resource"], pdfPage: { schemaVersion: 1, kind: "pdfPage", src: assetUrl(type, id, row.url), pageIndex: index, defaultZoom: "page-fit" } });
+    resource: chapterDescriptor(type, id, row.url) as ChapterResource["resource"], pdfPage: { schemaVersion: 1, kind: "pdfPage", src: assetUrl(type, id, row.url), pageIndex: index, defaultZoom: "page-fit" } });
   const base = { title: row.title, author: row.author ?? "", intro: row.intro ?? "", coverSrc: row.cover ? assetUrl(type, id, row.cover) : undefined };
   const overrides = optional({ title: row.titleOverride, author: row.authorOverride, intro: row.introOverride, coverSrc: row.coverOverride });
   if (overrides.coverSrc) overrides.coverSrc = assetUrl(type, id, overrides.coverSrc);
@@ -221,9 +249,15 @@ export async function readHistory(): Promise<HistoryResource> {
   return { schemaVersion: 2, reading: { sessions, books, days: days!.map(day => ({ ...day, books: groupedDays.get(day.day) ?? [] })), ...totals![0] }, search: { entries }, bookmarks: grouped } as HistoryResource;
 }
 
+/** 只有完整详情才算缓存；搜索候选只有基本信息，尚无详情更新时间和目录。 */
+export async function readCachedMoreInformation(sourceId: string, bookUrl: string): Promise<BookResource | null> {
+  const rows = await database.select<Array<{ id: string }>>(`SELECT b.id FROM books b JOIN sources s ON s.id=b.source_id AND (s.content_type=b.content_type OR (s.content_type='text' AND b.content_type='html')) WHERE b.source_id=$1 AND b.book_url=$2 AND (b.updated_at_ms IS NOT NULL OR EXISTS(SELECT 1 FROM chapters c WHERE c.book_id=b.id)) ORDER BY b.id LIMIT 1`, [sourceId, bookUrl]);
+  return rows[0] ? readBook(rows[0].id) : null;
+}
+
 /** 与写入接口使用相同的来源和 URL，直接读详情存储。 */
 export async function readMoreInformation(sourceId: string, bookUrl: string): Promise<BookResource> {
-  const rows = await database.select<Array<{ id: string }>>(`SELECT b.id FROM books b JOIN sources s ON s.id=b.source_id AND s.content_type=b.content_type WHERE b.source_id=$1 AND b.book_url=$2 ORDER BY b.id LIMIT 1`, [sourceId, bookUrl]);
-  if (!rows[0]) throw new Error("详情尚未保存");
-  return readBook(rows[0].id);
+  const book = await readCachedMoreInformation(sourceId, bookUrl);
+  if (!book) throw new Error("详情尚未保存");
+  return book;
 }

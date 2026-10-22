@@ -22,7 +22,7 @@ import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding } from "./useReaderMediaBinding";
 import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 import { registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
-import { clearOpenedBook, openedBook, refreshOpenedBook, switchOpenedBook } from "../books/bookDetailState";
+import { clearOpenedBook, openedBook, refreshOpenedChapter, switchOpenedBook } from "../books/bookDetailState";
 import { collectReaderTtsSegments } from "./ttsText";
 
 type ReaderControlsMode = "settings" | "tts" | "appearance" | "search";
@@ -160,7 +160,7 @@ async function notifyCurrentReading(refresh = false, prepareCurrent = false): Pr
     chapterIndex: readingChapterIndex.value, ...currentReaderPosition(), updatedAtMs: Date.now() }, prepareCurrent);
   if (refresh && chapter) {
     await mainText(book.id, chapter.id);
-    await refreshOpenedBook(book.id);
+    await refreshOpenedChapter(book.id, chapter.id);
   }
 }
 
@@ -472,7 +472,7 @@ readerTts = useReaderTts({
     if (!book || !chapter) return [];
     if (!chapter.resource) {
       await mainText(book.id, chapter.id);
-      await refreshOpenedBook(book.id);
+      await refreshOpenedChapter(book.id, chapter.id);
     }
     if (!(await readerChapterWindow.prepare(index))) return [];
     await nextTick();

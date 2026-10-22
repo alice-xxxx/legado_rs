@@ -17,7 +17,8 @@ export function useReaderChapterWindow(options: {
 }) {
   const chapters = ref<ReaderTextChapter[]>([]);
   const previews = new Map<number, HTMLElement>();
-  const pending = new Map<number, Promise<ReaderTextChapter | null>>();
+  const pending = new Map<number, { src?: string; task: Promise<ReaderTextChapter | null> }>();
+  const resourceVersions = new Map<number, string>();
   let generation = 0;
   let controller = new AbortController();
   let turning = false;
@@ -31,36 +32,43 @@ export function useReaderChapterWindow(options: {
   };
   function reset(): void {
     generation++; controller.abort(); controller = new AbortController();
-    chapters.value = []; pending.clear(); previews.clear(); turning = false;
+    chapters.value = []; pending.clear(); resourceVersions.clear(); previews.clear(); turning = false;
   }
   onScopeDispose(() => { generation++; controller.abort(); });
   watch([() => options.book.value?.id, options.visible, options.busy], ([id, visible, busy], [previousId]) => {
     if (id !== previousId || !visible || busy) reset();
   }, { flush: "sync" });
   async function prepare(index: number): Promise<ReaderTextChapter | null> {
+    const epoch = generation;
+    const entry = options.book.value?.chapters.find(chapter => chapter.index === index && !chapter.volume);
     const cached = chapters.value.find(chapter => chapter.index === index);
-    if (cached) return cached;
+    if (cached && resourceVersions.get(index) === entry?.resource?.src) return cached;
     const existing = pending.get(index);
-    if (existing) return existing;
-    const book = options.book.value, epoch = generation, signal = controller.signal;
-    const entry = book?.chapters.find(chapter => chapter.index === index && !chapter.volume);
+    if (existing) return existing.src === entry?.resource?.src ? existing.task
+      : existing.task.then(() => generation === epoch ? prepare(index) : null);
+    const book = options.book.value, signal = controller.signal;
     if (!book || !entry) return null;
     const task = (async () => {
       const descriptor = entry.resource;
       if (!descriptor || !["text", "richText"].includes(descriptor.contentFormat)) return null;
       const body = await readTextResource(descriptor, signal);
       if (generation !== epoch || signal.aborted || options.book.value?.id !== book.id) return null;
+      if (options.book.value.chapters.find(chapter => chapter.index === index)?.resource?.src !== descriptor.src) return null;
       const list = ordered(), position = list.findIndex(chapter => chapter.index === options.index.value);
       if (!list.slice(Math.max(0, position - 1), position + 2).some(chapter => chapter.index === index)) return null;
       const chapter: ReaderTextChapter = { index, title: entry.title, content: descriptor.contentFormat === "richText"
         ? { schemaVersion: 1, kind: "richText", markup: body } : { schemaVersion: 1, kind: "text", text: body } };
+      resourceVersions.set(index, descriptor.src);
       chapters.value = [...chapters.value.filter(item => item.index !== index), chapter].sort((a, b) => a.index - b.index);
       return chapter;
     })().catch(() => null).finally(() => { if (generation === epoch) pending.delete(index); });
-    pending.set(index, task);
+    pending.set(index, { src: entry.resource?.src, task });
     return task;
   }
-  watch([options.content, options.index, () => options.book.value?.chapters, () => settings.value.reader.readingMode], () => {
+  watch([options.content, options.index, () => {
+    const list = ordered(), position = list.findIndex(chapter => chapter.index === options.index.value);
+    return JSON.stringify(list.slice(Math.max(0, position - 1), position + 2).map(chapter => [chapter.id, chapter.resource?.src]));
+  }, () => settings.value.reader.readingMode], () => {
     if (!enabled.value || options.busy.value) return;
     const content = options.content.value;
     if (content?.kind !== "text" && content?.kind !== "richText") return;
@@ -71,9 +79,11 @@ export function useReaderChapterWindow(options: {
       chapters.value = [...chapters.value.filter(chapter => chapter.index !== index), { index, title: entry.title, content }]
         .sort((a, b) => a.index - b.index);
     }
+    if (entry.resource) resourceVersions.set(index, entry.resource.src);
     const window = list.slice(Math.max(0, position - 1), position + 2);
     const retained = chapters.value.filter(chapter => window.some(entry => entry.index === chapter.index));
     if (retained.length !== chapters.value.length) chapters.value = retained;
+    for (const index of resourceVersions.keys()) if (!window.some(entry => entry.index === index)) resourceVersions.delete(index);
     for (const chapter of window) void prepare(chapter.index);
   }, { immediate: true });
   const continuousChapters = computed(() => {

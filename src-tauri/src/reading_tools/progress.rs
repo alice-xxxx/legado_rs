@@ -1,6 +1,9 @@
 //! 阅读进度与相邻章节预读；正文请求统一调用 main_text。
 
-use crate::{main_text::MainText, settings::preload_count};
+use crate::{
+    main_text::{ChapterPreparation, MainText},
+    settings::preload_count,
+};
 use serde_json::{json, Value};
 
 impl MainText {
@@ -16,13 +19,15 @@ impl MainText {
         let _operation = self.backup.operation_read().await;
         let settings = resources.settings.read().await.ok();
         let count = preload_count(settings);
-        let book = crate::book_files::read_book(database, &book_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let end = chapter_index
-            .saturating_add(count + 1)
-            .min(book["chapters"].as_array().map_or(0, Vec::len));
-        for index in chapter_index..end {
+        let db = database.clone();
+        let id = book_id.to_owned();
+        let chapters = tokio::task::spawn_blocking(move || {
+            db.reading_chapter_ids(&id, chapter_index, count + 1)
+        })
+        .await
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())?;
+        for chapter_id in chapters {
             if self
                 .backup
                 .restore_epoch
@@ -31,24 +36,23 @@ impl MainText {
             {
                 break;
             }
-            let current = crate::book_files::read_book(database, book_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            if current["progress"]["chapterIndex"].as_u64() != Some(chapter_index as u64) {
-                break;
+            match self
+                .prepare_chapter(
+                    database,
+                    resources,
+                    book_id,
+                    &chapter_id,
+                    false,
+                    Some(chapter_index),
+                )
+                .await?
+            {
+                ChapterPreparation::Updated => {
+                    updated(json!({"bookId":book_id,"chapterId":chapter_id}))
+                }
+                ChapterPreparation::Cached => (),
+                ChapterPreparation::Stale => break,
             }
-            if current["chapters"][index]["volume"] == true {
-                continue;
-            }
-            if crate::book_files::indexed_chapter_ready(resources, &current, index).await? {
-                continue;
-            }
-            let chapter_id = current["chapters"][index]["id"]
-                .as_str()
-                .ok_or("Reading chapter ID is missing")?;
-            self.main_text(database, resources, book_id, chapter_id, false)
-                .await?;
-            updated(json!({"bookId":book_id}));
         }
         Ok(())
     }

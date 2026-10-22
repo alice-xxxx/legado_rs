@@ -1,4 +1,4 @@
-import { readMoreInformation } from "../../api/database";
+import { readBookAlternatives, readCachedMoreInformation, readMoreInformation } from "../../api/database";
 import { modifyDatabase } from "../../api/feDb";
 import { addLibraryContent } from "./contentLibraryState";
 import { computed, reactive, ref, shallowRef, watch, type Ref, type UnwrapNestedRefs } from "vue";
@@ -6,7 +6,7 @@ import { moreInformation } from "../../api/moreInformation";
 import type { BookResource, SearchBookResult, SearchResultSource } from "../../api/types";
 import { searchResults } from "../discovery/searchState";
 import { shelfBooks as shelf } from "../shelf/shelfBooks";
-import { clearOpenedBook, closeBookDetail, switchOpenedBook, openedBookFromShelf, openedBook } from "./bookDetailState";
+import { clearOpenedBook, closeBookDetail, replaceOpenedBook, switchOpenedBook, openedBookFromShelf, openedBook } from "./bookDetailState";
 import type { BookDetailOpenRequest, BookDetailTab } from "./bookDetailOpenRequest";
 
 export interface BookDetailSessionState {
@@ -95,10 +95,15 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       error: "",
     });
     try {
-      information = moreInformation(result.sourceId, result.bookUrl);
-      await information;
+      let saved = await readCachedMoreInformation(result.sourceId, result.bookUrl);
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
-      const saved = await readMoreInformation(result.sourceId, result.bookUrl);
+      if (!saved) {
+        information = moreInformation(result.sourceId, result.bookUrl);
+        await information;
+        if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+        saved = await readMoreInformation(result.sourceId, result.bookUrl);
+      }
+      if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
       // 候选身份和关联在一个事务内保存，Vue 不接触数据表。
       const candidates = searchResultSources.value.filter(source => source.sourceId !== saved.sourceId);
       await modifyDatabase([
@@ -106,10 +111,10 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
         { operation: "saveBook", bookId: saved.id, changes: { alternatives: candidates.map(source => source.resultId) } },
       ], { wait: true });
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
-      const book = await switchOpenedBook(saved.id);
-      if (!book) return;
+      saved.alternatives = await readBookAlternatives(saved.id);
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
-      request.details.bookId = book.id;
+      replaceOpenedBook(saved);
+      request.details.bookId = saved.id;
     } catch (error) {
       if (isCurrentRequest(request.generation, request.restoreRevision, request.details)) {
         request.details.error = dependencies.errorText(error);
@@ -136,15 +141,18 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     openedBookFromShelf.value = fromShelf;
     try {
       if (fromShelf && !shelf.value.books.some((entry) => entry.id === bookId)) {
-        throw new Error("\u4e66\u7c4d\u6587\u4ef6\u6682\u65f6\u4e0d\u53ef\u7528\u3002");
+        throw new Error("书籍文件暂时不可用。");
       }
       let book = await switchOpenedBook(bookId);
-      if (book?.sourceId && book.bookUrl) {
+      if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+      if (book?.sourceId && book.bookUrl && book.updatedAtMs == null && !book.chapters.length) {
         information = moreInformation(book.sourceId, book.bookUrl);
         await information;
         if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
         const saved = await readMoreInformation(book.sourceId, book.bookUrl);
-        book = await switchOpenedBook(saved.id);
+        if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
+        replaceOpenedBook(saved);
+        book = saved;
       }
       if (!book) return;
       if (!isCurrentRequest(request.generation, request.restoreRevision, request.details)) return;
@@ -188,7 +196,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
       await dependencies.startReading(book, chapterIndex);
     } catch (error) {
       if (isCurrentRequest(requestGeneration, restoreRevision, details)) {
-        dependencies.notify(`\u6253\u5f00\u9605\u8bfb\u5931\u8d25\uff1a${dependencies.errorText(error)}`, "error");
+        dependencies.notify(`打开阅读失败：${dependencies.errorText(error)}`, "error");
       }
     } finally {
       if (isCurrentRequest(requestGeneration, restoreRevision, details)) searchResultDetailsReadingBusy.value = false;
