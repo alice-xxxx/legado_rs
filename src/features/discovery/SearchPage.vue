@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import type { SearchBookResult, SearchType } from "../../api/types";
@@ -125,11 +125,9 @@ function closeSearchOptions(restoreFocus = false): void {
   if (restoreFocus) searchOptionsButton.value?.focus({ preventScroll: true });
 }
 
-async function toggleSearchOptions(): Promise<void> {
+function toggleSearchOptions(): void {
   if (searchOptionsOpen.value) { closeSearchOptions(); return; }
   searchOptionsOpen.value = true;
-  await nextTick();
-  searchOptionsElement.value?.querySelector<HTMLInputElement>("input:not(:disabled)")?.focus({ preventScroll: true });
 }
 
 function onSearchOptionsFocusOut(event: FocusEvent): void {
@@ -248,7 +246,7 @@ watch(selectedContentType, clearResultFilters);
         <BackButton class="search-back-button" label="返回" @click="returnFromSearch" />
         <form class="search-form search-prototype-top-input" @submit.prevent="submitSearch">
           <PrototypeIcon class="search-input-icon" name="search" aria-hidden="true" />
-          <input :value="searchKeyword" autofocus aria-label="搜索关键词" enterkeyhint="search" placeholder="搜索标题、作者或关键词"
+          <input :value="searchKeyword" aria-label="搜索关键词" enterkeyhint="search" placeholder="搜索标题、作者或关键词"
             :disabled="shelfBatchRecoveryRequired" @input="updateKeyword" />
           <button v-if="searchKeyword" type="button" class="clear-search" aria-label="清空搜索" title="清空搜索"
             :disabled="shelfBatchRecoveryRequired" @click="searchKeyword = ''">

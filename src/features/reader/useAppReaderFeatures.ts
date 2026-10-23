@@ -20,7 +20,6 @@ import { useReaderDictionary } from "./useReaderDictionary";
 import { useReaderBookmarksAndHistory } from "./useReaderBookmarksAndHistory";
 import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding } from "./useReaderMediaBinding";
-import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 import { registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
 import { clearOpenedBook, openedBook, refreshOpenedChapter, replaceOpenedBook, switchOpenedBook } from "../books/bookDetailState";
 import { collectReaderTtsSegments } from "./ttsText";
@@ -78,6 +77,9 @@ let readerChapterWindow!: ReturnType<typeof useReaderChapterWindow>;
 const readerControlsMode = ref<ReaderControlsMode>("settings");
 const readerDirectoryOpen = ref(false);
 const readerMenuOpen = ref(false);
+const readerOverlayOpen = ref(false);
+const readerGesturesBlocked = computed(() => readerMenuOpen.value || readerControlsOpen.value
+  || readerDirectoryOpen.value || readerOverlayOpen.value);
 const readerFindQuery = ref("");
 const readerFindMatches = ref<HTMLElement[]>([]);
 const readerFindIndex = ref(-1);
@@ -88,7 +90,7 @@ const progressSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
 const readerBookDownloadBusy = ref(false);
 let progressRevision = 0;
 let readerLoadRevision = 0;
-let readerMediaElement: ReaderMediaElement | null = null;
+let readerMediaElement: HTMLMediaElement | null = null;
 
 let readerClickSuppressedUntil = 0;
 let readerMediaSleepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -137,7 +139,7 @@ function seekReaderMedia(seconds: number): void {
   if (!media || isReaderMediaControlBlocked() || !Number.isFinite(seconds)) return;
   const maximum = Number.isFinite(media.duration) && media.duration >= 0 ? media.duration : Number.POSITIVE_INFINITY;
   try {
-    seekMedia(media, Math.max(0, Math.min(seconds, maximum)));
+    media.currentTime = Math.max(0, Math.min(seconds, maximum));
     // The existing seeked listener owns durable progress saving.
   } catch (error) {
     readerMediaError.value = "无法跳转播放位置：" + errorText(error);
@@ -292,6 +294,7 @@ function applyBookInformation(book: BookResource): void {
 
 function setReaderPage(index: number): void { readerNavigationActions.setReaderPage(index); }
 function turnPage(direction: -1 | 1): void {
+  if (readerGesturesBlocked.value) return;
   if (!readerBusy.value && readerChapterWindow?.turn(direction)) return;
   readerNavigationActions.turnPage(direction);
 }
@@ -355,7 +358,7 @@ readerMediaBinding = useReaderMediaBinding({
 readerDisplay = useReaderDisplay({
   reader: { viewport: readerViewport, visible: readerVisible, busy: readerBusy,
     imagePage: readingImagePage, mediaChapter: readingMediaChapter,
-    menuOpen: readerMenuOpen,
+    gesturesBlocked: readerGesturesBlocked,
     pageIndex: readerPageIndex, pageCount: readerPageCount, comicScrollTop: comicImageScrollTop,
     getLoadRevision: () => readerLoadRevision, getTouchStart: () => readerTouchStart,
     setTouchStart: value => { readerTouchStart = value; }, getClickSuppressedUntil: () => readerClickSuppressedUntil,
@@ -554,7 +557,7 @@ const readerDictionary = useReaderDictionary({
 });
 
 function setReaderMediaElement(element: unknown): void {
-  if (!(element instanceof HTMLMediaElement) && !(element instanceof NativeReaderAudio)) { readerMediaBinding.clearReaderMediaBinding(true); return; }
+  if (!(element instanceof HTMLMediaElement)) { readerMediaBinding.clearReaderMediaBinding(true); return; }
   if (readerMediaElement === element) return;
   const content = readingContent.value;
   if (content?.kind !== "media") return;
@@ -598,8 +601,6 @@ function openReaderControls(mode: ReaderControlsMode = "settings"): void {
   if (mode === "tts") {
     updateTtsSelection();
     readerTts.refreshTtsVoices();
-  } else if (mode === "search") {
-    void nextTick(() => document.getElementById("reader-find-input")?.focus());
   }
 }
 
@@ -619,7 +620,7 @@ return {
   ...readerBookmarksAndHistory, ...readerMediaBinding, ...readerNavigationActions, ...readerDisplay,
   readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom,
   readingContentType, readingImagePage, readingMediaChapter, readingVideoChapter, readerViewport, readerPageIndex, readerPageCount,
-  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen,
+  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen, readerOverlayOpen, readerGesturesBlocked,
   readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty, progressSaveState,
   readerBookDownloadBusy, readerChapterError,
   readerMediaError, readerMediaRetrying, readerMediaPlaying, readerMediaTimeMs, readerMediaDurationMs,

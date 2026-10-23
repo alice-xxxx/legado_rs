@@ -32,17 +32,13 @@ export function installDialogInteractions(): () => void {
         panel.tabIndex = -1;
       }
       if (!layer.contains(document.activeElement)) {
-        const target = [...layer.querySelectorAll<HTMLElement>("[autofocus],textarea,input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=hidden])")]
-          .find(element => visible(element) && !element.matches(":disabled"))
-          ?? [...layer.querySelectorAll<HTMLElement>("[data-back-action]")].find(visible)
-          ?? [...layer.querySelectorAll<HTMLElement>(controls)].find(visible) ?? panel;
-        target?.focus({ preventScroll: true });
+        panel?.focus({ preventScroll: true });
       }
     }
     document.body.classList.toggle("app-dialog-open", current.length > 0);
     const layer = top();
     for (const [, target] of removed) {
-      if (target && visible(target) && (!layer || layer.contains(target))) { target.focus({ preventScroll: true }); break; }
+      if (target && !target.matches("input,textarea,select,[contenteditable]") && visible(target) && (!layer || layer.contains(target))) { target.focus({ preventScroll: true }); break; }
     }
   }
   const observer = new MutationObserver(records => {

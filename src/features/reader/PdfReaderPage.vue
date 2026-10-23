@@ -33,7 +33,6 @@ const canvas = ref<HTMLCanvasElement | null>(null);
 const thumbnails = ref<Array<{ index: number; src: string }>>([]);
 const thumbnailStart = ref(0);
 const thumbnailPageWindow = 5;
-const findInput = ref<HTMLInputElement | null>(null);
 const findQuery = ref("");
 const findPageMatches = ref<number[]>([]);
 const findSearching = ref(false);
@@ -172,9 +171,6 @@ watch(() => [props.findOpen, findQuery.value] as const, () => {
     return;
   }
   findDebounce = setTimeout(() => { findDebounce = null; void findPdfPages(); }, 220);
-});
-watch(() => props.findOpen, open => {
-  if (open) void Promise.resolve().then(() => findInput.value?.focus());
 });
 
 function readableError(value: unknown): string {
@@ -358,7 +354,7 @@ onBeforeUnmount(() => {
     <section v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel">
       <header><strong>搜索 PDF 文本</strong><button type="button" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></button></header>
       <label for="pdf-find-input">关键词</label>
-      <input id="pdf-find-input" ref="findInput" v-model="findQuery" type="search" placeholder="搜索文档中的文字" autocomplete="off"/>
+      <input id="pdf-find-input" v-model="findQuery" type="search" placeholder="搜索文档中的文字" autocomplete="off"/>
       <p>{{ findSearching ? '正在扫描 PDF 页面…' : !findQuery.trim() ? '输入关键词查找包含它的页面' : `找到 ${findPageMatches.length} 页` }}</p>
       <p v-if="findError">{{ findError }}</p>
       <div v-if="findPageMatches.length" class="pdf-find-results">
@@ -396,7 +392,7 @@ onBeforeUnmount(() => {
         <h2>输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
         <label for="pdf-reader-password">PDF 密码</label>
-        <input id="pdf-reader-password" v-model="passwordInput" type="password" autocomplete="off" autofocus />
+        <input id="pdf-reader-password" v-model="passwordInput" type="password" autocomplete="off" />
         <p v-if="passwordError" class="pdf-password-error">{{ passwordError }}</p>
         <div class="pdf-password-actions">
           <button type="button" class="button secondary" data-back-action @click="cancelPassword">取消阅读</button>

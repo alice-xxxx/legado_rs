@@ -15,7 +15,6 @@ const draft = ref<Record<string, string>>({});
 const baseline = ref<Record<string, string>>({});
 const error = ref("");
 const editingField = ref<SourceEditorField | null>(null);
-const longInput = ref<HTMLTextAreaElement | null>(null);
 let originalLongValue = "";
 let returnFocus: HTMLElement | null = null;
 let baselineJson = props.jsonText;
@@ -45,13 +44,11 @@ function serialize(): string | null {
 function preview(field: SourceEditorField): string {
   return draft.value[field.key]?.replace(/\s+/g, " ").trim() || "未设置";
 }
-async function openField(field: SourceEditorField): Promise<void> {
+function openField(field: SourceEditorField): void {
   if (props.disabled) return;
-  returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  returnFocus = document.activeElement instanceof HTMLButtonElement ? document.activeElement : null;
   editingField.value = field;
   originalLongValue = draft.value[field.key] ?? "";
-  await nextTick();
-  longInput.value?.focus();
 }
 function closeField(discard = false): void {
   if (props.disabled) return;
@@ -107,7 +104,7 @@ defineExpose({ serialize, reset });
           <div><strong id="source-long-field-title">{{ editingField.label }}</strong><small>{{ editingField.key }}</small></div>
           <button type="button" :disabled="disabled" @click="closeField()">完成</button>
         </header>
-        <textarea ref="longInput" v-model="draft[editingField.key]" :disabled="disabled"
+        <textarea v-model="draft[editingField.key]" :disabled="disabled"
           :aria-label="editingField.label" spellcheck="false" autocapitalize="off" autocomplete="off" />
       </section>
     </Teleport>

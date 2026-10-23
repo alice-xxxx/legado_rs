@@ -54,7 +54,6 @@ function updateKeyword(event: Event): void {
           <span>关键词</span>
           <input
             :value="keyword"
-            autofocus
             maxlength="200"
             autocomplete="off"
             placeholder="输入测试关键词"

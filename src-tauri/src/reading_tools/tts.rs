@@ -8,6 +8,8 @@ pub(crate) struct Tts {
     executor: Arc<dyn crate::source_engine::SourceExecutor>,
     tts: tokio::sync::watch::Sender<Option<TtsSession>>,
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    system: std::sync::Mutex<Option<SystemTts>>,
+    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
     pub(crate) app: Option<tauri::AppHandle>,
 }
 impl Tts {
@@ -15,6 +17,8 @@ impl Tts {
         Self {
             executor,
             tts: tokio::sync::watch::channel(None).0,
+            #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+            system: std::sync::Mutex::new(None),
             #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
             app: None,
         }
@@ -26,8 +30,6 @@ use serde_json::json;
 use serde_json::Value;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use std::collections::HashMap;
-#[cfg(mobile)]
-use tauri_plugin_native_audio as _;
 use tokio::sync::{mpsc, oneshot, watch};
 
 const MAX_HTTP_TTS_TEXT_CHARS: usize = 20_000;
@@ -85,6 +87,14 @@ impl TtsStream {
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 impl Tts {
+    fn system_tts(&self) -> Result<SystemTts, String> {
+        let mut system = self.system.lock().map_err(|error| error.to_string())?;
+        if system.is_none() {
+            *system = Some(SystemTts::new().map_err(|error| error.to_string())?);
+        }
+        Ok(system.as_ref().unwrap().clone())
+    }
+
     fn tts_progress(&self, progress: Value) {
         use tauri::Emitter;
         if let Some(app) = &self.app {
@@ -129,7 +139,7 @@ impl Tts {
                         self.play_tts_audio(&mut player, receiver),
                     )?;
                 } else {
-                    self.queue_system_tts(&options, texts, &mut input, &mut player)
+                    self.queue_system_tts(texts, &mut input, &mut player)
                         .await?;
                 }
                 Ok::<_, String>(())
@@ -148,7 +158,6 @@ impl Tts {
             }
         }
         player.stop();
-        player.close();
         for id in assets {
             resources.tts.release(&id);
         }
@@ -163,11 +172,19 @@ impl Tts {
             while player.events.try_recv().is_ok() {}
             player.audio(&source.src)?;
             let mut highlighted = None;
+            let mut paused = None;
             while let Some(event) = player.events.recv().await {
                 if event["state"] == "error" {
                     return Err(event["error"].as_str().unwrap_or("音频播放失败").to_owned());
                 }
                 let ended = event["state"] == "ended";
+                if event["state"] == "time" || event["state"] == "paused" {
+                    let next = event["state"] == "paused";
+                    if paused != Some(next) {
+                        paused = Some(next);
+                        self.tts_progress(json!({ "paused": next }));
+                    }
+                }
                 if !ended && event["state"] != "time" {
                     continue;
                 }
@@ -195,80 +212,112 @@ impl Tts {
     }
 }
 
-// 移动端直接驱动原生插件；桌面 WebView 只承担音频输出，不管理朗读队列。
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[derive(Clone)]
+struct SystemTts {
+    engine: tts::Tts,
+    default_voice: Option<tts::Voice>,
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+impl SystemTts {
+    fn new() -> Result<Self, tts::Error> {
+        // 指定系统合成器，避免默认后端接管正在运行的屏幕阅读器。
+        #[cfg(target_os = "windows")]
+        let backend = tts::Backends::WinRt;
+        #[cfg(target_os = "linux")]
+        let backend = tts::Backends::SpeechDispatcher;
+        #[cfg(target_vendor = "apple")]
+        let backend = tts::Backends::AvFoundation;
+        #[cfg(target_os = "android")]
+        let backend = tts::Backends::Android;
+        let engine = tts::Tts::new(backend)?;
+        let default_voice = if engine.supported_features().get_voice {
+            engine.voice()?
+        } else {
+            None
+        };
+        Ok(Self {
+            engine,
+            default_voice,
+        })
+    }
+}
+
+// HTTP 音频由 WebView 输出；系统语音各平台统一使用 tts-rs。
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 struct TtsPlayer {
     app: tauri::AppHandle,
     events: mpsc::UnboundedReceiver<Value>,
     listeners: Vec<tauri::EventId>,
-    #[cfg(mobile)]
-    audio_channel: Option<tauri::ipc::Channel<Value>>,
-    #[cfg(mobile)]
-    http: bool,
+    system: Option<tts::Tts>,
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 impl TtsPlayer {
-    fn new(app: tauri::AppHandle, _http: bool) -> Result<Self, String> {
+    fn new(app: tauri::AppHandle, options: &TtsOptions, service: &Tts) -> Result<Self, String> {
         use tauri::Listener;
         let (sender, events) = mpsc::unbounded_channel();
         let mut listeners = vec![];
-        #[cfg(mobile)]
-        let audio_channel = if !_http {
-            use tauri_plugin_tts::TtsExt;
-            app.tts()
-                .set_background_behavior(tauri_plugin_tts::SetBackgroundBehaviorRequest {
-                    continue_in_background: true,
-                })
-                .map_err(|error| error.to_string())?;
-            for (name, state) in [
-                ("start", "start"),
-                ("finish", "ended"),
-                ("cancel", "cancel"),
-                ("error", "error"),
-            ] {
-                let sender = sender.clone();
-                listeners.push(app.listen(format!("tts://speech:{name}"), move |event| {
-                    if let Ok(mut data) = serde_json::from_str::<Value>(event.payload()) {
-                        data["state"] = json!(state);
-                        let _ = sender.send(data);
-                    }
-                }));
-            }
-            None
-        } else {
-            let channel = tauri::ipc::Channel::new(move |body| {
-                let mut data: Value = body.deserialize()?;
-                data["position"] = data["currentTime"].clone();
-                data["state"] = json!(if data["status"] == "ended" {
-                    "ended"
-                } else if data["error"].is_string() {
-                    "error"
-                } else if data["isPlaying"] == true {
-                    "time"
+        let system = if options.config_id.is_none() {
+            let SystemTts {
+                engine,
+                default_voice,
+            } = service.system_tts()?;
+            let configure = || -> Result<(), tts::Error> {
+                let normal = engine.normal_rate()?;
+                // Speech Dispatcher 使用以 0 为默认值的百分比，其他后端使用倍率。
+                let rate = if normal > 0.0 {
+                    normal * options.rate
                 } else {
-                    "buffering"
-                });
-                let _ = sender.send(data);
-                Ok(())
-            });
-            use tauri::Manager;
-            #[cfg(target_os = "android")]
-            let command = "register_listener";
-            #[cfg(target_os = "ios")]
-            let command = "registerListener";
-            if let Err(error) = app.state::<TtsNativeAudio>().0.run_mobile_plugin::<Value>(
-                command,
-                json!({ "event": "native_audio_state", "handler": channel }),
-            ) {
-                for listener in listeners {
-                    app.unlisten(listener);
+                    50.0 * options.rate.log2()
+                };
+                engine.set_rate(rate.clamp(engine.min_rate()?, engine.max_rate()?))?;
+                if engine.supported_features().voice {
+                    let voice = match options.voice_id.as_deref() {
+                        Some(id) => engine
+                            .voices()?
+                            .into_iter()
+                            .find(|voice| voice.id() == id)
+                            .or(default_voice),
+                        None => default_voice,
+                    };
+                    if let Some(voice) = voice {
+                        engine.set_voice(&voice)?;
+                    }
                 }
+                let tx = sender.clone();
+                engine.on_utterance_begin(move |id| {
+                    let _ = tx.send(json!({ "id": id.to_string(), "state": "start" }));
+                })?;
+                let tx = sender.clone();
+                engine.on_utterance_end(move |id| {
+                    let _ = tx.send(json!({ "id": id.to_string(), "state": "ended" }));
+                })?;
+                let tx = sender.clone();
+                engine.on_utterance_stop(move |id| {
+                    let _ = tx.send(json!({ "id": id.to_string(), "state": "cancel" }));
+                })?;
+                if engine.supported_features().pause {
+                    let tx = sender.clone();
+                    engine.on_utterance_pause(move |id| {
+                        let _ = tx.send(json!({ "id": id.to_string(), "state": "paused" }));
+                    })?;
+                    let tx = sender.clone();
+                    engine.on_utterance_resume(move |id| {
+                        let _ = tx.send(json!({ "id": id.to_string(), "state": "resumed" }));
+                    })?;
+                }
+                Ok(())
+            };
+            if let Err(error) = configure() {
+                engine.clear_utterance_callbacks();
                 return Err(error.to_string());
             }
-            Some(channel)
+            Some(engine)
+        } else {
+            None
         };
-        #[cfg(not(mobile))]
         listeners.push(app.listen("tts-playback", move |event| {
             if let Ok(data) = serde_json::from_str(event.payload()) {
                 let _ = sender.send(data);
@@ -278,114 +327,51 @@ impl TtsPlayer {
             app,
             events,
             listeners,
-            #[cfg(mobile)]
-            audio_channel,
-            #[cfg(mobile)]
-            http: _http,
+            system,
         })
     }
 
-    fn speak(&self, item: &TtsText, options: &TtsOptions, append: bool) -> Result<String, String> {
-        #[cfg(mobile)]
-        {
-            use tauri_plugin_tts::TtsExt;
-            let response = self
-                .app
-                .tts()
-                .speak(tauri_plugin_tts::SpeakRequest {
-                    text: item.text.clone(),
-                    language: None,
-                    voice_id: options.voice_id.clone(),
-                    rate: options.rate.min(4.0),
-                    pitch: 1.0,
-                    volume: 1.0,
-                    queue_mode: if append {
-                        tauri_plugin_tts::QueueMode::Add
-                    } else {
-                        tauri_plugin_tts::QueueMode::Flush
-                    },
-                })
-                .map_err(|error| error.to_string())?;
-            response
-                .utterance_id
-                .filter(|_| response.success)
-                .ok_or_else(|| "系统语音没有接受文本".into())
+    fn speak(&self, item: &TtsText, append: bool) -> Result<String, String> {
+        self.system
+            .as_ref()
+            .ok_or("系统语音尚未初始化")?
+            .speak(&item.text, !append)
+            .map_err(|error| error.to_string())?
+            .map(|id| id.to_string())
+            .ok_or_else(|| "系统语音没有接受文本".into())
+    }
+
+    fn pause(&self) -> Result<bool, String> {
+        let engine = self.system.as_ref().ok_or("系统语音尚未初始化")?;
+        if !engine.supported_features().pause {
+            return Ok(false);
         }
-        #[cfg(not(mobile))]
-        {
-            use tauri::Emitter;
-            let id = uuid::Uuid::new_v4().simple().to_string();
-            self.app.emit("tts-output", json!({ "action": "speak", "text": item.text, "voiceId": options.voice_id, "rate": options.rate, "id": id, "append": append })).map_err(|error| error.to_string())?;
-            Ok(id)
+        engine.pause().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
+    fn resume(&self) -> Result<(), String> {
+        if let Some(engine) = &self.system {
+            if engine.supported_features().pause {
+                engine.resume().map_err(|error| error.to_string())?;
+            }
         }
+        Ok(())
     }
 
     fn audio(&self, src: &str) -> Result<(), String> {
-        #[cfg(mobile)]
-        {
-            use tauri::Manager;
-            let handle = &self.app.state::<TtsNativeAudio>().0;
-            handle
-                .run_mobile_plugin::<Value>("initialize", ())
-                .map_err(|error| error.to_string())?;
-            handle
-                .run_mobile_plugin::<Value>("setSource", json!({ "src": src, "title": "朗读" }))
-                .map_err(|error| error.to_string())?;
-            handle
-                .run_mobile_plugin::<Value>("play", ())
-                .map_err(|error| error.to_string())?;
-            Ok(())
-        }
-        #[cfg(not(mobile))]
-        {
-            use tauri::Emitter;
-            self.app
-                .emit("tts-output", json!({ "action": "audio", "src": src }))
-                .map_err(|error| error.to_string())
-        }
+        use tauri::Emitter;
+        self.app
+            .emit("tts-output", json!({ "action": "audio", "src": src }))
+            .map_err(|error| error.to_string())
     }
 
     fn stop(&self) {
-        #[cfg(mobile)]
-        {
-            use tauri::Manager;
-            use tauri_plugin_tts::TtsExt;
-            if self.http {
-                let _ = self
-                    .app
-                    .state::<TtsNativeAudio>()
-                    .0
-                    .run_mobile_plugin::<Value>("dispose", ());
-            } else {
-                let _ = self.app.tts().stop();
-            }
+        use tauri::Emitter;
+        if let Some(engine) = &self.system {
+            let _ = engine.stop();
         }
-        #[cfg(not(mobile))]
-        {
-            use tauri::Emitter;
-            let _ = self.app.emit("tts-output", json!({ "action": "stop" }));
-        }
-    }
-
-    fn close(&self) {
-        #[cfg(mobile)]
-        {
-            use tauri::Manager;
-            #[cfg(target_os = "android")]
-            let command = "remove_listener";
-            #[cfg(target_os = "ios")]
-            let command = "removeListener";
-            if let Some(channel) = &self.audio_channel {
-                let _ = self
-                    .app
-                    .state::<TtsNativeAudio>()
-                    .0
-                    .run_mobile_plugin::<Value>(
-                        command,
-                        json!({ "event": "native_audio_state", "channelId": channel.id() }),
-                    );
-            }
-        }
+        let _ = self.app.emit("tts-output", json!({ "action": "stop" }));
     }
 }
 
@@ -393,33 +379,13 @@ impl TtsPlayer {
 impl Drop for TtsPlayer {
     fn drop(&mut self) {
         use tauri::Listener;
+        if let Some(engine) = &self.system {
+            engine.clear_utterance_callbacks();
+        }
         for listener in &self.listeners {
             self.app.unlisten(*listener);
         }
     }
-}
-
-#[cfg(mobile)]
-struct TtsNativeAudio(tauri::plugin::PluginHandle<tauri::Wry>);
-
-#[cfg(target_os = "ios")]
-tauri::ios_plugin_binding!(init_plugin_native_audio);
-
-#[cfg(mobile)]
-pub(crate) fn tts_native_audio() -> tauri::plugin::TauriPlugin<tauri::Wry> {
-    // 沿用同一个原生播放器，同时保留句柄供 Rust 直接调用。
-    tauri::plugin::Builder::new("native-audio")
-        .setup(|app, api| {
-            use tauri::Manager;
-            #[cfg(target_os = "android")]
-            let handle =
-                api.register_android_plugin("app.tauri.nativeaudio", "NativeAudioPlugin")?;
-            #[cfg(target_os = "ios")]
-            let handle = api.register_ios_plugin(init_plugin_native_audio)?;
-            app.manage(TtsNativeAudio(handle));
-            Ok(())
-        })
-        .build()
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -454,7 +420,7 @@ pub(crate) async fn start_tts(
         .app
         .clone()
         .ok_or_else(|| "应用尚未初始化".to_owned())
-        .and_then(|app| TtsPlayer::new(app, options.config_id.is_some()));
+        .and_then(|app| TtsPlayer::new(app, &options, &service));
     let player = match player {
         Ok(player) => player,
         Err(error) => {
@@ -499,6 +465,19 @@ pub(crate) async fn stop_tts(service: tauri::State<'_, Arc<Tts>>) -> Result<(), 
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
+pub(crate) async fn tts_voices(service: tauri::State<'_, Arc<Tts>>) -> Result<Vec<Value>, String> {
+    let service = service.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let engine = service.system_tts()?.engine;
+        if !engine.supported_features().voice { return Ok(vec![]); }
+        engine.voices().map(|voices| voices.into_iter().map(|voice| {
+            json!({ "voiceURI": voice.id(), "name": voice.name(), "lang": voice.language().to_string() })
+        }).collect()).map_err(|error| error.to_string())
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+#[tauri::command]
 pub(crate) async fn submit_tts(
     texts: Vec<TtsText>,
     service: tauri::State<'_, Arc<Tts>>,
@@ -536,22 +515,53 @@ impl Tts {
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
     async fn queue_system_tts(
         &self,
-        options: &TtsOptions,
         texts: Vec<TtsText>,
         input: &mut mpsc::Receiver<Vec<TtsText>>,
         player: &mut TtsPlayer,
     ) -> Result<(), String> {
         let mut pending = std::collections::VecDeque::from(texts);
-        let mut utterances = HashMap::new();
+        let mut utterances = HashMap::<String, TtsText>::new();
         let mut append = false;
+        let mut paused = false;
         loop {
             tokio::select! {
                 biased;
                 Some(event) = player.events.recv() => {
+                    // 不支持原生暂停时保留片段，恢复后从当前片段重读。
+                    if event["state"] == "pause-requested" {
+                        if paused { continue; }
+                        if !player.pause()? {
+                            let mut interrupted: Vec<_> = utterances.drain().map(|(_, text)| text).collect();
+                            interrupted.sort_by_key(|text| text.index);
+                            for text in interrupted.into_iter().rev() { pending.push_front(text); }
+                            player.stop();
+                            append = false;
+                        }
+                        paused = true;
+                        self.tts_progress(json!({ "paused": true }));
+                        continue;
+                    }
+                    if event["state"] == "resume-requested" {
+                        if !paused { continue; }
+                        player.resume()?;
+                        paused = false;
+                        self.tts_progress(json!({ "paused": false }));
+                        continue;
+                    }
+                    if event["state"] == "error" && !event["id"].is_string() {
+                        return Err(event["error"].as_str().unwrap_or("系统朗读失败").to_owned());
+                    }
                     let Some(id) = event["id"].as_str() else { continue; };
-                    let Some(&index) = utterances.get(id) else { continue; };
+                    let Some(text) = utterances.get(id) else { continue; };
                     match event["state"].as_str() {
-                        Some("start") => self.tts_progress(json!(index)),
+                        Some("paused" | "resumed") => {
+                            paused = event["state"] == "paused";
+                            self.tts_progress(json!({ "paused": paused }));
+                        },
+                        Some("start") => {
+                            self.tts_progress(json!({ "paused": false }));
+                            self.tts_progress(json!(text.index));
+                        },
                         Some("ended") => {
                             utterances.remove(id);
                         },
@@ -559,10 +569,10 @@ impl Tts {
                         _ => (),
                     }
                 },
-                _ = async {}, if !pending.is_empty() => {
+                _ = async {}, if !paused && !pending.is_empty() && utterances.len() < 2 => {
                     let item = pending.pop_front().unwrap();
-                    let id = player.speak(&item, options, append)?;
-                    utterances.insert(id, item.index);
+                    let id = player.speak(&item, append)?;
+                    utterances.insert(id, item);
                     append = true;
                 },
                 texts = input.recv() => match texts { Some(texts) => pending.extend(texts), None => return Ok(()) },

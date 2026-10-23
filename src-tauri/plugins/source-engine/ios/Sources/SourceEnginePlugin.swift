@@ -19,6 +19,7 @@ private struct VideoOrientationArgs: Decodable {
 
 private struct NavigationGesturesArgs: Decodable {
     let enabled: Bool
+    let local: Bool
 }
 
 /// Tauri's iOS edge enters Kotlin/Native; its HTTP and storage callbacks return through Rust C ABI.
@@ -29,11 +30,29 @@ final class SourceEnginePlugin: Plugin {
     private var webLoginSessions: [String: NativeWebLoginSession] = [:]
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
+    private lazy var localBackGesture: UIScreenEdgePanGestureRecognizer = {
+        let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleLocalBack(_:)))
+        gesture.edges = .left
+        gesture.isEnabled = false
+        return gesture
+    }()
 
     override public func load(webview: WKWebView) {
         mainWebView = webview
         // Top-level tabs have no parent screen. Vue enables this for subpages.
         webview.allowsBackForwardNavigationGestures = false
+        webview.addGestureRecognizer(localBackGesture)
+        webview.scrollView.panGestureRecognizer.require(toFail: localBackGesture)
+    }
+
+    @objc private func handleLocalBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
+        guard gesture.state == .ended, let webview = mainWebView else { return }
+        let distance = gesture.translation(in: webview).x
+        if distance >= max(48, webview.bounds.width * 0.2)
+            || distance > 12 && gesture.velocity(in: webview).x > 500 {
+            let payload: JSObject = [:]
+            trigger("navigationBack", data: payload)
+        }
     }
 
     @objc public func setNavigationGestures(_ invoke: Invoke) throws {
@@ -43,8 +62,9 @@ final class SourceEnginePlugin: Plugin {
                 invoke.reject("Main WebView is unavailable")
                 return
             }
-            webview.allowsBackForwardNavigationGestures = args.enabled
-            invoke.resolve(["enabled": webview.allowsBackForwardNavigationGestures])
+            webview.allowsBackForwardNavigationGestures = args.enabled && !args.local
+            self?.localBackGesture.isEnabled = args.enabled && args.local
+            invoke.resolve(["enabled": args.enabled])
         }
     }
 

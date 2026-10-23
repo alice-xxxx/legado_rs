@@ -19,7 +19,7 @@ export function useOutsidePointerDismiss(
     event.preventDefault();
     event.stopPropagation();
     dismiss();
-    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+    if (returnFocus?.isConnected && !returnFocus.matches("input,textarea,select,[contenteditable]")) returnFocus.focus({ preventScroll: true });
   };
   onMounted(() => {
     document.addEventListener("pointerdown", onPointerDown);

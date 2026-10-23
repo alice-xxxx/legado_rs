@@ -1,14 +1,14 @@
 import { computed, onBeforeUnmount, ref, type Ref } from "vue";
 import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@tauri-apps/api/core";
-import { startTts as beginTts, stopTts as endTts, submitTts, type TtsProgress } from "../../api/tts";
+import { startTts as beginTts, stopTts as endTts, submitTts, ttsVoices as loadVoices, type TtsProgress, type TtsVoice } from "../../api/tts";
 import { openedBook } from "../books/bookDetailState";
 import { settings } from "../settings/settingsStore";
 import { httpTtsConfigs } from "../settings/configurationStores";
 import { clamp, type PdfPageResource } from "./readerContent";
 import { mapTtsSegmentChunks, splitTtsText, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
-import { disposeNativeAudio, registerBeforeNativeAudioStart, usesNativeAudio } from "./nativeAudio";
-import { setupTtsOutput, ttsVoices as loadVoices, type TtsVoice } from "./ttsOutput";
+import { openMediaSession } from "./mediaSession";
+import { pauseTtsOutput, setTtsOutputRate, setupTtsOutput } from "./ttsOutput";
 
 export interface ReaderTtsContext {
   visible: Ref<boolean>;
@@ -31,9 +31,11 @@ export interface UseReaderTtsOptions {
 
 /** Vue 只投递正文和显示进度；朗读、流式音频和队列由 Rust 管理。 */
 export function useReaderTts(options: UseReaderTtsOptions) {
-  const nativePlayback = usesNativeAudio();
+  let mediaSession: ReturnType<typeof openMediaSession> | undefined;
   const ttsVoices = ref<TtsVoice[]>([]);
   const ttsActive = ref(false);
+  const ttsPaused = ref(false);
+  let initialRate = 1;
   const ttsSelectedText = ref("");
   const ttsError = ref("");
   const ttsNotice = ref("");
@@ -64,7 +66,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
 
   async function onProgress(progress: TtsProgress): Promise<void> {
     if (!ttsActive.value) return;
-    if (typeof progress === "string") { ttsError.value = progress; return; }
+    if (typeof progress === "string") { ttsError.value = progress; await stopTts(false); return; }
+    if (typeof progress === "object") { ttsPaused.value = progress.paused; mediaSession?.setPaused(progress.paused); return; }
     latestIndex = progress;
     if (advancing) return;
     const chapter = chapters.find(chapter => latestIndex >= chapter.start && latestIndex < chapter.start + chapter.targets.length);
@@ -108,7 +111,6 @@ export function useReaderTts(options: UseReaderTtsOptions) {
       const unlisten = await listen<TtsProgress>("tts", event => { void onProgress(event.payload); });
       if (destroyed) { output(); unlisten(); return; }
       cleanup.push(output, unlisten);
-      await refreshTtsVoices();
     })().catch(error => { ready = undefined; throw error; });
     return ready;
   }
@@ -132,11 +134,21 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     selected = Boolean(text?.trim());
     try {
       await setupTts();
-      if (nativePlayback) await disposeNativeAudio();
       if (current !== generation) return;
       const reader = settings.value.reader;
+      initialRate = reader.ttsRate;
+      ttsPaused.value = false;
+      const book = openedBook.value;
       await beginTts({ configId: reader.ttsEngine === "http" ? reader.httpTtsConfigId ?? null : null,
-        voiceId: reader.ttsVoiceURI || null, rate: reader.ttsRate });
+        voiceId: reader.ttsVoiceURI || null, rate: initialRate });
+      if (current !== generation) return;
+      mediaSession = openMediaSession({ title: book?.title || "朗读", artist: book?.author,
+        artwork: book?.coverSrc ? [{ src: book.coverSrc }] : [] }, {
+        play: () => setPaused(false),
+        pause: () => setPaused(true),
+        stop: () => stopTts(),
+      }, error => { ttsError.value = options.errorText(error); });
+      await mediaSession.ready;
       if (current !== generation) return;
       const chunks = selected ? splitTtsText(text!.trim())
         : (await options.loadSegments(reader.ttsStartPosition === "current")).flatMap(mapTtsSegmentChunks);
@@ -151,6 +163,8 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   async function stopTts(showNotice = true): Promise<void> {
     ++generation;
     ttsActive.value = false;
+    ttsPaused.value = false;
+    mediaSession?.close(); mediaSession = undefined;
     chapters = [];
     ttsChunkProgress.value = null;
     ttsExpectedChapterKey.value = null;
@@ -168,18 +182,33 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     else { settings.value.reader.ttsEngine = "system"; settings.value.reader.ttsVoiceURI = value.slice(7); }
   }
   function stopTtsForDisplayChange(): void { if (ttsActive.value && !ttsExpectedChapterKey.value) void stopTts(false); }
-  const unregister = registerBeforeNativeAudioStart(() => stopTts(false));
+  async function setPaused(paused: boolean): Promise<void> {
+    if (!ttsActive.value || paused === ttsPaused.value) return;
+    const current = generation;
+    try {
+      await pauseTtsOutput(paused, settings.value.reader.ttsEngine === "http");
+      if (current === generation) { ttsPaused.value = paused; mediaSession?.setPaused(paused); }
+    } catch (error) { if (current === generation) ttsError.value = options.errorText(error); }
+  }
+  async function toggleTtsPaused(): Promise<void> { await setPaused(!ttsPaused.value); }
+  async function setTtsRate(rate: number): Promise<void> {
+    if (!Number.isFinite(rate) || ttsActive.value && settings.value.reader.ttsEngine === "system") return;
+    const next = clamp(rate, 0.5, settings.value.reader.ttsEngine === "system" ? 4 : 5);
+    try {
+      if (ttsActive.value) await setTtsOutputRate(next / initialRate);
+      settings.value.reader.ttsRate = next;
+    } catch (error) { ttsError.value = options.errorText(error); }
+  }
   onBeforeUnmount(() => {
     destroyed = true;
-    unregister();
     void stopTts(false);
     cleanup.splice(0).forEach(dispose => dispose());
   });
 
   return {
-    nativePlayback, ttsVoices, ttsActive, ttsSelectedText, ttsError, ttsExpectedChapterKey, ttsCanStart,
+    ttsVoices, ttsActive, ttsPaused, toggleTtsPaused, ttsSelectedText, ttsError, ttsExpectedChapterKey, ttsCanStart,
     ttsEngineSelection, ttsNotice, ttsChunkProgress,
     setupTts, refreshTtsVoices, selectHttpTtsConfig, selectTtsEngine, startTts, stopTts, stopTtsForDisplayChange,
-    setTtsRate: (rate: number) => { settings.value.reader.ttsRate = clamp(rate, 0.5, 5); },
+    setTtsRate,
   };
 }

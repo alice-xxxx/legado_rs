@@ -5,6 +5,7 @@
   "windows": ["main"],
   "permissions": [
     "core:default",
+    "source-engine:allow-navigation-listener",
     "opener:default",
     "deep-link:allow-get-current",
     "sql:allow-select"

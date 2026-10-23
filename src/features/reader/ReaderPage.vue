@@ -39,18 +39,10 @@ export default defineComponent({
     }
     const horizontalReaderEdges = computed(() => context.readingImagePage.value || context.readingPdfPage.value
       || (!context.readingMediaChapter.value && !isVerticalReadingMode(settings.value.reader.readingMode)));
-    const bookmarkNoteInput = ref<HTMLTextAreaElement | null>(null);
-    let bookmarkReturnFocus: HTMLElement | null = null;
-    watch(context.bookmarkEditorOpen, async open => {
+    watch(context.bookmarkEditorOpen, open => {
       if (open) {
-        bookmarkReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         context.readerControlsOpen.value = false;
         context.readerDirectoryOpen.value = false;
-        await nextTick();
-        if (context.bookmarkEditorOpen.value) bookmarkNoteInput.value?.focus();
-      } else if (bookmarkReturnFocus?.isConnected) {
-        bookmarkReturnFocus.focus();
-        bookmarkReturnFocus = null;
       }
     }, { flush: "post" });
     const audioToolPanel = ref<"speed" | "sleep" | null>(null);
@@ -112,6 +104,7 @@ export default defineComponent({
     });
     onUnmounted(() => { if (comicFrame !== null) window.cancelAnimationFrame(comicFrame); });
     function nextComicImage(direction: -1 | 1): void {
+      if (context.readerGesturesBlocked.value) return;
       const scroller = context.readerViewport.value;
       if (!scroller) return;
       if (comicReadMode.value === "paged") {
@@ -174,14 +167,14 @@ export default defineComponent({
     }
     function onComicTouchStart(event: TouchEvent): void {
       comicTouchStart = null;
-      if (!context.readingImagePage.value || event.touches.length !== 1) return;
+      if (context.readerGesturesBlocked.value || !context.readingImagePage.value || event.touches.length !== 1) return;
       const touch = event.touches.item(0);
       if (touch) comicTouchStart = { x: touch.clientX, y: touch.clientY };
     }
     function onComicTouchEnd(event: TouchEvent): void {
       const start = comicTouchStart;
       comicTouchStart = null;
-      if (!start || !context.readingImagePage.value
+      if (!start || context.readerGesturesBlocked.value || !context.readingImagePage.value
         || event.touches.length || event.changedTouches.length !== 1) return;
       const touch = event.changedTouches.item(0);
       if (!touch) return;
@@ -193,13 +186,14 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, bookmarkNoteInput, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
+    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
   },
 });
 </script>
 
 <template>
   <section v-if="ctx.readerVisible" class="reader-shell"
+    :data-reader-menu-open="readerMenuOpen"
     :data-reader-mode="ctx.readingPdfPage ? 'pdf' : ctx.readingVideoChapter ? 'video' : ctx.readingMediaChapter ? 'audio' : ctx.readingImagePage ? 'comic' : 'novel'"
     :class="{ 'reader-menu-open': ctx.readingMediaChapter || readerMenuOpen || readerBusy || ctx.readerChapterError, 'reader-chrome-hidden': !ctx.readingMediaChapter && !readerMenuOpen && !readerBusy && !ctx.readerChapterError, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingContent }"
     @click="onReaderSurfaceClick">
@@ -231,7 +225,8 @@ export default defineComponent({
         </div>
       </div>
     </header>
-    <div class="reader-main">
+    <div class="reader-main" @touchmove="ctx.readerGesturesBlocked && $event.preventDefault()"
+      @wheel="ctx.readerGesturesBlocked && $event.preventDefault()">
       <output v-if="ctx.readingImagePage && comicPageCount" class="reader-comic-page-counter">{{ comicPageIndex }} / {{
         comicPageCount }}</output>
       <div class="reader-content-frame"
@@ -562,7 +557,8 @@ export default defineComponent({
             <option value="chapter">本章开头</option>
           </select></div>
         <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><input id="reader-tts-rate"
-            type="range" min="0.5" :max="ctx.nativePlayback && settings.reader.ttsEngine === 'system' ? 4 : 5" step="0.1" :value="settings.reader.ttsRate"
+            :disabled="ttsActive && settings.reader.ttsEngine === 'system'"
+            type="range" min="0.5" :max="settings.reader.ttsEngine === 'system' ? 4 : 5" step="0.1" :value="settings.reader.ttsRate"
             @input="setTtsRate(Number(($event.target as HTMLInputElement).value))" /><small>{{
               settings.reader.ttsRate.toFixed(1) }}×</small></div>
         <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox" :disabled="ttsActive"
@@ -572,6 +568,8 @@ export default defineComponent({
             type="button" class="button secondary small" :disabled="!ttsCanStart || !ttsSelectedText"
             @click="startSelectedTextTts">朗读选中文字</button></div>
         <div class="reader-tts-actions">
+          <button v-if="ttsActive" type="button" class="button secondary small"
+            :disabled="!ttsChunkProgress" @click="ctx.toggleTtsPaused()">{{ ctx.ttsPaused ? '继续朗读' : '暂停' }}</button>
           <button v-if="!ttsActive" type="button" class="button secondary small"
             :disabled="!ttsCanStart" @click="startTts()">开始朗读</button>
           <button v-if="ttsActive" type="button" class="button secondary small"
@@ -731,7 +729,7 @@ export default defineComponent({
           ctx.formatReaderMediaTime(ctx.readerMediaTimeMs) : `第 ${ctx.readerPageIndex + 1} / ${ctx.readerPageCount} 页` }}</span>
       </p>
       <label class="reader-bookmark-sheet-label" for="reader-bookmark-note"><span>备注</span><small>可选</small></label>
-      <textarea id="reader-bookmark-note" ref="bookmarkNoteInput" v-model="ctx.bookmarkNote" maxlength="300" rows="4"
+      <textarea id="reader-bookmark-note" v-model="ctx.bookmarkNote" maxlength="300" rows="4"
         placeholder="写下想记住的内容"></textarea>
       <small class="reader-bookmark-note-count">{{ ctx.bookmarkNote.length }} / 300</small>
       <div class="modal-actions">

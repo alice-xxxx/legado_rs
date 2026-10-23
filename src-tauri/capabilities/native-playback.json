@@ -1,7 +1,7 @@
 {
   "identifier": "native-playback",
-  "description": "Native speech and background audio on Android and iOS",
+  "description": "System media controls on Android and iOS",
   "windows": ["main"],
   "platforms": ["android", "iOS"],
-  "permissions": ["native-audio:default", "tts:default"]
+  "permissions": ["media-session:default"]
 }

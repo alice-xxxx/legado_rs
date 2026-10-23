@@ -19,8 +19,7 @@ import { useAppReaderFeatures } from "./useAppReaderFeatures";
 import { useBookSourceSwitch } from "../sources/useBookSourceSwitch";
 import { installBookSourceSwitchSession } from "../sources/bookSourceSwitchSession";
 import router, { routeNames } from "../../router";
-import { installReaderNativeBack } from "../../app/nativeBack";
-import { refreshNativeAudio, disposeNativeAudio } from "./nativeAudio";
+import { installReaderNativeBack, localBackAction } from "../../app/nativeBack";
 import { settings } from "../settings/settingsStore";
 import { isVerticalReadingMode } from "../settings/readerModes";
 
@@ -73,6 +72,8 @@ const bookSourceSwitchActions = useBookSourceSwitch({
   getRestoreRevision: getFrontendRestoreRevision,
 });
 const bookSourceSwitch = proxyRefs(bookSourceSwitchActions);
+watch(() => bookSourceSwitch.bookSourceSwitchOpen || readerFeatures.bookmarkEditorOpen.value
+  || readerFeatures.dictionaryOpen.value, open => { readerFeatures.readerOverlayOpen.value = open; }, { flush: "sync", immediate: true });
 async function closeReaderForNavigation(discardProgress = false): Promise<void> {
   await readerFeatures.closeReader(discardProgress);
   if (!readerFeatures.readerVisible.value && route.meta.screen !== "detail") clearOpenedBook();
@@ -101,9 +102,7 @@ const disposeBackupSession = installReaderBackupSession({
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
 const disposeNativeBack = installReaderNativeBack({
   visible: readerFeatures.readerVisible,
-  close: async () => {
-    if (!readerFeatures.readerMediaRetrying.value) await closeReaderForNavigation();
-  },
+  menuOpen: readerFeatures.readerMenuOpen,
 });
 
 function retain(unlisten: UnlistenFn): void {
@@ -138,31 +137,13 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   }
   if (!readerFeatures.readerVisible.value) return;
   if (event.key === "Escape") {
-    if (readerFeatures.bookmarkEditorOpen.value) {
-      event.preventDefault();
-      readerFeatures.closeBookmarkEditor();
-      return;
-    }
-    if (readerFeatures.dictionaryOpen.value) {
-      event.preventDefault();
-      readerFeatures.closeReaderDictionary();
-      return;
-    }
-    if (bookSourceSwitch.bookSourceSwitchOpen) {
-      event.preventDefault();
-      bookSourceSwitch.closeBookSourceSwitch();
-      return;
-    }
-    if (readerFeatures.readerDirectoryOpen.value || readerFeatures.readerControlsOpen.value) {
-      event.preventDefault();
-      readerFeatures.readerDirectoryOpen.value = false;
-      readerFeatures.readerControlsOpen.value = false;
-      return;
-    }
+    event.preventDefault();
+    void localBackAction()?.run();
+    return;
   }
-  if (bookSourceSwitch.bookSourceSwitchOpen || readerFeatures.readerDirectoryOpen.value) return;
+  if (readerFeatures.readerGesturesBlocked.value) return;
   if (readerFeatures.shouldIgnoreReaderKeydown(event, document)) return;
-  if (readerFeatures.readingMediaChapter.value && event.key !== "Escape") {
+  if (readerFeatures.readingMediaChapter.value) {
     if (event.key === " " || event.key === "ArrowLeft" || event.key === "ArrowRight") {
       event.preventDefault();
       if (readerFeatures.isReaderMediaControlBlocked()) return;
@@ -193,9 +174,6 @@ function onGlobalKeydown(event: KeyboardEvent): void {
   } else if (event.key === "ArrowLeft" || event.key === "PageUp") {
     event.preventDefault();
     readerFeatures.turnPage(-1);
-  } else if (event.key === "Escape") {
-    event.preventDefault();
-    void closeReaderForNavigation();
   }
 }
 
@@ -207,8 +185,7 @@ function onVisibilityChange(): void {
   } else if (readerFeatures.readerVisible.value) {
     syncReaderFullscreen(true);
     readerFeatures.handleReaderResize();
-    void refreshNativeAudio().then(() => readerFeatures.saveCurrentProgress())
-      .catch(error => notify(errorText(error), "error"));
+    void readerFeatures.saveCurrentProgress();
     void readerFeatures.beginReadingSession();
   }
 }
@@ -254,7 +231,6 @@ onBeforeUnmount(() => {
   disposeBackupSession();
   disposeReaderSession();
   disposeNativeBack();
-  void disposeNativeAudio().catch(error => console.debug("Native audio disposal failed:", error));
 });
 
 const readerVisible = readerFeatures.readerVisible;

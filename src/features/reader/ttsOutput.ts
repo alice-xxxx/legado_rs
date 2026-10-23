@@ -1,53 +1,56 @@
 import { isTauri } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
-import { getVoices, isInitialized } from "tauri-plugin-tts-api";
-import { usesNativeAudio } from "./nativeAudio";
 
-export interface TtsVoice { voiceURI: string; name: string; lang: string; }
-
-export async function ttsVoices(): Promise<TtsVoice[]> {
-  if (usesNativeAudio()) {
-    if (!(await isInitialized()).initialized) return [];
-    return (await getVoices()).map(voice => ({ voiceURI: voice.id, name: voice.name, lang: voice.language }));
-  }
-  return window.speechSynthesis?.getVoices() ?? [];
+export async function pauseTtsOutput(paused: boolean, http: boolean): Promise<void> {
+  if (!http) {
+    await emit("tts-playback", { state: paused ? "pause-requested" : "resume-requested" });
+  } else await emit("tts-output", { action: paused ? "pause" : "resume" });
 }
 
-/** 桌面输出适配：只播放 Rust 指定的内容，并回报硬件进度，不持有文本队列。 */
+export async function setTtsOutputRate(rate: number): Promise<void> {
+  await emit("tts-output", { action: "rate", rate });
+}
+
+/** 各平台共用网页音频输出；文本队列和音频生成仍由 Rust 管理。 */
 export async function setupTtsOutput(): Promise<() => void> {
-  if (!isTauri() || usesNativeAudio()) return () => {};
+  if (!isTauri()) return () => {};
+  const sharedAudio = new Audio();
   let audio: HTMLAudioElement | null = null;
-  const utterances = new Set<SpeechSynthesisUtterance>();
+  let outputRate = 1;
+  let revision = 0;
   const report = (data: Record<string, unknown>) => { void emit("tts-playback", data); };
   const stop = () => {
+    ++revision;
     if (audio) {
-      audio.onplay = audio.ontimeupdate = audio.onended = audio.onerror = null;
+      audio.onplay = audio.onpause = audio.ontimeupdate = audio.onended = audio.onerror = null;
       audio.pause(); audio.removeAttribute("src"); audio.load(); audio = null;
     }
-    for (const utterance of utterances) {
-      utterance.onstart = utterance.onend = utterance.onerror = null;
-    }
-    utterances.clear();
-    window.speechSynthesis?.cancel();
   };
-  const unlisten = await listen<{ action: "stop" | "audio" | "speak"; src: string; text: string; voiceId: string; rate: number; id: string; append: boolean }>("tts-output", ({ payload }) => {
-    if (payload.action !== "speak" || !payload.append) stop();
+  const unlisten = await listen<{ action: "stop" | "audio" | "pause" | "resume" | "rate"; src: string; rate: number }>("tts-output", ({ payload }) => {
+    if (payload.action === "pause" || payload.action === "resume") {
+      if (audio) {
+        if (payload.action === "pause") audio.pause();
+        else void audio.play().catch(error => report({ state: "error", error: String(error) }));
+      }
+      return;
+    }
+    if (payload.action === "rate") { outputRate = payload.rate; if (audio) audio.playbackRate = outputRate; return; }
+    if (payload.action === "stop") outputRate = 1;
+    stop();
     if (payload.action === "audio") {
-      const output = audio = new Audio(payload.src);
-      output.onplay = output.ontimeupdate = () => report({ state: "time", position: output.currentTime });
+      const output = audio = sharedAudio;
+      const current = revision;
+      output.src = payload.src;
+      output.playbackRate = outputRate;
+      output.onplay = output.ontimeupdate = () => {
+        report({ state: "time", position: output.currentTime });
+      };
+      output.onpause = () => {
+        if (!output.ended) report({ state: "paused" });
+      };
       output.onended = () => report({ state: "ended" });
       output.onerror = () => report({ state: "error", error: output.error?.message || "音频播放失败" });
-      void output.play().catch(error => { if (audio === output) report({ state: "error", error: String(error) }); });
-    } else if (payload.action === "speak") {
-      if (!window.speechSynthesis) { report({ id: payload.id, state: "error", error: "当前环境不支持系统朗读" }); return; }
-      const utterance = new SpeechSynthesisUtterance(payload.text);
-      utterances.add(utterance);
-      utterance.voice = window.speechSynthesis.getVoices().find(voice => voice.voiceURI === payload.voiceId) ?? null;
-      utterance.rate = payload.rate;
-      utterance.onstart = () => report({ id: payload.id, state: "start" });
-      utterance.onend = () => { utterances.delete(utterance); report({ id: payload.id, state: "ended" }); };
-      utterance.onerror = event => { utterances.delete(utterance); report({ id: payload.id, state: "error", error: event.error }); };
-      window.speechSynthesis.speak(utterance);
+      void output.play().catch(error => { if (current === revision) report({ state: "error", error: String(error) }); });
     }
   });
   return () => { unlisten(); stop(); };

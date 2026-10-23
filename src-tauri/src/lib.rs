@@ -141,18 +141,18 @@ async fn set_video_orientation(app: tauri::AppHandle, orientation: String) -> Re
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[tauri::command]
-async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool, local: bool) -> Result<bool, String> {
     #[cfg(target_os = "ios")]
     {
         use tauri_plugin_source_engine::SourceEngineExt;
         app.source_engine()
-            .set_navigation_gestures(enabled)
+            .set_navigation_gestures(enabled, local)
             .await
             .map_err(|error| error.to_string())
     }
     #[cfg(not(target_os = "ios"))]
     {
-        let _ = (app, enabled);
+        let _ = (app, enabled, local);
         Ok(false)
     }
 }
@@ -196,9 +196,7 @@ pub fn run() {
         }))
     };
     #[cfg(mobile)]
-    let builder = builder
-        .plugin(reading_tools::tts::tts_native_audio())
-        .plugin(tauri_plugin_tts::init());
+    let builder = builder.plugin(tauri_plugin_media_session::init());
     let builder = builder
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -323,6 +321,7 @@ pub fn run() {
         set_navigation_gestures,
         resources::app_bootstrap,
         reading_tools::tts::start_tts,
+        reading_tools::tts::tts_voices,
         reading_tools::tts::stop_tts,
         reading_tools::tts::submit_tts,
         source_login::login,

@@ -1,11 +1,11 @@
 import { onBackButtonPress, exit } from "@tauri-apps/api/app";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { PluginListener } from "@tauri-apps/api/core";
 import { watch, type Ref } from "vue";
 import router, { routeNames } from "../router";
 
 interface BackAction { run: () => void | Promise<void>; }
-let readerAction: { isOpen: () => boolean; action: BackAction } | null = null;
+let readerAction: { isOpen: () => boolean; menuOpen: () => boolean; action: BackAction } | null = null;
 const readerQuery = "_reader";
 
 function isIos(): boolean {
@@ -57,14 +57,15 @@ export function localBackAction(): BackAction | null {
 
 export function installReaderNativeBack(options: {
   visible: Ref<boolean>;
-  close: () => Promise<void>;
+  menuOpen: Ref<boolean>;
 }): () => void {
-  const session = { isOpen: () => options.visible.value, action: { run: options.close } };
+  const session = { isOpen: () => options.visible.value, menuOpen: () => options.menuOpen.value,
+    action: { run: () => {
+      if (options.menuOpen.value) options.menuOpen.value = false;
+    } } };
   readerAction = session;
-  // WKWebView needs a real history entry to swipe away an overlaid reader,
-  // including a book opened from the app's first page.
+  // Keep browser Back inside the reader, including when opened from the first page.
   const stop = watch(options.visible, async open => {
-    if (!isTauri() || !isIos()) return;
     const route = router.currentRoute.value;
     if (open && !route.query[readerQuery]) {
       await router.push({ path: route.path, query: { ...route.query, [readerQuery]: "1" }, hash: route.hash });
@@ -77,7 +78,6 @@ export function installReaderNativeBack(options: {
 }
 
 export function installNativeBackNavigation(): () => void {
-  if (!isTauri()) return () => {};
   const initial = router.currentRoute.value;
   if (initial.query[readerQuery] && !readerAction?.isOpen()) {
     const query = { ...initial.query };
@@ -86,23 +86,25 @@ export function installNativeBackNavigation(): () => void {
   }
   let disposed = false, handling = false;
   let listener: PluginListener | undefined;
+  let removeGestureListener: (() => Promise<unknown>) | undefined;
   let removeGestureSync: (() => void) | undefined;
   let prepareTabGesture: (() => Promise<void>) | undefined;
   const isTabRoute = (name: unknown) => name === routeNames.home
     || name === routeNames.shelf || name === routeNames.settings;
-  if (isIos()) {
-    let lastRequested: boolean | undefined;
+  if (isTauri() && isIos()) {
+    let lastRequested: string | undefined;
     let pending = Promise.resolve();
     let tabPushPending = false;
-    const requestGestureState = (enabled: boolean): Promise<void> => {
-      if (enabled === lastRequested) return pending;
-      lastRequested = enabled;
+    const requestGestureState = (enabled: boolean, local = false): Promise<void> => {
+      const state = `${enabled}:${local}`;
+      if (state === lastRequested) return pending;
+      lastRequested = state;
       pending = pending.then(async () => {
-        if (disposed || lastRequested !== enabled) return;
+        if (disposed || lastRequested !== state) return;
         try {
-          await invoke("set_navigation_gestures", { enabled });
+          await invoke("set_navigation_gestures", { enabled, local });
         } catch (error) {
-          if (lastRequested === enabled) lastRequested = undefined;
+          if (lastRequested === state) lastRequested = undefined;
           console.error("iOS navigation gesture update failed:", error);
         }
       });
@@ -111,6 +113,10 @@ export function installNativeBackNavigation(): () => void {
     const syncGestures = () => {
       if (tabPushPending) return;
       const route = router.currentRoute.value;
+      if (readerAction?.isOpen()) {
+        void requestGestureState(readerAction.menuOpen() || hasVisibleBackLayer(), true);
+        return;
+      }
       const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
         .some(visible);
       const sourceEditorEntry = route.name === routeNames.sources && Boolean(route.query.sourceEdit);
@@ -135,7 +141,7 @@ export function installNativeBackNavigation(): () => void {
       queued = true;
       queueMicrotask(() => { queued = false; if (!disposed) syncGestures(); });
     };
-    const controls = "[data-back-layer],.modal-backdrop,.overlay-backdrop,[aria-modal='true'],button[data-back-local]";
+    const controls = "[data-back-layer],.modal-backdrop,.overlay-backdrop,[aria-modal='true'],button[data-back-local],[data-reader-menu-open]";
     const affectsControls = (node: Node) => node instanceof Element
       && (node.matches(controls) || !!node.querySelector(controls));
     const observer = new MutationObserver(records => {
@@ -143,7 +149,7 @@ export function installNativeBackNavigation(): () => void {
         : [...record.addedNodes, ...record.removedNodes].some(affectsControls))) queueGestureSync();
     });
     observer.observe(document.body, {
-      childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "inert"],
+      childList: true, subtree: true, attributes: true, attributeFilter: ["class", "style", "hidden", "inert", "data-reader-menu-open"],
     });
     queueGestureSync();
     const removeAfterEach = router.afterEach((_to, _from, failure) => {
@@ -152,6 +158,20 @@ export function installNativeBackNavigation(): () => void {
       queueGestureSync();
     });
     removeGestureSync = () => { observer.disconnect(); removeAfterEach(); prepareTabGesture = undefined; };
+    const gestureChannel = new Channel(async () => {
+      if (disposed || handling || !readerAction?.isOpen()
+        || !readerAction.menuOpen() && !hasVisibleBackLayer()) return;
+      handling = true;
+      try { await localBackAction()?.run(); }
+      finally { handling = false; }
+    });
+    const unregisterGesture = () => invoke("plugin:source-engine|removeListener", {
+      event: "navigationBack", channelId: gestureChannel.id,
+    });
+    void invoke("plugin:source-engine|registerListener", { event: "navigationBack", handler: gestureChannel }).then(() => {
+      if (disposed) void unregisterGesture();
+      else removeGestureListener = unregisterGesture;
+    }).catch(error => console.error("Reader back gesture registration failed:", error));
   }
   const removeGuard = router.beforeEach(async (to, from) => {
     // During a native history traversal the WebView state already names `to`.
@@ -170,7 +190,7 @@ export function installNativeBackNavigation(): () => void {
     // handle the draft and reveal the source list captured by WKWebView.
     if (from.name === routeNames.sources && from.query.sourceEdit
       && from.path === to.path && from.query.sourceEdit !== to.query.sourceEdit
-      && !hasVisibleBackLayer()) return;
+      && !hasVisibleBackLayer() && !readerAction?.isOpen()) return;
     const action = localBackAction();
     if (!action) return;
     await action.run();
@@ -179,14 +199,14 @@ export function installNativeBackNavigation(): () => void {
     return closesReaderEntry ? undefined : false;
   });
 
-  if (/Android/.test(navigator.userAgent)) {
+  if (isTauri() && /Android/.test(navigator.userAgent)) {
     void onBackButtonPress(async ({ canGoBack }) => {
       if (disposed || handling) return;
       handling = true;
       try {
         const action = localBackAction();
         const route = router.currentRoute.value;
-        if (route.name === routeNames.sources && route.query.sourceEdit && !hasVisibleBackLayer()) {
+        if (route.name === routeNames.sources && route.query.sourceEdit && !hasVisibleBackLayer() && !readerAction?.isOpen()) {
           const query = { ...route.query };
           delete query.sourceEdit;
           delete query.sourceImport;
@@ -208,5 +228,5 @@ export function installNativeBackNavigation(): () => void {
       else listener = value;
     }).catch(error => console.error("Native back registration failed:", error));
   }
-  return () => { disposed = true; removeGuard(); removeGestureSync?.(); void listener?.unregister(); };
+  return () => { disposed = true; removeGuard(); removeGestureSync?.(); void listener?.unregister(); void removeGestureListener?.(); };
 }

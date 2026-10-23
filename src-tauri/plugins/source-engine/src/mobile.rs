@@ -28,10 +28,11 @@ pub struct SourceEngine<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> SourceEngine<R> {
     #[cfg(target_os = "ios")]
-    pub async fn set_navigation_gestures(&self, enabled: bool) -> crate::Result<bool> {
+    pub async fn set_navigation_gestures(&self, enabled: bool, local: bool) -> crate::Result<bool> {
         #[derive(serde::Serialize)]
         struct Request {
             enabled: bool,
+            local: bool,
         }
         #[derive(serde::Deserialize)]
         struct Response {
@@ -39,7 +40,7 @@ impl<R: Runtime> SourceEngine<R> {
         }
         let response: Response = self
             .0
-            .run_mobile_plugin_async("setNavigationGestures", Request { enabled })
+            .run_mobile_plugin_async("setNavigationGestures", Request { enabled, local })
             .await?;
         Ok(response.enabled)
     }

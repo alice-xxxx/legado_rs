@@ -11,7 +11,7 @@ export function useReaderDisplay(options: {
     viewport: Ref<HTMLElement | null>;
     visible: ReadonlyRef<boolean>; busy: ReadonlyRef<boolean>;
     imagePage: ReadonlyRef<boolean>; mediaChapter: ReadonlyRef<boolean>;
-    menuOpen: ReadonlyRef<boolean>;
+    gesturesBlocked: ReadonlyRef<boolean>;
     pageIndex: Ref<number>; pageCount: Ref<number>; comicScrollTop: Ref<number>;
     getLoadRevision: () => number;
     getTouchStart: () => ReaderTouchStartState | null;
@@ -50,7 +50,7 @@ export function useReaderDisplay(options: {
     const done = chapterTurnDone; chapterTurnDone = null; done?.(false);
   }
   onScopeDispose(clearPageTurnAnimation);
-  watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.menuOpen.value], () => {
+  watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.gesturesBlocked.value], () => {
     clearPageTurnAnimation();
     reader.setTouchStart(null);
   }, { flush: "sync" });
@@ -159,7 +159,7 @@ export function useReaderDisplay(options: {
   }
   function onReaderFrameWheel(event: WheelEvent): void {
     const viewport = reader.viewport.value;
-    if (!viewport || !reader.visible.value || reader.busy.value || reader.menuOpen.value || reader.imagePage.value
+    if (!viewport || !reader.visible.value || reader.busy.value || reader.gesturesBlocked.value || reader.imagePage.value
       || reader.mediaChapter.value || ignoredTouch(event.target)
       || viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
     const mode = settings.value.reader.readingMode;
@@ -179,7 +179,7 @@ export function useReaderDisplay(options: {
     clearPageTurnAnimation();
     reader.setTouchStart(null);
     const viewport = reader.viewport.value;
-    if (!viewport || reader.busy.value || event.touches.length !== 1 || ignoredTouch(event.target)
+    if (!viewport || reader.busy.value || reader.gesturesBlocked.value || event.touches.length !== 1 || ignoredTouch(event.target)
       || viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
     const touch = event.touches[0]!;
     reader.setTouchStart({ x: touch.clientX, y: touch.clientY, moved: false,
@@ -187,7 +187,7 @@ export function useReaderDisplay(options: {
   }
   function onReaderFrameTouchMove(event: TouchEvent): void {
     const start = reader.getTouchStart();
-    if (event.touches.length !== 1 || !start || reader.busy.value || !reader.visible.value
+    if (event.touches.length !== 1 || !start || reader.busy.value || reader.gesturesBlocked.value || !reader.visible.value
       || start.viewport !== reader.viewport.value || start.loadRevision !== reader.getLoadRevision()
       || start.viewport.ownerDocument.getSelection()?.isCollapsed === false) {
       onReaderFrameTouchCancel();
@@ -196,13 +196,13 @@ export function useReaderDisplay(options: {
     const touch = event.touches[0]!;
     const dx = Math.abs(touch.clientX - start.x), dy = Math.abs(touch.clientY - start.y);
     if (dx >= 12 || dy >= 12) start.moved = true;
-    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical" || reader.menuOpen.value) return;
+    if (reader.imagePage.value || settings.value.reader.readingMode === "vertical") return;
     const mode = settings.value.reader.readingMode;
     const verticalTurn = mode === "slide-vertical";
     const distance = verticalTurn ? dy : dx, crossDistance = verticalTurn ? dx : dy;
     if (pageDrag || (distance >= 12 && distance > crossDistance * 1.35)) {
       if (event.cancelable) event.preventDefault();
-      if (!pageDrag && !reader.menuOpen.value) {
+      if (!pageDrag) {
         const origin = verticalTurn ? start.y : start.x;
         const position = verticalTurn ? touch.clientY : touch.clientX;
         const direction = position < origin ? 1 : -1;
@@ -240,7 +240,7 @@ export function useReaderDisplay(options: {
   }
   function onReaderFrameTouchEnd(event: TouchEvent): void {
     const start = reader.getTouchStart(); reader.setTouchStart(null);
-    if (!start || event.changedTouches.length !== 1 || event.touches.length !== 0 || reader.busy.value
+    if (!start || event.changedTouches.length !== 1 || event.touches.length !== 0 || reader.busy.value || reader.gesturesBlocked.value
       || reader.viewport.value !== start.viewport || reader.getLoadRevision() !== start.loadRevision
       || !reader.visible.value || start.viewport.ownerDocument.getSelection()?.isCollapsed === false || ignoredTouch(event.target)) {
       onReaderFrameTouchCancel();
@@ -256,7 +256,7 @@ export function useReaderDisplay(options: {
       return;
     }
     reader.setClickSuppressedUntil(Date.now() + 500);
-    if (reader.imagePage.value || reader.menuOpen.value) return;
+    if (reader.imagePage.value) return;
     if (settings.value.reader.readingMode === "vertical") {
       return;
     }
