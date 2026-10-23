@@ -8,6 +8,7 @@ export interface ReaderSession {
   readingBook: Ref<BookResource | null>;
   readerProgressDirty: Ref<boolean>;
   startReading: (book: BookResource, chapterIndex?: number, offset?: number) => Promise<void>;
+  applyBookInformation: (book: BookResource) => void;
   saveCurrentProgress: () => Promise<void>;
   finishReadingSession: () => Promise<void>;
   closeReader: (discardProgress?: boolean) => Promise<void>;

@@ -176,18 +176,18 @@ export async function readChapter(book: Pick<BookResource, "id" | "contentType" 
 }
 
 export async function readBookAlternatives(id: string): Promise<ContentAlternative[]> {
-  const [rows] = await tables([{ table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" }], [id]);
+  const [rows] = await tables([{ table: "alternative_sources", fields: "alternative_id:resultId source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" }], [id]);
   return rows!.map(optional) as ContentAlternative[];
 }
 
 export async function readBook(id: string): Promise<BookResource> {
   const [metadata, chapters, pages, streams, tags, alternatives, progressRows] = await tables([
-    { table: "book_records", fields: "id content_type:kind title author intro cover source_id:sourceId source_name:sourceName source_group:sourceGroup book_url:bookUrl word_count:wordCount original page_count:pageCount url updated_at_ms:updatedAtMs chapter_count:chapterCount latest_title:latestChapter title_override:titleOverride author_override:authorOverride intro_override:introOverride cover_override:coverOverride (book_url!=char(0)):hasEngine", where: "WHERE id=$1" },
+    { table: "book_records", fields: "id content_type:kind title author intro cover source_id:sourceId source_name:sourceName source_group:sourceGroup book_url:bookUrl word_count:wordCount original page_count:pageCount url updated_at_ms:updatedAtMs information_fetched_at_ms:informationFetchedAtMs chapter_count:chapterCount latest_title:latestChapter title_override:titleOverride author_override:authorOverride intro_override:introOverride cover_override:coverOverride (book_url!=char(0)):hasEngine", where: "WHERE id=$1" },
     { table: "chapter_records", fields: chapterFields, where: "WHERE book_id=$1 ORDER BY position" },
     { table: "chapter_pages", fields: pageFields, where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
     { table: "chapter_streams", fields: streamFields, where: "WHERE book_id=$1 ORDER BY chapter_id,position" },
     { table: "book_tags", fields: "tag", where: "WHERE book_id=$1 ORDER BY position" },
-    { table: "alternative_sources", fields: "source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" },
+    { table: "alternative_sources", fields: "alternative_id:resultId source_id:sourceId source_name:sourceName engine_url:bookUrl title author cover latest", where: "WHERE book_id=$1 ORDER BY position" },
     { table: "book_previews", fields: previewFields, where: "WHERE id=$1" },
   ], [id]);
   // 预览和目录共用一条查询，避免目录替换时读到不同快照。
@@ -249,9 +249,9 @@ export async function readHistory(): Promise<HistoryResource> {
   return { schemaVersion: 2, reading: { sessions, books, days: days!.map(day => ({ ...day, books: groupedDays.get(day.day) ?? [] })), ...totals![0] }, search: { entries }, bookmarks: grouped } as HistoryResource;
 }
 
-/** 只有完整详情才算缓存；搜索候选只有基本信息，尚无详情更新时间和目录。 */
+/** 成功获取详情后才算缓存；仅保存搜索候选不会记录详情获取时间。 */
 export async function readCachedMoreInformation(sourceId: string, bookUrl: string): Promise<BookResource | null> {
-  const rows = await database.select<Array<{ id: string }>>(`SELECT b.id FROM books b JOIN sources s ON s.id=b.source_id AND (s.content_type=b.content_type OR (s.content_type='text' AND b.content_type='html')) WHERE b.source_id=$1 AND b.book_url=$2 AND (b.updated_at_ms IS NOT NULL OR EXISTS(SELECT 1 FROM chapters c WHERE c.book_id=b.id)) ORDER BY b.id LIMIT 1`, [sourceId, bookUrl]);
+  const rows = await database.select<Array<{ id: string }>>(`SELECT b.id FROM books b JOIN sources s ON s.id=b.source_id AND (s.content_type=b.content_type OR (s.content_type='text' AND b.content_type='html')) WHERE b.source_id=$1 AND b.book_url=$2 AND b.information_fetched_at_ms IS NOT NULL ORDER BY b.id LIMIT 1`, [sourceId, bookUrl]);
   return rows[0] ? readBook(rows[0].id) : null;
 }
 

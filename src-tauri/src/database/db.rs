@@ -107,7 +107,7 @@ pub(super) fn write<T: Send + 'static>(
                             schema.execute_batch(include_str!("schema.sql"))?;
                             schema.commit()?;
                         }
-                        15 => (),
+                        16 => (),
                         _ => return Err(ResourceError::new("数据库版本不匹配")),
                     }
                     *connection = Some((root, opened));

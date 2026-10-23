@@ -328,10 +328,19 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   align-items: center;
   justify-content: center;
   gap: 12px;
+  min-height: 220px;
+  margin: 0;
   padding: 24px 16px;
   color: var(--app-muted);
+  font-size: var(--ui-font-body);
+  line-height: 1.7;
   text-align: center;
+  overflow-wrap: anywhere;
 }
+
+.status-notice { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin: 12px 0; padding: 12px; border-radius: var(--ui-radius); color: var(--app-muted); background: var(--app-panel-soft); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
+.status-notice.is-error { color: var(--app-danger); background: var(--app-danger-soft); }
+.status-notice .text-button { min-height: var(--ui-compact-control-height); padding: 0 4px; border: 0; color: inherit; background: transparent; font-size: inherit; }
 
 .page-empty-state strong {
   color: var(--app-text);

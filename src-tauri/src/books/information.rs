@@ -102,11 +102,6 @@ impl Information {
                 return Err("Book details cancelled".into());
             }
             let book_id = key;
-            database
-                .bind_book_type(book_id.to_owned(), kind.to_owned())
-                .map_err(|e| e.to_string())?
-                .await
-                .map_err(|error| error.to_string())?;
             let chapters = execute(
                 SourceEngineRequest::new(
                     if legacy_rss {
@@ -210,7 +205,6 @@ pub(crate) fn cancel_more_information(
 ) {
     service.cancel_information(&source_id, &book_url);
 }
-
 
 impl Information {
     pub(crate) fn cancel_all(&self) {

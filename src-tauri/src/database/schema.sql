@@ -63,7 +63,7 @@ CREATE TABLE books (
     id TEXT PRIMARY KEY, content_type TEXT NOT NULL, source_id TEXT REFERENCES sources(id),
     title TEXT NOT NULL DEFAULT 'Untitled', author TEXT, intro TEXT, cover TEXT,
     word_count TEXT, status TEXT, original TEXT, book_url TEXT, page_count INTEGER, url TEXT,
-    updated_at_ms INTEGER, latest_chapter_title TEXT,
+    updated_at_ms INTEGER, information_fetched_at_ms INTEGER, latest_chapter_title TEXT,
     title_override TEXT, author_override TEXT, intro_override TEXT, cover_override TEXT,
     engine_toc_url TEXT, engine_origin TEXT, engine_origin_name TEXT, engine_name TEXT,
     engine_author TEXT, engine_kind TEXT, engine_cover_url TEXT, engine_intro TEXT,
@@ -233,7 +233,7 @@ CREATE VIEW reading_books AS SELECT book_id,count(*) AS session_count,sum(durati
 CREATE VIEW reading_days AS SELECT day,count(*) AS session_count,sum(duration_ms) AS total_duration_ms FROM reading_session_days GROUP BY day;
 CREATE VIEW reading_day_books AS SELECT d.day,s.book_id,count(*) AS session_count,sum(d.duration_ms) AS total_duration_ms FROM reading_session_days d JOIN reading_sessions s USING(session_id) GROUP BY d.day,s.book_id;
 CREATE VIEW reading_totals AS SELECT 1 AS id,coalesce(sum(duration_ms),0) AS duration_ms,count(*) AS sessions FROM reading_sessions;
-PRAGMA user_version=15;
+PRAGMA user_version=16;
 
 CREATE TABLE content_media (
     content_id TEXT NOT NULL REFERENCES chapter_contents(id) ON DELETE CASCADE,

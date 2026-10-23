@@ -31,24 +31,24 @@ function clearAll(): void {
 
 <template>
   <section class="search-history" aria-label="搜索历史">
-    <div class="search-history__row">
-      <span class="search-history__label">历史</span>
-      <div class="search-history__list">
-        <span v-for="entry in sortedEntries" :key="entry.normalizedQuery" class="search-history__entry">
-          <button type="button" class="search-history__query" :disabled="busy" :title="entry.query"
-            @click="emit('useQuery', entry.query)">{{ entry.query }}</button>
-          <button type="button" class="search-history__delete" :disabled="busy"
-            :aria-label="'删除搜索记录：' + entry.query" @click="emit('deleteQuery', entry.query)">
-            <PrototypeIcon name="close" />
-          </button>
-        </span>
-      </div>
+    <header class="search-history__row">
+      <h2 class="search-history__label">搜索历史</h2>
       <select v-model="sortMode" class="search-history__sort" aria-label="历史排序" :disabled="busy">
         <option value="recent">最近</option>
         <option value="popular">常用</option>
       </select>
       <button type="button" class="search-history__clear" :disabled="busy || !entries.length"
         @click="clearConfirmOpen = true">清空</button>
+    </header>
+    <div class="search-history__list">
+      <span v-for="entry in sortedEntries" :key="entry.normalizedQuery" class="search-history__entry">
+        <button type="button" class="search-history__query" :disabled="busy" :title="entry.query"
+          @click="emit('useQuery', entry.query)">{{ entry.query }}</button>
+        <button type="button" class="search-history__delete" :disabled="busy"
+          :aria-label="'删除搜索记录：' + entry.query" @click="emit('deleteQuery', entry.query)">
+          <PrototypeIcon name="close" />
+        </button>
+      </span>
     </div>
     <p v-if="error" class="search-history__error">{{ error }}</p>
     <section v-if="clearConfirmOpen" class="search-history__confirm-backdrop" @click.self="clearConfirmOpen = false">
@@ -68,46 +68,54 @@ function clearAll(): void {
 <style scoped>
 .search-history {
   min-width: 0;
-  margin: 0 0 8px;
+  padding-top: 20px;
   color: var(--app-text);
   font-size: var(--ui-font-caption);
 }
 .search-history__row {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 12px;
   min-width: 0;
-  height: 34px;
+  min-height: 40px;
+  margin-bottom: 8px;
 }
-.search-history__label, .search-history__sort, .search-history__clear {
+.search-history__sort, .search-history__clear {
   flex: none;
   color: var(--app-muted);
 }
+.search-history__label {
+  flex: 1;
+  margin: 0;
+  font-size: var(--ui-font-body);
+  font-weight: 600;
+}
 .search-history__list {
   display: flex;
-  flex: 1;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
+  gap: 10px;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: thin;
 }
 .search-history__entry {
   display: flex;
   flex: none;
   align-items: center;
-  border-radius: 6px;
-  background: var(--app-panel-soft);
+  max-width: 100%;
+  border: 1px solid var(--app-line);
+  border-radius: 8px;
+  background: var(--app-panel-softer);
 }
 .search-history button, .search-history select {
   font: inherit;
   cursor: pointer;
 }
 .search-history__query {
-  max-width: min(180px, 40vw);
-  min-height: 28px;
+  min-width: 0;
+  max-width: min(240px, 65vw);
+  min-height: 36px;
   overflow: hidden;
-  padding: 0 7px;
+  padding: 0 4px 0 12px;
   border: 0;
   color: var(--app-text);
   background: transparent;
@@ -117,8 +125,9 @@ function clearAll(): void {
 .search-history__delete {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 28px;
+  flex: none;
+  width: 32px;
+  height: 36px;
   padding: 0;
   border: 0;
   border-radius: 5px;
@@ -133,8 +142,8 @@ function clearAll(): void {
   color: var(--app-danger);
 }
 .search-history__sort, .search-history__clear {
-  min-height: 28px;
-  padding: 0 3px;
+  min-height: 36px;
+  padding: 0 4px;
   border: 0;
   background: transparent;
 }
@@ -146,6 +155,7 @@ function clearAll(): void {
   outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
+.search-history__entry:hover { border-color: var(--app-accent); }
 .search-history__error {
   margin: 4px 0;
   color: var(--app-danger);

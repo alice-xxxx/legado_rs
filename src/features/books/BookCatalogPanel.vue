@@ -40,14 +40,14 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
   <section class="book-catalog-view">
     <div class="catalog-tools">
       <label class="catalog-search">
-        <PrototypeIcon name="search" />
+        <PrototypeIcon name="search" aria-hidden="true" />
         <input v-model="query" type="search" :placeholder="searchPlaceholder" :aria-label="searchPlaceholder" />
         <button v-if="query" type="button" aria-label="清空目录搜索" @click="query = ''"><PrototypeIcon name="close" /></button>
       </label>
       <div class="catalog-tools-actions">
-        <button type="button" :disabled="activeIndex === undefined" @click="locateCurrent"><PrototypeIcon name="tune" /><span>定位当前</span></button>
-        <button type="button" :aria-pressed="descending" @click="descending = !descending"><PrototypeIcon name="filter" /><span>{{ descending ? '倒序' : '正序' }}</span></button>
-        <button type="button" :disabled="!canDownload || locked || busy" @click="emit('download')"><PrototypeIcon name="download" /><span>缓存全部</span></button>
+        <button type="button" title="定位当前" aria-label="定位当前" :disabled="activeIndex === undefined" @click="locateCurrent"><PrototypeIcon name="tune" /><span>定位当前</span></button>
+        <button type="button" :title="descending ? '切换为正序' : '切换为倒序'" :aria-label="descending ? '切换为正序' : '切换为倒序'" :aria-pressed="descending" @click="descending = !descending"><PrototypeIcon name="filter" /><span>{{ descending ? '倒序' : '正序' }}</span></button>
+        <button type="button" title="缓存全部" aria-label="缓存全部" :disabled="!canDownload || locked || busy" @click="emit('download')"><PrototypeIcon name="download" /><span>缓存全部</span></button>
       </div>
     </div>
     <div ref="viewport" class="catalog-scroll">
@@ -57,42 +57,52 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
           <button type="button" class="catalog-row" :data-chapter-index="chapter.index" :disabled="busy || locked || chapter.volume" :aria-current="chapter.index === activeIndex ? 'true' : undefined" @click="emit('select', chapter.index)">
             <strong>{{ chapter.title }}</strong>
             <span v-if="chapter.index === activeIndex" class="catalog-current-label">当前</span>
-            <span v-if="!chapter.resource && !chapter.volume" class="catalog-uncached" title="正文尚未准备，打开时读取"><PrototypeIcon name="cloud" /></span>
+            <span v-if="!chapter.volume && !chapter.resource && !chapter.pages?.length && !chapter.media" class="catalog-uncached" title="未缓存" aria-label="未缓存"><PrototypeIcon name="cloud" /></span>
           </button>
           <button v-if="canReplace && !chapter.volume" type="button" class="catalog-replace-action" :disabled="busy || locked" :aria-label="`更换《${chapter.title}》的章节来源`" title="更换章节来源" @click="emit('replace', chapter)"><PrototypeIcon name="source-switch" /></button>
         </article>
         <div aria-hidden="true" :style="{ height: `${range.bottom}px` }"></div>
-        <p v-if="!book.chapters.length" class="catalog-empty">暂无可显示的目录。</p>
-        <p v-else-if="!chapters.length" class="catalog-empty">没有匹配的内容。<button type="button" class="text-button" @click="query = ''">清空搜索</button></p>
+        <div v-if="!book.chapters.length" class="page-empty-state">暂无可显示的目录。</div>
+        <div v-else-if="!chapters.length" class="page-empty-state">没有匹配的内容。<button type="button" class="text-button" @click="query = ''">清空搜索</button></div>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
-.book-catalog-view { display: flex; height: 100%; min-height: 0; flex-direction: column; color: var(--app-text); background: var(--app-background); }
-.catalog-tools { display: grid; flex: none; grid-template-columns: minmax(200px, 300px) minmax(0, 1fr); gap: 12px; padding: 10px 0 12px; border-bottom: 1px solid var(--app-line); }
-.catalog-search { display: flex; min-width: 0; min-height: 36px; align-items: center; gap: 7px; padding: 0 9px; border: 1px solid var(--app-line); border-radius: 10px; color: var(--app-muted); background: var(--app-surface); }
-.catalog-search input { width: 100%; min-width: 0; border: 0; outline: none; color: var(--app-text); background: transparent; font-size: var(--ui-font-body); }
-.catalog-search:focus-within { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-.catalog-search button { display: grid; width: 30px; height: 30px; flex: none; place-items: center; border: 0; background: transparent; color: var(--app-muted); }
-.catalog-tools-actions { display: flex; gap: 6px; }
-.catalog-tools-actions button { display: inline-flex; min-height: 36px; flex: 1; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; border: 0; border-radius: 8px; color: var(--app-muted); background: var(--app-panel-soft); white-space: nowrap; font-size: var(--ui-font-body); }
-.catalog-scroll { min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
-.catalog-row-wrap { display: grid; position: relative; height: 56px; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 4px; border-bottom: 1px solid var(--app-line); }
-.catalog-row-wrap.can-replace { grid-template-columns: minmax(0, 1fr) 34px; }
-.catalog-row { display: flex; width: 100%; height: 55px; min-width: 0; align-items: center; gap: 8px; padding: 0 6px; border: 0; border-radius: 0; color: var(--app-text); background: transparent; text-align: left; }
-.catalog-row strong { min-width: 0; flex: 1; overflow: hidden; font-size: var(--ui-font-caption); font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
-.catalog-row-wrap.current .catalog-row { background: var(--app-accent-soft); }
-.catalog-row-wrap.current::before { position: absolute; top: 12px; bottom: 12px; left: 0; width: 2px; border-radius: 2px; background: var(--app-accent); content: ""; }
-.catalog-row-wrap.volume strong { color: var(--app-muted); font-weight: 700; }
+.book-catalog-view { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; color: var(--app-text); background: var(--app-background); }
+.catalog-tools { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--app-line); }
+.catalog-search { display: flex; align-items: center; gap: 6px; min-width: 0; height: 34px; padding-inline: 8px 4px; border: 1px solid var(--app-line); border-radius: var(--ui-radius); color: var(--app-muted); background: var(--app-surface); }
+.catalog-search > .prototype-icon { width: 18px; height: 18px; }
+.catalog-search input { flex: 1; width: 0; min-width: 0; padding: 0; border: 0; outline: 0; color: var(--app-text); background: transparent; font-size: var(--ui-font-body); }
+.catalog-search input::-webkit-search-cancel-button { appearance: none; }
+.catalog-search:focus-within { border-color: var(--app-accent); background: var(--app-surface); }
+.catalog-search button { display: grid; flex: none; place-items: center; width: 32px; height: 32px; color: var(--app-muted); }
+.catalog-search button .prototype-icon { width: 16px; height: 16px; }
+.catalog-tools-actions { display: flex; gap: 4px; }
+.catalog-tools-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding-inline: 8px; border-radius: var(--ui-radius); color: var(--app-muted); background: transparent; font-size: var(--ui-font-caption); white-space: nowrap; }
+.catalog-tools-actions .prototype-icon { width: 16px; height: 16px; }
+.catalog-tools-actions button[aria-pressed="true"] { color: var(--app-accent-ink); background: var(--app-accent-soft); }
+.catalog-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.catalog-row-wrap { display: grid; position: relative; grid-template-columns: minmax(0, 1fr); height: 56px; border-bottom: 1px solid var(--app-line); }
+.catalog-row-wrap.can-replace { grid-template-columns: minmax(0, 1fr) 40px; }
+.catalog-row { display: flex; align-items: center; gap: 8px; width: 100%; height: 55px; min-width: 0; padding-inline: 10px; color: var(--app-text); text-align: left; }
+.catalog-row strong { flex: 1; min-width: 0; overflow: hidden; font-size: var(--ui-font-body); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
+.catalog-row-wrap.current { background: var(--app-accent-soft); }
+.catalog-row-wrap.current::before { content: ""; position: absolute; top: 14px; bottom: 14px; left: 0; width: 3px; border-radius: 3px; background: var(--app-accent); }
+.catalog-row-wrap.current strong { color: var(--app-accent-ink); font-weight: 600; }
+.catalog-row-wrap.volume strong { color: var(--app-muted); font-weight: 600; }
 .catalog-current-label { flex: none; color: var(--app-accent-ink); font-size: var(--ui-font-caption); }
-.catalog-uncached { display: grid; width: 20px; flex: none; place-items: center; color: var(--app-muted); }
-.catalog-uncached .icon { width: 15px; height: 15px; }
-.catalog-replace-action { display: grid; width: 30px; height: 34px; place-items: center; border: 0; border-radius: 8px; color: var(--app-muted); background: transparent; }
-.catalog-empty { padding: 30px 8px; color: var(--app-muted); text-align: center; }
+.catalog-uncached { display: grid; flex: none; place-items: center; color: var(--app-muted); }
+.catalog-uncached .prototype-icon { width: 16px; height: 16px; }
+.catalog-replace-action { display: grid; align-self: center; place-items: center; width: 40px; height: 44px; border-radius: 8px; color: var(--app-muted); }
+.catalog-replace-action .prototype-icon { width: 18px; height: 18px; }
 button { cursor: pointer; }
-button:disabled { cursor: default; opacity: .5; }
-button:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
-@media (max-width: 680px) { .catalog-tools { grid-template-columns: minmax(0, 1fr); gap: 8px; } }
+button:disabled { cursor: default; }
+.catalog-row:hover:not(:disabled), .catalog-replace-action:hover:not(:disabled) { background: var(--app-panel-softer); }
+.catalog-row:focus-visible { outline-offset: -2px; }
+@media (max-width: 680px) {
+  .catalog-tools-actions button { width: 32px; padding: 0; }
+  .catalog-tools-actions span { display: none; }
+}
 </style>

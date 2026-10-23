@@ -196,7 +196,7 @@ pub(crate) fn verify_snapshot(root: &Path) -> Result<()> {
     };
     db::read(&database, |s| {
         let version = s.read("PRAGMA user_version", [], |r| r.get::<_, u32>(0))?[0];
-        if version != 15 {
+        if version != 16 {
             return Err(ResourceError::new("备份数据库版本不匹配"));
         }
         let integrity = s.read("PRAGMA integrity_check", [], |r| r.get::<_, String>(0))?;

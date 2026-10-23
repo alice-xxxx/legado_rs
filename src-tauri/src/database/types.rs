@@ -293,6 +293,9 @@ pub(crate) struct Book {
     pub url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub updated_at_ms: Option<i64>,
+    /// 最近一次详情和目录成功入库的时间，不要求目录发生变化。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub information_fetched_at_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "latestChapter")]
     pub latest_chapter_title: Option<String>,

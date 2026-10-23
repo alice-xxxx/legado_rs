@@ -1,6 +1,6 @@
 # 存储
 
-业务库为 SQLite `library.sqlite3`，结构版本 15。固定字段用普通列，有序集合用关系子表；布尔列声明为 `BOOLEAN`。不保存 JSON 对象，不使用 SQL JSON 函数。旧库不迁移，版本不匹配直接报错。
+业务库为 SQLite `library.sqlite3`，结构版本 16。固定字段用普通列，有序集合用关系子表；布尔列声明为 `BOOLEAN`。不保存 JSON 对象，不使用 SQL JSON 函数。旧库不迁移，版本不匹配直接报错。
 
 ## 边界
 
@@ -17,7 +17,7 @@
 | --- | --- |
 | 书源 | `sources` 保存身份和状态；`source_options` 保存固定选项；`source_rules/headers/login_items/login_choices/explore_links` 保存规则、请求头、表单、选项和发现链接。`source_records` 视图派生能力与搜索分类。 |
 | TTS | `http_tts_configs` 保存身份；`http_tts_options/headers/login_items/login_choices` 分别保存选项和子项，与书源分开。 |
-| 书籍 | `books` 保存资料、用户覆盖和引擎固定字段；`book_tags` 保存标签；`book_alternatives` 通过书籍 ID 关联候选。 |
+| 书籍 | `books` 保存资料、用户覆盖和引擎固定字段；`information_fetched_at_ms` 单独记录详情与目录最后成功获取时间，`updated_at_ms` 记录目录变化时间；`book_tags` 保存标签；`book_alternatives` 通过书籍 ID 关联候选。 |
 | 目录与变量 | `chapters` 以 `(book_id,id)` 标识章节；`engine_variables` 以书籍、可空章节 ID 和变量名区分作用域，随所属记录删除；引擎明确提供变量表时整体替换，缺省时保留。 |
 | 正文 | `chapter_contents` 保存生成关系和正文地址；`content_pages/streams/files/media` 保存图片页、线路和附属文件。`chapters.content_id` 指向当前正文，允许跨来源借用。 |
 | 书架 | `library_books` 保存顺序；`library_groups` 保存分组；`library_group_books` 保存成员关系。 |

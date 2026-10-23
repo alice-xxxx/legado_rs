@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { shelfBooks as shelf } from "../shelf/shelfBooks";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources } from "../sources/sourcesStore";
@@ -11,6 +10,7 @@ import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import BookDisplayMetadataEditor from "./BookDisplayMetadataEditor.vue";
 import { useBookDetailActions } from "./useBookDetailActions";
 import { useBookMetadataActions } from "./useBookMetadataActions";
@@ -80,6 +80,7 @@ const detailSession = useBookDetailSession({
   isRecoveryRequired: () => recoveryRequired.value,
   getRestoreRevision,
   startReading: readerSession.startReading,
+  applyBookInformation: readerSession.applyBookInformation,
   closeDisplayEditor: () => { bookDisplayEditorBookId.value = null; },
   notify,
   errorText,
@@ -89,6 +90,8 @@ const {
   searchResultDetailsShelfBook,
   searchResultDetailsReadingBusy,
   searchResultSources,
+  informationRefreshBusy,
+  informationRefreshError,
 } = detailSession;
 const currentSearchResultDetails = computed(() => searchResultDetails.value ?? {
   result: openRequest?.kind === "search-result" ? openRequest.result : null,
@@ -207,13 +210,6 @@ function closeBookDetails(): void {
   bookSourceSwitch.closeBookSourceSwitch();
   returnFromBookDetail(openRequest);
 }
-watch(() => {
-  const activeDetails = searchResultDetails.value;
-  return Boolean(activeDetails?.inShelf && activeDetails.bookId
-    && !shelf.value.books.some((book) => book.id === activeDetails.bookId));
-}, (bookWasRemoved) => {
-  if (bookWasRemoved) closeBookDetails();
-});
 const recentCatalogChapters = computed(() => (openedBook.value?.chapters ?? [])
   .slice(-4).reverse());
 const catalogAction = ref<BookAction | null>(null);
@@ -222,6 +218,16 @@ const catalogCheckBusy = computed(() => catalogAction.value === "check");
 let information: ReturnType<typeof moreInformation> | null = null;
 const bookDetailTab = ref<"catalog" | "info" | "sources">("catalog");
 const bookDetailMenuOpen = ref(false);
+const bookDetailMenuElement = ref<HTMLElement | null>(null);
+useOutsidePointerDismiss(
+  () => bookDetailMenuOpen.value,
+  target => target instanceof Node && Boolean(bookDetailMenuElement.value?.contains(target)),
+  () => { bookDetailMenuOpen.value = false; },
+);
+const bookOperationBusy = computed(() => bookPanelBusy.value || informationRefreshBusy.value || bookInfoRefreshBusy.value
+  || catalogAction.value !== null || bookProgressResetBusy.value || bookChapterCacheClearBusy.value || bookSourceSwitch.bookSourceSwitchBusy || bookSourceSwitch.bookSourceCheckBusy);
+const canClearChapterCache = computed(() => openedBook.value?.canChangeSource === true && !!openedBook.value.sourceId
+  && openedBook.value.chapters.some(chapter => chapter.resource || chapter.pages?.length || chapter.media));
 const bookDetailContentRef = ref<HTMLElement | null>(null);
 function selectBookDetailTab(tab: "catalog" | "info" | "sources"): void {
   bookDetailTab.value = tab;
@@ -242,7 +248,7 @@ watch(() => readerVisible.value, (visible) => {
 });
 async function runCurrentBookAction(action: BookAction): Promise<void> {
   const book = openedBook.value;
-  if (!book || recoveryRequired.value || catalogAction.value) return;
+  if (!book || recoveryRequired.value || bookOperationBusy.value) return;
   const revision = getRestoreRevision();
   try {
     if (action === "download") {
@@ -267,6 +273,13 @@ async function runCurrentBookAction(action: BookAction): Promise<void> {
   } finally {
     catalogAction.value = null;
   }
+}
+
+function toggleBookShelf(): void {
+  const book = openedBook.value;
+  if (!book || bookPanelBusy.value || recoveryRequired.value || searchResultDetailsReadingBusy.value) return;
+  if (searchResultDetailsShelfBook.value) pendingRemoval.value = { id: book.id, title: book.title };
+  else void detailSession.addSearchResultFromDetails(searchDetailSourceCandidates.value);
 }
 async function clearOpenedBookChapterCache(): Promise<void> {
   const pending = pendingBookChapterCacheClear.value;
@@ -365,10 +378,7 @@ async function searchMoreBookSources(): Promise<void> {
 }
 watch([bookDetailTab, () => openedBook.value?.id, () => bookSourceSwitch.bookSourceSwitchBusy, bookPanelBusy, readerVisible], async ([tab, , busy, loading, reading]) => {
   if (tab !== "sources" || busy || loading || reading || openedBook.value?.canChangeSource !== true) return;
-  if (!await ensureInlineBookSources()) return;
-  if (!bookSourceSwitch.bookSourceCandidateResults.length && !bookSourceSwitch.bookSourceSearchId && !bookSourceSwitch.bookSourceSearchBusy) {
-    await bookSourceSwitch.startBookSourceCandidateSearch();
-  }
+  await ensureInlineBookSources();
 });
 async function chooseCachedBookSource(candidate: SearchBookResult): Promise<void> {
   if (!await ensureInlineBookSources()) return;
@@ -385,300 +395,283 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   book?.mediaType === "audio" || book?.mediaType === "video";
 </script>
 <template>
-    <section class="book-detail-page">
-      <article class="book-detail-panel">
-        <header class="book-detail-toolbar">
-          <BackButton class="book-detail-icon-button book-detail-back" label="返回" @click="closeBookDetails" />
-          <nav class="book-detail-tabs">
-            <button type="button" :class="{ active: bookDetailTab === 'info' }" @click="selectBookDetailTab('info')">概览</button>
-            <button type="button" :class="{ active: bookDetailTab === 'catalog' }" @click="selectBookDetailTab('catalog')">{{ openedBook?.mediaType === 'video' ? '剧集' : openedBook?.mediaType === 'audio' ? '节目' : '目录' }}</button>
-            <button type="button" :class="{ active: bookDetailTab === 'sources' }" @click="selectBookDetailTab('sources')">来源</button>
-          </nav>
-          <div v-if="openedBook" class="book-detail-toolbar-actions">
-            <div class="book-detail-menu-wrap">
-              <button type="button" class="book-detail-icon-button" aria-label="更多书籍操作" :aria-expanded="bookDetailMenuOpen"
-                @click.stop="bookDetailMenuOpen = !bookDetailMenuOpen"><PrototypeIcon name="more"/></button>
-              <div v-if="bookDetailMenuOpen" class="book-detail-menu" @click.stop>
-                <button v-if="!searchResultDetailsShelfBook && currentSearchResultDetails.result"
-                  class="book-detail-menu-item"
-                  :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
-                  @click="bookDetailMenuOpen = false; detailSession.addSearchResultFromDetails()">
-                  <PrototypeIcon name="plus"/><span>加入书架</span>
-                </button>
-                <template v-if="searchResultDetailsShelfBook">
-                <button class="book-detail-menu-item"
-                  :disabled="recoveryRequired"
-                  @click="bookDetailMenuOpen = false; bookMetadataActions.openBookDisplayEditor()">
-                  <PrototypeIcon name="edit"/><span>编辑显示信息</span>
-                </button>
-                <button v-if="canRefreshOpenedBookInfo"
-                  class="book-detail-menu-item"
-                  :disabled="bookInfoRefreshBusy || bookPanelBusy || recoveryRequired"
-                  @click="bookDetailMenuOpen = false; bookDetailActions.refreshOpenedBookInfo()">
-                  <PrototypeIcon name="refresh"/><span>{{ bookInfoRefreshBusy ? '刷新中…' : '刷新内容信息' }}</span>
-                </button>
-                <button v-if="openedBook.canChangeSource === true && openedBook.sourceId" class="book-detail-menu-item"
-                  :disabled="catalogCheckBusy || recoveryRequired"
-                  @click="bookDetailMenuOpen = false; runCurrentBookAction('check')">
-                  <PrototypeIcon name="search"/><span>{{ catalogCheckBusy ? '正在检查…' : '检查更新' }}</span>
-                </button>
-                <button v-if="openedBook.canChangeSource === true && openedBook.sourceId" class="book-detail-menu-item"
-                  :disabled="recoveryRequired"
-                  @click="bookDetailMenuOpen = false; runCurrentBookAction('download')">
-                  <PrototypeIcon name="download"/><span>缓存全部{{ openedBook.mediaType === 'video' ? '剧集' : openedBook.mediaType === 'audio' ? '节目' : '章节' }}</span>
-                </button>
-                <div class="book-detail-menu-divider"></div>
-                <button class="book-detail-menu-item"
-                  :disabled="bookProgressResetBusy || bookPanelBusy || bookInfoRefreshBusy || recoveryRequired"
-                  @click="pendingBookProgressReset = { id: openedBook.id, title: openedBook.title }; bookProgressResetError = ''; bookDetailMenuOpen = false">
-                  <PrototypeIcon name="history"/><span>重置{{ openedBook.mediaType === 'video' ? '观看' : openedBook.mediaType === 'audio' ? '收听' : '阅读' }}进度</span>
-                </button>
-                <button v-if="openedBook.canChangeSource === true && openedBook.sourceId"
-                  class="book-detail-menu-item"
-                  :disabled="bookChapterCacheClearBusy || bookPanelBusy || bookInfoRefreshBusy || bookProgressResetBusy || bookSourceSwitch.bookSourceSwitchBusy || recoveryRequired"
-                  @click="pendingBookChapterCacheClear = { id: openedBook.id, title: openedBook.title }; bookChapterCacheClearError = ''; bookDetailMenuOpen = false">
-                  <PrototypeIcon name="trash"/><span>{{ bookChapterCacheClearBusy ? '清除中…' : '清除正文缓存' }}</span>
-                </button>
-                <div class="book-detail-menu-divider"></div>
-                <button v-if="openedBook.canChangeSource === true && openedBook.sourceId" class="book-detail-menu-item"
-                  :disabled="catalogRefreshBusy || recoveryRequired"
-                  @click="bookDetailMenuOpen = false; runCurrentBookAction('refresh')">
-                  <PrototypeIcon name="refresh"/><span>{{ catalogRefreshBusy ? '正在更新目录…' : '更新目录' }}</span>
-                </button>
-                <button v-if="openedBook.canChangeSource === true"
-                  class="book-detail-menu-item" :disabled="bookPanelBusy || recoveryRequired"
-                  @click="bookDetailMenuOpen = false; openBookSourceSwitch()">
-                  <PrototypeIcon name="source-switch"/><span>更换来源</span>
-                </button>
-                <div class="book-detail-menu-divider"></div>
-                <button class="book-detail-menu-item book-detail-menu-item--danger"
-                  :disabled="recoveryRequired"
-                  @click="bookDetailMenuOpen = false; pendingRemoval = { id: openedBook.id, title: openedBook.title }">
-                  <PrototypeIcon name="trash"/><span>从内容库移除</span>
-                </button>
-                </template>
-              </div>
+  <section class="book-detail-page">
+    <article class="book-detail-panel">
+      <header class="book-detail-toolbar">
+        <BackButton class="book-detail-icon-button book-detail-back" label="返回" @click="closeBookDetails" />
+        <nav class="book-detail-tabs" aria-label="书籍详情">
+          <button type="button" :class="{ active: bookDetailTab === 'info' }" :aria-pressed="bookDetailTab === 'info'"
+            @click="selectBookDetailTab('info')">概览</button>
+          <button type="button" :class="{ active: bookDetailTab === 'catalog' }"
+            :aria-pressed="bookDetailTab === 'catalog'" @click="selectBookDetailTab('catalog')">{{ openedBook?.mediaType
+              === 'video' ? '剧集' : openedBook?.mediaType === 'audio' ? '节目' : '目录' }}</button>
+          <button type="button" :class="{ active: bookDetailTab === 'sources' }"
+            :aria-pressed="bookDetailTab === 'sources'" @click="selectBookDetailTab('sources')">来源</button>
+        </nav>
+        <div v-if="openedBook" class="book-detail-toolbar-actions">
+          <div ref="bookDetailMenuElement" class="book-detail-menu-wrap">
+            <button type="button" class="book-detail-icon-button" aria-label="更多书籍操作"
+              :aria-expanded="bookDetailMenuOpen" @click.stop="bookDetailMenuOpen = !bookDetailMenuOpen">
+              <PrototypeIcon name="more" />
+            </button>
+            <div v-if="bookDetailMenuOpen" class="book-detail-menu" role="region" aria-label="更多书籍操作" @click.stop>
+              <button class="book-detail-menu-item" :disabled="bookOperationBusy || recoveryRequired"
+                @click="bookDetailMenuOpen = false; bookMetadataActions.openBookDisplayEditor()">
+                <PrototypeIcon name="edit" /><span>编辑显示信息</span>
+              </button>
+              <button v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item"
+                :disabled="bookOperationBusy || recoveryRequired"
+                @click="bookDetailMenuOpen = false; bookDetailActions.refreshOpenedBookInfo()">
+                <PrototypeIcon name="refresh" /><span>{{ bookInfoRefreshBusy ? '刷新中…' : '刷新信息' }}</span>
+              </button>
+              <button v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item"
+                :disabled="bookOperationBusy || recoveryRequired"
+                @click="bookDetailMenuOpen = false; runCurrentBookAction('refresh')">
+                <PrototypeIcon name="refresh" /><span>{{ catalogRefreshBusy ? '正在更新目录…' : '更新目录' }}</span>
+              </button>
+              <div v-if="hasReadingProgress(openedBook.progress) || canClearChapterCache"
+                class="book-detail-menu-divider"></div>
+              <button v-if="hasReadingProgress(openedBook.progress)" class="book-detail-menu-item"
+                :disabled="bookOperationBusy || recoveryRequired"
+                @click="pendingBookProgressReset = { id: openedBook.id, title: openedBook.title }; bookProgressResetError = ''; bookDetailMenuOpen = false">
+                <PrototypeIcon name="history" /><span>重置{{ openedBook.mediaType === 'video' ? '观看' :
+                  openedBook.mediaType === 'audio' ? '收听' : '阅读' }}进度</span>
+              </button>
+              <button v-if="canClearChapterCache" class="book-detail-menu-item"
+                :disabled="bookOperationBusy || recoveryRequired"
+                @click="pendingBookChapterCacheClear = { id: openedBook.id, title: openedBook.title }; bookChapterCacheClearError = ''; bookDetailMenuOpen = false">
+                <PrototypeIcon name="trash" /><span>{{ bookChapterCacheClearBusy ? '清除中…' : '清除正文缓存' }}</span>
+              </button>
             </div>
           </div>
-          <div v-else></div>
-        </header>
+        </div>
+        <div v-else></div>
+      </header>
 
-        <main ref="bookDetailContentRef" class="book-detail-content"
-          :class="{ 'book-detail-content--catalog': bookDetailTab === 'catalog' }"
-          @click="bookDetailMenuOpen = false">
-          <BookSourcesPanel v-if="bookDetailTab === 'sources' && currentSearchResultDetails.result"
-            :book="openedBook || currentSearchResultDetails.result" :candidates="searchDetailSourceCandidates" :session="bookSourceSwitch"
-            :loading="bookPanelBusy" :locked="recoveryRequired" :error="currentSearchResultDetails.error"
-            :can-refresh="canRefreshOpenedBookInfo" :refresh-busy="bookInfoRefreshBusy"
-            :can-check="!!searchResultDetailsShelfBook && !!openedBook" :check-busy="catalogCheckBusy"
-            @select="chooseSearchResultSource" @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo"
-            @check="runCurrentBookAction('check')" @retry="retryBookDetails" />
-          <section v-else-if="!openedBook && currentSearchResultDetails.result && bookDetailTab === 'info'" class="book-info-view">
+      <p v-if="informationRefreshBusy || informationRefreshError" class="status-notice detail-refresh-status"
+        :class="{ 'is-error': informationRefreshError }" role="status">
+        {{ informationRefreshError || '正在后台刷新详情，已缓存内容可继续使用。' }}
+      </p>
+
+      <main ref="bookDetailContentRef" class="book-detail-content"
+        :class="{ 'book-detail-content--catalog': bookDetailTab === 'catalog', 'book-detail-content--sources': bookDetailTab === 'sources' }"
+        @click="bookDetailMenuOpen = false">
+        <BookSourcesPanel v-if="bookDetailTab === 'sources' && currentSearchResultDetails.result"
+          :book="openedBook || currentSearchResultDetails.result" :candidates="searchDetailSourceCandidates"
+          :session="bookSourceSwitch" :loading="bookPanelBusy" :locked="recoveryRequired"
+          :error="currentSearchResultDetails.error" :can-refresh="canRefreshOpenedBookInfo"
+          :refresh-busy="bookInfoRefreshBusy || informationRefreshBusy" :can-check="canRefreshOpenedBookInfo"
+          :check-busy="catalogCheckBusy || informationRefreshBusy" @select="chooseSearchResultSource"
+          @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo"
+          @check="runCurrentBookAction('check')" @retry="retryBookDetails" />
+        <section v-else-if="!openedBook && currentSearchResultDetails.result && bookDetailTab === 'info'"
+          class="book-info-view">
+          <div class="detail-hero">
+            <img v-if="currentSearchResultDetails.result.coverSrc" :src="currentSearchResultDetails.result.coverSrc"
+              decoding="async" alt="封面" />
+            <div v-else class="detail-cover-fallback">{{ currentSearchResultDetails.result.title.slice(0, 1) }}</div>
+            <div class="detail-title-copy">
+              <h2>{{ currentSearchResultDetails.result.title }}</h2>
+              <p class="detail-author">{{ currentSearchResultDetails.result.author || '作者未知' }}</p>
+              <p class="detail-source-name">{{ currentSearchResultDetails.result.sourceName }}</p>
+            </div>
+            <div class="detail-hero-actions">
+              <button type="button" class="button secondary" @click="selectBookDetailTab('sources')">更换来源（{{
+                searchResultSources.length }}）</button>
+            </div>
+          </div>
+          <p v-if="bookPanelBusy || pageResourceLoading" class="status-notice" role="status">正在加载详情和目录，可在来源页切换其他源。</p>
+          <p v-if="currentSearchResultDetails.error" class="status-notice is-error">{{ currentSearchResultDetails.error
+            }}
+            <button type="button" class="text-button" @click="retryBookDetails">重试</button>
+          </p>
+          <section class="detail-section detail-intro">
+            <header>
+              <h3>简介</h3>
+            </header>
+            <p>{{ currentSearchResultDetails.result.intro || '暂无简介。' }}</p>
+          </section>
+        </section>
+        <div v-else-if="bookPanelBusy || pageResourceLoading" class="page-empty-state" role="status">正在读取内容详情…
+          <button v-if="currentSearchResultDetails.result" type="button" class="text-button"
+            @click="selectBookDetailTab('sources')">更换来源</button>
+        </div>
+        <div v-else-if="currentSearchResultDetails.error" class="page-empty-state detail-error-notice">
+          {{ currentSearchResultDetails.error }}
+          <button v-if="currentSearchResultDetails.result" class="button secondary small"
+            @click="retryBookDetails">重试</button>
+          <button v-else-if="currentSearchResultDetails.bookId" class="button secondary small"
+            @click="retryBookDetails">重试</button>
+        </div>
+        <template v-else-if="openedBook">
+          <BookCatalogPanel v-if="bookDetailTab === 'catalog'" :key="openedBook.id" :book="openedBook"
+            :busy="searchResultDetailsReadingBusy" :locked="recoveryRequired"
+            :can-download="canRefreshOpenedBookInfo && !bookOperationBusy"
+            :can-replace="openedBook.canChangeSource === true && !isMediaReaderBook(openedBook)"
+            @select="detailSession.startReading" @download="runCurrentBookAction('download')"
+            @replace="openBookSourceSwitch" />
+          <BookSourcesPanel v-else-if="bookDetailTab === 'sources'" :book="openedBook"
+            :candidates="bookSourceSwitch.bookSourceCandidateResults" :session="bookSourceSwitch"
+            :locked="recoveryRequired" :can-refresh="canRefreshOpenedBookInfo"
+            :refresh-busy="bookInfoRefreshBusy || informationRefreshBusy" :can-check="canRefreshOpenedBookInfo"
+            :check-busy="catalogCheckBusy || informationRefreshBusy" @select="chooseCachedBookSource"
+            @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo"
+            @check="runCurrentBookAction('check')" />
+
+          <section v-else class="book-info-view">
             <div class="detail-hero">
-              <img v-if="currentSearchResultDetails.result.coverSrc" :src="currentSearchResultDetails.result.coverSrc" decoding="async"/>
-              <div v-else class="detail-cover-fallback">{{ currentSearchResultDetails.result.title.slice(0, 1) }}</div>
+              <img v-if="openedBook.coverSrc || currentSearchResultDetails.result?.coverSrc"
+                :src="openedBook.coverSrc || currentSearchResultDetails.result?.coverSrc" decoding="async" alt="封面" />
+              <div v-else class="detail-cover-fallback">{{ openedBook.title.slice(0, 1) }}</div>
               <div class="detail-title-copy">
-                <h2>{{ currentSearchResultDetails.result.title }}</h2>
-                <p class="detail-author">{{ currentSearchResultDetails.result.author || '作者未知' }}</p>
-                <p>{{ currentSearchResultDetails.result.sourceName }}</p>
-                <button type="button" class="button secondary" @click="selectBookDetailTab('sources')">更换来源（{{ searchResultSources.length }}）</button>
+                <h2>{{ openedBook.title }}</h2>
+                <p class="detail-author">{{ openedBook.author || '作者未知' }}</p>
+              </div>
+              <div class="detail-hero-actions">
+                <button class="button primary" type="button"
+                  :disabled="bookPanelBusy || searchResultDetailsReadingBusy || recoveryRequired || !(openedBook.chapterCount || openedBook.chapters?.length)"
+                  @click="detailSession.startReading()">
+                  <PrototypeIcon
+                    :name="openedBook.mediaType === 'video' ? 'play' : openedBook.mediaType === 'audio' ? 'speaker' : 'book'" />
+                  {{ openedBook.mediaType === 'video'
+                    ? hasReadingProgress(openedBook.progress) ? '继续观看' : '开始观看'
+                    : openedBook.mediaType === 'audio'
+                      ? hasReadingProgress(openedBook.progress) ? '继续收听' : '开始收听'
+                      : hasReadingProgress(openedBook.progress) ? '继续阅读' : '开始阅读' }}
+                </button>
+                <button type="button" class="button secondary"
+                  :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
+                  @click="toggleBookShelf">
+                  {{ searchResultDetailsShelfBook ? '移出' : '加入书架' }}
+                </button>
               </div>
             </div>
-            <p v-if="bookPanelBusy || pageResourceLoading" class="detail-loading-notice" role="status">正在加载详情和目录，可在来源页切换其他源。</p>
-            <p v-if="currentSearchResultDetails.error">{{ currentSearchResultDetails.error }}
-              <button type="button" class="text-button" @click="retryBookDetails">重试</button>
-            </p>
-            <section class="detail-section detail-intro"><header><h3>简介</h3></header>
-              <p>{{ currentSearchResultDetails.result.intro || '暂无简介。' }}</p>
+            <button type="button" class="prototype-overview-progress" aria-label="查看目录和阅读位置"
+              @click="selectBookDetailTab('catalog')">
+              <span class="detail-progress-copy">
+                <small>{{ openedBook.mediaType === 'video' ? '观看进度' : openedBook.mediaType === 'audio' ? '收听进度' : '阅读进度'
+                  }}</small>
+                <strong v-if="hasReadingProgress(openedBook.progress)">
+                  第 {{ (openedBook.progress?.chapterIndex ?? 0) + 1 }}
+                  {{ openedBook.mediaType === 'video' ? '集' : openedBook.mediaType === 'audio' ? '期' :
+                    bookContentType(openedBook) === 'image' ? '话' : bookContentType(openedBook) === 'pdf' ? '页' : '章' }}
+                  <template v-if="openedBook.mediaType"> · {{ progressTime(openedBook.progress?.offset) }}</template>
+                  <template v-else> · {{ readingProgressPercent(openedBook.progress, openedBook.chapterCount ||
+                    openedBook.chapters.length) }}%</template>
+                </strong>
+                <strong v-else>尚未开始</strong>
+              </span>
+              <span v-if="!openedBook.mediaType" class="detail-reading-track">
+                <span
+                  :style="{ width: `${readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length)}%` }"></span>
+              </span>
+              <PrototypeIcon class="detail-progress-arrow" name="right" />
+            </button>
+            <div class="book-detail-facts">
+              <button type="button" class="book-detail-fact detail-fact-link" @click="selectBookDetailTab('catalog')">
+                <span><small>最新章节</small><strong :title="openedBook.latestChapter || recentCatalogChapters[0]?.title">{{
+                  openedBook.latestChapter || recentCatalogChapters[0]?.title || '暂无目录信息' }}</strong></span>
+                <PrototypeIcon name="right" />
+              </button>
+              <div class="book-detail-fact">
+                <span><small>{{ openedBook.wordCount ? '字数' : '目录总数' }}</small><strong>{{ openedBook.wordCount ||
+                  `${openedBook.chapterCount || openedBook.chapters.length} ${openedBook.mediaType === 'video' ? '集' :
+                    openedBook.mediaType === 'audio' ? '期' : bookContentType(openedBook) === 'image' ? '话' :
+                    bookContentType(openedBook) === 'pdf' ? '页' : '章'}` }}</strong></span>
+              </div>
+              <button type="button" class="book-detail-fact detail-fact-link" @click="selectBookDetailTab('sources')">
+                <span><small>当前来源</small><strong :title="openedBook.sourceName">{{ openedBook.sourceName || '本地内容'
+                    }}</strong></span>
+                <PrototypeIcon name="right" />
+              </button>
+              <div class="book-detail-fact">
+                <span><small>分类</small><strong class="detail-kind">{{ openedBook.kind || (openedBook.mediaType ===
+                  'video' ? '视频' :
+                  openedBook.mediaType === 'audio' ? '音频' : '阅读内容') }}</strong></span>
+              </div>
+            </div>
+            <section class="detail-section detail-intro">
+              <header>
+                <h3>简介</h3>
+              </header>
+              <p>{{ openedBook.intro || '暂无简介。' }}</p>
             </section>
           </section>
-          <div v-else-if="bookPanelBusy || pageResourceLoading" class="catalog-empty">正在读取内容详情…
-            <button v-if="currentSearchResultDetails.result" type="button" class="text-button" @click="selectBookDetailTab('sources')">更换来源</button>
-          </div>
-          <div v-else-if="currentSearchResultDetails.error" class="catalog-empty">
-            {{ currentSearchResultDetails.error }}
-            <button v-if="currentSearchResultDetails.result" class="button secondary small" @click="retryBookDetails">重试</button>
-            <button v-else-if="currentSearchResultDetails.bookId" class="button secondary small" @click="retryBookDetails">重试</button>
-          </div>
-          <template v-else-if="openedBook">
-            <BookCatalogPanel v-if="bookDetailTab === 'catalog'" :key="openedBook.id" :book="openedBook"
-              :busy="searchResultDetailsReadingBusy" :locked="recoveryRequired"
-              :can-download="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true && !!openedBook.sourceId"
-              :can-replace="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true && !isMediaReaderBook(openedBook)"
-              @select="detailSession.startReading" @download="runCurrentBookAction('download')" @replace="openBookSourceSwitch" />
-            <BookSourcesPanel v-else-if="bookDetailTab === 'sources'" :book="openedBook" :candidates="bookSourceSwitch.bookSourceCandidateResults" :session="bookSourceSwitch"
-              :locked="recoveryRequired" :can-refresh="canRefreshOpenedBookInfo" :refresh-busy="bookInfoRefreshBusy"
-              :can-check="!!searchResultDetailsShelfBook && openedBook.canChangeSource === true" :check-busy="catalogCheckBusy"
-              @select="chooseCachedBookSource" @search="searchMoreBookSources" @refresh="bookDetailActions.refreshOpenedBookInfo" @check="runCurrentBookAction('check')" />
-
-            <section v-else class="book-info-view">
-              <div class="detail-hero">
-                <img v-if="openedBook.coverSrc || currentSearchResultDetails.result?.coverSrc"
-                  :src="openedBook.coverSrc || currentSearchResultDetails.result?.coverSrc"
-loading="lazy" decoding="async"/>
-                <div v-else class="detail-cover-fallback">{{ openedBook.title.slice(0, 1) }}</div>
-                <div class="detail-title-copy">
-                  <small class="detail-type-label">
-                    {{ openedBook.mediaType === 'video' ? '视频'
-                      : openedBook.mediaType === 'audio' ? '音频'
-                      : bookContentType(openedBook) === 'image' ? '图片'
-                      : bookContentType(openedBook) === 'pdf' ? 'PDF'
-                      : bookContentType(openedBook) === 'html' ? 'HTML' : '文本' }}
-                    {{ openedBook.kind ? ' · ' + openedBook.kind : '' }}
-                  </small>
-                  <h2>{{ openedBook.title }}</h2>
-                  <p class="detail-author">{{ openedBook.author || '作者未知' }}</p>
-                  <div class="detail-hero-actions">
-                    <button class="button primary" type="button"
-                      :disabled="bookPanelBusy || searchResultDetailsReadingBusy || recoveryRequired || !(openedBook.chapterCount || openedBook.chapters?.length)"
-                      @click="detailSession.startReading()">
-                      <PrototypeIcon :name="openedBook.mediaType === 'video' ? 'play' : openedBook.mediaType === 'audio' ? 'speaker' : 'book'"/>
-                      {{ openedBook.mediaType === 'video'
-                        ? hasReadingProgress(openedBook.progress) ? '继续观看' : '开始观看'
-                        : openedBook.mediaType === 'audio'
-                        ? hasReadingProgress(openedBook.progress) ? '继续收听' : '开始收听'
-                        : hasReadingProgress(openedBook.progress) ? '继续阅读' : '开始阅读' }}
-                    </button>
-                    <button v-if="!searchResultDetailsShelfBook && currentSearchResultDetails.result"
-                      type="button" class="button secondary"
-                      :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
-                      @click="detailSession.addSearchResultFromDetails()">
-                      加入书架
-                    </button>
-                  </div>
-                </div>
-                <aside class="prototype-overview-progress">
-                  <div>
-                    <small>{{ openedBook.mediaType === 'video' ? '观看进度' : openedBook.mediaType === 'audio' ? '收听进度' : '阅读进度' }}</small>
-                    <strong v-if="hasReadingProgress(openedBook.progress)">
-                      第 {{ (openedBook.progress?.chapterIndex ?? 0) + 1 }}
-                      {{ openedBook.mediaType === 'video' ? '集' : openedBook.mediaType === 'audio' ? '期' : bookContentType(openedBook) === 'image' ? '话' : bookContentType(openedBook) === 'pdf' ? '页' : '章' }}
-                      <template v-if="openedBook.mediaType"> · {{ progressTime(openedBook.progress?.offset) }}</template>
-                      <template v-else> · {{ readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length) }}%</template>
-                    </strong>
-                    <strong v-else>尚未开始</strong>
-                  </div>
-                  <div v-if="!openedBook.mediaType" class="detail-reading-track"
-
->
-                    <span :style="{ width: `${readingProgressPercent(openedBook.progress, openedBook.chapterCount || openedBook.chapters.length)}%` }"></span>
-                  </div>
-                  <button type="button" class="detail-catalog-link" @click="selectBookDetailTab('catalog')">
-                    查看{{ openedBook.mediaType === 'video' ? '剧集' : openedBook.mediaType === 'audio' ? '节目' : '目录' }}
-                    <PrototypeIcon name="right"/>
-                  </button>
-                </aside>
-              </div>
-              <div class="book-detail-facts">
-                <button type="button" class="book-detail-fact detail-fact-link"
-                  @click="selectBookDetailTab('catalog')">
-                  <span><small>最新</small><strong>{{ openedBook.latestChapter || recentCatalogChapters[0]?.title || '暂无目录信息' }}</strong></span>
-                  <PrototypeIcon name="right"/>
-                </button>
-                <div class="book-detail-fact">
-                  <span><small>规模</small><strong>{{ openedBook.wordCount ? openedBook.wordCount : `${openedBook.chapterCount || openedBook.chapters.length} 项内容` }}</strong></span>
-                </div>
-                <button type="button" class="book-detail-fact detail-fact-link"
-                  @click="selectBookDetailTab('sources')">
-                  <span><small>当前来源</small><strong>{{ openedBook.sourceName || '本地内容' }}</strong></span>
-                  <PrototypeIcon name="right"/>
-                </button>
-                <div class="book-detail-fact">
-                  <span><small>类型</small><strong>{{ openedBook.kind || (openedBook.mediaType === 'video' ? '视频' : openedBook.mediaType === 'audio' ? '音频' : '阅读内容') }}</strong></span>
-                </div>
-              </div>
-              <section class="detail-section detail-intro">
-                <header><h3>简介</h3></header>
-                <p>{{ openedBook.intro || '暂无简介。' }}</p>
-              </section>
-            </section>
-          </template>
-          <div v-else class="catalog-empty">暂无可显示的内容信息。</div>
-        </main>
+        </template>
+        <div v-else class="page-empty-state">暂无可显示的内容信息。</div>
+      </main>
 
 
 
-        <BookDisplayMetadataEditor
-          v-if="openedBook && bookDisplayEditorBookId === openedBook.id"
-          :key="openedBook.id"
-          :book="openedBook"
-          :locked="recoveryRequired"
-          :return-label="bookDetailTab === 'catalog' ? '返回目录' : '返回概览'"
-          @close="bookMetadataActions.closeBookDisplayEditor"
-          @save="bookMetadataActions.saveBookDisplayMetadata"
-        />
-      </article>
-    </section>
+      <BookDisplayMetadataEditor v-if="openedBook && bookDisplayEditorBookId === openedBook.id" :key="openedBook.id"
+        :book="openedBook" :locked="recoveryRequired" :return-label="bookDetailTab === 'catalog' ? '返回目录' : '返回概览'"
+        @close="bookMetadataActions.closeBookDisplayEditor" @save="bookMetadataActions.saveBookDisplayMetadata" />
+    </article>
+  </section>
 
-    <section
-      v-if="pendingBookProgressReset"
-      class="modal-backdrop"
-      @click.self="!bookProgressResetBusy && (pendingBookProgressReset = null)"
-    >
-      <article class="app-modal confirm-modal">
-        <div class="confirm-symbol">↺</div>
-        <h2 id="book-reset-progress-title">重置阅读进度？</h2>
-        <p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
-        <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
-        <p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p>
-        <div class="modal-actions">
-          <button class="button secondary" data-back-action :disabled="bookProgressResetBusy" @click="pendingBookProgressReset = null">取消</button>
-          <button class="button danger" :disabled="bookProgressResetBusy || recoveryRequired" @click="bookDetailActions.resetOpenedBookProgress">
-            {{ bookProgressResetBusy ? '正在重置…' : '确认重置进度' }}
-          </button>
-        </div>
-      </article>
-    </section>
+  <section v-if="pendingBookProgressReset" class="modal-backdrop"
+    @click.self="!bookProgressResetBusy && (pendingBookProgressReset = null)">
+    <article class="app-modal confirm-modal" role="dialog" aria-modal="true"
+      aria-labelledby="book-reset-progress-title">
+      <h2 id="book-reset-progress-title">重置阅读进度？</h2>
+      <p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
+      <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
+      <p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p>
+      <div class="modal-actions">
+        <button class="button secondary" data-back-action :disabled="bookProgressResetBusy"
+          @click="pendingBookProgressReset = null">取消</button>
+        <button class="button danger" :disabled="bookProgressResetBusy || recoveryRequired"
+          @click="bookDetailActions.resetOpenedBookProgress">
+          {{ bookProgressResetBusy ? '正在重置…' : '确认重置进度' }}
+        </button>
+      </div>
+    </article>
+  </section>
 
-    <section
-      v-if="pendingBookChapterCacheClear"
-      class="modal-backdrop"
-      @click.self="!bookChapterCacheClearBusy && (pendingBookChapterCacheClear = null)"
-    >
-      <article class="app-modal confirm-modal">
-        <div class="confirm-symbol">⌫</div>
-        <h2 id="book-clear-chapter-cache-title">清除章节缓存？</h2>
-        <p>将清除《{{ pendingBookChapterCacheClear.title }}》已缓存的章节正文。之后可以重新下载正文。</p>
-        <p>阅读进度、章节目录、封面和书签都会保留。<span v-if="readingBook?.id === pendingBookChapterCacheClear.id">当前阅读器会先保存阅读位置并关闭，避免继续显示已清除的正文。</span></p>
-        <p v-if="bookChapterCacheClearError" class="source-identity-confirmation">{{ bookChapterCacheClearError }}</p>
-        <div class="modal-actions">
-          <button class="button secondary" data-back-action :disabled="bookChapterCacheClearBusy" @click="pendingBookChapterCacheClear = null">取消</button>
-          <button class="button danger" :disabled="bookChapterCacheClearBusy || recoveryRequired" @click="clearOpenedBookChapterCache">
-            {{ bookChapterCacheClearBusy ? '正在清除…' : '确认清除缓存' }}
-          </button>
-        </div>
-      </article>
-    </section>
+  <section v-if="pendingBookChapterCacheClear" class="modal-backdrop"
+    @click.self="!bookChapterCacheClearBusy && (pendingBookChapterCacheClear = null)">
+    <article class="app-modal confirm-modal" role="dialog" aria-modal="true"
+      aria-labelledby="book-clear-chapter-cache-title">
+      <h2 id="book-clear-chapter-cache-title">清除章节缓存？</h2>
+      <p>将清除《{{ pendingBookChapterCacheClear.title }}》已缓存的章节正文。之后可以重新下载正文。</p>
+      <p>阅读进度、章节目录、封面和书签都会保留。<span
+          v-if="readingBook?.id === pendingBookChapterCacheClear.id">当前阅读器会先保存阅读位置并关闭，避免继续显示已清除的正文。</span></p>
+      <p v-if="bookChapterCacheClearError" class="source-identity-confirmation">{{ bookChapterCacheClearError }}</p>
+      <div class="modal-actions">
+        <button class="button secondary" data-back-action :disabled="bookChapterCacheClearBusy"
+          @click="pendingBookChapterCacheClear = null">取消</button>
+        <button class="button danger" :disabled="bookChapterCacheClearBusy || recoveryRequired"
+          @click="clearOpenedBookChapterCache">
+          {{ bookChapterCacheClearBusy ? '正在清除…' : '确认清除缓存' }}
+        </button>
+      </div>
+    </article>
+  </section>
 
-    <section
-      v-if="pendingRemoval"
-      class="modal-backdrop"
-      @click.self="pendingRemoval = null"
-    >
-      <article class="app-modal confirm-modal">
-        <div class="confirm-symbol">⌫</div>
-        <h2>从书架移除这本书？</h2>
-        <p>《{{ pendingRemoval.title }}》及其本地书籍数据、阅读进度和书签都会被移除。</p>
-        <div class="modal-actions">
-          <button class="button secondary" data-back-action @click="pendingRemoval = null">保留</button>
-          <button class="button danger" :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
-            确认移除
-          </button>
-        </div>
-      </article>
-    </section>
+  <section v-if="pendingRemoval" class="modal-backdrop" @click.self="pendingRemoval = null">
+    <article class="app-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="book-remove-title">
+      <h2 id="book-remove-title">从书架移除这本书？</h2>
+      <p>将《{{ pendingRemoval.title }}》从书架移除，详情缓存、阅读进度和书签都会保留。</p>
+      <div class="modal-actions">
+        <button class="button secondary" data-back-action @click="pendingRemoval = null">保留</button>
+        <button class="button danger" :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
+          确认移除
+        </button>
+      </div>
+    </article>
+  </section>
 
-    <BookSourceSwitchView v-if="!readerVisible" :session="bookSourceSwitch" :locked="recoveryRequired" />
+  <BookSourceSwitchView v-if="!readerVisible" :session="bookSourceSwitch" :locked="recoveryRequired" />
 
 </template>
 
 <style scoped>
 .book-detail-page {
   display: flex;
+  justify-content: center;
   width: 100%;
   height: 100dvh;
   min-height: 0;
-  justify-content: center;
   overflow: hidden;
   padding-top: var(--safe-top);
   background: var(--app-background);
@@ -686,13 +679,10 @@ loading="lazy" decoding="async"/>
 
 .book-detail-panel {
   display: flex;
-  width: min(920px, 100%);
+  flex-direction: column;
+  width: min(var(--app-content-width), 100%);
   height: 100%;
   min-height: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border: 0;
-  border-radius: 0;
   background: var(--app-background);
 }
 
@@ -700,29 +690,26 @@ loading="lazy" decoding="async"/>
   position: relative;
   z-index: 2;
   display: grid;
-  min-height: 64px;
-  grid-template-columns: 42px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
   align-items: center;
-  gap: 10px;
-  padding: 0 16px;
+  flex: none;
+  gap: 12px;
+  min-height: var(--ui-header-height);
+  padding: 0 var(--ui-page-gutter);
   border-bottom: 1px solid var(--app-line);
-  background: var(--app-background);
 }
 
 .book-detail-tabs {
   display: flex;
-  width: max-content;
-  max-width: 100%;
-  height: 100%;
   justify-self: center;
-  gap: 14px;
+  align-self: stretch;
+  gap: 24px;
 }
 
 .book-detail-tabs button {
   position: relative;
-  min-width: 56px;
-  height: 100%;
-  padding: 0 8px;
+  min-width: 48px;
+  padding-inline: 6px;
   color: var(--app-muted);
   font-size: var(--ui-font-body);
   cursor: pointer;
@@ -730,40 +717,41 @@ loading="lazy" decoding="async"/>
 
 .book-detail-tabs button.active {
   color: var(--app-text);
-  font-weight: 720;
+  font-weight: 650;
 }
 
 .book-detail-tabs button.active::after {
-  position: absolute;
-  right: 10px;
-  bottom: 0;
-  left: 10px;
-  height: 2px;
-  border-radius: 2px;
-  background: var(--app-accent);
   content: "";
+  position: absolute;
+  right: 6px;
+  bottom: -1px;
+  left: 6px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--app-accent);
 }
 
 .book-detail-toolbar-actions {
-  display: flex;
-  min-width: 36px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-.book-detail-menu-wrap {
-  position: relative;
+  justify-self: end;
 }
 
 .book-detail-icon-button {
   display: grid;
-  width: 36px;
-  height: 36px;
   place-items: center;
-  border-radius: 8px;
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
   color: var(--app-muted);
-  background: transparent;
   cursor: pointer;
+}
+
+.book-detail-icon-button[aria-expanded="true"] {
+  color: var(--app-accent-ink);
+  background: var(--app-accent-soft);
+}
+
+.book-detail-menu-wrap {
+  position: relative;
 }
 
 .book-detail-menu {
@@ -772,151 +760,186 @@ loading="lazy" decoding="async"/>
   top: calc(100% + 8px);
   right: 0;
   display: grid;
-  width: min(260px, calc(100vw - 36px));
-  gap: 2px;
-  padding: 7px;
+  width: min(260px, calc(100vw - 32px));
+  max-height: calc(100dvh - var(--safe-top) - 88px);
+  overflow-y: auto;
+  padding: 6px;
   border: 1px solid var(--app-line);
-  border-radius: 14px;
+  border-radius: 12px;
   background: var(--app-surface);
   box-shadow: var(--app-shadow);
 }
 
 .book-detail-menu-item {
   display: flex;
-  min-height: 40px;
   align-items: center;
   gap: 10px;
-  padding: 0 10px;
+  min-height: 44px;
+  padding: 8px 10px;
   border-radius: 8px;
   color: var(--app-text);
+  font-size: var(--ui-font-body);
   text-align: left;
   cursor: pointer;
 }
 
-.book-detail-menu-item--danger {
-  color: var(--app-danger);
+.book-detail-menu-item :deep(svg) {
+  width: 18px;
+  height: 18px;
+  color: var(--app-muted);
 }
 
 .book-detail-menu-divider {
   height: 1px;
-  margin: 4px 3px;
+  margin: 6px 10px;
   background: var(--app-line);
 }
 
 .book-detail-content {
-  min-height: 0;
   flex: 1;
+  min-width: 0;
+  min-height: 0;
   overflow: auto;
-  padding: 24px;
+  padding: var(--ui-space-6) var(--ui-page-gutter) max(var(--ui-space-6), var(--safe-bottom));
   color: var(--app-text);
-  background: var(--app-background);
   overscroll-behavior: contain;
 }
 
-.book-info-view {
-  display: block;
+.book-detail-content--catalog {
+  overflow: hidden;
+  padding: 0 0 var(--safe-bottom);
 }
-.detail-loading-notice { margin: 16px 0; padding: 12px 14px; border-radius: 12px; color: var(--app-accent-ink); background: var(--app-accent-soft); line-height: 1.7; }
+
+.book-detail-content--sources {
+  padding-top: var(--ui-space-2);
+}
+
+.detail-refresh-status {
+  flex: none;
+  margin: 0;
+  border-radius: 0;
+}
+
+.detail-error-notice {
+  color: var(--app-danger);
+}
 
 .detail-hero {
   display: grid;
-  grid-template-columns: 160px minmax(0, 1fr) 190px;
+  grid-template-columns: 112px minmax(0, 1fr);
   align-items: start;
-  gap: 22px;
+  column-gap: 20px;
+  row-gap: 16px;
 }
 
-.detail-hero > img,
+.detail-hero>img,
 .detail-cover-fallback {
-  display: block;
-  width: 100%;
-  aspect-ratio: 4 / 5;
+  display: grid;
+  grid-row: 1 / 3;
+  width: 112px;
+  height: 150px;
   overflow: hidden;
-  border-radius: 12px;
+  border-radius: 8px;
   object-fit: cover;
 }
 
 .detail-cover-fallback {
-  display: grid;
   place-items: center;
   color: var(--app-accent-ink);
   background: var(--app-accent-soft);
-  font-size: 40px;
-  font-weight: 700;
+  font-size: 32px;
+  font-weight: 600;
 }
 
 .detail-title-copy {
   display: grid;
-  min-width: 0;
   align-content: start;
-  gap: 0;
-  padding-top: 5px;
-}
-
-.detail-type-label,
-.detail-author,
-.prototype-overview-progress small,
-.book-detail-fact small {
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-}
-
-.detail-type-label {
-  color: var(--app-accent);
-  font-size: var(--ui-font-body);
-  font-weight: 750;
+  gap: 8px;
+  min-width: 0;
+  padding-top: 4px;
 }
 
 .detail-title-copy h2 {
-  margin: 7px 0 5px;
-  font-size: 29px;
-  line-height: 1.15;
-  letter-spacing: -0.04em;
+  margin: 0;
+  font-size: var(--ui-font-title);
+  line-height: 1.4;
   overflow-wrap: anywhere;
 }
 
-.detail-author {
+.detail-author,
+.detail-source-name {
   margin: 0;
-  font-size: var(--ui-font-caption);
+  color: var(--app-muted);
+  font-size: var(--ui-font-body);
+  overflow-wrap: anywhere;
 }
 
 .detail-hero-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 22px;
+  grid-column: 2;
+  align-self: end;
+  gap: 6px;
+}
+
+.detail-hero-actions .button {
+  min-height: var(--ui-compact-control-height);
+  gap: 4px;
+  padding-inline: 8px;
+  font-size: var(--ui-font-caption);
+}
+
+.detail-hero-actions :deep(svg) {
+  width: 16px;
+  height: 16px;
 }
 
 .prototype-overview-progress {
-  display: flex;
-  min-height: 126px;
-  flex-direction: column;
-  padding: 15px;
-  border-left: 1px solid var(--app-line);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 24px;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--app-line);
+  text-align: left;
+  cursor: pointer;
 }
 
-.prototype-overview-progress > div:first-child,
-.book-detail-fact > span {
+.detail-progress-copy {
   display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px 16px;
   min-width: 0;
-  flex-direction: column;
-  gap: 5px;
 }
 
-.prototype-overview-progress small,
-.book-detail-fact small {
+.prototype-overview-progress small {
+  color: var(--app-muted);
   font-size: var(--ui-font-caption);
 }
 
 .prototype-overview-progress strong {
-  font-size: var(--ui-font-caption);
+  font-size: var(--ui-font-body);
+  font-weight: 600;
+}
+
+.detail-progress-arrow {
+  grid-column: 2;
+  grid-row: 1;
+  width: 18px;
+  height: 18px;
+  color: var(--app-muted);
 }
 
 .detail-reading-track {
-  height: 5px;
-  margin-top: auto;
+  grid-column: 1 / -1;
+  grid-row: 2;
+  height: 4px;
   overflow: hidden;
-  border-radius: 999px;
-  background: var(--app-panel-soft);
+  border-radius: 4px;
+  background: var(--app-line);
 }
 
 .detail-reading-track span {
@@ -926,238 +949,163 @@ loading="lazy" decoding="async"/>
   background: var(--app-accent);
 }
 
-.detail-catalog-link {
-  display: flex;
-  min-height: 30px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--app-accent-ink);
-  font-size: var(--ui-font-caption);
-  cursor: pointer;
-}
-
 .book-detail-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 28px;
-  border-top: 1px solid var(--app-line);
-  border-bottom: 1px solid var(--app-line);
+  column-gap: 24px;
+  margin-top: 16px;
 }
 
 .book-detail-fact {
-  display: grid;
-  min-width: 0;
-  min-height: 64px;
-  grid-template-columns: minmax(0, 1fr) 16px;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border: 0;
-  border-right: 1px solid var(--app-line);
-  border-radius: 0;
-  color: var(--app-text);
-  background: transparent;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  min-height: 76px;
+  padding-block: 14px;
+  border-bottom: 1px solid var(--app-line);
   text-align: left;
 }
 
-.book-detail-fact:nth-child(2n) {
-  border-right: 0;
+.book-detail-fact>span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
 }
 
-.book-detail-fact:nth-child(-n + 2) {
-  border-bottom: 1px solid var(--app-line);
+.book-detail-fact small {
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
 }
 
-.book-detail-fact:not(.detail-fact-link) {
-  grid-template-columns: minmax(0, 1fr);
+.book-detail-fact strong {
+  overflow: hidden;
+  font-size: var(--ui-font-body);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.book-detail-fact .detail-kind {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.book-detail-fact :deep(svg) {
+  width: 16px;
+  height: 16px;
+  color: var(--app-muted);
 }
 
 .detail-fact-link {
   cursor: pointer;
 }
 
-.book-detail-fact strong {
-  overflow: hidden;
-  font-size: var(--ui-font-caption);
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .detail-section {
   display: grid;
-  gap: 8px;
-  margin-top: 28px;
-}
-
-.detail-section header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  gap: 12px;
+  margin-top: 24px;
 }
 
 .detail-section h3 {
   margin: 0;
-  font-size: var(--ui-font-body);
+  color: var(--app-muted);
+  font-size: var(--ui-font-caption);
+  font-weight: 650;
 }
 
 .detail-section p {
   margin: 0;
   color: var(--app-muted);
-  font-size: var(--ui-font-caption);
+  font-size: var(--ui-font-body);
   line-height: 1.85;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-.catalog-empty {
-  display: grid;
-  min-height: 150px;
-  place-content: center;
-  justify-items: center;
-  gap: 12px;
+.book-detail-menu-item:hover:not(:disabled),
+.book-detail-icon-button:hover,
+.detail-fact-link:hover {
+  background: var(--app-panel-softer);
+}
+
+.prototype-overview-progress:hover {
+  background: var(--app-panel-softer);
+}
+
+.confirm-modal {
+  width: min(420px, 100%);
+  padding: 24px;
+  color: var(--app-text);
+}
+
+.confirm-modal h2 {
+  margin: 0 0 12px;
+  font-size: var(--ui-font-heading);
+}
+
+.confirm-modal p {
+  margin: 8px 0;
   color: var(--app-muted);
-  text-align: center;
+  font-size: var(--ui-font-body);
+  line-height: 1.7;
+  overflow-wrap: anywhere;
 }
 
-.catalog-empty .button {
-  margin-top: 4px;
+.confirm-modal .source-identity-confirmation {
+  color: var(--app-danger);
 }
-@media (max-width: 860px) {
-  .book-detail-panel {
-    width: 100%;
-    border: 0;
-    border-radius: 0;
-  }
 
+.confirm-modal .modal-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 24px;
+}
+
+.confirm-modal .button {
+  padding-inline: 8px;
+}
+
+@media (max-width: 600px) {
   .book-detail-toolbar {
-    min-height: 58px;
-    gap: 10px;
-    padding: 0 10px;
-  }
-
-  .book-detail-content {
-    padding: 22px 13px calc(22px + var(--safe-bottom));
-  }
-
-  .book-detail-content--catalog {
-    padding: 0 13px var(--safe-bottom);
-  }
-
-  .book-info-view {
-    display: block;
-  }
-
-  .detail-hero {
-    grid-template-columns: 100px minmax(0, 1fr);
-    gap: 14px;
-  }
-
-  .detail-title-copy {
-    padding-top: 1px;
-  }
-
-  .detail-title-copy h2 {
-    margin-top: 6px;
-    font-size: var(--ui-font-title);
-  }
-
-  .prototype-overview-progress {
-    grid-column: 1 / -1;
-    min-height: 0;
-    padding: 12px 0 0;
-    border-top: 1px solid var(--app-line);
-    border-left: 0;
-  }
-
-  .detail-reading-track {
-    margin-top: 10px;
-  }
-
-  .detail-catalog-link {
-    margin-top: 5px;
-  }
-
-  .book-detail-facts {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    margin-top: 20px;
-  }
-
-  .book-detail-fact {
-    min-height: 58px;
-    padding: 0 9px;
-  }
-
-  .detail-section {
-    margin-top: 22px;
-  }
-
-  .detail-hero-actions .button {
-    min-height: 36px;
-    padding: 0 10px;
-    font-size: var(--ui-font-body);
-  }
-
-  .prototype-catalog-tools {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-    margin: 0 0 12px;
-    padding: 10px 12px 9px;
-    box-shadow: 0 5px 12px rgb(32 34 42 / 4%);
-  }
-.catalog-row-wrap {
-    grid-template-columns: minmax(0, 1fr) 34px;
-  }
-.book-detail-menu {
-    position: fixed;
-    right: 10px;
-    bottom: calc(10px + var(--safe-bottom));
-    left: 10px;
-    top: auto;
-    width: auto;
-    padding: 8px;
-    border-radius: 16px;
-  }
-
-  .book-detail-menu-item {
-    min-height: 42px;
-  }
-}
-
-@media (max-width: 430px) {
-  .book-detail-toolbar {
-    grid-template-columns: 38px minmax(0, 1fr) 34px;
-    gap: 6px;
-    padding-right: 8px;
-    padding-left: 8px;
-  }
-
-  .book-detail-toolbar .back-button {
-    width: 38px;
-    min-width: 38px;
-    height: 38px;
-    min-height: 38px;
-  }
-
-  .book-detail-toolbar-actions {
-    min-width: 34px;
+    gap: 4px;
   }
 
   .book-detail-tabs {
-    gap: 3px;
+    gap: 12px;
   }
 
   .book-detail-tabs button {
-    min-width: 50px;
-    padding: 0 4px;
-    font-size: var(--ui-font-body);
+    min-width: 44px;
   }
 
-  .catalog-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .detail-hero {
+    grid-template-columns: 88px minmax(0, 1fr);
+    column-gap: 16px;
+    row-gap: 12px;
+  }
+
+  .detail-hero>img,
+  .detail-cover-fallback {
+    width: 88px;
+    height: 118px;
+  }
+
+  .prototype-overview-progress {
+    margin-top: 20px;
+  }
+
+  .book-detail-facts {
+    column-gap: 20px;
+    margin-top: 8px;
+  }
+
+  .book-detail-fact {
+    min-height: 72px;
   }
 }
-
 </style>

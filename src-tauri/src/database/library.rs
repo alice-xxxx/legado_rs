@@ -109,6 +109,7 @@ impl Database {
                         page_count: r.get("page_count")?,
                         url: r.get("url")?,
                         updated_at_ms: r.get("updated_at_ms")?,
+                        information_fetched_at_ms: r.get("information_fetched_at_ms")?,
                         latest_chapter_title: r.get("latest_chapter_title")?,
                         engine: if r.get::<_, Option<String>>("book_url")?.is_some() {
                             Some(engine_row(r)?)
@@ -216,6 +217,23 @@ impl Database {
             if chapters.is_empty() && !previous.is_empty() {
                 return Err(ResourceError::new("书源返回空目录"));
             }
+            let previous_type = s
+                .read(
+                    "SELECT content_type FROM books WHERE id=?1",
+                    [&book.id],
+                    |r| r.get::<_, String>(0),
+                )?
+                .pop();
+            // 文本正文可能已识别为 HTML，刷新资料不应使已缓存正文失效。
+            if previous_type.as_deref() == Some("html") && book.content_type == "text" {
+                book.content_type = "html".into();
+            }
+            if previous_type.is_some_and(|kind| kind != book.content_type) {
+                s.write(
+                    "UPDATE chapters SET content_id=NULL WHERE book_id=?1",
+                    [&book.id],
+                )?;
+            }
             let mut changed = previous.len() != chapters.len();
             for (index, engine) in chapters.into_iter().enumerate() {
                 let id = format!(
@@ -232,8 +250,7 @@ impl Database {
                     ..Default::default()
                 });
             }
-            // 首次保存空目录也标记详情已获取，避免再次进入时重复联网。
-            if changed || previous.is_empty() {
+            if changed {
                 book.updated_at_ms = Some(crate::support::now_ms() as i64);
             }
             save_record(s, &book)?;
@@ -245,6 +262,13 @@ impl Database {
             {
                 s.write("INSERT INTO book_tags(book_id,position,tag) SELECT ?1,0,?2 WHERE NOT EXISTS(SELECT 1 FROM book_tags WHERE book_id=?1)",params![book.id,kind])?;
             }
+            if cancellation.is_cancelled() {
+                return Err(ResourceError::new("详情已取消"));
+            }
+            s.write(
+                "UPDATE books SET information_fetched_at_ms=?2 WHERE id=?1",
+                params![book.id, crate::support::now_ms()],
+            )?;
             Ok(())
         })
     }
@@ -500,4 +524,215 @@ pub(super) fn patch_book(s: &Session<'_>, id: &str, patch: BookPatch) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio_util::sync::CancellationToken;
+
+    fn details(kind: &str) -> Book {
+        Book {
+            id: "book".into(),
+            content_type: kind.into(),
+            title: Some("Book".into()),
+            ..Default::default()
+        }
+    }
+
+    fn catalog(urls: &[&str]) -> Vec<EngineChapter> {
+        urls.iter()
+            .map(|url| EngineChapter {
+                url: (*url).into(),
+                title: (*url).into(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn successful_fetch_time_is_independent_of_catalog_changes_and_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::new(root.path()).unwrap();
+        database
+            .save_information(
+                details("text"),
+                catalog(&["a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        let first = database.book("book").unwrap().unwrap();
+        assert!(first.information_fetched_at_ms.is_some());
+        database
+            .save_main_text(
+                "book".into(),
+                first.chapters[0].id.clone(),
+                Chapter {
+                    url: Some("cached.txt".into()),
+                    ..Default::default()
+                },
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        db::write(&database, WriteMode::Transaction, |s| {
+            s.write(
+                "UPDATE books SET information_fetched_at_ms=1 WHERE id='book'",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap()
+        .wait()
+        .unwrap();
+        database
+            .save_information(
+                details("text"),
+                catalog(&["a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        let unchanged = database.book("book").unwrap().unwrap();
+        assert!(unchanged.information_fetched_at_ms.unwrap() > 1);
+        assert_eq!(unchanged.updated_at_ms, first.updated_at_ms);
+        assert!(database
+            .save_information(details("image"), vec![], CancellationToken::new())
+            .unwrap()
+            .wait()
+            .is_err());
+        // 事务中途发现重复章节，也不能修改类型、目录或成功时间。
+        assert!(database
+            .save_information(
+                details("image"),
+                catalog(&["a", "a"]),
+                CancellationToken::new()
+            )
+            .unwrap()
+            .wait()
+            .is_err());
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        assert!(database
+            .save_information(details("image"), catalog(&["c"]), cancellation)
+            .unwrap()
+            .wait()
+            .is_err());
+        let retained = database.book("book").unwrap().unwrap();
+        assert_eq!(
+            retained.information_fetched_at_ms,
+            unchanged.information_fetched_at_ms
+        );
+        assert_eq!(retained.content_type, "text");
+        assert_eq!(
+            retained.chapters[0].content_id,
+            unchanged.chapters[0].content_id
+        );
+        assert!(retained.chapters[0].content_id.is_some());
+        assert_eq!(
+            retained
+                .chapters
+                .iter()
+                .map(|chapter| &chapter.id)
+                .collect::<Vec<_>>(),
+            unchanged
+                .chapters
+                .iter()
+                .map(|chapter| &chapter.id)
+                .collect::<Vec<_>>()
+        );
+        database
+            .save_information(
+                details("html"),
+                catalog(&["a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        database
+            .save_information(
+                details("text"),
+                catalog(&["a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert_eq!(database.book("book").unwrap().unwrap().content_type, "html");
+    }
+
+    #[test]
+    fn empty_success_is_cached_and_progress_follows_chapter_id_after_reordering() {
+        let root = tempfile::tempdir().unwrap();
+        let database = Database::new(root.path()).unwrap();
+        database
+            .save_information(details("text"), vec![], CancellationToken::new())
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert!(database
+            .book("book")
+            .unwrap()
+            .unwrap()
+            .information_fetched_at_ms
+            .is_some());
+        database
+            .save_information(
+                details("text"),
+                catalog(&["a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        let chapter = database.book("book").unwrap().unwrap().chapters[1]
+            .id
+            .clone();
+        let save = |id: String, index, offset| {
+            database
+                .submit(vec![Mutation::SaveProgress {
+                    book_id: "book".into(),
+                    progress: ProgressInput {
+                        chapter_id: Some(id),
+                        chapter_index: index,
+                        offset,
+                        ..Default::default()
+                    },
+                }])
+                .unwrap()
+                .wait()
+        };
+        save(chapter.clone(), 1, 42).unwrap();
+        database
+            .save_information(
+                details("text"),
+                catalog(&["new", "a", "b"]),
+                CancellationToken::new(),
+            )
+            .unwrap()
+            .wait()
+            .unwrap();
+        // 阅读器仍持有刷新前序号，写入应按稳定 ID 定位，而非跳到另一章。
+        save(chapter.clone(), 1, 84).unwrap();
+        let progress = database.book("book").unwrap().unwrap().progress.unwrap();
+        assert_eq!(progress.chapter_id.as_deref(), Some(chapter.as_str()));
+        assert_eq!(progress.chapter_index, 2);
+        assert_eq!(progress.offset, 84);
+        assert!(save("missing".into(), 1, 100).is_err());
+        assert_eq!(
+            database
+                .book("book")
+                .unwrap()
+                .unwrap()
+                .progress
+                .unwrap()
+                .offset,
+            84
+        );
+    }
 }

@@ -5,10 +5,11 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { search, stopSearch, releaseSearchResults } from "../../api/search";
 import { mainText, cancelMainText } from "../../api/mainText";
 import { saveChapter } from "../../api/books";
+import { modifyDatabase } from "../../api/feDb";
 import { moreInformation } from "../../api/moreInformation";
 import { readChapter, readMoreInformation } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
-import { presentSearchResults } from "../discovery/searchPresentation";
+import { compareSearchSources, presentSearchResults } from "../discovery/searchPresentation";
 import { type BookResource, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
 import { refreshOpenedBook, refreshOpenedChapter, replaceOpenedBook, openedBook } from "../books/bookDetailState";
@@ -47,6 +48,7 @@ export function useBookSourceSwitch({
   const bookSourceSwitchOpen = ref(false);
   const bookSourceSwitchInline = ref(false);
   const bookSourceSwitchBusy = ref(false);
+  const bookSourceSwitchCancellable = ref(false);
   const bookSourceCheckBusy = ref(false);
   const chapterSourceBusyResultId = ref<string | null>(null);
   const chapterSourceError = ref("");
@@ -70,15 +72,16 @@ export function useBookSourceSwitch({
   const bookSourceSearchId = ref<string | null>(null);
   const searchedCandidates = shallowRef<SearchBookResult[]>([]);
   const bookSourceCandidateResults = computed<SearchBookResult[]>(() => {
-    const cached = (bookSourceSwitchBook.value?.alternatives ?? []).map((candidate, index) => ({
-      resultId: `alternative-${index}`, alternativeIndex: index,
+    const cached = (bookSourceSwitchBook.value?.alternatives ?? []).map(candidate => ({
+      resultId: candidate.resultId,
       sourceId: candidate.sourceId, sourceName: candidate.sourceName, bookUrl: candidate.bookUrl,
       title: candidate.title, author: candidate.author, coverSrc: candidate.cover,
       latestChapter: candidate.latest,
+      intro: candidate.intro, responseTimeMs: candidate.responseTimeMs,
     }));
-    if (!bookSourceSwitchOpen.value) return cached;
+    if (!bookSourceSwitchOpen.value) return cached.sort(compareSearchSources);
     const liveSources = new Set(searchedCandidates.value.map(candidate => candidate.sourceId));
-    return [...cached.filter(candidate => !liveSources.has(candidate.sourceId)), ...searchedCandidates.value];
+    return [...cached.filter(candidate => !liveSources.has(candidate.sourceId)), ...searchedCandidates.value].sort(compareSearchSources);
   });
   const bookSourceCandidateErrors = ref<Array<{ sourceId?: string; message: string }>>([]);
   const selectedBookSourceCandidate = ref<SearchBookResult | null>(null);
@@ -89,6 +92,7 @@ export function useBookSourceSwitch({
     let bookSourceSearchGeneration = 0;
   let information: ReturnType<typeof moreInformation> | null = null;
   let text: ReturnType<typeof mainText> | null = null;
+  let cancellation: Promise<void> = Promise.resolve();
   const currentRestore = (revision: number) => revision === getRestoreRevision();
 
   const bookSourceCurrentChapter = computed(() => {
@@ -113,9 +117,6 @@ export function useBookSourceSwitch({
     const restoreRevision = getRestoreRevision();
     const book = fromReader ? readingBook.value : openedBook.value;
     await openBookSourceSwitchFor(book, fromReader, chapterTarget, restoreRevision);
-    if (fromReader && currentRestore(restoreRevision) && bookSourceSwitchOpen.value && !bookSourceCandidateResults.value.length && !bookSourceSearchBusy.value) {
-      await startBookSourceCandidateSearch();
-    }
   }
 
   async function openBookSourceSwitchForBook(book: BookResource, chapterTarget?: { id: string; title: string }, inline = false): Promise<void> {
@@ -163,19 +164,16 @@ export function useBookSourceSwitch({
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceSwitchOpen.value = true;
     bookSourceSwitchInline.value = inline;
-    if (chapterTarget) {
-      await startBookSourceCandidateSearch();
-    } else {
-      const generation = bookSourceSearchGeneration;
-
-      if (!currentRestore(restoreRevision) || generation !== bookSourceSearchGeneration) return;
-      bookSourceSearchStatus.value = bookSourceCandidateResults.value.length ? "已缓存的可换来源" : "尚无可换来源，点击刷新搜索。";
-    }
+    bookSourceSearchStatus.value = bookSourceCandidateResults.value.length ? "已缓存的可换来源" : "尚无可换来源，可点击「搜索更多」查找。";
   }
 
   function closeBookSourceSwitch(): void {
-    void information?.cancel().catch(console.error);
-    void text?.cancel().catch(console.error);
+    cancellation = Promise.allSettled([cancellation, information?.cancel(), text?.cancel()]).then(() => {});
+    information = null;
+    text = null;
+    bookSourceSwitchBusy.value = false;
+    bookSourceSwitchCancellable.value = false;
+    chapterSourceBusyResultId.value = null;
     const taskId = bookSourceSearchId.value;
     const shouldCancel = Boolean(taskId);
     bookSourceSearchGeneration += 1;
@@ -213,6 +211,7 @@ export function useBookSourceSwitch({
     bookSourceCandidateErrors.value = [];
     selectedBookSourceCandidate.value = null;
     bookSourceSearchBusy.value = true;
+    let candidates: SearchBookResult[] = [];
     try {
       const manualKeyword = bookSourceSearchKeyword.value.trim();
       // 换源与其他页面共用搜索接口，只在此选择 100% 匹配。
@@ -228,6 +227,7 @@ export function useBookSourceSwitch({
         results.push(...batch.results);
         searchedCandidates.value = presentSearchResults(results, keyword)
           .flatMap(group => group.sources!.map(source => ({ ...source, sources: group.sources })));
+        if (batch.results.length) candidates = bookSourceCandidateResults.value.filter(source => source.sourceId !== book.sourceId);
         if (batch.error) bookSourceCandidateErrors.value.push({ sourceId: batch.sourceId, message: batch.error });
         if (batch.sourceId) completed++;
         bookSourceSearchStatus.value = `正在搜索其他源（${completed} / ${sourceIds.length}）`;
@@ -244,6 +244,17 @@ export function useBookSourceSwitch({
         bookSourceSearchBusy.value = false;
         bookSourceSwitchError.value = errorText(error);
         bookSourceSearchStatus.value = "搜索失败";
+      }
+    } finally {
+      // 正常结束或取消后统一保存一次；未上架的书仍由加入书架操作保存。
+      if (candidates.length && currentRestore(restoreRevision) && libraryType(book.id)) {
+        book.alternatives = candidates.map(source => ({ ...source, cover: source.coverSrc, latest: source.latestChapter }));
+        await modifyDatabase([
+          { operation: "saveBooks", books: candidates.map(source => ({ sourceId: source.sourceId, bookUrl: source.bookUrl, title: source.title, author: source.author, cover: source.coverSrc, latest: source.latestChapter })) },
+          { operation: "saveBook", bookId: book.id, changes: { alternatives: candidates.map(source => source.resultId) } },
+        ], { wait: true }).catch(error => {
+          if (currentRestore(restoreRevision)) notify(`保存可换来源失败：${errorText(error)}`, "error");
+        });
       }
     }
   }
@@ -284,6 +295,8 @@ export function useBookSourceSwitch({
     bookSourceCheckBusy.value = true;
     bookSourceSwitchError.value = "";
     try {
+      await cancellation;
+      if (!current()) return;
       information = moreInformation(book.sourceId, book.bookUrl);
       await information;
       if (!current()) return;
@@ -311,7 +324,10 @@ export function useBookSourceSwitch({
     chapterSourceBusyResultId.value = candidate.resultId;
     chapterSourceError.value = "";
     bookSourceSwitchBusy.value = true;
+    bookSourceSwitchCancellable.value = true;
     try {
+      await cancellation;
+      if (!current()) return;
       information = moreInformation(candidate.sourceId, candidate.bookUrl);
       await information;
       if (!current()) return;
@@ -329,6 +345,7 @@ export function useBookSourceSwitch({
       if (!replacement?.chapter.contentId) throw new Error("候选章节正文尚未缓存。");
       await cancelMainText(book.id, chapter.id);
       if (!current()) return;
+      bookSourceSwitchCancellable.value = false;
       await saveChapter(book.id, { ...chapter, contentId: replacement.chapter.contentId });
       if (!current()) return;
       await refreshOpenedChapter(book.id, chapter.id);
@@ -347,9 +364,10 @@ export function useBookSourceSwitch({
       chapterSourceError.value = errorText(error);
       notify(chapterSourceError.value, "error");
     } finally {
-      if (currentRestore(revision)) {
+      if (currentRestore(revision) && generation === bookSourceSearchGeneration) {
         chapterSourceBusyResultId.value = null;
         bookSourceSwitchBusy.value = false;
+        bookSourceSwitchCancellable.value = false;
       }
     }
   }
@@ -361,8 +379,11 @@ export function useBookSourceSwitch({
     const current = () => currentRestore(revision) && generation === bookSourceSearchGeneration && bookSourceSwitchOpen.value;
     const readerWasOpen = bookSourceSwitchFromReader.value && readerVisible.value && readingBook.value?.id === book.id;
     bookSourceSwitchBusy.value = true;
+    bookSourceSwitchCancellable.value = true;
     bookSourceChangeError.value = "";
     try {
+      await cancellation;
+      if (!current()) return;
       if (readerWasOpen) {
         await saveCurrentProgress();
         if (!current()) return;
@@ -373,10 +394,25 @@ export function useBookSourceSwitch({
       if (!current()) return;
       const cached = await readMoreInformation(candidate.sourceId, candidate.bookUrl);
       if (!current()) return;
+      const alternatives = [{ resultId: book.id, sourceId: book.sourceId!, sourceName: book.sourceName ?? "", bookUrl: book.bookUrl!,
+        title: book.title, author: book.author, coverSrc: book.coverSrc, latestChapter: book.latestChapter }, ...bookSourceCandidateResults.value]
+        .filter(source => source.sourceId !== cached.sourceId);
+      // 只在上架的新来源上保存关联；未上架时只保留内存中的来源列表。
+      if (libraryType(book.id)) {
+        await modifyDatabase([
+          { operation: "saveBooks", books: alternatives.map(source => ({ sourceId: source.sourceId, bookUrl: source.bookUrl, title: source.title, author: source.author, cover: source.coverSrc, latest: source.latestChapter })) },
+          { operation: "saveBook", bookId: cached.id, changes: { alternatives: alternatives.map(source => source.resultId) } },
+        ], { wait: true });
+        if (!current()) return;
+      }
+      cached.alternatives = alternatives.map(source => ({ ...source, cover: source.coverSrc, latest: source.latestChapter }));
+      bookSourceSwitchCancellable.value = false;
       // 整书换源只替换书架条目，书架现有监听负责持久化；两本书的缓存各自保留。
       if (libraryType(book.id)) replaceLibraryContent(book.id, cached);
       if (openedBook.value?.id === book.id) replaceOpenedBook(cached);
       if (!current()) return;
+      closeBookSourceSwitch();
+      notify(`已切换到“${candidate.sourceName}”。`);
       if (readerWasOpen) {
         readingBook.value = cached;
         readingChapterIndex.value = cached.progress?.chapterIndex ?? 0;
@@ -384,13 +420,13 @@ export function useBookSourceSwitch({
         readingContent.value = null;
         await loadReaderChapter(readingChapterIndex.value);
       }
-      if (!current()) return;
-      closeBookSourceSwitch();
-      notify(`已切换到“${candidate.sourceName}”。`);
     } catch (error) {
       if (current()) bookSourceChangeError.value = errorText(error);
     } finally {
-      if (currentRestore(revision)) bookSourceSwitchBusy.value = false;
+      if (currentRestore(revision) && generation === bookSourceSearchGeneration) {
+        bookSourceSwitchBusy.value = false;
+        bookSourceSwitchCancellable.value = false;
+      }
     }
   }
   function resetForRestore(): void {
@@ -401,6 +437,10 @@ export function useBookSourceSwitch({
     bookSourceSwitchInline.value = false;
     bookSourceSwitchConfirmOpen.value = false;
     bookSourceSwitchBusy.value = false;
+    bookSourceSwitchCancellable.value = false;
+    cancellation = Promise.resolve();
+    information = null;
+    text = null;
     bookSourceCheckBusy.value = false;
     chapterSourceBusyResultId.value = null;
     chapterSourceError.value = "";
@@ -425,6 +465,7 @@ export function useBookSourceSwitch({
     bookSourceSwitchOpen,
     bookSourceSwitchInline,
     bookSourceSwitchBusy,
+    bookSourceSwitchCancellable,
     bookSourceCheckBusy,
     chapterSourceBusyResultId,
     chapterSourceError,

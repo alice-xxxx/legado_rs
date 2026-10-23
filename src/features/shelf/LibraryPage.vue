@@ -201,10 +201,6 @@ function openImport(): void {
   void router.push({ name: routeNames.shelfImport });
 }
 
-function openSearch(): void {
-  void router.push({ name: routeNames.search });
-}
-
 function groupBookCount(group: string): number {
   return group ? shelfView.shelf.books.filter((book) => book.groups?.includes(group)).length
     : shelfView.shelf.books.length;
@@ -380,11 +376,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
               @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</button>
           </div>
           <div v-else-if="!shelfBatch.selectionMode" class="page-empty-state library-filter-empty">
-            <strong>暂无内容</strong>
-            <div class="page-empty-actions">
-              <button class="button secondary small" :disabled="mutationLocked" @click.stop="openImport()">导入</button>
-              <button class="button primary small" @click.stop="openSearch()">搜索</button>
-            </div>
+            暂无内容
           </div>
         </section>
       </main>

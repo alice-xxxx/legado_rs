@@ -6,6 +6,7 @@ export type BookSourceSwitchSession = Pick<
   | "bookSourceSwitchOpen"
   | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
+  | "bookSourceSwitchCancellable"
   | "bookSourceCheckBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceError"

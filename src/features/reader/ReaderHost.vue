@@ -84,6 +84,7 @@ const disposeReaderSession = installReaderSession({
   readingBook: readerFeatures.readingBook,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   startReading: readerFeatures.startReading,
+  applyBookInformation: readerFeatures.applyBookInformation,
   saveCurrentProgress: readerFeatures.saveCurrentProgress,
   finishReadingSession: readerFeatures.finishReadingSession,
   closeReader: closeReaderForNavigation,

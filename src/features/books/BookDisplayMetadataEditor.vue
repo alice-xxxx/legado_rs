@@ -199,16 +199,16 @@ function submit(): void {
 <template>
   <Teleport to="body">
     <section class="book-display-editor-backdrop" data-back-layer @click.self="requestClose">
-      <article class="book-display-editor">
+      <article class="book-display-editor" role="dialog" aria-modal="true" aria-labelledby="book-display-editor-title">
         <header class="book-display-editor-toolbar safe-area-top">
           <BackButton class="book-display-editor-back" :label="returnLabel" :disabled="coverPicking" @click="requestClose" />
-          <h2 id="book-display-editor-title">书籍信息编辑</h2>
+          <h2 id="book-display-editor-title">编辑显示信息</h2>
           <button type="submit" form="book-display-editor-form" class="book-display-editor-save" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</button>
         </header>
         <form id="book-display-editor-form" class="book-display-editor-form" @submit.prevent="submit">
           <div class="book-display-editor-identity">
             <div class="book-display-cover-preview">
-              <img v-if="coverPreviewSrc && !coverPreviewError" :src="coverPreviewSrc" @error="coverPreviewError = true" />
+              <img v-if="coverPreviewSrc && !coverPreviewError" :src="coverPreviewSrc" alt="封面预览" @error="coverPreviewError = true" />
               <span v-else-if="coverPreviewError">封面无法加载，请检查地址或资源是否可用。</span>
               <span v-else>{{ coverPreviewMessage || "暂无封面" }}</span>
             </div>
@@ -241,16 +241,12 @@ function submit(): void {
               <button type="button" class="text-button" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</button>
               <button type="button" class="text-button" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</button>
             </div>
-            <small>支持选择 JPEG、PNG、WebP 图片或填写 HTTPS 地址；留空表示不显示封面。所选图片在保存显示信息后生效。</small>
+            <small>支持 JPG、PNG、WebP 图片或 HTTPS 地址。留空不显示封面。</small>
             <p v-if="coverSelectionError" class="book-display-editor-error">{{ coverSelectionError }}</p>
           </label>
 
           <button type="button" class="text-button book-display-reset-all" :disabled="locked" @click="resetAll">全部恢复原值</button>
           <p v-if="locked" class="book-display-editor-error">恢复完成前不能继续保存。请重启应用后检查书架。</p>
-          <footer class="book-display-editor-actions">
-            <button type="button" class="button secondary" :disabled="coverPicking" @click="requestClose">取消</button>
-            <button type="submit" class="button primary" :disabled="locked || coverPicking || !hasChanges">保存修改</button>
-          </footer>
         </form>
       </article>
       <div v-if="discardPromptOpen" class="book-display-discard-scrim" data-back-layer>
@@ -268,48 +264,42 @@ function submit(): void {
 </template>
 
 <style scoped>
-.book-display-editor-backdrop{--be-accent:var(--app-accent);--be-line:var(--app-line);--be-muted:var(--app-subtle);position:fixed;z-index:80;inset:0;display:grid;place-items:center;padding:18px;background:#191b2780;backdrop-filter:blur(2px)}
-.book-display-editor{width:min(700px,100%);height:min(860px,92dvh);display:flex;flex-direction:column;overflow:hidden;border:1px solid var(--be-line);border-radius:15px;color:var(--app-text);background:var(--app-surface);box-shadow:0 24px 72px #15172130}
-.book-display-editor-toolbar{flex:none;min-height:61px;display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:center;gap:12px;padding-inline:var(--ui-header-gutter);padding-bottom:6px;border-bottom:1px solid var(--be-line)}
-.book-display-editor-toolbar h2{margin:0;text-align:center;color:var(--app-text);font-size:var(--ui-font-heading);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-.book-display-editor-back{justify-self:start}
-.book-display-editor-save{min-height:35px;padding:0 14px;border:0;border-radius:9px;background:var(--be-accent);color:var(--app-on-accent);font-size:var(--ui-font-caption);font-weight:700;cursor:pointer}
-.book-display-editor-save:disabled{opacity:.5;cursor:default}
-.book-display-editor-form{min-height:0;display:grid;align-content:start;gap:20px;overflow:auto;padding:20px 24px 30px}
-.book-display-editor-identity{display:grid;grid-template-columns:112px minmax(0,1fr);align-items:start;gap:17px}
-.book-display-identity-fields{display:grid;gap:14px;min-width:0}
-.book-display-field{display:grid;gap:7px;min-width:0;color:var(--app-muted);font-size:var(--ui-font-caption);font-weight:650}
-.book-display-field input,.book-display-field textarea{box-sizing:border-box;min-width:0;width:100%;padding:10px 11px;border:1px solid var(--app-line);border-radius:9px;color:var(--app-text);background:var(--app-surface);font-size:var(--ui-font-body);font-family:inherit;line-height:1.55}
-.book-display-field input{min-height:40px}
-.book-display-field textarea{min-height:130px;resize:vertical;white-space:pre-wrap;overflow-wrap:anywhere}
-.book-display-field input:focus,.book-display-field textarea:focus{outline:2px solid #6757d644;outline-offset:0;border-color:var(--app-accent-soft)}
-.book-display-field small{color:var(--be-muted);font-size:var(--ui-font-caption);line-height:1.5;font-weight:400;overflow-wrap:anywhere}
-.book-display-input-row{display:flex;align-items:center;flex-wrap:wrap;gap:8px;min-width:0}
-.book-display-input-row input{flex:1 1 200px}
-.book-display-input-row .text-button{flex:none;min-height:35px;padding:0 8px;border:0;border-radius:8px;color:var(--be-accent);background:var(--app-accent-soft);font-size:var(--ui-font-body);white-space:nowrap;cursor:pointer}
-.book-display-input-row .text-button:disabled{opacity:.5;cursor:default}
-.book-display-cover-preview{width:112px;height:154px;display:grid;place-items:center;overflow:hidden;border:1px solid var(--be-line);border-radius:9px;color:var(--app-subtle);background:var(--app-panel-soft);font-size:var(--ui-font-caption);line-height:1.5;text-align:center}
-.book-display-cover-preview img{width:100%;height:100%;object-fit:cover}
-.book-display-cover-preview span{padding:8px}
-.book-display-reset-all{justify-self:start;min-height:32px;padding:0 5px;border:0;background:transparent;color:var(--be-accent);font-size:var(--ui-font-caption);cursor:pointer}
-.book-display-editor-error{margin:0;padding:10px 12px;border:1px solid var(--app-danger-line);border-radius:9px;color:var(--app-danger);background:var(--app-danger-soft);font-size:var(--ui-font-caption);line-height:1.55;overflow-wrap:anywhere}
-.book-display-editor-actions{position:sticky;bottom:-30px;z-index:2;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin:0 -24px -30px;padding:14px 24px max(14px,var(--safe-bottom));border-top:1px solid var(--be-line);background:var(--app-surface)}
-.book-display-editor-actions .button{min-height:36px;white-space:nowrap;font-size:var(--ui-font-body)}
-.book-display-discard-scrim{position:fixed;z-index:90;inset:0;display:grid;place-items:center;padding:14px;background:#191b2799}
-.book-display-discard-dialog{box-sizing:border-box;width:min(435px,100%);padding:24px;border:1px solid var(--be-line);border-radius:14px;background:var(--app-surface);box-shadow:0 18px 55px #15172133}
-.book-display-discard-dialog h3{margin:0;font-size:var(--ui-font-heading);color:var(--app-text)}
-.book-display-discard-dialog p{margin:11px 0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.65}
-.book-display-discard-dialog footer{display:flex;justify-content:flex-end;gap:9px;margin-top:19px}
-@media(max-width:640px){
- .book-display-editor-backdrop{padding:0;display:block}
- .book-display-editor{width:100%;height:100dvh;border:0;border-radius:0}
- .book-display-editor-toolbar{min-height:55px;padding-inline:var(--ui-header-gutter);padding-bottom:0}
- .book-display-editor-toolbar h2{font-size:var(--ui-font-heading)}
- .book-display-editor-form{gap:17px;padding:16px 15px 22px}
- .book-display-editor-identity{grid-template-columns:92px minmax(0,1fr);gap:12px}
- .book-display-cover-preview{width:92px;height:127px}
- .book-display-identity-fields{gap:11px}
- .book-display-input-row input{flex-basis:100%}
- .book-display-editor-actions{margin:0 -15px -22px;bottom:-22px;padding:11px 15px max(14px,var(--safe-bottom))}
+.book-display-editor-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(25 27 35 / 36%); }
+.book-display-editor { display: flex; flex-direction: column; width: min(700px, 100%); height: min(860px, 92dvh); overflow: hidden; border: 1px solid var(--app-line); border-radius: 14px; color: var(--app-text); background: var(--app-surface); box-shadow: var(--app-shadow); }
+.book-display-editor-toolbar { display: grid; grid-template-columns: 44px minmax(0, 1fr) 56px; align-items: center; flex: none; gap: 8px; min-height: 64px; padding-inline: 16px; border-bottom: 1px solid var(--app-line); }
+.book-display-editor-toolbar h2 { overflow: hidden; margin: 0; font-size: var(--ui-font-body); font-weight: 600; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.book-display-editor-save { min-height: 36px; padding-inline: 12px; border-radius: 8px; color: var(--app-on-accent); background: var(--app-accent); font-size: var(--ui-font-body); cursor: pointer; }
+.book-display-editor-form { display: grid; align-content: start; gap: 24px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; }
+.book-display-editor-identity { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: start; gap: 20px; }
+.book-display-identity-fields { display: grid; gap: 16px; min-width: 0; }
+.book-display-field { display: grid; gap: 8px; min-width: 0; color: var(--app-muted); font-size: var(--ui-font-caption); }
+.book-display-field input,
+.book-display-field textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--app-line); border-radius: 8px; color: var(--app-text); background: var(--app-panel-softer); font-size: var(--ui-font-body); line-height: 1.6; }
+.book-display-field input { min-height: 44px; }
+.book-display-field textarea { min-height: 160px; resize: vertical; }
+.book-display-field input:focus,
+.book-display-field textarea:focus { outline: 2px solid var(--app-accent); outline-offset: 1px; background: var(--app-surface); }
+.book-display-field small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
+.book-display-input-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.book-display-input-row input { flex: 1 1 100%; }
+.book-display-input-row .text-button { min-height: 40px; padding: 0 12px; border-radius: 8px; color: var(--app-accent-ink); background: var(--app-accent-soft); font-size: var(--ui-font-caption); font-weight: 400; }
+.book-display-cover-preview { display: grid; place-items: center; width: 100px; height: 138px; overflow: hidden; border-radius: 8px; color: var(--app-muted); background: var(--app-panel-soft); font-size: var(--ui-font-caption); text-align: center; }
+.book-display-cover-preview img { width: 100%; height: 100%; object-fit: cover; }
+.book-display-cover-preview span { padding: 8px; overflow-wrap: anywhere; }
+.book-display-reset-all { justify-self: start; min-height: 44px; font-size: var(--ui-font-caption); font-weight: 400; }
+.book-display-editor-error { margin: 0; padding: 12px; border-radius: 8px; color: var(--app-danger); background: var(--app-danger-soft); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
+.book-display-discard-scrim { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 16px; background: rgb(25 27 35 / 36%); }
+.book-display-discard-dialog { width: min(420px, 100%); padding: 24px; border: 1px solid var(--app-line); border-radius: 14px; background: var(--app-surface); box-shadow: var(--app-shadow); }
+.book-display-discard-dialog h3 { margin: 0 0 12px; color: var(--app-text); font-size: var(--ui-font-heading); }
+.book-display-discard-dialog p { color: var(--app-muted); font-size: var(--ui-font-body); line-height: 1.7; }
+.book-display-discard-dialog footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 24px; }
+.book-display-discard-dialog .button { padding-inline: 8px; }
+@media (max-width: 600px) {
+  .book-display-editor-backdrop { padding: 0; }
+  .book-display-editor { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
+  .book-display-editor-toolbar { min-height: calc(56px + var(--safe-top)); padding-inline: 12px; }
+  .book-display-editor-form { gap: 20px; padding: 20px 16px max(24px, var(--safe-bottom)); }
+  .book-display-editor-identity { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; }
+  .book-display-cover-preview { width: 80px; height: 112px; }
 }
 </style>

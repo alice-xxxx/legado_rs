@@ -78,6 +78,7 @@ export interface ContentGroup { id: string[]; name: string; }
 export type ContentLibrary = Partial<Record<ContentType, ContentPreview[]>> & { groups?: ContentGroup[] };
 
 export interface ContentAlternative {
+  resultId: string;
   bookUrl: string;
   sourceId: string;
   sourceName: string;
@@ -85,6 +86,8 @@ export interface ContentAlternative {
   author?: string;
   cover?: string;
   latest?: string;
+  intro?: string;
+  responseTimeMs?: number;
 }
 export interface ImagePage { id: string; src: string; url?: string; }
 export interface ChapterImagesResource { kind: "images"; pages: ImagePage[]; }
@@ -157,6 +160,8 @@ export interface BookResource {
   /** Filename of the retained local original, such as original.epub. */
   original?: string;
   updatedAtMs?: number;
+  /** 最近一次成功获取详情和目录的时间。 */
+  informationFetchedAtMs?: number;
   cover?: string;
   alternatives?: ContentAlternative[];
   /** Audio and video sources store progress.offset in milliseconds. */
@@ -291,6 +296,8 @@ export interface DisplayReplacementRule {
 
 /** Rust 处理后的单个书源候选；resultId 用于详情、入架和换源操作。 */
 export interface SearchResultSource {
+  /** 本次书源搜索耗时，包含网站请求和规则处理，不含本地排队。 */
+  responseTimeMs?: number;
   /** 原始书籍上下文供统一写库保存，详情规则可继续使用其中的自定义字段。 */
   engine?: Record<string, unknown>;
   bookUrl: string;

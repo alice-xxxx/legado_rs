@@ -8,7 +8,11 @@ use crate::{
 use futures_util::{stream, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 pub(crate) struct Search {
     pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
@@ -124,20 +128,26 @@ impl Search {
                 request.cancellation = Some(token.clone());
                 async move {
                     let _cancel_on_drop = token.drop_guard();
+                    let mut response_time_ms = None;
                     let response = async {
                         let _slot = self
                             .search_slots
                             .acquire()
                             .await
                             .map_err(|error| error.to_string())?;
-                        tokio::time::timeout(SEARCH_SOURCE_TIMEOUT, self.executor.execute(request))
-                            .await
-                            .unwrap_or_else(
-                                |_| Err("Source search timed out after 10000 ms".into()),
-                            )
+                        // 从取得执行名额后计时，排除本地并发排队时间。
+                        let started = Instant::now();
+                        let response = tokio::time::timeout(
+                            SEARCH_SOURCE_TIMEOUT,
+                            self.executor.execute(request),
+                        )
+                        .await
+                        .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()));
+                        response_time_ms = Some(started.elapsed().as_millis() as u64);
+                        response
                     }
                     .await;
-                    (source, response)
+                    (source, response, response_time_ms)
                 }
             })
             .buffer_unordered(SEARCH_CONCURRENCY);
@@ -147,7 +157,7 @@ impl Search {
                 _ = cancellation.cancelled() => break,
                 response = responses.next() => response,
             };
-            let Some((source, response)) = response else {
+            let Some((source, response, response_time_ms)) = response else {
                 break;
             };
             let _operation = tokio::select! {
@@ -171,7 +181,8 @@ impl Search {
                             continue;
                         }
                         let result_id = source_book_id(&source, book);
-                        let leaf = project_search_result(&result_id, &source, book);
+                        let mut leaf = project_search_result(&result_id, &source, book);
+                        leaf.response_time_ms = response_time_ms;
                         if search_match_rank(
                             &leaf.title,
                             leaf.author.as_deref(),
@@ -307,6 +318,8 @@ pub(crate) struct SearchResultSource {
     pub(crate) intro: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) latest_chapter: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub(crate) response_time_ms: Option<u64>,
     pub(crate) book_url: String,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub(crate) media_type: Option<String>,
@@ -330,6 +343,7 @@ pub(crate) fn project_search_result(
         cover_src: None,
         intro: None,
         latest_chapter: None,
+        response_time_ms: None,
         book_url: text_at(book, &["bookUrl", "url", "origin"]).unwrap_or_default(),
         media_type: None,
         kind: None,

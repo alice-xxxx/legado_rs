@@ -307,13 +307,14 @@ fn save_progress(
             progress.chapter_index + 1,
         )
     } else {
-        s.read(
-            "SELECT id,read_position FROM chapter_positions WHERE book_id=?1 AND position=?2",
-            params![book, progress.chapter_index],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?)),
-        )?
-        .pop()
-        .ok_or_else(|| ResourceError::new("章节不存在"))?
+        // 详情后台更新可能调整章节序号，已有章节 ID 始终优先于旧序号。
+        let (id, index, read) = s.read(
+            "SELECT id,position,read_position FROM chapter_positions WHERE book_id=?1 AND ((?3 IS NOT NULL AND id=?3) OR (?3 IS NULL AND position=?2))",
+            params![book, progress.chapter_index, progress.chapter_id],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, u64>(1)?, r.get::<_, u64>(2)?)),
+        )?.pop().ok_or_else(|| ResourceError::new("章节不存在"))?;
+        progress.chapter_index = index;
+        (id, read)
     };
     if progress
         .chapter_id

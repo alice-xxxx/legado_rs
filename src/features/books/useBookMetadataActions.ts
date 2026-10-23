@@ -1,7 +1,7 @@
 import { removeLibraryContent } from "./contentLibraryState";
 import type { Ref } from "vue";
 import { type BookDisplayMetadataPatch, type BookIdentity } from "../../api/types";
-import { openedBook, refreshOpenedBook as refreshBookResource } from "./bookDetailState";
+import { openedBook, openedBookFromShelf, refreshOpenedBook as refreshBookResource } from "./bookDetailState";
 
 type PendingBookRemoval = { id: string; title: string };
 
@@ -61,6 +61,7 @@ export function useBookMetadataActions(options: BookMetadataActionsOptions) {
     if (!pendingRemoval.value || recoveryRequired.value) return;
     const { id, title } = pendingRemoval.value;
     removeLibraryContent([id]);
+    if (openedBook.value?.id === id) openedBookFromShelf.value = false;
     pendingRemoval.value = null;
     notify(`《${title}》已从书架移除，缓存和阅读记录保留。`);
   }

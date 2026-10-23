@@ -22,7 +22,7 @@ import { useReaderPageInteraction } from "./useReaderPageInteraction";
 import { useReaderMediaBinding } from "./useReaderMediaBinding";
 import { NativeReaderAudio, seekMedia, type ReaderMediaElement } from "./nativeAudio";
 import { registerReaderTtsConfigSelectionWriter } from "./readerTtsConfigService";
-import { clearOpenedBook, openedBook, refreshOpenedChapter, switchOpenedBook } from "../books/bookDetailState";
+import { clearOpenedBook, openedBook, refreshOpenedChapter, replaceOpenedBook, switchOpenedBook } from "../books/bookDetailState";
 import { collectReaderTtsSegments } from "./ttsText";
 
 type ReaderControlsMode = "settings" | "tts" | "appearance" | "search";
@@ -254,6 +254,40 @@ function loadReaderChapter(index: number, mediaOffset?: number, fragment?: strin
 async function startReading(book: BookResource, index?: number, offset?: number, positionHint?: ReaderPosition): Promise<void> {
   const activeBook = openedBook.value?.id === book.id ? openedBook.value : await switchOpenedBook(book.id);
   if (activeBook) await readerChapterLoading.startReading(activeBook, index, offset, positionHint);
+}
+
+/** 后台目录更新按章节 ID 保留正在阅读的位置，不让章节插入导致跳章。 */
+function applyBookInformation(book: BookResource): void {
+  const previous = openedBook.value;
+  if (!readerVisible.value || previous?.id !== book.id) {
+    replaceOpenedBook(book);
+    return;
+  }
+  const chapter = previous.chapters.find(entry => entry.index === readingChapterIndex.value);
+  const matched = book.chapters.find(entry => entry.id === chapter?.id);
+  const target = matched ?? book.chapters.find(entry => entry.index === book.progress?.chapterIndex && !entry.volume)
+    ?? book.chapters.find(entry => !entry.volume);
+  if (!target) return;
+  const position = matched ? currentReaderPosition() : {
+    offset: book.progress?.offset ?? 0, pageId: book.progress?.pageId,
+    anchor: book.progress?.anchor, quality: book.progress?.quality,
+  };
+  const resourceKey = (entry: typeof chapter) => JSON.stringify([entry?.id, entry?.resource?.src, entry?.media?.src, entry?.pages?.map(page => page.src)]);
+  const reload = bookContentType(previous) !== bookContentType(book) || resourceKey(chapter) !== resourceKey(target);
+  if (reload) {
+    readerPendingPosition.value = position;
+    readerMediaBinding.clearReaderMediaBinding(true);
+  }
+  book.progress = { ...book.progress, ...position, chapterId: target.id, chapterIndex: target.index };
+  readingChapterIndex.value = target.index;
+  replaceOpenedBook(book);
+  if (reload) {
+    void readerChapterLoading.loadReaderChapter(target.index, position.offset, undefined, position);
+    return;
+  }
+  readerProgressDirty.value = true;
+  progressRevision += 1;
+  void saveCurrentProgress();
 }
 
 function setReaderPage(index: number): void { readerNavigationActions.setReaderPage(index); }
@@ -594,7 +628,7 @@ return {
   onReaderSurfaceClick, moveReaderFind, handleReaderFindKeydown, isReaderMediaControlBlocked,
   setReaderMediaElement, toggleReaderMediaPlayback, seekReaderMedia, skipReaderMedia,
   clearReaderMediaSleepTimer, setReaderMediaSleepTimer, onReaderMediaSleepTimerChange, closeReader, handleReaderResize,
-  loadReaderChapter, startReading, setReaderPage, turnPage, saveCurrentProgress,
+  loadReaderChapter, startReading, applyBookInformation, setReaderPage, turnPage, saveCurrentProgress,
   formatReaderMediaTime, openReaderDirectory,
   downloadReaderBook, openReaderControls, openHttpTtsSettings,
   ttsError, selectedReaderText, clearReaderScrollListeners: readerDisplay.clearReaderScrollListeners,

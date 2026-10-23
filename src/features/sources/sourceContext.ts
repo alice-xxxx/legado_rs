@@ -10,6 +10,7 @@ export type BookSourceSwitchContract = UnwrapNestedRefs<Pick<
   | "bookSourceSwitchOpen"
   | "bookSourceSwitchInline"
   | "bookSourceSwitchBusy"
+  | "bookSourceSwitchCancellable"
   | "bookSourceCheckBusy"
   | "chapterSourceBusyResultId"
   | "chapterSourceError"
