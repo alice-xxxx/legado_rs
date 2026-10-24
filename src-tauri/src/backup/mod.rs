@@ -14,7 +14,7 @@ pub(crate) use create::create_backup;
 pub use restore::recover_interrupted_restore;
 pub(crate) use restore::restore_backup;
 
-const BACKUP_FORMAT: &str = "legado-rs-resource-backup";
+const BACKUP_FORMAT: &str = "foliver-resource-backup";
 const BACKUP_VERSION: u32 = 2;
 const MANIFEST_PATH: &str = "manifest.json";
 const MAX_ENTRIES: usize = 100_000;

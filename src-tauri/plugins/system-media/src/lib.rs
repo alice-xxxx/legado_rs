@@ -24,7 +24,7 @@ mod mobile {
             .invoke_handler(tauri::generate_handler![update, clear])
             .setup(|app, api| {
                 #[cfg(target_os = "android")]
-                let handle = api.register_android_plugin("io.legado.media", "SystemMediaPlugin")?;
+                let handle = api.register_android_plugin("com.xyz.foliver.media", "SystemMediaPlugin")?;
                 #[cfg(target_os = "ios")]
                 let handle = api.register_ios_plugin(init_plugin_system_media)?;
                 app.manage(Session(handle));

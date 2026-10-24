@@ -17,12 +17,12 @@ use tauri::{Emitter, State};
 const WEBDAV_BACKUP_RETRY_COOLDOWN: Duration = Duration::from_secs(60 * 60);
 const WEBDAV_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_WEBDAV_BACKUP_BYTES: u64 = 512 * 1024 * 1024;
-const WEBDAV_BACKUP_FILE_NAME: &str = "legado-rs-backup.zip";
+const WEBDAV_BACKUP_FILE_NAME: &str = "foliver-backup.zip";
 use crate::backup::state::WebDavBackupConfig;
 
 async fn temporary_webdav_backup_file() -> Result<PickerFile, String> {
     let directory = std::env::temp_dir()
-        .join("legado-rs-webdav-backups")
+        .join("foliver-webdav-backups")
         .join(uuid::Uuid::new_v4().simple().to_string());
     tokio::fs::create_dir_all(&directory)
         .await
@@ -315,7 +315,7 @@ impl Operations {
     ) -> Result<Value, String> {
         let directory = webdav_directory_url(&config.url)?;
         let destination_url = webdav_file_url(&directory, WEBDAV_BACKUP_FILE_NAME)?;
-        let temporary_name = format!(".legado-rs-backup-{}.upload", uuid::Uuid::new_v4().simple());
+        let temporary_name = format!(".foliver-backup-{}.upload", uuid::Uuid::new_v4().simple());
         let temporary_url = webdav_file_url(&directory, &temporary_name)?;
         let staged = temporary_webdav_backup_file().await?;
         self.create_backup(database, resources, &staged.path)
@@ -658,7 +658,7 @@ pub(crate) async fn create_backup_from_picker(
     if let Ok(path) = destination.clone().into_path() {
         service.create_backup(&database, &resources, &path).await?;
     } else {
-        let directory = std::env::temp_dir().join("legado-rs-backup-staging");
+        let directory = std::env::temp_dir().join("foliver-backup-staging");
         tokio::fs::create_dir_all(&directory)
             .await
             .map_err(|error| error.to_string())?;
@@ -758,7 +758,7 @@ pub(crate) async fn restore_backup_from_picker(
     app: tauri::AppHandle,
     service: State<'_, std::sync::Arc<Operations>>,
 ) -> Result<Value, String> {
-    let selected = match pick_file(&app, "Legado backup", &["zip"]).await {
+    let selected = match pick_file(&app, "Foliver backup", &["zip"]).await {
         Ok(selected) => selected,
         Err(error) => {
             return Ok(restore_error_response(

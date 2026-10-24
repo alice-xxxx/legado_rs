@@ -1,7 +1,7 @@
 plugins { id("com.android.library") }
 
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
-    namespace = "io.legado.media"
+    namespace = "com.xyz.foliver.media"
     compileSdk = 37
     defaultConfig { minSdk = 26 }
     compileOptions {

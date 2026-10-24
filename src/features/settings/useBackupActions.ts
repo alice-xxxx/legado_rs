@@ -151,7 +151,7 @@ export function useBackupActions() {
         webDavBackupError.value = `备份已上传，但${warning}`;
         notify(webDavBackupError.value, "error");
       } else {
-        notify("WebDAV 备份已上传至 legado-rs-backup.zip。");
+        notify("WebDAV 备份已上传。");
       }
     } catch (error) {
       webDavBackupError.value = `WebDAV 上传失败：${errorText(error)}`;
@@ -165,7 +165,7 @@ export function useBackupActions() {
     const config = webDavBackupConfig.value;
     if (backupBusy.value || shelfBatchRecoveryRequired.value
       || !config?.url) return;
-    if (!window.confirm("将使用 WebDAV 目录中的 legado-rs-backup.zip 替换当前本地书架、阅读数据、源和设置。恢复成功后会重新载入应用数据。要继续吗？")) return;
+    if (!window.confirm("将使用 WebDAV 目录中的备份替换当前本地书架、阅读数据、源和设置。恢复成功后会重新载入应用数据。要继续吗？")) return;
     beginBackupRestore();
     webDavBackupError.value = "";
     try {

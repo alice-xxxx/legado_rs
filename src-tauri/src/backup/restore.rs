@@ -67,7 +67,7 @@ pub fn recover_interrupted_restore(root: impl AsRef<Path>) -> Result<(), String>
         .and_then(|name| name.to_str())
         .ok_or_else(|| "App data root has an invalid folder name".to_owned())?;
     let root = parent.join(root_name);
-    let journal_path = parent.join(format!(".legado-restore-{root_name}.json"));
+    let journal_path = parent.join(format!(".foliver-restore-{root_name}.json"));
     let journal_bytes = match fs::read(&journal_path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -75,8 +75,8 @@ pub fn recover_interrupted_restore(root: impl AsRef<Path>) -> Result<(), String>
     };
     let journal: RestoreJournal = serde_json::from_slice(&journal_bytes)
         .map_err(|error| format!("Restore recovery record is invalid: {error}"))?;
-    let stage_name = validate_recovery_name(&journal.stage_name, "legado-restore-")?;
-    let displaced_name = validate_recovery_name(&journal.displaced_name, ".legado-previous-")?;
+    let stage_name = validate_recovery_name(&journal.stage_name, "foliver-restore-")?;
+    let displaced_name = validate_recovery_name(&journal.displaced_name, ".foliver-previous-")?;
     let stage = parent.join(stage_name);
     let displaced = parent.join(displaced_name);
 
@@ -171,7 +171,7 @@ pub(crate) fn restore_backup_sync(
         .parent()
         .ok_or_else(|| TransactionError::new("App data root has no parent folder"))?;
     let stage_dir = tempfile::Builder::new()
-        .prefix("legado-restore-")
+        .prefix("foliver-restore-")
         .tempdir_in(parent)
         .map_err(|error| {
             TransactionError::new(format!("Cannot create restore staging folder: {error}"))
@@ -193,14 +193,14 @@ fn commit_restore(root: &Path, stage: &Path) -> Result<(), TransactionError> {
         ));
     }
     let displaced = parent.join(format!(
-        ".legado-previous-{}",
+        ".foliver-previous-{}",
         uuid::Uuid::new_v4().simple()
     ));
     let root_name = root
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| TransactionError::new("App data root has an invalid folder name"))?;
-    let journal_path = parent.join(format!(".legado-restore-{root_name}.json"));
+    let journal_path = parent.join(format!(".foliver-restore-{root_name}.json"));
     let journal = RestoreJournal {
         stage_name: stage
             .file_name()

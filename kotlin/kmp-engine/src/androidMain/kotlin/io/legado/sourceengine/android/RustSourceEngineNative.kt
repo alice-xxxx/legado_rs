@@ -6,7 +6,7 @@ package io.legado.sourceengine.android
  * Small JNI surface for Android. The native library name follows Cargo's `[lib] name`; top-level
  * external methods expose stable static JNI symbols to the Kotlin host adapter.
  */
-private val rustSourceEngineLibraryLoaded: Unit = System.loadLibrary("legado_lib")
+private val rustSourceEngineLibraryLoaded: Unit = System.loadLibrary("foliver_lib")
 
 internal fun rustSourceHttpRequest(requestJson: String): String {
     rustSourceEngineLibraryLoaded

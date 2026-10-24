@@ -12,12 +12,12 @@ export const deepLinkLabels: Record<DeepLinkKind, string> = {
 /** Match LegadoDeepLink.parse: first src, form decoding, fragments ignored, missing src ignored. */
 export function parseDeepLink(raw: string): PendingImportLink | null {
   const text = raw.trim();
-  if (!text.startsWith("legado://") && !text.startsWith("yuedu://") && !text.startsWith("legado-rs://")) return null;
+  if (!/^(foliver|legado|yuedu):\/\//.test(text)) return null;
   if (text.length > 4 * 1024 * 1024) throw new Error("导入链接过长。");
   const link = new URL(text);
   let kind: DeepLinkKind;
   let parameter = "src";
-  if (link.protocol === "legado-rs:") {
+  if (link.protocol === "foliver:") {
     if (link.username || link.password || link.port || link.hash || (link.pathname && link.pathname !== "/")) {
       throw new Error("不支持这个导入链接。");
     }

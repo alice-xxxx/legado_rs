@@ -105,6 +105,7 @@ val androidNinja = providers.provider { findNinjaExecutable(locateAndroidNdk()).
 val cleanLegacyRustAndroidAarLibraries = tasks.register<Delete>("cleanLegacyRustAndroidAarLibraries") {
     androidAbis.forEach { abi ->
         delete(androidJniLibsOutput.map { it.file("$abi/liblegado_lib.so") })
+        delete(androidJniLibsOutput.map { it.file("$abi/libfoliver_lib.so") })
     }
 }
 
@@ -276,7 +277,7 @@ kotlin {
             }
             binaries.framework {
                 baseName = "LegadoSourceEngine"
-                binaryOption("bundleId", "com.alice.legado.sourceengine")
+                binaryOption("bundleId", "com.xyz.foliver.sourceengine")
                 isStatic = true
                 val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_arm64").get().asFile
                 linkerOpts(
@@ -312,7 +313,7 @@ kotlin {
             }
             binaries.framework {
                 baseName = "LegadoSourceEngine"
-                binaryOption("bundleId", "com.alice.legado.sourceengine")
+                binaryOption("bundleId", "com.xyz.foliver.sourceengine")
                 isStatic = true
                 val quickJsLibs = layout.buildDirectory.dir("iosNativeLibs/ios_simulator_arm64").get().asFile
                 linkerOpts(

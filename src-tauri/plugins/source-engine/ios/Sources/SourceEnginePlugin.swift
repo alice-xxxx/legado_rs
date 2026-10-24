@@ -61,7 +61,7 @@ final class SourceEnginePlugin: Plugin {
         case .cancelled, .failed: phase = "end"
         default: return
         }
-        let payload: JSObject = ["phase": phase, "progress": progress, "commit": commit]
+        let payload: JSObject = ["phase": phase, "progress": Double(progress), "commit": commit]
         trigger("navigationBack", data: payload)
     }
 

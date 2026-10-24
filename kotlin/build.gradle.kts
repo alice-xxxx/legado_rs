@@ -247,7 +247,7 @@ tasks.register("stageTauriAndroidAar") {
                 input.entries().asSequence()
                     .filterNot {
                         it.name.startsWith("jni/") &&
-                            (!it.name.startsWith("jni/arm64-v8a/") || it.name.endsWith("/liblegado_lib.so"))
+                            (!it.name.startsWith("jni/arm64-v8a/") || it.name.endsWith("/liblegado_lib.so") || it.name.endsWith("/libfoliver_lib.so"))
                     }
                     .forEach { entry ->
                         output.putNextEntry(ZipEntry(entry.name))

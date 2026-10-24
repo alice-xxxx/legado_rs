@@ -60,7 +60,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes build-essential curl file libayatana-appindicator3-dev libssl-dev librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev
       - run: npm ci
-      - run: npm run tauri -- icon app-icon.png
+      - run: npm run icons
       - name: Prepare desktop engine and compact Java runtime
         if: runner.os != 'Windows'
         working-directory: kotlin
@@ -119,7 +119,7 @@ jobs:
         run: bash ./gradlew --no-daemon --console=plain stageTauriAndroidAar
       - run: npm ci
       - run: npm run tauri -- android init --ci
-      - run: npm run tauri -- icon app-icon.png
+      - run: npm run icons
       - name: Configure native Android app
         run: node src-tauri/android/configure.mjs
       - name: Restore release signing key
@@ -151,7 +151,7 @@ jobs:
           abis = {name.split("/")[1] for name in libraries}
           if abis != {"arm64-v8a"}:
               raise SystemExit(f"Unexpected APK architectures: {sorted(abis)}")
-          for library in ("liblegado_lib.so", "liblegado_quickjs.so"):
+          for library in ("libfoliver_lib.so", "liblegado_quickjs.so"):
               if f"lib/arm64-v8a/{library}" not in libraries:
                   raise SystemExit(f"Missing arm64 library: {library}")
           subprocess.run([str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/apksigner"), "verify", str(apks[0])], check=True)
@@ -221,7 +221,7 @@ jobs:
           xcodebuild -create-xcframework -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
       - run: npm ci
       - run: npm run tauri -- ios init --ci
-      - run: npm run tauri -- icon app-icon.png
+      - run: npm run icons
       - name: Package unsigned device IPA
         run: npm run tauri -- ios build --no-sign --ci
       - uses: actions/upload-artifact@v7

@@ -1513,6 +1513,54 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "foliver"
+version = "0.1.0"
+dependencies = [
+ "ammonia",
+ "atomicwrites",
+ "axum",
+ "base64 0.23.1",
+ "encoding_rs",
+ "feed-rs",
+ "futures-executor",
+ "futures-util",
+ "http-range-header",
+ "image",
+ "imageproc",
+ "jni 0.22.4",
+ "natord",
+ "ndk-context",
+ "percent-encoding",
+ "quick-xml 0.42.0",
+ "regex",
+ "reqwest",
+ "rusqlite",
+ "rustls-platform-verifier",
+ "serde",
+ "serde_json",
+ "sha2",
+ "sqlx",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-deep-link",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-opener",
+ "tauri-plugin-single-instance",
+ "tauri-plugin-source-engine",
+ "tauri-plugin-sql",
+ "tauri-plugin-system-media",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "tts",
+ "uuid",
+ "webp",
+ "zip",
+]
+
+[[package]]
 name = "foreign-types"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2723,54 +2771,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 dependencies = [
  "spin",
-]
-
-[[package]]
-name = "legado"
-version = "0.1.0"
-dependencies = [
- "ammonia",
- "atomicwrites",
- "axum",
- "base64 0.23.1",
- "encoding_rs",
- "feed-rs",
- "futures-executor",
- "futures-util",
- "http-range-header",
- "image",
- "imageproc",
- "jni 0.22.4",
- "natord",
- "ndk-context",
- "percent-encoding",
- "quick-xml 0.42.0",
- "regex",
- "reqwest",
- "rusqlite",
- "rustls-platform-verifier",
- "serde",
- "serde_json",
- "sha2",
- "sqlx",
- "tauri",
- "tauri-build",
- "tauri-plugin-deep-link",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-opener",
- "tauri-plugin-single-instance",
- "tauri-plugin-source-engine",
- "tauri-plugin-sql",
- "tauri-plugin-system-media",
- "tempfile",
- "tokio",
- "tokio-stream",
- "tokio-util",
- "tts",
- "uuid",
- "webp",
- "zip",
 ]
 
 [[package]]

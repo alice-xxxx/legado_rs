@@ -65,7 +65,7 @@ impl AppDataProcessLock {
             let parent = std::fs::canonicalize(parent)?;
             let root = parent.join(name);
             let path = parent.join(format!(
-                ".legado-{}.lock",
+                ".foliver-{}.lock",
                 crate::support::sha256_hex(root.to_string_lossy().as_bytes())
             ));
             for candidate in [&root, &path] {

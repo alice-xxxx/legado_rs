@@ -1,4 +1,4 @@
-package io.legado.media
+package com.xyz.foliver.media
 
 import android.app.Notification
 import android.app.NotificationChannel

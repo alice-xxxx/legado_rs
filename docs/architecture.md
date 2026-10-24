@@ -25,7 +25,7 @@
 
 ## 持久化
 
-Android 业务数据位于应用私有目录的 `files/legado/`，其他平台使用 Tauri 应用数据目录。跨进程锁和备份恢复暂存目录位于业务数据目录旁；Android 上均保留在应用沙箱内。字段定义以 Rust 模型和 `src/api/types.ts` 为准。
+Android 业务数据位于应用私有目录的 `files/foliver/`，其他平台使用 Tauri 应用数据目录。跨进程锁和备份恢复暂存目录位于业务数据目录旁；Android 上均保留在应用沙箱内。字段定义以 Rust 模型和 `src/api/types.ts` 为准。
 
 | 文件或目录 | 内容 |
 |---|---|
@@ -124,7 +124,7 @@ Rust 解析并持久化，Vue 展示缓存。导入按内容、格式和解析�
 
 阅读器与详情共用来源列表和目录组件。来源展示封面、书名、作者及已有的最新章节；阅读器以完整页面承载来源和目录，返回后继续阅读。目录共用搜索、正倒序、当前章节定位、缓存和指定章节换源操作，并按可见区域渲染章节。
 
-Tauri 注册 `legado`、`yuedu`、`legado-rs` 协议。解析与处理入口为 `src/features/import/deepLinks.ts`、`useExternalImportActions.ts`，冷启动、运行中唤起和粘贴导入共用队列与弹窗。
+Tauri 注册 `foliver` 协议，同时兼容 `legado`、`yuedu` 书源协议。解析与处理入口为 `src/features/import/deepLinks.ts`、`useExternalImportActions.ts`，冷启动、运行中唤起和粘贴导入共用队列与弹窗。
 
 `legado`、`yuedu` 使用第一个 `src` 查询参数，缺失或为空时忽略：
 
@@ -138,4 +138,4 @@ Tauri 注册 `legado`、`yuedu`、`legado-rs` 协议。解析与处理入口为 
 | `/theme`、`/dictRule`、`/readConfig` | 提示暂未提供对应导入功能。 |
 | 其他路径 | 自动识别已有配置类型。 |
 
-`legado-rs://import-source?url=...` 和 `legado-rs://import-rules?url=...` 分别导入书源和替换规则。载荷可为 HTTP(S) 地址或 JSON，由 Rust 下载、识别和校验，确认后保存；书籍链接不读取其指定的本地文件。协议注册见 `src-tauri/tauri.conf.json`。
+`foliver://import-source?url=...` 和 `foliver://import-rules?url=...` 分别导入书源和替换规则。载荷可为 HTTP(S) 地址或 JSON，由 Rust 下载、识别和校验，确认后保存；书籍链接不读取其指定的本地文件。协议注册见 `src-tauri/tauri.conf.json`。

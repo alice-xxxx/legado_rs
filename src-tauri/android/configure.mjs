@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+const androidPackagePath = JSON.parse(await readFile(new URL("../tauri.conf.json", import.meta.url), "utf8")).identifier.replaceAll(".", "/");
 
 // The generated Gradle Kotlin doFirst source patch cannot be configuration-cache serialized
 // by Gradle 9. Disable configuration caching ONLY for this generated Android app project;
@@ -142,14 +143,14 @@ if (!contents.includes(generatedKotlinPatchMarker)) {
 // 修正 Tauri Android 模板中的过时 Kotlin API 调用。
 // Resolve the file references at Gradle configuration time. Task.project is not
 // accessible from doFirst with Gradle 9's configuration cache enabled.
-val legadoGeneratedKotlinSources = listOf(
-    layout.projectDirectory.file("src/main/java/com/alice/legado/generated/RustWebView.kt").asFile,
-    layout.projectDirectory.file("src/main/java/com/alice/legado/generated/WryActivity.kt").asFile,
+val foliverGeneratedKotlinSources = listOf(
+    layout.projectDirectory.file("src/main/java/${androidPackagePath}/generated/RustWebView.kt").asFile,
+    layout.projectDirectory.file("src/main/java/${androidPackagePath}/generated/WryActivity.kt").asFile,
 )
 tasks.configureEach {
     if (name.startsWith("compile") && name.endsWith("Kotlin")) {
         doFirst {
-            for (sourceFile in legadoGeneratedKotlinSources) {
+            for (sourceFile in foliverGeneratedKotlinSources) {
                 if (!sourceFile.isFile) continue
                 val original = sourceFile.readText()
                 val patched = original

@@ -95,7 +95,7 @@ pub(crate) fn app_data_root<R: tauri::Runtime>(
     // Android returns the sandbox root. Keep our data and its sibling lock/restore
     // files inside it, rather than trying to write into /data/user/0.
     #[cfg(target_os = "android")]
-    let root = root.join("files").join("legado");
+    let root = root.join("files").join("foliver");
     Ok(root)
 }
 

@@ -11,7 +11,7 @@ pub(crate) fn picker_import_directory(root: &Path) -> PathBuf {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let key = stable_hash(&root.to_string_lossy());
     std::env::temp_dir()
-        .join("legado-rs-picker-imports")
+        .join("foliver-picker-imports")
         .join(format!("{key:016x}"))
 }
 

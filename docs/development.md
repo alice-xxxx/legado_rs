@@ -30,7 +30,7 @@ Windows 的 Gradle 命令使用 `.\kotlin\gradlew.bat -p kotlin --no-daemon --co
 bash kotlin/gradlew -p kotlin --no-daemon --console=plain stageTauriAndroidAar
 npm ci
 npm run tauri -- android init --ci
-npm run tauri -- icon app-icon.png
+npm run icons
 node src-tauri/android/configure.mjs
 npm run tauri -- android build --apk --ci --split-per-abi
 ```
@@ -47,7 +47,7 @@ bash kotlin/gradlew -p kotlin --no-daemon --console=plain -Plegado.iosNativeTarg
 xcodebuild -create-xcframework -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
 npm ci
 npm run tauri -- ios init --ci
-npm run tauri -- icon app-icon.png
+npm run icons
 npm run tauri -- ios build --no-sign --ci
 ```
 

@@ -1,4 +1,4 @@
-package io.legado.media
+package com.xyz.foliver.media
 
 import android.app.Activity
 import android.content.BroadcastReceiver
@@ -92,7 +92,7 @@ class SystemMediaPlugin(private val activity: Activity) : Plugin(activity) {
                 if (next.id < state.id) { invoke.resolve(); return@post }
                 if (next.id != state.id) clearSession()
                 if (session == null) {
-                    session = MediaSession(activity, "Legado").apply {
+                    session = MediaSession(activity, "Foliver").apply {
                         setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
                         setCallback(object : MediaSession.Callback() {
                             override fun onPlay() = command("play")
