@@ -23,10 +23,11 @@
     "active": true,
     "targets": "all",
     "iOS": {
-      "template": "src-tauri/ios-project.yml"
+      "template": "src-tauri/ios-project.yml",
+      "minimumSystemVersion": "15.0"
     },
     "resources": {
-      "../kotlin/build/source-engine/runtime": "source-engine/"
+      "plugins/source-engine/engine/build/source-engine/runtime": "source-engine/"
     },
     "fileAssociations": [
       {
@@ -72,7 +73,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "android": {
+      "minSdkVersion": 26
+    }
   },
   "plugins": {
     "deep-link": {

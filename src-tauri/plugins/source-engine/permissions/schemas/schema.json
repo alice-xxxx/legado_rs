@@ -295,22 +295,10 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Enables the execute command without any pre-configured scope.",
-          "type": "string",
-          "const": "allow-execute",
-          "markdownDescription": "Enables the execute command without any pre-configured scope."
-        },
-        {
-          "description": "Denies the execute command without any pre-configured scope.",
-          "type": "string",
-          "const": "deny-execute",
-          "markdownDescription": "Denies the execute command without any pre-configured scope."
-        },
-        {
-          "description": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-execute`",
+          "description": "Default permissions for the plugin",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-execute`"
+          "markdownDescription": "Default permissions for the plugin"
         }
       ]
     }

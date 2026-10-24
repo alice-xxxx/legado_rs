@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, HashMap};
 
 pub(super) fn engine_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineBook> {
     Ok(EngineBook {
+        extra: Default::default(),
         book_url: r.get("book_url")?,
         toc_url: r.get("engine_toc_url")?,
         origin: r.get("engine_origin")?,
@@ -34,6 +35,7 @@ pub(super) fn chapter_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Chapter> {
         duration_ms: r.get("duration_ms")?,
         protocol: r.get("protocol")?,
         engine_data: EngineChapter {
+            extra: Default::default(),
             url: r
                 .get::<_, Option<String>>("engine_url")?
                 .unwrap_or_default(),

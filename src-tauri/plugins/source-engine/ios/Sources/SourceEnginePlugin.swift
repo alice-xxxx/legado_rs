@@ -5,8 +5,9 @@ import Tauri
 import UIKit
 import WebKit
 
-private struct ExecuteArgs: Decodable {
-    let requestJson: String
+private struct EngineContext: Decodable {
+    let dataDirectory: String
+    let executionId: String
 }
 
 /// Tauri's iOS bridge enters Kotlin/Native; HTTP and storage callbacks return through Rust C ABI.
@@ -15,18 +16,51 @@ final class SourceEnginePlugin: Plugin {
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
 
-    @objc public func execute(_ invoke: Invoke) throws {
-        let args = try invoke.parseArgs(ExecuteArgs.self)
-        let applicationSupport = FileManager.default.urls(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask
-        ).first!
-        let dataDirectory = applicationSupport.appendingPathComponent("source-engine", isDirectory: true).path
+    @objc public func search(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeSearchRequest, execute: IosSourceEngine.shared.search, encode: NativeDtos.shared.encodeSearchPage)
+    }
 
-        IosSourceEngine.shared.executeJson(
-            requestJson: args.requestJson,
-            appDataDirectory: dataDirectory
-        ) { result, error in
+    @objc public func exploreKinds(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeSourceRequest, execute: IosSourceEngine.shared.exploreKinds, encode: NativeDtos.shared.encodeExploreKinds)
+    }
+
+    @objc public func explore(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeExploreRequest, execute: IosSourceEngine.shared.explore, encode: NativeDtos.shared.encodeSearchPage)
+    }
+
+    @objc public func detail(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeBookRequest, execute: IosSourceEngine.shared.detail, encode: NativeDtos.shared.encodeBook)
+    }
+
+    @objc public func chapters(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeBookRequest, execute: IosSourceEngine.shared.chapters, encode: NativeDtos.shared.encodeChapterList)
+    }
+
+    @objc public func content(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeContentRequest, execute: IosSourceEngine.shared.content, encode: NativeDtos.shared.encodeChapterContent)
+    }
+
+    @objc public func resolveMedia(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeMediaRequest, execute: IosSourceEngine.shared.resolveMedia, encode: NativeDtos.shared.encodeMediaLocation)
+    }
+
+    @objc public func httpTtsAudio(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeTtsRequest, execute: IosSourceEngine.shared.httpTtsAudio, encode: NativeDtos.shared.encodeAudioData)
+    }
+
+    @objc public func login(_ invoke: Invoke) throws {
+        try call(invoke, decode: NativeDtos.shared.decodeLoginRequest, execute: IosSourceEngine.shared.login, encode: NativeDtos.shared.encodeLoginState)
+    }
+
+    private func call<Q, R>(
+        _ invoke: Invoke,
+        decode: (String) throws -> Q,
+        execute: (Q, String, String, @escaping (R?, Error?) -> Void) -> Void,
+        encode: @escaping (R) throws -> String
+    ) throws {
+        let context = try invoke.parseArgs(EngineContext.self)
+        let request = try decode(invoke.getRawArgs())
+        execute(request, context.dataDirectory, context.executionId) { result, error in
             if let error {
                 invoke.reject(error.localizedDescription)
                 return
@@ -35,7 +69,16 @@ final class SourceEnginePlugin: Plugin {
                 invoke.reject("Kotlin source engine returned no result")
                 return
             }
-            invoke.resolve(["resultJson": result])
+            do {
+                let json = try encode(result)
+                guard let object = try JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any] else {
+                    invoke.reject("Invalid source engine response")
+                    return
+                }
+                invoke.resolve(JSTypes.coerceDictionaryToJSObject(object))
+            } catch {
+                invoke.reject(error.localizedDescription)
+            }
         }
     }
 

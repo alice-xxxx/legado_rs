@@ -1,7 +1,7 @@
 //! 朗读会话：开始清空队列，投递后顺序朗读，只有结束才关闭会话。
 use std::sync::Arc;
 
-use crate::source_engine::SourceEngineRequest;
+use tauri_plugin_source_engine::TtsRequest;
 use base64::Engine as _;
 use serde::Deserialize;
 pub(crate) struct Tts {
@@ -596,22 +596,18 @@ impl Tts {
     ) -> Result<(Vec<u8>, &'static str), String> {
         let token = tokio_util::sync::CancellationToken::new();
         let _cancel_on_drop = token.clone().drop_guard();
-        let mut request = SourceEngineRequest {
-            keyword: Some(text.to_owned()),
-            page: Some(((rate - 0.5) * 10.0).round() as i32),
-            ..SourceEngineRequest::new("httpTtsAudio", config)
+        let request = TtsRequest {
+            config: serde_json::from_value(config.clone()).map_err(|error| error.to_string())?,
+            text: text.to_owned(), speech_rate: ((rate - 0.5) * 10.0).round() as i32,
         };
-        request.cancellation = Some(token);
-        let result = match self.executor.execute(request).await {
+        let result = match self.executor.http_tts_audio(request, token).await {
             Ok(result) => result,
             Err(error) if error.contains("HTTP TTS returned an empty audio response") => {
                 return Ok((vec![], "audio/mpeg"))
             }
             Err(error) => return Err(error),
         };
-        let encoded = result["bytesBase64"]
-            .as_str()
-            .ok_or("朗读引擎没有返回音频")?;
+        let encoded = &result.bytes_base64;
         if encoded.len() > MAX_HTTP_TTS_AUDIO_BASE64_BYTES {
             return Err("朗读音频超过 16 MiB".into());
         }
@@ -625,7 +621,7 @@ impl Tts {
             return Ok((bytes, "audio/mpeg"));
         }
         let content_type =
-            http_tts_audio_type(result["contentType"].as_str().unwrap_or_default(), &bytes)?;
+            http_tts_audio_type(&result.content_type, &bytes)?;
         Ok((bytes, content_type))
     }
 

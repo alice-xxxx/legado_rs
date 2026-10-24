@@ -1,12 +1,12 @@
-use serde::de::DeserializeOwned;
+use serde::{Serialize, de::DeserializeOwned};
 use tauri::{
-    plugin::{PluginApi, PluginHandle},
     AppHandle, Runtime,
+    plugin::{PluginApi, PluginHandle},
 };
 
 use crate::{
-    SourceEngineCall, SourceEngineResponse, SourceLoginWebCancelled, SourceLoginWebCapture,
-    SourceLoginWebSession, SourceLoginWebStart, SourceLoginWebStarted,
+    ExecutionContext, SourceLoginWebCancelled, SourceLoginWebCapture, SourceLoginWebSession,
+    SourceLoginWebStart, SourceLoginWebStarted,
 };
 
 #[cfg(target_os = "ios")]
@@ -27,11 +27,48 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct SourceEngine<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> SourceEngine<R> {
-    pub fn execute(&self, call: SourceEngineCall) -> crate::Result<SourceEngineResponse> {
-        self.0
-            .run_mobile_plugin("execute", call)
-            .map_err(Into::into)
+    async fn invoke<Q, T>(
+        &self,
+        method: crate::api::Method,
+        request: Q,
+        context: ExecutionContext,
+    ) -> crate::Result<T>
+    where
+        Q: Serialize + Send + 'static,
+        T: DeserializeOwned + Send + 'static,
+    {
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct NativeCall<Q> {
+            #[serde(flatten)]
+            request: Q,
+            data_directory: String,
+            execution_id: String,
+        }
+        let handle = self.0.clone();
+        tokio::task::spawn_blocking(move || {
+            let lease = crate::host::ExecutionScope::enter(
+                context.cancellation,
+                context.storage,
+                method.is_search(),
+            )
+            .map_err(crate::Error::Engine)?;
+            handle
+                .run_mobile_plugin(
+                    method.signature().0,
+                    NativeCall {
+                        request,
+                        data_directory: context.data_dir.to_string_lossy().into_owned(),
+                        execution_id: lease.id().to_owned(),
+                    },
+                )
+                .map_err(Into::into)
+        })
+        .await
+        .map_err(|error| crate::Error::Engine(format!("Native source worker failed: {error}")))?
     }
+
+    crate::api::source_methods!();
 
     pub fn start_web_login(
         &self,

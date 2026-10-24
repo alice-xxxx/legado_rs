@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use crate::search::source_book_id;
-use crate::source_engine::SourceEngineRequest;
+use crate::source_engine::book_request;
 use serde_json::json;
 
 impl Information {
@@ -65,26 +65,10 @@ impl Information {
             raw_book["bookUrl"] = json!(book_url);
             raw_book["origin"] = source.source["bookSourceUrl"].clone();
             raw_book["originName"] = json!(source.name);
-            let legacy_rss = crate::rss::is_legacy_rss_source(&source.source);
-            let execute = |mut request: SourceEngineRequest| {
-                request.cancellation = Some(token.clone());
-                self.executor.execute(request)
-            };
-            let info = execute(
-                SourceEngineRequest::new(
-                    if legacy_rss {
-                        "rssBookInfo"
-                    } else {
-                        "bookInfo"
-                    },
-                    &source.source,
-                )
-                .with_book(raw_book.clone()),
-            )
-            .await?;
-            if !info.is_object() {
-                return Err("Source engine returned invalid book details".into());
-            }
+            let info = self.executor.detail(
+                book_request(&source.source, raw_book.clone())?, token.clone(),
+            ).await?;
+            let info = serde_json::to_value(info).map_err(|error| error.to_string())?;
             // 详情规则可以只返回部分字段，目录请求仍需保留搜索和已存储的上下文。
             let mut engine_book = raw_book;
             engine_book
@@ -102,22 +86,9 @@ impl Information {
                 return Err("Book details cancelled".into());
             }
             let book_id = key;
-            let chapters = execute(
-                SourceEngineRequest::new(
-                    if legacy_rss {
-                        "rssChapters"
-                    } else {
-                        "chapters"
-                    },
-                    &source.source,
-                )
-                .with_book(engine_book.clone()),
-            )
-            .await?;
-            let chapters = chapters
-                .as_array()
-                .ok_or("Source engine returned an invalid chapter catalog")?
-                .clone();
+            let chapters = self.executor.chapters(
+                book_request(&source.source, engine_book.clone())?, token.clone(),
+            ).await?.chapters;
             {
                 let database = database.clone();
                 let token = token.clone();
@@ -143,8 +114,7 @@ impl Information {
                                 ..Default::default()
                             }
                         },
-                        serde_json::from_value(serde_json::Value::Array(chapters))
-                            .map_err(|error| error.to_string())?,
+                        chapters,
                         token,
                     )
                     .map_err(|e| e.to_string())?

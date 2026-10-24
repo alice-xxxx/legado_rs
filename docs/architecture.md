@@ -5,8 +5,9 @@
 | 层 | 职责 |
 |---|---|
 | Vue | 页面交互、共享响应式状态、直接查询只读 SQLite、排版与播放。 |
-| Rust | 应用服务、数据库写入、任务、缓存、文件资源服务与引擎宿主能力。 |
-| KMP | 执行书源规则和脚本。桌面通过 JVM/JNI，Android/iOS 通过原生插件接入。 |
+| Rust | 应用服务、数据库写入、任务、缓存与文件资源服务。 |
+| source-engine 插件 | 类型化引擎 API、运行时、JNI/C ABI，以及 HTTP、浏览器、图像和存储宿主适配。 |
+| KMP | 执行书源规则和脚本，保留脚本所需模型和协议，自行构建 JVM、Android 和 iOS 产物。 |
 
 修改操作通过 Tauri IPC 提交。Vue 使用官方 SQL 插件读取业务表，Rust 在启动时注册只读连接池，仅授予 `sql:allow-select`，不向前端开放建库、加载连接或执行写 SQL。设置通过启动及保存命令直接返回数据。搜索通过 Tauri Channel 发送临时结果。正文、图片和媒体使用 HTTP 文件资源；业务数据没有 `.json` HTTP 资源接口。
 
@@ -18,13 +19,15 @@
 | `src/features/` | 页面、阅读器、导入、配置及对应状态。 |
 | `src/api/`、`src/ui/` | 类型化命令与资源接口、共用展示组件。 |
 | `src-tauri/src/lib.rs` | 初始化独立模块并注册各模块的 Tauri 命令和状态。 |
-| `src-tauri/src/books/`、`sources/`、`discovery/`、`rss/` | 书籍导入、详情与正文、来源引擎与登录、发现和 RSS；类型定义归所属模块。 |
+| `src-tauri/src/books/`、`sources/`、`discovery/`、`rss/` | 书籍导入、详情与正文、书源管理与登录、发现和 RSS；类型定义归所属模块。 |
 | `src-tauri/src/resources/`、`backup/` | 文件及 HTTP 资源、备份恢复与操作屏障。 |
 | `src-tauri/src/reading_tools/`、`search/`、`settings/` | 阅读预读、记录、规则与朗读，搜索会话，应用及阅读设置。 |
-| `kotlin/`、`src-tauri/plugins/source-engine/` | KMP 引擎、原生库及移动端插件。 |
+| `src-tauri/plugins/source-engine/` | 自行构建的 KMP 引擎、原生库及全平台插件；App 通过存储接口提供持久化。 |
 | `src-tauri/plugins/navigation/` | 返回输入和原生导航手势；页面与阅读器返回规则由 Vue 决定。 |
 | `src-tauri/plugins/screen/` | 全屏、系统栏、方向、常亮、亮度和屏幕信息；复用 Tauri 窗口能力。 |
 | `src-tauri/plugins/system-media/` | 系统媒体适配；音视频内容仍由 Vue 播放。 |
+
+App 通过插件的 `search`、`detail`、`chapters`、`content` 等具名 API 传递请求和结果类型。执行上下文提供数据目录、取消信号和类型化存储接口；插件不引用 App 模块。App 的 `database/source_state.rs` 实现持久化，原生请求格式只在插件内部解码。源规则和脚本仍兼容原协议，序列化仅用于跨语言边界和源协议数据。KMP 不依赖应用数据库、配置、路由和弹窗；目录和正文解析不保存章节或修改阅读进度。公共宿主服务仅有一份，JVM 与 Android 复用 `jvmAndAndroidMain`，平台源集保留各自的系统实现。
 
 ## 持久化
 

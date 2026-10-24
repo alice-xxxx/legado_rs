@@ -1,7 +1,9 @@
 //! 正文转换与离线下载；缓存写入只走 resources.cache。
+use tauri_plugin_source_engine::{ContentRequest, MediaRequest};
+use tokio_util::sync::CancellationToken;
 use crate::{
     resources::ResourceRef,
-    source_engine::{SourceEngineRequest, SourceExecutor},
+    source_engine::SourceExecutor,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -11,27 +13,18 @@ async fn media(
     executor: &dyn SourceExecutor,
     book: &str,
     chapter: &str,
-    context: &SourceEngineRequest,
+    context: &ContentRequest,
+    cancellation: &CancellationToken,
     url: &str,
     headers: Option<HashMap<String, String>>,
 ) -> Result<(ResourceRef, &'static str), String> {
-    let mut request = context.clone();
-    request.operation = "resolveMedia".into();
-    request.media_url = Some(url.to_owned());
-    request.media_headers = headers;
-    let resolved = executor.execute(request).await?;
-    let url = resolved["url"].as_str().ok_or("来源未返回媒体地址")?;
-    let headers = resolved["headers"]
-        .as_object()
-        .ok_or("来源未返回媒体请求头")?
-        .iter()
-        .map(|(name, value)| {
-            Ok((
-                name.clone(),
-                value.as_str().ok_or("媒体请求头必须是字符串")?.to_owned(),
-            ))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+    let resolved = executor.resolve_media(MediaRequest {
+        source: context.source.clone(), book: context.book.clone(), chapter: context.chapter.clone(),
+        url: url.to_owned(), headers: headers.unwrap_or_default(),
+    }, cancellation.clone()).await?;
+    let url = resolved.url.as_str();
+    let mut headers = resolved.headers.into_iter().collect::<Vec<_>>();
+    headers.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     let fingerprint =
         serde_json::to_vec(&(book, chapter, url, &headers)).map_err(|e| e.to_string())?;
     let id = format!("chapter-media-{}", crate::support::sha256_hex(&fingerprint));
@@ -86,34 +79,27 @@ pub(crate) async fn chapter_content(
     executor: &dyn SourceExecutor,
     book: &str,
     chapter_id: &str,
-    context: &SourceEngineRequest,
-    response: Value,
+    context: &ContentRequest,
+    response: String,
     mut chapter: Value,
+    cancellation: CancellationToken,
 ) -> Result<Value, String> {
-    let body = response
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-        .ok_or("来源返回空正文")?;
-    let base = context
-        .chapter
-        .as_ref()
-        .and_then(|v| crate::support::text_at(v, &["url", "chapterUrl"]))
-        .or_else(|| {
-            context
-                .book
-                .as_ref()
-                .and_then(|v| crate::support::text_at(v, &["bookUrl", "url"]))
-        });
+    let body = response.as_str();
+    if body.trim().is_empty() { return Err("来源返回空正文".into()); }
+    let base = Some(context.chapter.url.clone()).filter(|url| !url.trim().is_empty())
+        .or_else(|| context.chapter.extra.get("chapterUrl").and_then(Value::as_str).map(str::to_owned))
+        .or_else(|| context.book.book_url.clone().filter(|url| !url.trim().is_empty()))
+        .or_else(|| context.book.extra.get("url").and_then(Value::as_str).map(str::to_owned));
     for key in ["resource", "url", "pages", "sources", "protocol", "files"] {
         chapter.as_object_mut().unwrap().remove(key);
     }
-    let kind = crate::source_catalog::content_type(&context.source);
+    let kind = crate::source_catalog::content_type(context.source.as_value());
     let (reference, format) = match kind {
         "image" => {
             let mut pages = Vec::new();
             for (index, url) in image_urls(body, base.as_deref())?.iter().enumerate() {
                 let (reference, _) =
-                    media(resources, executor, book, chapter_id, context, url, None).await?;
+                    media(resources, executor, book, chapter_id, context, &cancellation, url, None).await?;
                 pages.push(json!({"id":format!("p{}",index+1),"url":reference.as_str()}));
             }
             chapter["pages"] = json!(pages);
@@ -123,7 +109,7 @@ pub(crate) async fn chapter_content(
             let (candidates, default, headers) = candidates(body)?;
             let mut sources = Vec::new();
             for (index, (label, url)) in candidates.into_iter().enumerate() {
-                match media(resources, executor,book,chapter_id,context,&url,headers.clone()).await {
+                match media(resources, executor, book, chapter_id, context, &cancellation,&url,headers.clone()).await {
                     Ok((reference,protocol)) => sources.push(json!({"src":reference.as_str(),"label":label,"format":protocol,"selected":index==default,"unavailableReason":null})),
                     Err(error) if kind == "audio" => return Err(error),
                     Err(_) => sources.push(json!({"src":null,"label":label,"format":null,"selected":false,"unavailableReason":"清晰度解析失败"})),
@@ -172,7 +158,7 @@ pub(crate) async fn chapter_content(
             for escaped in urls {
                 let url = quick_xml::escape::unescape(&escaped).map_err(|e| e.to_string())?;
                 let (reference, _) =
-                    media(resources, executor, book, chapter_id, context, &url, None).await?;
+                    media(resources, executor, book, chapter_id, context, &cancellation, &url, None).await?;
                 markup = markup.replace(&escaped, reference.as_str());
             }
             let reference = crate::book_files::content_ref("html", book, chapter_id, &markup, true)

@@ -23,7 +23,6 @@ desktop = [
     "dep:tauri-plugin-opener",
     "dep:tauri-plugin-dialog",
     "dep:tauri-plugin-fs",
-    "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
     "dep:tts",
     "dep:tauri-plugin-system-media",
@@ -34,6 +33,7 @@ desktop = [
     "dep:sqlx",
     "tauri-plugin-single-instance/deep-link",
     "tauri/wry",
+    "tauri-plugin-source-engine/desktop-runtime",
     "tauri/compression",
     "tauri/common-controls-v6",
     "tauri/dynamic-acl",
@@ -48,7 +48,6 @@ mobile-runtime = [
     "dep:tauri-plugin-opener",
     "dep:tauri-plugin-dialog",
     "dep:tauri-plugin-fs",
-    "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
     "tauri-plugin-source-engine/native-mobile",
     "dep:tauri-plugin-system-media",
@@ -69,7 +68,7 @@ tauri = { version = "2", default-features = false, features = [], optional = tru
 tauri-plugin-opener = { version = "2", default-features = false, optional = true }
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"], optional = true }
 tauri-plugin-fs = { version = "2", default-features = false, optional = true }
-tauri-plugin-source-engine = { path = "plugins/source-engine", optional = true }
+tauri-plugin-source-engine = { path = "plugins/source-engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.32.1", features = ["bundled", "column_decltype"] }
@@ -89,7 +88,6 @@ encoding_rs = "0.8"
 feed-rs = "2"
 http-range-header = "0.4"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
-imageproc = { version = "0.27.0", default-features = false }
 natord = "1.0.9"
 percent-encoding = "2"
 quick-xml = "0.42"
@@ -101,14 +99,6 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 tauri-plugin-deep-link = { version = "2", optional = true }
 tauri-plugin-single-instance = { version = "2", optional = true }
-
-[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-jni = { version = "0.22.4", features = ["invocation"] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-jni = "0.22.4"
-ndk-context = "0.1.1"
-rustls-platform-verifier = "0.7.1"
 
 [patch.crates-io]
 swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }

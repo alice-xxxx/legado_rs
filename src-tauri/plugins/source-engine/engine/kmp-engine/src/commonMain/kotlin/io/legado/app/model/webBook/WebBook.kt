@@ -1,0 +1,392 @@
+package io.legado.app.model.webBook
+
+import io.legado.app.constant.AppConst
+import io.legado.app.constant.AppLog
+import io.legado.app.data.entities.Book
+import io.legado.app.data.entities.BookChapter
+import io.legado.app.data.entities.BookListPage
+import io.legado.app.data.entities.BookSource
+import io.legado.app.data.entities.ReviewPage
+import io.legado.app.data.entities.rule.ReviewRule
+import io.legado.app.exception.NoStackTraceException
+import io.legado.app.help.http.StrResponse
+import io.legado.app.help.source.SourceDebugLoggers
+import io.legado.app.model.analyzeRule.AnalyzeRuleFactories
+import io.legado.app.model.analyzeRule.AnalyzeUrlCore
+import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
+import io.legado.app.model.analyzeRule.RuleData
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+
+object WebBook {
+
+    suspend fun getBookListAwait(
+        bookSource: BookSource,
+        key: String,
+        page: Int? = 1,
+        filter: ((name: String, author: String) -> Boolean)? = null,
+        shouldBreak: ((size: Int) -> Boolean)? = null,
+        isSearch: Boolean = true,
+        onUrlResolved: ((AnalyzeUrlCore) -> Unit)? = null,
+        selectedOptions: Map<String, String>? = null,
+    ): BookListPage {
+        var url = key
+        if (isSearch) {
+            if (bookSource.searchUrl.isNullOrBlank()) throw NoStackTraceException("搜索url不能为空")
+            else url = bookSource.searchUrl!!
+        }
+        val ruleData = RuleData()
+        val variables = buildMap<AppConst.JsVarName, Any> {
+            if (isSearch) put(AppConst.JsVarName.KEY, key)
+            if (page != null) put(AppConst.JsVarName.PAGE, page)
+        }
+        val analyzeUrl = AnalyzeUrlFactories.create(
+            rawUrl = url,
+            baseUrl = bookSource.bookSourceUrl,
+            source = bookSource,
+            ruleData = ruleData,
+            coroutineContext = currentCoroutineContext(),
+            selectedOptions = selectedOptions,
+            variables = variables
+        )
+        onUrlResolved?.invoke(analyzeUrl)
+        val res = checkLogin(analyzeUrl, bookSource)
+        return BookList.analyzeBookList(
+            bookSource = bookSource,
+            ruleData = ruleData,
+            analyzeUrl = analyzeUrl,
+            baseUrl = res.url,
+            body = res.body,
+            isSearch = isSearch,
+            isRedirect = checkRedirect(bookSource, res),
+            filter = filter,
+            shouldBreak = shouldBreak,
+        )
+    }
+
+    suspend fun getBookInfoAwait(
+        bookSource: BookSource,
+        book: Book,
+        canReName: Boolean = true,
+    ): Book {
+        if (!book.infoHtml.isNullOrEmpty()) {
+            BookInfo.analyzeBookInfo(
+                bookSource = bookSource,
+                book = book,
+                baseUrl = book.bookUrl,
+                redirectUrl = book.bookUrl,
+                body = book.infoHtml,
+                canReName = canReName
+            )
+        } else {
+            val analyzeUrl = AnalyzeUrlFactories.create(
+                rawUrl = book.bookUrl,
+                baseUrl = bookSource.bookSourceUrl,
+                source = bookSource,
+                ruleData = book,
+                coroutineContext = currentCoroutineContext()
+            )
+            val res = checkLogin(analyzeUrl, bookSource)
+            checkRedirect(bookSource, res)
+            BookInfo.analyzeBookInfo(
+                bookSource = bookSource,
+                book = book,
+                baseUrl = book.bookUrl,
+                redirectUrl = res.url,
+                body = res.body,
+                canReName = canReName
+            )
+        }
+        return book
+    }
+
+    suspend fun getChapterListAwait(
+        bookSource: BookSource,
+        book: Book,
+        runPerJs: Boolean = false
+    ): Result<List<BookChapter>> {
+        return runCatching {
+            if (runPerJs) {
+                runPreUpdateJs(bookSource, book).getOrThrow()
+            }
+            val tocRule = bookSource.tocRule
+            val isSingleChapter = tocRule.chapterList.isNullOrBlank()
+            if (isSingleChapter) {
+                SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "⇒目录规则为空,作为单章节书籍处理")
+                val chapterList = arrayListOf(
+                    BookChapter(
+                        bookUrl = book.bookUrl,
+                        title = "共一章",
+                        url = book.tocUrl
+                    )
+                )
+                return@runCatching BookChapterList.updateBook(book, chapterList)
+            } else if (book.bookUrl == book.tocUrl && !book.tocHtml.isNullOrEmpty()) {
+                BookChapterList.analyzeChapterList(
+                    bookSource = bookSource,
+                    book = book,
+                    baseUrl = book.tocUrl,
+                    body = book.tocHtml
+                )
+            } else {
+                val analyzeUrl = AnalyzeUrlFactories.create(
+                    rawUrl = book.tocUrl,
+                    baseUrl = book.bookUrl,
+                    source = bookSource,
+                    ruleData = book,
+                    coroutineContext = currentCoroutineContext()
+                )
+                val res = checkLogin(analyzeUrl, bookSource)
+                checkRedirect(bookSource, res)
+                BookChapterList.analyzeChapterList(
+                    bookSource = bookSource,
+                    book = book,
+                    baseUrl = book.tocUrl,
+                    redirectUrl = res.url,
+                    body = res.body
+                )
+            }
+        }.onFailure {
+            currentCoroutineContext().ensureActive()
+        }
+    }
+
+    suspend fun getContentAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter,
+        nextChapterUrl: String? = null,
+    ): String {
+        if (bookSource.contentRule.content.isNullOrEmpty()) {
+            SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "⇒正文规则为空,使用章节链接:${bookChapter.url}")
+            return bookChapter.url
+        }
+        if (bookChapter.isVolume && bookChapter.url.startsWith(bookChapter.title)) {
+            SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "⇒一级目录正文不解析规则")
+            return bookChapter.tag ?: ""
+        }
+        val chapterUrl = bookChapter.getAbsoluteURL(book)
+        return if (bookChapter.url == book.bookUrl && !book.tocHtml.isNullOrEmpty()) {
+            BookContent.analyzeContent(
+                bookSource = bookSource,
+                book = book,
+                bookChapter = bookChapter,
+                baseUrl = chapterUrl,
+                redirectUrl = chapterUrl,
+                body = book.tocHtml,
+                nextChapterUrl = nextChapterUrl,
+            )
+        } else {
+            val analyzeUrl = AnalyzeUrlFactories.create(
+                rawUrl = chapterUrl,
+                baseUrl = book.tocUrl,
+                source = bookSource,
+                ruleData = book,
+                chapter = bookChapter,
+                coroutineContext = currentCoroutineContext()
+            )
+            val res = checkLogin(analyzeUrl, bookSource)
+            checkRedirect(bookSource, res)
+            BookContent.analyzeContent(
+                bookSource = bookSource,
+                book = book,
+                bookChapter = bookChapter,
+                baseUrl = chapterUrl,
+                redirectUrl = res.url,
+                body = res.body,
+                nextChapterUrl = nextChapterUrl,
+            )
+        }
+    }
+
+    suspend fun getReviewListAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter?,
+        paragraphIndex: Int,
+        page: Int = 1,
+        sort: Int = 0,
+    ): Result<ReviewPage> = fetchReviewPage(
+        bookSource, book, bookChapter,
+        urlRuleSelector = { it.reviewUrl to "reviewUrl 为空" },
+        variables = mapOf(
+            AppConst.JsVarName.PARAGRAPH_INDEX to paragraphIndex,
+            AppConst.JsVarName.SORT to sort,
+            AppConst.JsVarName.PAGE to page,
+        )
+    )
+
+    suspend fun getReviewRepliesAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter?,
+        paragraphIndex: Int,
+        reviewId: String,
+        page: Int = 1,
+    ): Result<ReviewPage> = fetchReviewPage(
+        bookSource, book, bookChapter,
+        urlRuleSelector = { it.replyListUrl to "书源未配置回复列表URL规则" },
+        variables = mapOf(
+            AppConst.JsVarName.PARAGRAPH_INDEX to paragraphIndex,
+            AppConst.JsVarName.REVIEW_ID to reviewId,
+            AppConst.JsVarName.PAGE to page,
+        )
+    )
+
+    private suspend fun fetchReviewPage(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter?,
+        urlRuleSelector: (ReviewRule) -> Pair<String?, String>,
+        variables: Map<AppConst.JsVarName, Any>,
+    ): Result<ReviewPage> = runCatching {
+        if (bookSource.ruleReview.isNullOrEmpty()) {
+            throw NoStackTraceException("书源未配置段评规则")
+        }
+        val reviewRule = bookSource.reviewRule
+        val (rawUrl, missingMsg) = urlRuleSelector(reviewRule)
+        if (rawUrl.isNullOrBlank()) throw NoStackTraceException(missingMsg)
+        val baseUrl = bookChapter?.getAbsoluteURL(book) ?: book.bookUrl
+        val analyzeUrl = AnalyzeUrlFactories.create(
+            rawUrl = rawUrl,
+            baseUrl = baseUrl,
+            source = bookSource,
+            ruleData = book,
+            chapter = bookChapter,
+            coroutineContext = currentCoroutineContext(),
+            variables = variables
+        )
+        val res = checkLogin(analyzeUrl, bookSource)
+        checkRedirect(bookSource, res)
+        BookReview.analyzeReviewList(
+            bookSource = bookSource,
+            book = book,
+            bookChapter = bookChapter,
+            baseUrl = baseUrl,
+            redirectUrl = res.url,
+            body = res.body,
+            reviewRule = reviewRule,
+            variables = variables
+        )
+    }.onFailure {
+        currentCoroutineContext().ensureActive()
+    }
+
+    suspend fun getReviewCountAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter,
+    ): Result<Map<Int, Int>> = runCatching {
+        if (bookSource.ruleReview.isNullOrEmpty()) {
+            throw NoStackTraceException("书源未配置段评规则")
+        }
+        val reviewRule = bookSource.reviewRule
+        val countRule = reviewRule.reviewCountRule
+            ?: return@runCatching emptyMap<Int, Int>()
+        val analyzeRule = AnalyzeRuleFactories.create(book, bookSource).apply {
+            chapter = bookChapter
+            setBaseUrl(bookChapter.getAbsoluteURL(book))
+            coroutineContext = currentCoroutineContext()
+        }
+        analyzeRule.setContent("")
+        val res = analyzeRule.evalJS(countRule)
+        BookReview.analyzeReviewCount(bookSource, res)
+    }.onFailure {
+        currentCoroutineContext().ensureActive()
+    }
+
+    suspend fun evalReviewActionAwait(
+        bookSource: BookSource,
+        book: Book,
+        bookChapter: BookChapter?,
+        rule: String,
+        paragraphIndex: Int,
+        reviewId: String? = null,
+        contentText: String? = null,
+        selected: Boolean? = null,
+    ): Result<Any?> = runCatching {
+        val variables =
+            mutableMapOf<AppConst.JsVarName, Any>(AppConst.JsVarName.PARAGRAPH_INDEX to paragraphIndex)
+        reviewId?.let { variables[AppConst.JsVarName.REVIEW_ID] = it }
+        selected?.let { variables[AppConst.JsVarName.SELECTED] = it }
+        val analyzeRule = AnalyzeRuleFactories.create(book, bookSource).apply {
+            chapter = bookChapter
+            setBaseUrl(bookChapter?.getAbsoluteURL(book) ?: book.bookUrl)
+            coroutineContext = currentCoroutineContext()
+            this.variables = variables
+        }
+        analyzeRule.evalJS(rule, contentText)
+    }.onFailure {
+        currentCoroutineContext().ensureActive()
+    }
+
+    suspend fun preciseSearchAwait(
+        bookSource: BookSource,
+        name: String,
+        author: String,
+    ): Result<Book> {
+        return runCatching {
+            currentCoroutineContext().ensureActive()
+            getBookListAwait(
+                bookSource, name,
+                filter = { fName, fAuthor -> fName == name && fAuthor == author },
+                shouldBreak = { it > 0 }
+            ).books.firstOrNull()?.let { searchBook ->
+                currentCoroutineContext().ensureActive()
+                return@runCatching searchBook.toBook()
+            }
+            throw NoStackTraceException("未搜索到 $name($author) 书籍")
+        }.onFailure {
+            currentCoroutineContext().ensureActive()
+        }
+    }
+
+    suspend fun runPreUpdateJs(bookSource: BookSource, book: Book): Result<Unit> {
+        return runCatching {
+            val preUpdateJs = bookSource.tocRule.preUpdateJs
+            if (!preUpdateJs.isNullOrBlank()) {
+                AnalyzeRuleFactories.create(book, bookSource, true).apply {
+                    coroutineContext = currentCoroutineContext()
+                }.evalJS(preUpdateJs)
+            }
+        }.onFailure {
+            currentCoroutineContext().ensureActive()
+            AppLog.put("执行preUpdateJs规则失败 书源:${bookSource.bookSourceName}", it)
+        }
+    }
+
+    private suspend fun checkLogin(analyzeUrl: AnalyzeUrlCore, bookSource: BookSource) : StrResponse{
+        var tmp: Throwable? = null
+        var res = try {
+                analyzeUrl.getStrResponseAwait()
+            }catch (e: Throwable){
+                tmp = e
+                null
+            }
+        try{
+            //检测书源是否已登录
+            bookSource.loginCheckJs.let {
+                if (!it.isNullOrBlank()) {
+                    res = analyzeUrl.evalJS(it, res) as StrResponse
+                }
+            }
+
+        }catch (e: Throwable){
+            throw tmp ?: e
+        }
+        return res ?: throw tmp!!
+    }
+
+    private fun checkRedirect(bookSource: BookSource, response: StrResponse) : Boolean {
+        response.raw.priorResponse?.let {
+            if (it.isRedirect) {
+                SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "≡检测到重定向(${it.code})")
+                SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "┌重定向后地址")
+                SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "└${response.url}")
+                return true
+            }
+        }
+        return false
+    }
+
+}

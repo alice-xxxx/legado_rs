@@ -1,8 +1,8 @@
 //! 统一搜索入口：所有书源搜索都在此请求 KMP，并使用相同结果结构向 Vue emit。
 
+use tauri_plugin_source_engine::SearchRequest;
 use crate::{
     source_catalog::SourceRecord,
-    source_engine::SourceEngineRequest,
     support::{now_ms, text_at},
 };
 use futures_util::{stream, StreamExt};
@@ -120,16 +120,11 @@ impl Search {
         let mut responses = stream::iter(sources)
             .map(|source| {
                 let token = cancellation.child_token();
-                let mut request = SourceEngineRequest {
-                    keyword: Some(keyword.to_owned()),
-                    page: Some(page as i32),
-                    ..SourceEngineRequest::new("search", &source.source)
-                };
-                request.cancellation = Some(token.clone());
                 async move {
-                    let _cancel_on_drop = token.drop_guard();
+                    let _cancel_on_drop = token.clone().drop_guard();
                     let mut response_time_ms = None;
                     let response = async {
+                        let request = SearchRequest { source: (&source.source).try_into()?, keyword: keyword.to_owned(), page: page as i32 };
                         let _slot = self
                             .search_slots
                             .acquire()
@@ -139,10 +134,11 @@ impl Search {
                         let started = Instant::now();
                         let response = tokio::time::timeout(
                             SEARCH_SOURCE_TIMEOUT,
-                            self.executor.execute(request),
+                            self.executor.search(request, token.clone()),
                         )
                         .await
-                        .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()));
+                        .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()))
+                        .and_then(|page| serde_json::to_value(page).map_err(|error| error.to_string()));
                         response_time_ms = Some(started.elapsed().as_millis() as u64);
                         response
                     }

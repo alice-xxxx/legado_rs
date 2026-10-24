@@ -1526,16 +1526,12 @@ dependencies = [
  "futures-util",
  "http-range-header",
  "image",
- "imageproc",
- "jni 0.22.4",
  "natord",
- "ndk-context",
  "percent-encoding",
  "quick-xml 0.42.0",
  "regex",
  "reqwest",
  "rusqlite",
- "rustls-platform-verifier",
  "serde",
  "serde_json",
  "sha2",
@@ -5669,10 +5665,22 @@ dependencies = [
 name = "tauri-plugin-source-engine"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
+ "image",
+ "imageproc",
+ "jni 0.22.4",
+ "ndk-context",
+ "percent-encoding",
+ "reqwest",
+ "rustls-platform-verifier",
  "serde",
+ "serde_json",
  "tauri",
  "tauri-plugin",
  "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "uuid",
 ]
 
 [[package]]

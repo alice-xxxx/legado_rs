@@ -3,28 +3,46 @@ use tauri::{
     plugin::{Builder, TauriPlugin},
 };
 
-pub use models::{
-    SourceEngineCall, SourceEngineResponse, SourceLoginWebCancelled, SourceLoginWebCapture,
-    SourceLoginWebSession, SourceLoginWebStart, SourceLoginWebStarted,
-};
+pub use models::*;
 
 #[cfg(desktop)]
 mod desktop;
 #[cfg(mobile)]
 mod mobile;
 
-mod commands;
+mod api;
+mod browser;
+mod context;
 mod error;
+mod host;
+pub mod http;
+pub mod http_client;
+mod image_ops;
+mod jni_bridge;
+#[cfg(desktop)]
+mod jvm;
 mod models;
+pub mod source;
+pub mod storage;
+mod wire;
+
+pub use api::{EngineFuture, SourceExecutor};
+pub use context::ExecutionContext;
+#[cfg(desktop)]
+pub use desktop::JvmEngine;
+pub use wire::TextOr;
+
+#[cfg(all(feature = "desktop-runtime", desktop))]
+pub use browser::install_app as install_browser_app;
 
 #[cfg(desktop)]
-use desktop::SourceEngine;
+pub use desktop::SourceEngine;
 #[cfg(mobile)]
-use mobile::SourceEngine;
+pub use mobile::SourceEngine;
 
 pub use error::{Error, Result};
 
-/// Gives the Tauri command a platform-neutral route to the native parser adapter.
+/// Typed source operations and native login browser controls for every app runtime.
 pub trait SourceEngineExt<R: Runtime> {
     fn source_engine(&self) -> &SourceEngine<R>;
 }
@@ -35,10 +53,9 @@ impl<R: Runtime, T: Manager<R>> SourceEngineExt<R> for T {
     }
 }
 
-/// Registers the Kotlin/Native and Kotlin/Android parser entry points on mobile builds.
+/// Registers the platform engine adapter and its application state.
 pub fn init<R: Runtime>() -> TauriPlugin<R> {
     Builder::new("source-engine")
-        .invoke_handler(tauri::generate_handler![commands::execute])
         .setup(|app, api| {
             #[cfg(mobile)]
             let source_engine = mobile::init(app, api)?;

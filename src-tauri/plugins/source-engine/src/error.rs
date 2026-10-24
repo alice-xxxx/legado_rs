@@ -9,8 +9,8 @@ pub enum Error {
     #[cfg(mobile)]
     #[error(transparent)]
     PluginInvoke(#[from] tauri::plugin::mobile::PluginInvokeError),
-    #[error("The source-engine native bridge is only available on mobile targets")]
-    UnsupportedTarget,
+    #[error("{0}")]
+    Engine(String),
 }
 
 impl Serialize for Error {

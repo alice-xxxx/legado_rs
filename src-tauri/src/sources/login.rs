@@ -1,6 +1,7 @@
 //! 统一登录入口：Rust 执行规则、保存登录数据，Vue 只收取表单和显示结果。
 
-use crate::{source_engine::SourceEngineRequest, support::validate_id};
+use crate::support::validate_id;
+use tauri_plugin_source_engine::{LoginRequest, LoginAction as EngineLoginAction};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
@@ -132,51 +133,37 @@ impl Login {
                 LoginAction::Clear => "clear",
                 LoginAction::Cancel => unreachable!(),
             };
-            let mut request = SourceEngineRequest {
-                keyword: Some(kind.into()),
-                ..SourceEngineRequest::new("login", &source.source)
+            let engine_action = match action {
+                LoginAction::Open => EngineLoginAction::Open,
+                LoginAction::Clear => EngineLoginAction::Clear,
+                LoginAction::Submit { fields, button } => {
+                    validate_source_login_credentials(&fields)?;
+                    EngineLoginAction::Submit { fields, button }
+                }
+                LoginAction::Cancel => unreachable!(),
             };
-            request.cancellation = Some(session.cancel.clone());
-            if let LoginAction::Submit { fields, button } = action {
-                validate_source_login_credentials(&fields)?;
-                request.credentials = Some(fields);
-                request.action_id = button;
-            }
-            // 每个动作只走同一个 KMP 登录流程，状态读取和表单刷新由该流程一并完成。
-            let mut result = self.executor.execute(request.clone()).await?;
-            if let Some(web) = result.get("web") {
+            let mut request = LoginRequest { source: (&source.source).try_into()?, action: engine_action };
+            let mut response = self.executor.login(request.clone(), session.cancel.clone()).await?;
+            let web_login = response.web.is_some();
+            if let Some(web) = response.web.clone() {
                 if kind == "open" {
-                    self.open_login_browser(session.clone(), web.clone(), revision, epoch)
-                        .await?;
+                    self.open_login_browser(session.clone(), web, revision, epoch).await?;
                 } else {
                     let captured = self.complete_login_browser(session.clone()).await?;
-                    if captured["sourceRevision"].as_u64()
-                        != Some(self.sources.revision(source_id).await)
-                        || captured["restoreEpoch"].as_u64()
-                            != Some(
-                                self.backup
-                                    .restore_epoch
-                                    .load(std::sync::atomic::Ordering::SeqCst),
-                            )
+                    if captured.source_revision != self.sources.revision(source_id).await
+                        || captured.restore_epoch != self.backup.restore_epoch.load(std::sync::atomic::Ordering::SeqCst)
                     {
                         return Err("书源或备份已变化，请重新打开登录页".into());
                     }
-                    let url = captured["loginUrl"]
-                        .as_str()
-                        .ok_or("Private browser returned no login URL")?;
-                    let cookies = captured["cookieHeader"]
-                        .as_str()
-                        .ok_or("Private browser returned invalid cookies")?;
-                    validate_login_cookies(cookies)?;
-                    request.keyword = Some("cookies".into());
-                    request.credentials = Some(HashMap::from([
-                        ("loginUrl".into(), url.into()),
-                        ("cookieHeader".into(), cookies.into()),
-                    ]));
-                    result = self.executor.execute(request).await?;
+                    validate_login_cookies(&captured.cookie_header)?;
+                    request.action = EngineLoginAction::ImportCookies {
+                        url: captured.login_url, cookies: captured.cookie_header,
+                    };
+                    response = self.executor.login(request, session.cancel.clone()).await?;
                 }
-                result["webOpen"] = json!(kind == "open");
             }
+            let mut result = serde_json::to_value(response).map_err(|error| error.to_string())?;
+            if web_login { result["webOpen"] = json!(kind == "open"); }
             let mut update = sanitize_source_login_result(result)?;
             update["sourceId"] = json!(source_id);
             if session.cancel.is_cancelled() {
@@ -212,14 +199,11 @@ impl Login {
     async fn open_login_browser(
         &self,
         session: Arc<LoginSession>,
-        info: Value,
+        info: tauri_plugin_source_engine::LoginWeb,
         revision: u64,
         epoch: u64,
     ) -> Result<(), String> {
-        let url = info["url"]
-            .as_str()
-            .ok_or("Source engine returned no web login URL")?
-            .to_owned();
+        let url = info.url;
         let parsed = reqwest::Url::parse(&url).map_err(|error| error.to_string())?;
         if url.len() > 8192
             || !matches!(parsed.scheme(), "http" | "https")
@@ -229,44 +213,20 @@ impl Login {
         {
             return Err("Source login URL must be an HTTP(S) URL without credentials".into());
         }
-        let cookies = info["cookieHeader"]
-            .as_str()
-            .ok_or("Invalid login cookies")?
-            .to_owned();
+        let cookies = info.cookie_header;
         validate_login_cookies(&cookies)?;
         let app = self.app.clone().ok_or("Application is unavailable")?;
         tokio::task::spawn_blocking(move || {
             if session.cancel.is_cancelled() {
                 return Err("登录已取消".into());
             }
-            #[cfg(mobile)]
-            {
-                use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebStart};
-                let started = app
-                    .source_engine()
-                    .start_web_login(SourceLoginWebStart {
-                        source_id: session.source_id.clone(),
-                        session_id: session.id.clone(),
-                        source_revision: revision,
-                        restore_epoch: epoch,
-                        login_url: url,
-                        cookie_header: cookies,
-                    })
-                    .map_err(|error| error.to_string())?;
-                if !started.started {
-                    return Err("Native login browser did not start".into());
-                }
-            }
-            #[cfg(not(mobile))]
-            crate::source_engine::start_web_login(
-                &app,
-                &session.source_id,
-                &session.id,
-                revision,
-                epoch,
-                &url,
-                &cookies,
-            )?;
+            use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebStart};
+            let started = app.source_engine().start_web_login(SourceLoginWebStart {
+                source_id: session.source_id.clone(), session_id: session.id.clone(),
+                source_revision: revision, restore_epoch: epoch,
+                login_url: url, cookie_header: cookies,
+            }).map_err(|error| error.to_string())?;
+            if !started.started { return Err("Native login browser did not start".into()); }
             // 取消可能早于原生窗口创建完成，创建者必须补做清理。
             if session.cancel.is_cancelled() {
                 close_browser(&app, &session)?;
@@ -277,50 +237,23 @@ impl Login {
         .map_err(|error| error.to_string())?
     }
 
-    async fn complete_login_browser(&self, session: Arc<LoginSession>) -> Result<Value, String> {
-        #[cfg(mobile)]
+    async fn complete_login_browser(&self, session: Arc<LoginSession>) -> Result<tauri_plugin_source_engine::SourceLoginWebCapture, String> {
         let app = self.app.clone().ok_or("Application is unavailable")?;
         tokio::task::spawn_blocking(move || {
-            #[cfg(mobile)]
-            {
-                use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebSession};
-                let captured = app
-                    .source_engine()
-                    .complete_web_login(SourceLoginWebSession {
-                        source_id: session.source_id.clone(),
-                        session_id: session.id.clone(),
-                    })
-                    .map_err(|error| error.to_string())?;
-                Ok(
-                    json!({"loginUrl":captured.login_url, "cookieHeader":captured.cookie_header,
-                    "sourceRevision":captured.source_revision, "restoreEpoch":captured.restore_epoch}),
-                )
-            }
-            #[cfg(not(mobile))]
-            crate::source_engine::complete_web_login(&session.source_id, &session.id)
-        })
-        .await
-        .map_err(|error| error.to_string())?
+            use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebSession};
+            app.source_engine().complete_web_login(SourceLoginWebSession {
+                source_id: session.source_id.clone(), session_id: session.id.clone(),
+            }).map_err(|error| error.to_string())
+        }).await.map_err(|error| error.to_string())?
     }
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 fn close_browser(app: &tauri::AppHandle, session: &LoginSession) -> Result<(), String> {
-    #[cfg(mobile)]
-    {
-        use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebSession};
-        app.source_engine()
-            .cancel_web_login(SourceLoginWebSession {
-                source_id: session.source_id.clone(),
-                session_id: session.id.clone(),
-            })
-            .map_err(|error| error.to_string())?;
-    }
-    #[cfg(not(mobile))]
-    {
-        let _ = app;
-        crate::source_engine::cancel_web_login(&session.source_id, &session.id)?;
-    }
+    use tauri_plugin_source_engine::{SourceEngineExt, SourceLoginWebSession};
+    app.source_engine().cancel_web_login(SourceLoginWebSession {
+        source_id: session.source_id.clone(), session_id: session.id.clone(),
+    }).map_err(|error| error.to_string())?;
     Ok(())
 }
 
@@ -329,13 +262,13 @@ impl Login {
     async fn open_login_browser(
         &self,
         _: Arc<LoginSession>,
-        _: Value,
+        _: tauri_plugin_source_engine::LoginWeb,
         _: u64,
         _: u64,
     ) -> Result<(), String> {
         Err("Web login is unavailable".into())
     }
-    async fn complete_login_browser(&self, _: Arc<LoginSession>) -> Result<Value, String> {
+    async fn complete_login_browser(&self, _: Arc<LoginSession>) -> Result<tauri_plugin_source_engine::SourceLoginWebCapture, String> {
         Err("Web login is unavailable".into())
     }
 }

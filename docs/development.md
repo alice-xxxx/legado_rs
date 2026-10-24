@@ -1,6 +1,8 @@
 # Foliver 开发与打包
 
-工具版本与发布配置见 [GitHub Actions](../.github/workflows/build.yml)。CI 可手动选择全部平台、桌面、Android 或 iOS 构建。
+JDK、Kotlin、KSP、Gradle、AGP 与 Android SDK/NDK 的版本统一维护在 [toolchain.properties](../src-tauri/plugins/source-engine/toolchain.properties)，App、插件和 KMP 使用同一套配置。修改版本后运行 `node src-tauri/toolchain.mjs --sync`，同步 KMP 的 Gradle wrapper 与 daemon JDK；已有 Android 工程再运行 `node src-tauri/android/configure.mjs`。CI 自动执行。发布配置见 [GitHub Actions](../.github/workflows/build.yml)。
+
+构建使用 JDK 21；桌面 JVM 字节码目标为 21，Android 为 11。Gradle 自动选择 JDK 21，不需要修改全局 `JAVA_HOME`。Android CMake 和 NDK 必须安装配置中指定的版本，不再自动选择已安装的最高版本。
 
 ## 各平台的运行时
 
@@ -16,18 +18,18 @@
 
 ```sh
 npm ci
-bash kotlin/gradlew -p kotlin --no-daemon --console=plain prepareDesktopJvmRuntime
+bash src-tauri/plugins/source-engine/engine/gradlew -p src-tauri/plugins/source-engine/engine --no-daemon --console=plain prepareDesktopJvmRuntime
 npm run tauri -- dev
 ```
 
-Windows 的 Gradle 命令使用 `.\kotlin\gradlew.bat -p kotlin --no-daemon --console=plain prepareDesktopJvmRuntime`。修改 Kotlin 后需重新准备 runtime。桌面打包使用 `npm run tauri -- build`；CI 分别生成 Windows NSIS、macOS DMG、Linux AppImage/DEB。
+Windows 的 Gradle 命令使用 `.\src-tauri\plugins\source-engine\engine\gradlew.bat -p src-tauri/plugins/source-engine/engine --no-daemon --console=plain prepareDesktopJvmRuntime`。修改 Kotlin 后需重新准备 runtime。桌面打包使用 `npm run tauri -- build`；CI 分别生成 Windows NSIS、macOS DMG、Linux AppImage/DEB。
 
 ## Android
 
-需要 Android SDK、NDK 与四个 Rust Android targets，最低 Android 8（API 26）。
+需要 Android SDK、NDK 与 Rust 的 `aarch64-linux-android` target，最低 Android 8（API 26）。
 
 ```sh
-bash kotlin/gradlew -p kotlin --no-daemon --console=plain stageTauriAndroidAar
+bash src-tauri/plugins/source-engine/engine/gradlew -p src-tauri/plugins/source-engine/engine --no-daemon --console=plain stageTauriAndroidAar
 npm ci
 npm run tauri -- android init --ci
 npm run icons
@@ -43,8 +45,8 @@ npm run tauri -- android build --apk --ci --split-per-abi
 
 ```sh
 export IPHONEOS_DEPLOYMENT_TARGET=15.0
-bash kotlin/gradlew -p kotlin --no-daemon --console=plain -Plegado.iosNativeTargets=ios_arm64 :kmp-engine:linkReleaseFrameworkIosArm64
-xcodebuild -create-xcframework -framework kotlin/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
+bash src-tauri/plugins/source-engine/engine/gradlew -p src-tauri/plugins/source-engine/engine --no-daemon --console=plain -Plegado.iosNativeTargets=ios_arm64 :kmp-engine:linkReleaseFrameworkIosArm64
+xcodebuild -create-xcframework -framework src-tauri/plugins/source-engine/engine/kmp-engine/build/bin/iosArm64/releaseFramework/LegadoSourceEngine.framework -output src-tauri/plugins/source-engine/ios/Frameworks/LegadoSourceEngine.xcframework
 npm ci
 npm run tauri -- ios init --ci
 npm run icons

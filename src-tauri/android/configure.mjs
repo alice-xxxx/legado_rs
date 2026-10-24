@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { toolchain, syncGradleVersions } from "../toolchain.mjs";
 const androidPackagePath = JSON.parse(await readFile(new URL("../tauri.conf.json", import.meta.url), "utf8")).identifier.replaceAll(".", "/");
 
 // The generated Gradle Kotlin doFirst source patch cannot be configuration-cache serialized
@@ -23,39 +24,36 @@ if (!/^org\.gradle\.logging\.stacktrace\s*=/m.test(gradleProperties)) {
 }
 await writeFile(gradlePropertiesFile, gradleProperties, "utf8");
 
-// Tauri 2.12's Android AAR requires compileSdk >= 36. Some plugins still set 34
-// in their own build scripts; finalizeDsl runs after those values are assigned.
+// Apply the shared SDK and bytecode target after each library's own DSL.
 const rootBuildFile = new URL("../gen/android/build.gradle.kts", import.meta.url);
 const librarySdkMarker = "// Foliver Android library compile SDK compatibility.";
 let rootBuild = await readFile(rootBuildFile, "utf8");
-if (!rootBuild.includes(librarySdkMarker)) {
-  const librarySdkConfig = String.raw`
-// Foliver Android library compile SDK compatibility.
+const originalRootBuild = rootBuild;
+rootBuild = rootBuild.replace(/com\.android\.tools\.build:gradle:[^"]+/g, "com.android.tools.build:gradle:" + toolchain["agp.version"])
+  .replace(/org\.jetbrains\.kotlin:kotlin-gradle-plugin:[^"]+/g, "org.jetbrains.kotlin:kotlin-gradle-plugin:" + toolchain["kotlin.version"]);
+const librarySdkConfig = `${librarySdkMarker}
 subprojects {
     pluginManager.withPlugin("com.android.library") {
         extensions.getByType<com.android.build.api.variant.LibraryAndroidComponentsExtension>()
             .finalizeDsl { library ->
-                if ((library.compileSdk ?: 0) < 36) library.compileSdk = 36
+                library.compileSdk = ${toolchain["android.compileSdk"]}
+                library.buildToolsVersion = "${toolchain["android.buildTools"]}"
+                library.ndkVersion = "${toolchain["android.ndk"]}"
+                library.defaultConfig.minSdk = maxOf(library.defaultConfig.minSdk ?: 0, ${toolchain["android.minSdk"]})
+                library.compileOptions {
+                    sourceCompatibility = JavaVersion.toVersion("${toolchain["android.jvmTarget"]}")
+                    targetCompatibility = JavaVersion.toVersion("${toolchain["android.jvmTarget"]}")
+                }
+                tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
+                    compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget("${toolchain["android.jvmTarget"]}"))
+                }
             }
     }
 }
 `;
-  rootBuild += "\n" + librarySdkConfig;
-}
-const libraryBytecodeMarker = "// Foliver Android library Java/Kotlin bytecode.";
-if (!rootBuild.includes(libraryBytecodeMarker)) {
-  const sdkCheck = "if ((library.compileSdk ?: 0) < 36) library.compileSdk = 36";
-  if (!rootBuild.includes(sdkCheck)) throw new Error("Cannot find Android library compatibility configuration");
-  rootBuild = rootBuild.replace(sdkCheck, `${sdkCheck}
-                ${libraryBytecodeMarker}
-                library.compileOptions {
-                    sourceCompatibility = JavaVersion.VERSION_11
-                    targetCompatibility = JavaVersion.VERSION_11
-                }
-                tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile>().configureEach {
-                    compilerOptions.jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_11)
-                }`);
-}
+const librarySdkBlock = /^\/\/ Foliver Android library compile SDK compatibility\.\r?\nsubprojects \{[\s\S]*?^\}\r?\n?/m;
+rootBuild = librarySdkBlock.test(rootBuild) ? rootBuild.replace(librarySdkBlock, librarySdkConfig)
+  : rootBuild + "\n" + librarySdkConfig;
 // reqwest 0.13 uses Android's trust manager through this small Kotlin component.
 // Its AAR version must match the Rust shim in Cargo.lock (not the verifier crate version).
 const rustlsRepositoryMarker = "// Foliver Android system certificate verifier.";
@@ -72,31 +70,30 @@ allprojects {
 }
 `;
 }
-await writeFile(rootBuildFile, rootBuild, "utf8");
+if (rootBuild !== originalRootBuild) await writeFile(rootBuildFile, rootBuild, "utf8");
 
 const buildFile = new URL("../gen/android/app/build.gradle.kts", import.meta.url);
 const manifestFile = new URL("../gen/android/app/src/main/AndroidManifest.xml", import.meta.url);
 const networkConfigFile = new URL("../gen/android/app/src/main/res/xml/network_security_config.xml", import.meta.url);
 const marker = "// Source-engine dependencies include a JVM-only JAR index.";
 let contents = await readFile(buildFile, "utf8");
-let buildFileChanged = false;
+const originalContents = contents;
+for (const field of ["compileSdk", "targetSdk", "minSdk"]) {
+  contents = contents.replace(new RegExp(field + "\\s*=\\s*\\d+"), field + " = " + toolchain["android." + field]);
+}
+contents = contents.replace(/^\s*(?:ndkVersion|buildToolsVersion)\s*=.*\r?\n/gm, "")
+  .replace(/(?:android|extensions\.configure<com\.android\.build\.api\.dsl\.ApplicationExtension>)\s*\{/, block => `${block}\n    ndkVersion = "${toolchain["android.ndk"]}"\n    buildToolsVersion = "${toolchain["android.buildTools"]}"`);
+await syncGradleVersions(new URL("../gen/android/", import.meta.url));
+
 const cargoLock = await readFile(new URL("../Cargo.lock", import.meta.url), "utf8");
 const rustlsAndroidVersions = [...cargoLock.matchAll(/\[\[package\]\]\r?\nname = "rustls-platform-verifier-android"\r?\nversion = "([^"]+)"/g)];
 if (rustlsAndroidVersions.length !== 1) throw new Error("Expected one rustls-platform-verifier-android version in Cargo.lock");
 const rustlsAndroidDependency = `implementation("org.rustls:rustls-platform-verifier:${rustlsAndroidVersions[0][1]}")`;
 const existingRustlsDependency = /implementation\("org\.rustls:rustls-platform-verifier:[^"]+"\)/;
 if (existingRustlsDependency.test(contents)) {
-  const updated = contents.replace(existingRustlsDependency, rustlsAndroidDependency);
-  buildFileChanged ||= updated !== contents;
-  contents = updated;
+  contents = contents.replace(existingRustlsDependency, rustlsAndroidDependency);
 } else {
   contents = contents.replace("dependencies {", `dependencies {\n    ${rustlsAndroidDependency}`);
-  buildFileChanged = true;
-}
-// Native audio requires Android 8+. Keep regenerated projects aligned with the plugin.
-if (/minSdk\s*=\s*24/.test(contents)) {
-    contents = contents.replace(/minSdk\s*=\s*24/, "minSdk = 26");
-    buildFileChanged = true;
 }
 const arm64Marker = "// Foliver supports Android arm64 only.";
 if (!contents.includes(arm64Marker)) {
@@ -108,27 +105,11 @@ android {
     }
 }
 `;
-  buildFileChanged = true;
 }
-// The generated app targets Java 8 by default. JDK 21 warns on source/target 8, so align the
-// generated Java and Kotlin bytecode levels at 11 instead of suppressing the compiler warning.
-const javaEightOptions = /    compileOptions \{\r?\n        sourceCompatibility = JavaVersion\.VERSION_1_8\r?\n        targetCompatibility = JavaVersion\.VERSION_1_8\r?\n    \}/;
-const javaElevenOptions = /    compileOptions \{\r?\n        sourceCompatibility = JavaVersion\.VERSION_11\r?\n        targetCompatibility = JavaVersion\.VERSION_11\r?\n    \}/;
-if (javaEightOptions.test(contents)) {
-  contents = contents.replace(javaEightOptions, (block) => block.replaceAll("VERSION_1_8", "VERSION_11"));
-  buildFileChanged = true;
-} else if (!javaElevenOptions.test(contents)) {
-  throw new Error(`Cannot find generated Java 8 or Java 11 compile options in ${buildFile.pathname}`);
-}
-
-const kotlinEightTarget = /kotlin \{\r?\n    compilerOptions \{\r?\n        jvmTarget = JvmTarget\.JVM_1_8\r?\n    \}/;
-const kotlinElevenTarget = /kotlin \{\r?\n    compilerOptions \{\r?\n        jvmTarget = JvmTarget\.JVM_11\r?\n    \}/;
-if (kotlinEightTarget.test(contents)) {
-  contents = contents.replace(kotlinEightTarget, (block) => block.replace("JVM_1_8", "JVM_11"));
-  buildFileChanged = true;
-} else if (!kotlinElevenTarget.test(contents)) {
-  throw new Error(`Cannot find generated Kotlin JVM 8 or JVM 11 target in ${buildFile.pathname}`);
-}
+// Keep generated app bytecode aligned with the engine's Android target.
+contents = contents.replace(/sourceCompatibility\s*=[^\r\n]+/g, 'sourceCompatibility = JavaVersion.toVersion("' + toolchain["android.jvmTarget"] + '")')
+  .replace(/targetCompatibility\s*=[^\r\n]+/g, 'targetCompatibility = JavaVersion.toVersion("' + toolchain["android.jvmTarget"] + '")')
+  .replace(/jvmTarget\s*=[^\r\n]+/, 'jvmTarget = JvmTarget.fromTarget("' + toolchain["android.jvmTarget"] + '")');
 
 // Tauri creates these Kotlin sources during `tauri android build`, after `android init`.
 // 在 Kotlin 编译任务开始时再修正模板调用，避免 init 阶段读取尚未生成的文件。
@@ -166,7 +147,6 @@ tasks.configureEach {
 }
 `;
   contents = contents.replace(rustBlock, `${generatedKotlinPatch}\nrust {\n`);
-  buildFileChanged = true;
 }
 
 if (!contents.includes(marker)) {
@@ -180,7 +160,6 @@ if (!contents.includes(marker)) {
     androidBlock,
     (match) => `${match}    ${marker}\n    packaging {\n        resources {\n            excludes += "META-INF/INDEX.LIST"\n        }\n    }\n\n`,
   );
-  buildFileChanged = true;
 }
 // Release builds use the same private signing key locally and in Actions.
 const releaseMarker = "// Foliver release packaging and signing.";
@@ -207,14 +186,11 @@ if (!contents.includes(releaseMarker)) {
     }
 `;
   contents += "\nandroid {\n" + releaseConfig + "}\n";
-  buildFileChanged = true;
 }
 // Use AGP's public DSL types instead of its deprecated generated android() accessors.
-const publicAndroidDsl = contents.replace(/^android \{/gm,
+contents = contents.replace(/^android \{/gm,
   "extensions.configure<com.android.build.api.dsl.ApplicationExtension> {");
-buildFileChanged ||= publicAndroidDsl !== contents;
-contents = publicAndroidDsl;
-if (buildFileChanged) await writeFile(buildFile, contents, "utf8");
+if (contents !== originalContents) await writeFile(buildFile, contents, "utf8");
 
 const appConfig = JSON.parse(await readFile(new URL("../tauri.conf.json", import.meta.url), "utf8"));
 const mainActivityFile = new URL(

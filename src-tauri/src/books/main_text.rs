@@ -1,7 +1,8 @@
 //! 正文统一入口：请求后入库，缓存没有就新增，有就更新。
 use std::sync::Arc;
 
-use crate::{source_engine::SourceEngineRequest, support::validate_id};
+use crate::support::validate_id;
+use tauri_plugin_source_engine::{BookRequest, ContentRequest};
 
 pub(crate) enum ChapterPreparation {
     Updated,
@@ -128,24 +129,13 @@ impl MainText {
             if !source.enabled {
                 return Err("Book source is disabled".into());
             }
-            let mut request = SourceEngineRequest {
-                chapter: Some(
-                    serde_json::to_value(&context.chapter.engine_data)
-                        .map_err(|error| error.to_string())?,
-                ),
+            let book = BookRequest::new((&source.source).try_into()?, context.engine.ok_or("Source book context is missing")?);
+            let request = ContentRequest {
+                source: book.source, book: book.book,
+                chapter: context.chapter.engine_data.clone(),
                 next_chapter_url: context.next_chapter_url,
-                ..SourceEngineRequest::new(
-                    if crate::rss::is_legacy_rss_source(&source.source) {
-                        "rssContent"
-                    } else {
-                        "content"
-                    },
-                    &source.source,
-                )
-            }
-            .with_book(serde_json::to_value(context.engine).map_err(|error| error.to_string())?);
-            request.cancellation = Some(token.clone());
-            let content = self.executor.execute(request.clone()).await?;
+            };
+            let content = self.executor.content(request.clone(), token.clone()).await?.content;
 
             let mut chapter = crate::chapter_resources::chapter_content(
                 database,
@@ -156,6 +146,7 @@ impl MainText {
                 &request,
                 content,
                 serde_json::to_value(context.chapter).map_err(|error| error.to_string())?,
+                token.clone(),
             )
             .await?;
             if cache {
@@ -201,8 +192,32 @@ mod tests {
 
     struct NoNetwork;
     impl crate::source_engine::SourceExecutor for NoNetwork {
-        fn execute<'a>(&'a self, _: SourceEngineRequest) -> crate::source_engine::EngineFuture<'a> {
-            panic!("cached or stale chapters must not execute source rules");
+        fn search<'a>(&'a self, _: tauri_plugin_source_engine::SearchRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn explore_kinds<'a>(&'a self, _: tauri_plugin_source_engine::SourceRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ExploreKinds> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn explore<'a>(&'a self, _: tauri_plugin_source_engine::ExploreRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn detail<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::Book> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn chapters<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterList> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn content<'a>(&'a self, _: tauri_plugin_source_engine::ContentRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterContent> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn resolve_media<'a>(&'a self, _: tauri_plugin_source_engine::MediaRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::MediaLocation> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn http_tts_audio<'a>(&'a self, _: tauri_plugin_source_engine::TtsRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::AudioData> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
+        }
+        fn login<'a>(&'a self, _: tauri_plugin_source_engine::LoginRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::LoginState> {
+            Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
     }
 

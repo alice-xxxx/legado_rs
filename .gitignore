@@ -26,7 +26,7 @@ dist-ssr
 **/.kotlin/
 **/build/
 **/target/
-/kotlin/native/
+/src-tauri/plugins/source-engine/engine/native/
 source-snapshot/
 
 # Local Android signing identity; publish only through Actions Secrets.

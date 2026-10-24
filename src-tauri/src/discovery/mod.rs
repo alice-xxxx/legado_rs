@@ -3,6 +3,7 @@
 //!
 //! 分类规则地址保存在数据库中；Vue 使用分类 ID 请求，只读取展示信息。
 
+use tauri_plugin_source_engine::{ExploreRequest, SourceRequest};
 #[path = "home_config.rs"]
 pub mod home_config;
 
@@ -11,9 +12,8 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    rss::{is_legacy_rss_source, is_rss_source},
+    rss::{is_rss_source},
     search::Search,
-    source_engine::SourceEngineRequest,
 };
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -68,22 +68,15 @@ pub(crate) async fn prepare_categories(
             });
         }
     }
-    let operation = if is_legacy_rss_source(&source.source) {
-        "rssExploreKinds"
-    } else {
-        "exploreKinds"
-    };
-    let raw = service
-        .executor
-        .execute(SourceEngineRequest::new(operation, &source.source))
-        .await?;
-    let raw_categories = raw
-        .as_array()
-        .ok_or_else(|| "Source engine returned invalid discovery categories".to_owned())?;
-    if raw_categories.len() > 512 {
-        return Err("Source engine returned too many discovery categories".to_owned());
+    let categories = service.executor.explore_kinds(
+        SourceRequest { source: (&source.source).try_into()? },
+        tokio_util::sync::CancellationToken::new(),
+    ).await?.categories;
+    if categories.len() > 512 {
+        return Err("Source engine returned too many discovery categories".into());
     }
-
+    let raw_categories = categories.into_iter().map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     let mut public_categories = Vec::with_capacity(raw_categories.len());
     let mut private_categories = Vec::with_capacity(raw_categories.len());
     let mut seen_category_ids = std::collections::HashSet::new();
@@ -238,23 +231,12 @@ pub(crate) async fn list_books(
         .url
         .clone()
         .ok_or_else(|| "Discovery category has no engine URL".to_owned())?;
-    let operation = if is_legacy_rss_source(&source.source) {
-        "rssExplore"
-    } else {
-        "explore"
-    };
-    let raw = service
-        .executor
-        .execute(SourceEngineRequest {
-            keyword: Some(category_url),
-            page: Some(page.max(1) as i32),
-            ..SourceEngineRequest::new(operation, &source.source)
-        })
-        .await?;
-    let raw_books = raw
-        .get("books")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "Source engine returned an invalid discovery page".to_owned())?;
+    let raw = service.executor.explore(ExploreRequest {
+        source: (&source.source).try_into()?, url: category_url, page: page.max(1) as i32,
+    }, tokio_util::sync::CancellationToken::new()).await?;
+    let has_next_page = raw.has_next_page;
+    let raw_books = raw.books.into_iter().map(serde_json::to_value)
+        .collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?;
     if raw_books.len() > 2_000 {
         return Err("Source engine returned too many discovery results".to_owned());
     }
@@ -282,10 +264,7 @@ pub(crate) async fn list_books(
     result["sourceId"] = json!(source_id);
     result["categoryId"] = json!(category_id);
     result["page"] = json!(page.max(1));
-    result["hasNextPage"] = raw
-        .get("hasNextPage")
-        .cloned()
-        .unwrap_or(Value::Bool(false));
+    result["hasNextPage"] = json!(has_next_page);
     Ok(result)
 }
 

@@ -4,7 +4,7 @@
 pub(crate) mod book_import;
 pub(crate) mod database;
 mod file_access;
-mod http_client;
+pub(crate) use tauri_plugin_source_engine::http_client;
 #[path = "books/information.rs"]
 pub(crate) mod information;
 #[path = "books/main_text.rs"]
@@ -35,14 +35,7 @@ pub mod discovery;
 pub mod rss;
 #[path = "sources/source_engine.rs"]
 pub mod source_engine;
-#[path = "sources/source_host_ffi.rs"]
-mod source_host_ffi;
-#[path = "sources/source_http.rs"]
-mod source_http;
-#[path = "sources/source_jni.rs"]
-mod source_jni;
-#[path = "sources/source_storage.rs"]
-mod source_storage;
+pub(crate) use tauri_plugin_source_engine::http as source_http;
 
 // 阅读配置、资源服务和持久化模型。
 #[path = "books/files.rs"]
@@ -51,8 +44,6 @@ pub(crate) mod book_files;
 pub(crate) mod chapter_resources;
 #[path = "settings/http_tts_config.rs"]
 pub(crate) mod http_tts_config;
-#[path = "sources/image_ops_host.rs"]
-mod image_ops_host;
 pub mod reading_tools;
 pub mod resources;
 
@@ -162,7 +153,7 @@ pub fn run() {
             }
 
             #[cfg(all(feature = "desktop", not(any(target_os = "android", target_os = "ios"))))]
-            source_engine::install_browser_app(app.handle().clone());
+            tauri_plugin_source_engine::install_browser_app(app.handle().clone());
 
             #[cfg(debug_assertions)]
             app.listen("frontend-runtime-error", |event| {

@@ -8,6 +8,7 @@ import app.tauri.plugin.JSObject;
 import app.tauri.plugin.Plugin;
 import io.legado.sourceengine.android.AndroidSourceWebLogin;
 import io.legado.sourceengine.bridge.AndroidSourceEngineBlocking;
+import io.legado.sourceengine.bridge.NativeDtos;
 import org.json.JSONObject;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -16,7 +17,7 @@ import java.util.concurrent.Executors;
 @TauriPlugin
 public final class SourceEnginePlugin extends Plugin {
     private final Activity activity;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = Executors.newCachedThreadPool();
     private final ExecutorService loginExecutor = Executors.newSingleThreadExecutor();
 
     public SourceEnginePlugin(Activity activity) {
@@ -25,19 +26,66 @@ public final class SourceEnginePlugin extends Plugin {
     }
 
     @Command
-    public void execute(Invoke invoke) {
-        final ExecuteArgs args = invoke.parseArgs(ExecuteArgs.class);
-        final String appDataDirectory = new java.io.File(activity.getFilesDir(), "source-engine").getAbsolutePath();
+    public void search(Invoke invoke) {
+        call(invoke, NativeDtos::decodeSearchRequest, AndroidSourceEngineBlocking::search, NativeDtos::encodeSearchPage);
+    }
 
+    @Command
+    public void exploreKinds(Invoke invoke) {
+        call(invoke, NativeDtos::decodeSourceRequest, AndroidSourceEngineBlocking::exploreKinds, NativeDtos::encodeExploreKinds);
+    }
+
+    @Command
+    public void explore(Invoke invoke) {
+        call(invoke, NativeDtos::decodeExploreRequest, AndroidSourceEngineBlocking::explore, NativeDtos::encodeSearchPage);
+    }
+
+    @Command
+    public void detail(Invoke invoke) {
+        call(invoke, NativeDtos::decodeBookRequest, AndroidSourceEngineBlocking::detail, NativeDtos::encodeBook);
+    }
+
+    @Command
+    public void chapters(Invoke invoke) {
+        call(invoke, NativeDtos::decodeBookRequest, AndroidSourceEngineBlocking::chapters, NativeDtos::encodeChapterList);
+    }
+
+    @Command
+    public void content(Invoke invoke) {
+        call(invoke, NativeDtos::decodeContentRequest, AndroidSourceEngineBlocking::content, NativeDtos::encodeChapterContent);
+    }
+
+    @Command
+    public void resolveMedia(Invoke invoke) {
+        call(invoke, NativeDtos::decodeMediaRequest, AndroidSourceEngineBlocking::resolveMedia, NativeDtos::encodeMediaLocation);
+    }
+
+    @Command
+    public void httpTtsAudio(Invoke invoke) {
+        call(invoke, NativeDtos::decodeTtsRequest, AndroidSourceEngineBlocking::httpTtsAudio, NativeDtos::encodeAudioData);
+    }
+
+    @Command
+    public void login(Invoke invoke) {
+        call(invoke, NativeDtos::decodeLoginRequest, AndroidSourceEngineBlocking::login, NativeDtos::encodeLoginState);
+    }
+
+    @FunctionalInterface
+    private interface Codec<I, O> { O run(I input) throws Exception; }
+
+    @FunctionalInterface
+    private interface NativeCall<Q, R> {
+        R run(Q request, String directory, String executionId, android.content.Context context) throws Exception;
+    }
+
+    private <Q, R> void call(Invoke invoke, Codec<String, Q> decode, NativeCall<Q, R> run, Codec<R, String> encode) {
         executor.execute(() -> {
             try {
-                String result = AndroidSourceEngineBlocking.executeJson(args.requestJson, appDataDirectory, activity);
-                JSObject response = new JSObject();
-                response.put("resultJson", result);
-                invoke.resolve(response);
+                EngineContextArgs context = invoke.parseArgs(EngineContextArgs.class);
+                R result = run.run(decode.run(invoke.getRawArgs()), context.dataDirectory, context.executionId, activity);
+                invoke.resolve(new JSObject(encode.run(result)));
             } catch (Throwable error) {
-                String message = error.getMessage();
-                invoke.reject(message == null ? error.toString() : message);
+                reject(invoke, error);
             }
         });
     }
