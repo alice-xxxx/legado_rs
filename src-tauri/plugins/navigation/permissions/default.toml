@@ -1,0 +1,8 @@
+[default]
+description = "Control native history gestures and receive back gestures."
+permissions = ["allow-set-gestures", "allow-listeners"]
+
+[[permission]]
+identifier = "allow-listeners"
+description = "Register and remove native back gesture listeners."
+commands.allow = ["registerListener", "removeListener"]

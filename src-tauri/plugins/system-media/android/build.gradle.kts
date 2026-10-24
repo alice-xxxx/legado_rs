@@ -1,4 +1,4 @@
-plugins { id("com.android.library") }
+plugins { id("com.android.library"); id("org.jetbrains.kotlin.android") }
 
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
     namespace = "com.xyz.foliver.media"

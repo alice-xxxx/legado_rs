@@ -1,8 +1,4 @@
-export interface LocalBackGestureEvent {
-  phase: "start" | "move" | "end";
-  progress: number;
-  commit?: boolean;
-}
+import type { BackGestureEvent } from "tauri-plugin-navigation-api";
 
 /** Move the current local page to reveal its live parent underneath. */
 export function createLocalBackGesture(getTarget: () => {
@@ -16,7 +12,7 @@ export function createLocalBackGesture(getTarget: () => {
     active = null;
   }
 
-  async function handle(event: LocalBackGestureEvent): Promise<void> {
+  async function handle(event: BackGestureEvent): Promise<void> {
     if (event.phase === "start") {
       cancel();
       const target = getTarget();

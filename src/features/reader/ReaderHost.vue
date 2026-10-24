@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, proxyRefs, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { setSystemUiHidden } from "tauri-plugin-screen-api";
 import { useRoute } from "vue-router";
 import type {
   AppBootstrap,
@@ -255,7 +256,7 @@ function syncReaderFullscreen(visible: boolean): void {
   fullscreenUpdate = fullscreenUpdate.catch(() => {}).then(async () => {
     if (disposed || readerVisible.value !== visible) return;
     try {
-      await invoke<boolean>("set_reader_fullscreen", { hidden: visible });
+      await setSystemUiHidden(visible);
     } catch (error) {
       console.warn("Reader fullscreen could not be changed:", error);
     }
@@ -263,7 +264,7 @@ function syncReaderFullscreen(visible: boolean): void {
 }
 watch(readerVisible, syncReaderFullscreen);
 onBeforeUnmount(() => {
-  if (fullscreenUsed) void fullscreenUpdate.catch(() => {}).then(() => invoke("set_reader_fullscreen", { hidden: false })).catch(() => {});
+  if (fullscreenUsed) void fullscreenUpdate.catch(() => {}).then(() => setSystemUiHidden(false)).catch(() => {});
 });
 </script>
 

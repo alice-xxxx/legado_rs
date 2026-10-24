@@ -99,64 +99,6 @@ pub(crate) fn app_data_root<R: tauri::Runtime>(
     Ok(root)
 }
 
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-async fn set_reader_fullscreen(app: tauri::AppHandle, hidden: bool) -> Result<bool, String> {
-    #[cfg(target_os = "ios")]
-    {
-        use tauri_plugin_source_engine::SourceEngineExt;
-        // UIKit callbacks must be able to run while the command awaits Swift.
-        app.source_engine()
-            .set_reader_fullscreen(hidden)
-            .await
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        let _ = (app, hidden);
-        Ok(false)
-    }
-}
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-async fn set_video_orientation(app: tauri::AppHandle, orientation: String) -> Result<bool, String> {
-    if !matches!(orientation.as_str(), "portrait" | "landscape" | "restore") {
-        return Err("Unsupported video orientation".to_owned());
-    }
-    #[cfg(any(target_os = "ios", target_os = "android"))]
-    {
-        use tauri_plugin_source_engine::SourceEngineExt;
-        app.source_engine()
-            .set_video_orientation(&orientation)
-            .await
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(any(target_os = "ios", target_os = "android")))]
-    {
-        let _ = app;
-        Ok(false)
-    }
-}
-
-#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
-#[tauri::command]
-async fn set_navigation_gestures(app: tauri::AppHandle, enabled: bool, local: bool) -> Result<bool, String> {
-    #[cfg(target_os = "ios")]
-    {
-        use tauri_plugin_source_engine::SourceEngineExt;
-        app.source_engine()
-            .set_navigation_gestures(enabled, local)
-            .await
-            .map_err(|error| error.to_string())
-    }
-    #[cfg(not(target_os = "ios"))]
-    {
-        let _ = (app, enabled, local);
-        Ok(false)
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub fn run() {
@@ -196,6 +138,8 @@ pub fn run() {
         }))
     };
     let builder = builder
+        .plugin(tauri_plugin_screen::init())
+        .plugin(tauri_plugin_navigation::init())
         .plugin(tauri_plugin_system_media::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
@@ -306,8 +250,10 @@ pub fn run() {
         tauri::async_runtime::spawn(async move {
             // A fresh frontend has no active reader yet. Restore native chrome
             // before loading it, without waiting for a dead JavaScript context.
-            if let Err(error) = set_reader_fullscreen(webview.app_handle().clone(), false).await {
-                eprintln!("[web-content] failed to restore native chrome: {error}");
+            if label == "main" {
+                if let Err(error) = tauri_plugin_screen::reset(webview.clone()).await {
+                    eprintln!("[web-content] failed to restore screen controls: {error}");
+                }
             }
             if let Err(error) = webview.reload() {
                 eprintln!("[web-content] failed to reload {label}: {error}");
@@ -315,9 +261,6 @@ pub fn run() {
         });
     });
     let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
-        set_reader_fullscreen,
-        set_video_orientation,
-        set_navigation_gestures,
         resources::app_bootstrap,
         reading_tools::tts::start_tts,
         reading_tools::tts::tts_voices,

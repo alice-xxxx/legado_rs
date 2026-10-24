@@ -311,12 +311,6 @@
           "type": "string",
           "const": "default",
           "markdownDescription": "Default permissions for the plugin\n#### This default permission set includes:\n\n- `allow-execute`"
-        },
-        {
-          "description": "Allows registering and removing native navigation gesture listeners.",
-          "type": "string",
-          "const": "allow-navigation-listener",
-          "markdownDescription": "Allows registering and removing native navigation gesture listeners."
         }
       ]
     }

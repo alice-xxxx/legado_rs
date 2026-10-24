@@ -9,140 +9,11 @@ private struct ExecuteArgs: Decodable {
     let requestJson: String
 }
 
-private struct ReaderFullscreenArgs: Decodable {
-    let hidden: Bool
-}
-
-private struct VideoOrientationArgs: Decodable {
-    let orientation: String
-}
-
-private struct NavigationGesturesArgs: Decodable {
-    let enabled: Bool
-    let local: Bool
-}
-
-/// Tauri's iOS edge enters Kotlin/Native; its HTTP and storage callbacks return through Rust C ABI.
+/// Tauri's iOS bridge enters Kotlin/Native; HTTP and storage callbacks return through Rust C ABI.
 final class SourceEnginePlugin: Plugin {
-    private weak var mainWebView: WKWebView?
-    private var readerContentInsetBehavior: UIScrollView.ContentInsetAdjustmentBehavior?
-    private var previousVideoOrientation: UIInterfaceOrientationMask?
     private var webLoginSessions: [String: NativeWebLoginSession] = [:]
     private var webLoginExpiry: [String: DispatchWorkItem] = [:]
     private var appInactiveObserver: NSObjectProtocol?
-    private lazy var localBackGesture: UIScreenEdgePanGestureRecognizer = {
-        let gesture = UIScreenEdgePanGestureRecognizer(target: self, action: #selector(handleLocalBack(_:)))
-        gesture.edges = .left
-        gesture.isEnabled = false
-        return gesture
-    }()
-
-    override public func load(webview: WKWebView) {
-        mainWebView = webview
-        // Top-level tabs have no parent screen. Vue enables this for subpages.
-        webview.allowsBackForwardNavigationGestures = false
-        webview.addGestureRecognizer(localBackGesture)
-        webview.scrollView.panGestureRecognizer.require(toFail: localBackGesture)
-    }
-
-    @objc private func handleLocalBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        guard let webview = mainWebView else { return }
-        let distance = gesture.translation(in: webview).x
-        let progress = max(0, min(1, distance / max(1, webview.bounds.width)))
-        let phase: String
-        var commit = false
-        switch gesture.state {
-        case .began: phase = "start"
-        case .changed: phase = "move"
-        case .ended:
-            phase = "end"
-            commit = distance >= max(48, webview.bounds.width * 0.2)
-                || distance > 12 && gesture.velocity(in: webview).x > 500
-        case .cancelled, .failed: phase = "end"
-        default: return
-        }
-        let payload: JSObject = ["phase": phase, "progress": Double(progress), "commit": commit]
-        trigger("navigationBack", data: payload)
-    }
-
-    @objc public func setNavigationGestures(_ invoke: Invoke) throws {
-        let args = try invoke.parseArgs(NavigationGesturesArgs.self)
-        DispatchQueue.main.async { [weak self] in
-            guard let webview = self?.mainWebView else {
-                invoke.reject("Main WebView is unavailable")
-                return
-            }
-            webview.allowsBackForwardNavigationGestures = args.enabled && !args.local
-            self?.localBackGesture.isEnabled = args.enabled && args.local
-            invoke.resolve(["enabled": args.enabled])
-        }
-    }
-
-    @objc public func setReaderFullscreen(_ invoke: Invoke) throws {
-        let args = try invoke.parseArgs(ReaderFullscreenArgs.self)
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let webview = self.mainWebView else {
-                invoke.reject("Main WebView is unavailable")
-                return
-            }
-            if args.hidden {
-                if self.readerContentInsetBehavior == nil {
-                    self.readerContentInsetBehavior = webview.scrollView.contentInsetAdjustmentBehavior
-                }
-                webview.scrollView.contentInsetAdjustmentBehavior = .never
-            } else if let original = self.readerContentInsetBehavior {
-                webview.scrollView.contentInsetAdjustmentBehavior = original
-                self.readerContentInsetBehavior = nil
-            }
-            UIApplication.shared.setStatusBarHidden(args.hidden, with: .none)
-            invoke.resolve(["hidden": UIApplication.shared.isStatusBarHidden])
-        }
-    }
-
-    @objc public func setVideoOrientation(_ invoke: Invoke) throws {
-        let args = try invoke.parseArgs(VideoOrientationArgs.self)
-        DispatchQueue.main.async { [weak self] in
-            guard let self, let webview = self.mainWebView,
-                  let scene = webview.window?.windowScene else {
-                invoke.resolve(["applied": false])
-                return
-            }
-            guard #available(iOS 16.0, *) else {
-                invoke.resolve(["applied": false])
-                return
-            }
-
-            let target: UIInterfaceOrientationMask
-            switch args.orientation {
-            case "landscape":
-                if self.previousVideoOrientation == nil {
-                    self.previousVideoOrientation = Self.orientationMask(for: scene.interfaceOrientation)
-                }
-                target = .landscape
-            case "portrait":
-                if self.previousVideoOrientation == nil {
-                    self.previousVideoOrientation = Self.orientationMask(for: scene.interfaceOrientation)
-                }
-                target = .portrait
-            case "restore":
-                guard let previous = self.previousVideoOrientation else {
-                    invoke.resolve(["applied": false])
-                    return
-                }
-                target = previous
-                self.previousVideoOrientation = nil
-            default:
-                invoke.reject("Unsupported video orientation")
-                return
-            }
-
-            webview.window?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
-            scene.requestGeometryUpdate(.iOS(interfaceOrientations: target)) { error in
-                NSLog("Could not update video fullscreen orientation: %@", error.localizedDescription)
-            }
-            invoke.resolve(["applied": true])
-        }
-    }
 
     @objc public func execute(_ invoke: Invoke) throws {
         let args = try invoke.parseArgs(ExecuteArgs.self)
@@ -165,14 +36,6 @@ final class SourceEnginePlugin: Plugin {
                 return
             }
             invoke.resolve(["resultJson": result])
-        }
-    }
-
-    private static func orientationMask(for orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
-        switch orientation {
-        case .landscapeLeft: return .landscapeLeft
-        case .landscapeRight: return .landscapeRight
-        default: return .portrait
         }
     }
 

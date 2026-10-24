@@ -27,6 +27,8 @@ desktop = [
     "dep:tauri-plugin-deep-link",
     "dep:tts",
     "dep:tauri-plugin-system-media",
+    "dep:tauri-plugin-navigation",
+    "dep:tauri-plugin-screen",
     "dep:tauri-plugin-single-instance",
     "dep:tauri-plugin-sql",
     "dep:sqlx",
@@ -50,6 +52,8 @@ mobile-runtime = [
     "dep:tauri-plugin-deep-link",
     "tauri-plugin-source-engine/native-mobile",
     "dep:tauri-plugin-system-media",
+    "dep:tauri-plugin-navigation",
+    "dep:tauri-plugin-screen",
     "dep:tts",
 ]
 
@@ -57,6 +61,8 @@ mobile-runtime = [
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
+tauri-plugin-screen = { path = "plugins/screen", optional = true }
+tauri-plugin-navigation = { path = "plugins/navigation", optional = true }
 tauri-plugin-system-media = { path = "plugins/system-media", optional = true }
 tts = { git = "https://github.com/ndarilek/tts-rs", rev = "8fbcb720cb86c5166a9ed46272e3777f742da18e", optional = true }
 tauri = { version = "2", default-features = false, features = [], optional = true }

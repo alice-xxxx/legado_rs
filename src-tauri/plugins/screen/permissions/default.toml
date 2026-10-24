@@ -1,0 +1,8 @@
+[default]
+description = "Read screen information and control the application screen."
+permissions = ["allow-apply", "allow-get-info", "allow-reset", "allow-listeners"]
+
+[[permission]]
+identifier = "allow-listeners"
+description = "Receive asynchronous screen control errors."
+commands.allow = ["registerListener", "removeListener"]

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { invoke, isTauri } from "@tauri-apps/api/core";
+import { isTauri } from "@tauri-apps/api/core";
+import { setOrientation } from "tauri-plugin-screen-api";
 import { settings } from "../settings/settingsStore";
 import ReaderPage from "./ReaderPage.vue";
 import type { ReaderPageProps } from "./readerContext";
@@ -18,7 +19,7 @@ type WebkitVideoElement = HTMLVideoElement & { webkitDisplayingFullscreen?: bool
 function setNativeVideoOrientation(orientation: VideoOrientation): void {
   if (!isTauri()) return;
   orientationUpdate = orientationUpdate.catch(() => {}).then(async () => {
-    await invoke<boolean>("set_video_orientation", { orientation });
+    await setOrientation(orientation);
   }).catch(error => console.warn("Video orientation could not be changed:", error));
 }
 

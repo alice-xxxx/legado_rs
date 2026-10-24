@@ -40,17 +40,4 @@ Denies the execute command without any pre-configured scope.
 
 </td>
 </tr>
-
-<tr>
-<td>
-
-`source-engine:allow-navigation-listener`
-
-</td>
-<td>
-
-Allows registering and removing native navigation gesture listeners.
-
-</td>
-</tr>
 </table>

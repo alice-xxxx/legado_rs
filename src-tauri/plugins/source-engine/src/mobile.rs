@@ -27,57 +27,6 @@ pub fn init<R: Runtime, C: DeserializeOwned>(
 pub struct SourceEngine<R: Runtime>(PluginHandle<R>);
 
 impl<R: Runtime> SourceEngine<R> {
-    #[cfg(target_os = "ios")]
-    pub async fn set_navigation_gestures(&self, enabled: bool, local: bool) -> crate::Result<bool> {
-        #[derive(serde::Serialize)]
-        struct Request {
-            enabled: bool,
-            local: bool,
-        }
-        #[derive(serde::Deserialize)]
-        struct Response {
-            enabled: bool,
-        }
-        let response: Response = self
-            .0
-            .run_mobile_plugin_async("setNavigationGestures", Request { enabled, local })
-            .await?;
-        Ok(response.enabled)
-    }
-
-    #[cfg(target_os = "ios")]
-    pub async fn set_reader_fullscreen(&self, hidden: bool) -> crate::Result<bool> {
-        #[derive(serde::Serialize)]
-        struct Request {
-            hidden: bool,
-        }
-        #[derive(serde::Deserialize)]
-        struct Response {
-            hidden: bool,
-        }
-        let response: Response = self
-            .0
-            .run_mobile_plugin_async("setReaderFullscreen", Request { hidden })
-            .await?;
-        Ok(response.hidden)
-    }
-
-    pub async fn set_video_orientation(&self, orientation: &str) -> crate::Result<bool> {
-        #[derive(serde::Serialize)]
-        struct Request<'a> {
-            orientation: &'a str,
-        }
-        #[derive(serde::Deserialize)]
-        struct Response {
-            applied: bool,
-        }
-        let response: Response = self
-            .0
-            .run_mobile_plugin_async("setVideoOrientation", Request { orientation })
-            .await?;
-        Ok(response.applied)
-    }
-
     pub fn execute(&self, call: SourceEngineCall) -> crate::Result<SourceEngineResponse> {
         self.0
             .run_mobile_plugin("execute", call)

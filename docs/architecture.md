@@ -22,6 +22,9 @@
 | `src-tauri/src/resources/`、`backup/` | 文件及 HTTP 资源、备份恢复与操作屏障。 |
 | `src-tauri/src/reading_tools/`、`search/`、`settings/` | 阅读预读、记录、规则与朗读，搜索会话，应用及阅读设置。 |
 | `kotlin/`、`src-tauri/plugins/source-engine/` | KMP 引擎、原生库及移动端插件。 |
+| `src-tauri/plugins/navigation/` | 返回输入和原生导航手势；页面与阅读器返回规则由 Vue 决定。 |
+| `src-tauri/plugins/screen/` | 全屏、系统栏、方向、常亮、亮度和屏幕信息；复用 Tauri 窗口能力。 |
+| `src-tauri/plugins/system-media/` | 系统媒体适配；音视频内容仍由 Vue 播放。 |
 
 ## 持久化
 

@@ -1,4 +1,0 @@
-[[permission]]
-identifier = "allow-navigation-listener"
-description = "Allows registering and removing native navigation gesture listeners."
-commands.allow = ["registerListener", "removeListener"]

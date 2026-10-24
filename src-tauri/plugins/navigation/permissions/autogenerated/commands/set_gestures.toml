@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-gestures"
+description = "Enables the set_gestures command without any pre-configured scope."
+commands.allow = ["set_gestures"]
+
+[[permission]]
+identifier = "deny-set-gestures"
+description = "Denies the set_gestures command without any pre-configured scope."
+commands.deny = ["set_gestures"]

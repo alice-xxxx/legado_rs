@@ -1,18 +1,13 @@
-import { onBackButtonPress, exit } from "@tauri-apps/api/app";
-import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
-import type { PluginListener } from "@tauri-apps/api/core";
+import { exit } from "@tauri-apps/api/app";
+import { isTauri } from "@tauri-apps/api/core";
+import { onBackGesture, onBackRequested, setNavigationGestures, supportsHistoryGestures, type Unlisten } from "tauri-plugin-navigation-api";
 import { watch, type Ref } from "vue";
 import router, { routeNames } from "../router";
-import { createLocalBackGesture, type LocalBackGestureEvent } from "./localBackGesture";
+import { createLocalBackGesture } from "./localBackGesture";
 
 interface BackAction { run: () => void | Promise<void>; }
 let readerAction: { isOpen: () => boolean; menuOpen: () => boolean; action: BackAction } | null = null;
 const readerQuery = "_reader";
-
-function isIos(): boolean {
-  return /iPhone|iPad|iPod/.test(navigator.userAgent)
-    || /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1;
-}
 
 function visible(element: Element): boolean {
   return element.isConnected && element.getClientRects().length > 0
@@ -89,13 +84,13 @@ export function installNativeBackNavigation(): () => void {
     void router.replace({ path: initial.path, query, hash: initial.hash });
   }
   let disposed = false, handling = false;
-  let listener: PluginListener | undefined;
-  let removeGestureListener: (() => Promise<unknown>) | undefined;
+  let removeBackListener: Unlisten | undefined;
+  let removeGestureListener: Unlisten | undefined;
   let removeGestureSync: (() => void) | undefined;
   let prepareTabGesture: (() => Promise<void>) | undefined;
   const isTabRoute = (name: unknown) => name === routeNames.home
     || name === routeNames.shelf || name === routeNames.settings;
-  if (isTauri() && isIos()) {
+  if (supportsHistoryGestures()) {
     let lastRequested: string | undefined;
     let pending = Promise.resolve();
     let tabPushPending = false;
@@ -106,10 +101,10 @@ export function installNativeBackNavigation(): () => void {
       pending = pending.then(async () => {
         if (disposed || lastRequested !== state) return;
         try {
-          await invoke("set_navigation_gestures", { enabled, local });
+          await setNavigationGestures(enabled, local);
         } catch (error) {
           if (lastRequested === state) lastRequested = undefined;
-          console.error("iOS navigation gesture update failed:", error);
+          console.error("Navigation gesture update failed:", error);
         }
       });
       return pending;
@@ -173,7 +168,7 @@ export function installNativeBackNavigation(): () => void {
         back: action.run };
     });
     removeGestureSync = () => { observer.disconnect(); removeAfterEach(); localGesture.cancel(); prepareTabGesture = undefined; };
-    const gestureChannel = new Channel<LocalBackGestureEvent>(async event => {
+    void onBackGesture(async event => {
       if (disposed || !readerAction?.isOpen()) return;
       if (event.phase === "start") {
         if (handling) return;
@@ -182,13 +177,9 @@ export function installNativeBackNavigation(): () => void {
       try { await localGesture.handle(event); }
       catch (error) { localGesture.cancel(); handling = false; console.error("Reader back gesture failed:", error); }
       finally { if (event.phase === "end") handling = false; }
-    });
-    const unregisterGesture = () => invoke("plugin:source-engine|removeListener", {
-      event: "navigationBack", channelId: gestureChannel.id,
-    });
-    void invoke("plugin:source-engine|registerListener", { event: "navigationBack", handler: gestureChannel }).then(() => {
-      if (disposed) void unregisterGesture();
-      else removeGestureListener = unregisterGesture;
+    }).then(unlisten => {
+      if (disposed) void unlisten();
+      else removeGestureListener = unlisten;
     }).catch(error => console.error("Reader back gesture registration failed:", error));
   }
   const removeGuard = router.beforeEach(async (to, from) => {
@@ -217,8 +208,8 @@ export function installNativeBackNavigation(): () => void {
     return closesReaderEntry ? undefined : false;
   });
 
-  if (isTauri() && /Android/.test(navigator.userAgent)) {
-    void onBackButtonPress(async ({ canGoBack }) => {
+  if (isTauri()) {
+    void onBackRequested(async ({ canGoBack, source }) => {
       if (disposed || handling) return;
       handling = true;
       try {
@@ -233,18 +224,18 @@ export function installNativeBackNavigation(): () => void {
           if (router.options.history.state.back === router.resolve(list).fullPath) router.back();
           else void router.replace(list);
         } else if (action) await action.run();
-        else if (canGoBack && typeof router.options.history.state.back === "string") router.back();
+        else if (canGoBack !== false && typeof router.options.history.state.back === "string") router.back();
         else {
           const pageBack = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-action]"))
             .reverse().find(visible);
           if (pageBack) buttonAction(pageBack).run();
-          else await exit(0);
+          else if (source === "system") await exit(0);
         }
       } finally { handling = false; }
-    }).then(value => {
-      if (disposed) void value.unregister();
-      else listener = value;
+    }).then(unlisten => {
+      if (disposed) void unlisten();
+      else removeBackListener = unlisten;
     }).catch(error => console.error("Native back registration failed:", error));
   }
-  return () => { disposed = true; removeGuard(); removeGestureSync?.(); void listener?.unregister(); void removeGestureListener?.(); };
+  return () => { disposed = true; removeGuard(); removeGestureSync?.(); void removeBackListener?.(); void removeGestureListener?.(); };
 }
