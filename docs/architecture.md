@@ -87,6 +87,8 @@ app-data/
 
 ## Vue 共享状态
 
+媒体内容由 Vue 的音视频元素消费，HLS 使用 WebKit 或 hls.js；HTTP 朗读沿用网页音频输出，系统语音使用 `tts-rs`。`mediaSession.ts` 统一同步媒体信息、播放状态和时间轴，并把系统操作交回内容播放器。桌面使用 WebView 的 Media Session API，移动端通过自有 `plugins/system-media` 接入系统媒体会话、前台通知、音频焦点和中断事件。适配层只有 `update`、`clear` 和操作事件，不持有内容播放器；后台持续播放仍受平台 WebView 生命周期约束。
+
 `src/main.ts` 初始化 `src/features/` 下的共享状态：设置由 `settingsStore.ts` 管理，历史和书签由 `historyStore.ts` 管理，规则和 HTTP TTS 由 `configurationStores.ts` 管理。内容库使用 `contentLibraryState.ts`，书架模块提供派生视图；`sourcesStore.ts` 和 `tasksStore.ts` 分别管理书源与任务。
 
 详情与阅读共用 `bookDetailState.ts` 的 `openedBook` 和轻量 `bookPreviews`。Vue 直接查询预览视图，按需加载完整资料；书籍通过 `bookId` 标识。一次 SQL 查询读取完整目录及其关联表，保持同一 WAL 快照，列表不读取完整目录。

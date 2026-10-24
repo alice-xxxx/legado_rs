@@ -109,12 +109,6 @@ android {
 `;
   buildFileChanged = true;
 }
-const nativeHlsDependency = '    implementation("androidx.media3:media3-exoplayer-hls:1.4.1")';
-if (!contents.includes(nativeHlsDependency)) {
-    contents = contents.replace("dependencies {", "dependencies {\n" + nativeHlsDependency);
-    buildFileChanged = true;
-}
-
 // The generated app targets Java 8 by default. JDK 21 warns on source/target 8, so align the
 // generated Java and Kotlin bytecode levels at 11 instead of suppressing the compiler warning.
 const javaEightOptions = /    compileOptions \{\r?\n        sourceCompatibility = JavaVersion\.VERSION_1_8\r?\n        targetCompatibility = JavaVersion\.VERSION_1_8\r?\n    \}/;

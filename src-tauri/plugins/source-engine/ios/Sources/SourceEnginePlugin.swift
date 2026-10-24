@@ -46,13 +46,23 @@ final class SourceEnginePlugin: Plugin {
     }
 
     @objc private func handleLocalBack(_ gesture: UIScreenEdgePanGestureRecognizer) {
-        guard gesture.state == .ended, let webview = mainWebView else { return }
+        guard let webview = mainWebView else { return }
         let distance = gesture.translation(in: webview).x
-        if distance >= max(48, webview.bounds.width * 0.2)
-            || distance > 12 && gesture.velocity(in: webview).x > 500 {
-            let payload: JSObject = [:]
-            trigger("navigationBack", data: payload)
+        let progress = max(0, min(1, distance / max(1, webview.bounds.width)))
+        let phase: String
+        var commit = false
+        switch gesture.state {
+        case .began: phase = "start"
+        case .changed: phase = "move"
+        case .ended:
+            phase = "end"
+            commit = distance >= max(48, webview.bounds.width * 0.2)
+                || distance > 12 && gesture.velocity(in: webview).x > 500
+        case .cancelled, .failed: phase = "end"
+        default: return
         }
+        let payload: JSObject = ["phase": phase, "progress": progress, "commit": commit]
+        trigger("navigationBack", data: payload)
     }
 
     @objc public func setNavigationGestures(_ invoke: Invoke) throws {

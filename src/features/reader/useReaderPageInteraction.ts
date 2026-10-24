@@ -189,19 +189,18 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
 
   function handleReaderTapAt(x: number, y: number): void {
     if (reader.busy.value || reader.sourceRefreshBusy.value) return;
-    if (reader.menuOpen.value) {
-      reader.menuOpen.value = false;
-      reader.controlsOpen.value = false;
-      reader.directoryOpen.value = false;
-      return;
-    }
+    if (reader.controlsOpen.value || reader.directoryOpen.value) return;
     const mode = settings.value.reader.readingMode;
     const textReader = !reader.imagePage.value && !reader.pdfPage.value;
+    const vertical = textReader && mode === "slide-vertical";
+    const bounds = reader.viewport.value?.getBoundingClientRect();
+    const position = vertical ? y - (bounds?.top ?? 0) : x;
+    const size = vertical ? bounds?.height ?? window.innerHeight : window.innerWidth;
+    if (reader.menuOpen.value) {
+      if (position >= size / 3 && position <= size * 2 / 3) reader.menuOpen.value = false;
+      return;
+    }
     if (!textReader || mode !== "vertical") {
-      const vertical = textReader && mode === "slide-vertical";
-      const bounds = reader.viewport.value?.getBoundingClientRect();
-      const position = vertical ? y - (bounds?.top ?? 0) : x;
-      const size = vertical ? bounds?.height ?? window.innerHeight : window.innerWidth;
       if (position < size / 3) {
         actions.turnPage(-1);
         return;

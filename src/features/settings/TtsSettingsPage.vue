@@ -18,6 +18,8 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { selectReaderHttpTtsConfig } from "../reader/readerTtsConfigService";
 
+const props = defineProps<{ embedded?: boolean }>();
+const emit = defineEmits<{ back: [] }>();
 const configs = httpTtsConfigs;
 const importBusy = ref(false);
 const error = ref("");
@@ -54,7 +56,10 @@ function handleRestore(): void {
 }
 
 function returnToAdvancedSettings(): void {
-  returnToRoute(routeNames.settingsOther);
+  if (props.embedded) {
+    if (editorOpen.value) closeEditor();
+    else emit("back");
+  } else returnToRoute(routeNames.settingsOther);
 }
 
 const selectedConfig = computed(() => configs.value.find((item) => item.id === selectedConfigId.value));
@@ -105,7 +110,7 @@ const editingConfigId = ref("");
 const fields = reactive<HttpTtsConfigEditorFields>(emptyFields());
 const editorDirty = computed(() => editorOpen.value && JSON.stringify(fields) !== initialEditorFields.value);
 let pendingNavigation: ((allow: boolean) => void) | null = null;
-onBeforeRouteLeave(() => {
+if (!props.embedded) onBeforeRouteLeave(() => {
   if (!editorOpen.value) return true;
   if (!editorDirty.value) return true;
   return new Promise<boolean>((resolve) => {
@@ -511,7 +516,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 <template>
   <section class="settings-card http-tts-config-card" :class="{ 'http-tts-config-card--empty': !editorOpen && configs.length === 0 }">
     <header class="http-tts-topbar safe-area-top">
-      <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
+      <BackButton :label="embedded ? '返回阅读菜单' : '返回高级设置'" @click="returnToAdvancedSettings" />
       <div class="http-tts-top-title"><strong>TTS 引擎</strong></div>
       <div class="http-tts-top-add">
         <button type="button" class="button primary"
@@ -623,7 +628,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         </div>
       </section>
     </div>
-    <section v-if="editorOpen" class="http-tts-editor-page">
+    <section v-if="editorOpen" class="http-tts-editor-page" data-back-layer>
       <article class="http-tts-editor-dialog">
         <header class="http-tts-editor-header safe-area-top">
           <button type="button" class="http-tts-editor-close" data-back-action data-back-local @click="closeEditor"><PrototypeIcon name="left"/></button>

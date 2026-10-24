@@ -51,9 +51,6 @@ const readerFeatures = useAppReaderFeatures({
   getRestoreRevision: getFrontendRestoreRevision,
   notify,
   errorText,
-  openOtherSettings: () => {
-    void router.push({ name: routeNames.settingsOther });
-  },
   showShelfBehindReader,
 });
 
@@ -73,7 +70,17 @@ const bookSourceSwitchActions = useBookSourceSwitch({
 });
 const bookSourceSwitch = proxyRefs(bookSourceSwitchActions);
 watch(() => bookSourceSwitch.bookSourceSwitchOpen || readerFeatures.bookmarkEditorOpen.value
-  || readerFeatures.dictionaryOpen.value, open => { readerFeatures.readerOverlayOpen.value = open; }, { flush: "sync", immediate: true });
+  || readerFeatures.dictionaryOpen.value, open => {
+  readerFeatures.readerOverlayOpen.value = open;
+  if (open) {
+    readerFeatures.readerControlsOpen.value = false;
+    readerFeatures.readerDirectoryOpen.value = false;
+  }
+}, { flush: "sync", immediate: true });
+watch(() => readerFeatures.readerControlsOpen.value || readerFeatures.readerDirectoryOpen.value
+  || readerFeatures.readerTtsSettingsOpen.value || readerFeatures.readerOverlayOpen.value, open => {
+  if (open) readerFeatures.readerMenuOpen.value = true;
+}, { flush: "sync" });
 async function closeReaderForNavigation(discardProgress = false): Promise<void> {
   await readerFeatures.closeReader(discardProgress);
   if (!readerFeatures.readerVisible.value && route.meta.screen !== "detail") clearOpenedBook();
@@ -102,7 +109,11 @@ const disposeBackupSession = installReaderBackupSession({
 const disposeBookSourceSwitch = installBookSourceSwitchSession(bookSourceSwitch);
 const disposeNativeBack = installReaderNativeBack({
   visible: readerFeatures.readerVisible,
-  menuOpen: readerFeatures.readerMenuOpen,
+  menuOpen: computed(() => readerFeatures.readerMenuOpen.value || readerFeatures.readingMediaChapter.value
+    || readerFeatures.readerBusy.value || !!readerFeatures.readerChapterError.value),
+  close: async () => {
+    if (!readerFeatures.readerMediaRetrying.value) await closeReaderForNavigation();
+  },
 });
 
 function retain(unlisten: UnlistenFn): void {

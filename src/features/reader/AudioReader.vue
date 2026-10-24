@@ -16,6 +16,7 @@ onBeforeUnmount(() => { audioElement.value?.pause(); reader.setReaderMediaElemen
   <ReaderPage v-bind="props">
     <div class="audio-reader">
       <audio v-show="content" ref="audioElement"
+         :defaultPlaybackRate.prop="settings.reader.audioPlaybackRate"
          :playbackRate.prop="settings.reader.audioPlaybackRate" controls playsinline preload="metadata" />
     </div>
   </ReaderPage>

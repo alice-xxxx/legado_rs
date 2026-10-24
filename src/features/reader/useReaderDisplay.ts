@@ -176,8 +176,13 @@ export function useReaderDisplay(options: {
     }
   }
   function onReaderFrameTouchStart(event: TouchEvent): void {
-    clearPageTurnAnimation();
     reader.setTouchStart(null);
+    // A released turn must commit before the next gesture snapshots its source page.
+    if (activePageTurn && !pageDrag) {
+      activePageTurn.finish?.();
+      if (activePageTurn) return;
+    }
+    clearPageTurnAnimation();
     const viewport = reader.viewport.value;
     if (!viewport || reader.busy.value || reader.gesturesBlocked.value || event.touches.length !== 1 || ignoredTouch(event.target)
       || viewport.ownerDocument.getSelection()?.isCollapsed === false) return;
@@ -234,7 +239,7 @@ export function useReaderDisplay(options: {
   function onReaderFrameTouchCancel(): void {
     reader.setTouchStart(null);
     reader.setClickSuppressedUntil(Date.now() + 500);
-    const turn = activePageTurn;
+    const turn = pageDrag ? activePageTurn : null;
     pageDrag = null;
     if (turn) turn.settle(false, () => { if (activePageTurn === turn) clearPageTurnAnimation(); });
   }

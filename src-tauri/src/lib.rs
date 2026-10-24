@@ -195,9 +195,8 @@ pub fn run() {
             }
         }))
     };
-    #[cfg(mobile)]
-    let builder = builder.plugin(tauri_plugin_media_session::init());
     let builder = builder
+        .plugin(tauri_plugin_system_media::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())

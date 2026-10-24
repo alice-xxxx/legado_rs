@@ -12,7 +12,7 @@ export async function setTtsOutputRate(rate: number): Promise<void> {
 }
 
 /** 各平台共用网页音频输出；文本队列和音频生成仍由 Rust 管理。 */
-export async function setupTtsOutput(): Promise<() => void> {
+export async function setupTtsOutput(sync: (media: HTMLAudioElement) => void): Promise<() => void> {
   if (!isTauri()) return () => {};
   const sharedAudio = new Audio();
   let audio: HTMLAudioElement | null = null;
@@ -22,7 +22,7 @@ export async function setupTtsOutput(): Promise<() => void> {
   const stop = () => {
     ++revision;
     if (audio) {
-      audio.onplay = audio.onpause = audio.ontimeupdate = audio.onended = audio.onerror = null;
+      audio.onplay = audio.onpause = audio.ontimeupdate = audio.onended = audio.onerror = audio.onratechange = null;
       audio.pause(); audio.removeAttribute("src"); audio.load(); audio = null;
     }
   };
@@ -43,12 +43,15 @@ export async function setupTtsOutput(): Promise<() => void> {
       output.src = payload.src;
       output.playbackRate = outputRate;
       output.onplay = output.ontimeupdate = () => {
+        sync(output);
         report({ state: "time", position: output.currentTime });
       };
       output.onpause = () => {
+        sync(output);
         if (!output.ended) report({ state: "paused" });
       };
-      output.onended = () => report({ state: "ended" });
+      output.onended = () => { sync(output); report({ state: "ended" }); };
+      output.onratechange = () => sync(output);
       output.onerror = () => report({ state: "error", error: output.error?.message || "音频播放失败" });
       void output.play().catch(error => { if (current === revision) report({ state: "error", error: String(error) }); });
     }

@@ -2758,11 +2758,11 @@ dependencies = [
  "tauri-plugin-deep-link",
  "tauri-plugin-dialog",
  "tauri-plugin-fs",
- "tauri-plugin-media-session",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
  "tauri-plugin-source-engine",
  "tauri-plugin-sql",
+ "tauri-plugin-system-media",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -5598,17 +5598,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tauri-plugin-media-session"
-version = "0.2.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec0c8a8691d65110989d7ec433690242ecf1762ad35fa6fd7aa7f5d2699d8d05"
-dependencies = [
- "serde",
- "tauri",
- "tauri-plugin",
-]
-
-[[package]]
 name = "tauri-plugin-opener"
 version = "2.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5674,6 +5663,16 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
  "tokio",
+]
+
+[[package]]
+name = "tauri-plugin-system-media"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
 ]
 
 [[package]]

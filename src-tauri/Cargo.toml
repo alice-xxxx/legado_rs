@@ -25,8 +25,8 @@ desktop = [
     "dep:tauri-plugin-fs",
     "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
-    "dep:tauri-plugin-media-session",
     "dep:tts",
+    "dep:tauri-plugin-system-media",
     "dep:tauri-plugin-single-instance",
     "dep:tauri-plugin-sql",
     "dep:sqlx",
@@ -49,7 +49,7 @@ mobile-runtime = [
     "dep:tauri-plugin-source-engine",
     "dep:tauri-plugin-deep-link",
     "tauri-plugin-source-engine/native-mobile",
-    "dep:tauri-plugin-media-session",
+    "dep:tauri-plugin-system-media",
     "dep:tts",
 ]
 
@@ -57,6 +57,7 @@ mobile-runtime = [
 tauri-build = { version = "2", features = [], optional = true }
 
 [dependencies]
+tauri-plugin-system-media = { path = "plugins/system-media", optional = true }
 tts = { git = "https://github.com/ndarilek/tts-rs", rev = "8fbcb720cb86c5166a9ed46272e3777f742da18e", optional = true }
 tauri = { version = "2", default-features = false, features = [], optional = true }
 tauri-plugin-opener = { version = "2", default-features = false, optional = true }
@@ -102,9 +103,6 @@ jni = { version = "0.22.4", features = ["invocation"] }
 jni = "0.22.4"
 ndk-context = "0.1.1"
 rustls-platform-verifier = "0.7.1"
-
-[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-tauri-plugin-media-session = { version = "=0.2.4", optional = true }
 
 [patch.crates-io]
 swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }

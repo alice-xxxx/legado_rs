@@ -1,0 +1,7 @@
+{
+  "identifier": "system-media",
+  "description": "System media controls for the main window",
+  "windows": ["main"],
+  "platforms": ["android", "iOS"],
+  "permissions": ["system-media:default"]
+}

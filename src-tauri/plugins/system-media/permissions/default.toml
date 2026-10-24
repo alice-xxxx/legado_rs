@@ -1,0 +1,8 @@
+[default]
+description = "Synchronize system media controls and receive their actions."
+permissions = ["allow-update", "allow-clear", "allow-listeners"]
+
+[[permission]]
+identifier = "allow-listeners"
+description = "Receive system media actions."
+commands.allow = ["registerListener", "removeListener"]

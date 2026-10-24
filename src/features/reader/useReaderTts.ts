@@ -107,7 +107,7 @@ export function useReaderTts(options: UseReaderTtsOptions) {
   function setupTts(): Promise<void> {
     ready ??= (async () => {
       if (!isTauri()) return;
-      const output = await setupTtsOutput();
+      const output = await setupTtsOutput(media => mediaSession?.sync(media));
       const unlisten = await listen<TtsProgress>("tts", event => { void onProgress(event.payload); });
       if (destroyed) { output(); unlisten(); return; }
       cleanup.push(output, unlisten);

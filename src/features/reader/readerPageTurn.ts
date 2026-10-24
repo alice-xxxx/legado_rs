@@ -15,6 +15,7 @@ export interface ReaderPageTurn {
   readonly progress: number;
   update(progress: number, point: Point): void;
   settle(commit: boolean, done: (committed: boolean) => void): void;
+  finish?(): void;
   dispose(): void;
 }
 
@@ -71,13 +72,15 @@ export function createReaderPageTurn(viewport: HTMLElement, direction: PageTurnD
   let pending: ((committed: boolean) => void) | null = null;
   const complete = (committed: boolean) => {
     const callback = pending;
-    pending = null;
     // A completion can be emitted inside the library's draw/dispatch stack.
     // Let it finish before the host disposes the renderer and commits the reading page.
-    if (callback) queueMicrotask(() => { if (!disposed) callback(committed); });
+    if (callback) queueMicrotask(() => {
+      if (!disposed && pending === callback) { pending = null; callback(committed); }
+    });
   };
   const reducedMotion = () => view.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (mode !== "simulation") {
+    let commitOnFinish = false;
     layer.classList.add("swiper");
     const wrapper = viewport.ownerDocument.createElement("div");
     wrapper.className = "swiper-wrapper";
@@ -109,12 +112,18 @@ export function createReaderPageTurn(viewport: HTMLElement, direction: PageTurnD
       },
       settle(commit, done) {
         if (disposed) return;
+        commitOnFinish = commit;
         pending = done;
         // A click creates and turns the layer in the same task. Flush its
         // initial position so the browser actually starts the CSS transition.
         void wrapper.offsetWidth;
         const moved = swiper.slideTo(commit ? target : initial, reducedMotion() ? 0 : 300);
         if (!moved && !swiper.animating) complete(commit);
+      },
+      finish() {
+        const callback = pending;
+        pending = null;
+        callback?.(commitOnFinish);
       },
       dispose() { disposed = true; pending = null; swiper.destroy(true, true); layer.remove(); },
     };

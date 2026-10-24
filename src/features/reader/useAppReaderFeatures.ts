@@ -30,14 +30,12 @@ interface AppReaderFeatureDependencies {
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;
   errorText: (error: unknown) => string;
-  openOtherSettings: () => void;
   showShelfBehindReader: (book: BookResource) => Promise<void>;
 }
 
 /** 组合阅读器状态和阅读相关功能。 */
 export function useAppReaderFeatures(options: AppReaderFeatureDependencies) {
-const { getRestoreRevision, notify, errorText,
-  openOtherSettings } = options;
+const { getRestoreRevision, notify, errorText } = options;
 const readerVisible = ref(false);
 const readingBook = openedBook;
 const readingChapterIndex = ref(0);
@@ -77,9 +75,10 @@ let readerChapterWindow!: ReturnType<typeof useReaderChapterWindow>;
 const readerControlsMode = ref<ReaderControlsMode>("settings");
 const readerDirectoryOpen = ref(false);
 const readerMenuOpen = ref(false);
+const readerTtsSettingsOpen = ref(false);
 const readerOverlayOpen = ref(false);
 const readerGesturesBlocked = computed(() => readerMenuOpen.value || readerControlsOpen.value
-  || readerDirectoryOpen.value || readerOverlayOpen.value);
+  || readerDirectoryOpen.value || readerTtsSettingsOpen.value || readerOverlayOpen.value);
 const readerFindQuery = ref("");
 const readerFindMatches = ref<HTMLElement[]>([]);
 const readerFindIndex = ref(-1);
@@ -224,6 +223,7 @@ async function closeReader(discardProgress = false): Promise<void> {
   readerVisible.value = false;
   readerControlsOpen.value = false;
   readerDirectoryOpen.value = false;
+  readerTtsSettingsOpen.value = false;
   readerChapterError.value = "";
   clearReaderMediaSleepTimer();
   readingContent.value = null;
@@ -604,12 +604,11 @@ function openReaderControls(mode: ReaderControlsMode = "settings"): void {
   }
 }
 
-async function openHttpTtsSettings(): Promise<void> {
-  await closeReader();
-  if (!readerVisible.value) {
-    clearOpenedBook();
-    openOtherSettings();
-  }
+function openHttpTtsSettings(): void {
+  readerControlsOpen.value = false;
+  readerDirectoryOpen.value = false;
+  readerMenuOpen.value = true;
+  readerTtsSettingsOpen.value = true;
 }
 
 return {
@@ -620,7 +619,7 @@ return {
   ...readerBookmarksAndHistory, ...readerMediaBinding, ...readerNavigationActions, ...readerDisplay,
   readerVisible, readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom,
   readingContentType, readingImagePage, readingMediaChapter, readingVideoChapter, readerViewport, readerPageIndex, readerPageCount,
-  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen, readerOverlayOpen, readerGesturesBlocked,
+  readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen, readerTtsSettingsOpen, readerOverlayOpen, readerGesturesBlocked,
   readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty, progressSaveState,
   readerBookDownloadBusy, readerChapterError,
   readerMediaError, readerMediaRetrying, readerMediaPlaying, readerMediaTimeMs, readerMediaDurationMs,

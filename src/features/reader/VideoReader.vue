@@ -93,6 +93,7 @@ onBeforeUnmount(() => {
   <ReaderPage v-bind="props">
     <div class="video-reader">
       <video v-if="content" :ref="setVideoElement" :key="content.src"
+         :defaultPlaybackRate.prop="settings.reader.videoPlaybackRate"
          :playbackRate.prop="settings.reader.videoPlaybackRate" controls playsinline preload="metadata" />
     </div>
   </ReaderPage>

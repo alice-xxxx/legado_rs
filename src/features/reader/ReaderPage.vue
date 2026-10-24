@@ -1,5 +1,5 @@
 <script lang="ts">
-import { computed, defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
+import { computed, defineAsyncComponent, defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
 import type { ReaderContextFeatures } from "./readerContext";
 import type { ChapterResource } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
@@ -20,7 +20,8 @@ export default defineComponent({
     bookSourceSwitch: { type: Object as PropType<BookSourceSwitchContract>, required: true },
     shelfBatchRecoveryRequired: { type: Boolean, required: true },
   },
-  components: { BackButton, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel },
+  components: { BackButton, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel,
+    TtsSettingsPage: defineAsyncComponent(() => import("../settings/TtsSettingsPage.vue")) },
   setup(props) {
     const context = {
       ...props.readerFeatures,
@@ -141,23 +142,13 @@ export default defineComponent({
       else void context.changeChapter(direction);
     }
     function handleComicTapAt(x: number): void {
-      if (context.readerMenuOpen.value) {
-        context.readerMenuOpen.value = false;
-        context.readerControlsOpen.value = false;
-        context.readerDirectoryOpen.value = false;
-        return;
-      }
+      if (context.readerGesturesBlocked.value) return;
       if (x < window.innerWidth / 3) nextComicImage(-1);
       else if (x > window.innerWidth * 2 / 3) nextComicImage(1);
       else context.readerMenuOpen.value = true;
     }
     function turnReaderEdge(direction: -1 | 1): void {
-      if (context.readerMenuOpen.value) {
-        context.readerMenuOpen.value = false;
-        context.readerControlsOpen.value = false;
-        context.readerDirectoryOpen.value = false;
-        return;
-      }
+      if (context.readerGesturesBlocked.value) return;
       if (context.readingImagePage.value) nextComicImage(direction);
       else context.turnPage(direction);
     }
@@ -364,6 +355,8 @@ export default defineComponent({
       </div>
       <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-left" @click.stop="turnReaderEdge(-1)"></div>
       <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-right" @click.stop="turnReaderEdge(1)"></div>
+      <div v-if="readerMenuOpen && !ctx.readingMediaChapter && !readerBusy && !ctx.readerChapterError"
+        class="reader-menu-surface" @click.stop="onReaderSurfaceClick" />
     </div>
     <footer v-if="ctx.readingImagePage" class="reader-footer reader-comic-dock">
       <nav class="reader-bottom-nav">
@@ -415,10 +408,13 @@ export default defineComponent({
         <!-- The header's More action owns advanced settings, as in the prototype. -->
       </nav>
     </footer>
+    <section v-if="readerTtsSettingsOpen" class="reader-book-page reader-tts-settings" data-back-layer @click.stop>
+      <TtsSettingsPage embedded @back="readerTtsSettingsOpen = false" />
+    </section>
     <section v-if="readerDirectoryOpen && openedBook" class="reader-book-page" data-back-layer @click.stop
       @keydown.esc.stop.prevent="readerDirectoryOpen = false">
       <header class="reader-book-page-header">
-        <BackButton label="返回阅读" @click="readerDirectoryOpen = false" />
+        <BackButton label="返回阅读菜单" @click="readerDirectoryOpen = false" />
         <div><strong>目录</strong><small>{{ openedBook.title }}</small></div>
         <small>{{ openedBook.chapters.length }} 项</small>
       </header>

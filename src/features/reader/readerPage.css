@@ -84,6 +84,9 @@
   padding: 0 20px;
 }
 
+/* Keep menu taps off the text, links, PDF controls and comic touch handlers. */
+.reader-menu-surface { position: absolute; inset: 0; z-index: 4; touch-action: none; }
+
 .reader-shell[data-reader-mode="audio"],
 .reader-shell[data-reader-mode="video"] {
   display: flex;
@@ -585,3 +588,4 @@
 .reader-book-page-header strong { font-size: var(--ui-font-body); }
 .reader-book-page-header small { overflow: hidden; color: var(--app-muted); font-size: var(--ui-font-caption); text-overflow: ellipsis; white-space: nowrap; }
 .reader-book-page > .book-catalog-view { height: auto; min-height: 0; flex: 1; padding: 0 13px var(--safe-bottom); }
+.reader-tts-settings { overflow: auto; }

@@ -3,6 +3,7 @@ import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import type { PluginListener } from "@tauri-apps/api/core";
 import { watch, type Ref } from "vue";
 import router, { routeNames } from "../router";
+import { createLocalBackGesture, type LocalBackGestureEvent } from "./localBackGesture";
 
 interface BackAction { run: () => void | Promise<void>; }
 let readerAction: { isOpen: () => boolean; menuOpen: () => boolean; action: BackAction } | null = null;
@@ -57,14 +58,17 @@ export function localBackAction(): BackAction | null {
 
 export function installReaderNativeBack(options: {
   visible: Ref<boolean>;
-  menuOpen: Ref<boolean>;
+  menuOpen: Readonly<Ref<boolean>>;
+  close: () => Promise<void>;
 }): () => void {
   const session = { isOpen: () => options.visible.value, menuOpen: () => options.menuOpen.value,
-    action: { run: () => {
-      if (options.menuOpen.value) options.menuOpen.value = false;
+    action: { run: async () => {
+      // Reading consumes Back so an edge swipe cannot also turn a page and exit.
+      // Subpages are handled by topBackLayer; the menu itself exits the reader.
+      if (options.menuOpen.value) await options.close();
     } } };
   readerAction = session;
-  // Keep browser Back inside the reader, including when opened from the first page.
+  // Give WebKit a history entry to preview the page beneath the reader.
   const stop = watch(options.visible, async open => {
     const route = router.currentRoute.value;
     if (open && !route.query[readerQuery]) {
@@ -114,7 +118,10 @@ export function installNativeBackNavigation(): () => void {
       if (tabPushPending) return;
       const route = router.currentRoute.value;
       if (readerAction?.isOpen()) {
-        void requestGestureState(readerAction.menuOpen() || hasVisibleBackLayer(), true);
+        const layer = topBackLayer();
+        // The menu uses WebKit's real history preview of the library. Local
+        // subpages slide over the still-mounted reading menu underneath.
+        void requestGestureState(readerAction.menuOpen() || !!layer, !!layer);
         return;
       }
       const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
@@ -157,13 +164,24 @@ export function installNativeBackNavigation(): () => void {
       if (failure) lastRequested = undefined;
       queueGestureSync();
     });
-    removeGestureSync = () => { observer.disconnect(); removeAfterEach(); prepareTabGesture = undefined; };
-    const gestureChannel = new Channel(async () => {
-      if (disposed || handling || !readerAction?.isOpen()
-        || !readerAction.menuOpen() && !hasVisibleBackLayer()) return;
-      handling = true;
-      try { await localBackAction()?.run(); }
-      finally { handling = false; }
+    const localGesture = createLocalBackGesture(() => {
+      const layer = topBackLayer();
+      if (!readerAction?.isOpen() || !layer) return null;
+      const action = localBackAction();
+      if (!action) return null;
+      return { element: layer.closest<HTMLElement>("[data-back-layer],.modal-backdrop,.overlay-backdrop") ?? layer,
+        back: action.run };
+    });
+    removeGestureSync = () => { observer.disconnect(); removeAfterEach(); localGesture.cancel(); prepareTabGesture = undefined; };
+    const gestureChannel = new Channel<LocalBackGestureEvent>(async event => {
+      if (disposed || !readerAction?.isOpen()) return;
+      if (event.phase === "start") {
+        if (handling) return;
+        handling = true;
+      } else if (!handling) return;
+      try { await localGesture.handle(event); }
+      catch (error) { localGesture.cancel(); handling = false; console.error("Reader back gesture failed:", error); }
+      finally { if (event.phase === "end") handling = false; }
     });
     const unregisterGesture = () => invoke("plugin:source-engine|removeListener", {
       event: "navigationBack", channelId: gestureChannel.id,

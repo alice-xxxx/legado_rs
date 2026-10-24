@@ -1,7 +1,0 @@
-{
-  "identifier": "native-playback",
-  "description": "System media controls on Android and iOS",
-  "windows": ["main"],
-  "platforms": ["android", "iOS"],
-  "permissions": ["media-session:default"]
-}
