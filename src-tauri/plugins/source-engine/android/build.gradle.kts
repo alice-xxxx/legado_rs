@@ -27,6 +27,7 @@ extensions.configure<com.android.build.api.dsl.LibraryExtension> {
 }
 
 dependencies {
+    implementation("androidx.appcompat:appcompat:1.6.0")
     // Invoke.parseArgs exposes Jackson's TypeReference overload in its JVM signature.
     implementation("com.fasterxml.jackson.core:jackson-databind:2.15.3")
     // The KMP AAR is staged by the Android workflow; its non-transitive Maven dependencies are

@@ -11,7 +11,7 @@ private struct BrowserRequest:Decodable{
     let capabilityId:String;let html:String;let baseUrl:String;let javaScript:String;let delayTimeMs:UInt64;let mode:String;let method:String;let headers:[BrowserHeader];let title:String;let waitForResult:Bool;let executionId:String?
 }
 private func failure(_ text:String)->NSError{NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:text])}
-private func pageURL(_ text:String)throws->URL{guard let url=URL(string:text),["http","https"].contains(url.scheme ?? ""),url.host != nil,url.user == nil,url.password == nil else{throw failure("浏览器地址无效")};return url}
+private func pageURL(_ text:String)throws->Foundation.URL{guard let url=Foundation.URL(string:text),["http","https"].contains(url.scheme ?? ""),url.host != nil,url.user == nil,url.password == nil else{throw failure("浏览器地址无效")};return url}
 private func quoted(_ text:String)->String{String(data:try! JSONSerialization.data(withJSONObject:[text]),encoding:.utf8)!.dropFirst().dropLast().description}
 
 /** 页面只持有自己的非持久化 WKWebsiteDataStore。 */
@@ -36,7 +36,7 @@ final class SourceBrowser {
         guard let page=try session(invoke.parseArgs(LoginSession.self)),let login=page.login else{throw failure("登录会话已结束")}
         page.cookies{value in
             page.close(nil)
-            invoke.resolve(JSTypes.coerceDictionaryToJSObject(["loginUrl":login.loginUrl,"sourceRevision":login.sourceRevision,"restoreEpoch":login.restoreEpoch,"cookieHeader":value]))
+            invoke.resolve(Tauri.JsonValue.dictionary(["loginUrl":login.loginUrl,"sourceRevision":login.sourceRevision,"restoreEpoch":login.restoreEpoch,"cookieHeader":value]))
         }
     }
     func cancel(_ invoke:Invoke)throws{
@@ -69,12 +69,12 @@ final class SourceBrowser {
 
 private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMessageHandler,UIAdaptivePresentationControllerDelegate{
     let id=UUID();weak var owner:SourceBrowser?
-    let invoke:Invoke;let target:URL;let login:LoginStart?;let request:BrowserRequest?
+    let invoke:Invoke;let target:Foundation.URL;let login:LoginStart?;let request:BrowserRequest?
     let web:WKWebView
     private let bridge="foliver_"+UUID().uuidString.replacingOccurrences(of:"-",with:"")
     private var timeout:DispatchWorkItem?;private var poll:Timer?
     private var returned=false;private var closed=false;private var evaluated=false
-    init(owner:SourceBrowser,invoke:Invoke,url:URL,login:LoginStart?,request:BrowserRequest?)throws{
+    init(owner:SourceBrowser,invoke:Invoke,url:Foundation.URL,login:LoginStart?,request:BrowserRequest?)throws{
         self.owner=owner;self.invoke=invoke;self.target=url;self.login=login;self.request=request
         let config=WKWebViewConfiguration();config.websiteDataStore = .nonPersistent();web=WKWebView(frame:CGRect(x:0,y:0,width:900,height:700),configuration:config)
         super.init(nibName:nil,bundle:nil)
@@ -99,7 +99,7 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
     @objc private func cancel(){close("浏览器已关闭")}
     @objc private func done(){if login != nil{navigationController?.dismiss(animated:true)}else{evaluate()}}
     func presentationControllerDidDismiss(_ presentationController:UIPresentationController){if login==nil{close("浏览器已关闭")}}
-    func resolve(_ value:[String:Any]){if !returned{returned=true;invoke.resolve(JSTypes.coerceDictionaryToJSObject(value))}}
+    func resolve(_ value:Tauri.JsonObject){if !returned{returned=true;invoke.resolve(Tauri.JsonValue.dictionary(value))}}
     func close(_ error:String?){
         if closed{return};closed=true;timeout?.cancel();poll?.invalidate()
         if !returned{returned=true;invoke.reject(error ?? "浏览器会话已结束")}

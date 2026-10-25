@@ -14,8 +14,8 @@ final class SourceEnginePlugin:Plugin {
         run(request,context.dataDirectory,context.executionId){result,error in
             if let error=error{invoke.reject(error.localizedDescription);return}
             do{guard let result=result else{throw NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:"引擎未返回结果"])}
-                guard let value=try JSONSerialization.jsonObject(with:Data(encode(result).utf8)) as? [String:Any] else{throw NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:"引擎结果不是对象"])}
-                invoke.resolve(JSTypes.coerceDictionaryToJSObject(value))
+                guard let value=try JSONSerialization.jsonObject(with:Data(encode(result).utf8)) as? Tauri.JsonObject else{throw NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:"引擎结果不是对象"])}
+                invoke.resolve(Tauri.JsonValue.dictionary(value))
             }catch{invoke.reject(error.localizedDescription)}
         }
     }
