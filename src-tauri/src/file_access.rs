@@ -37,7 +37,10 @@ pub struct PickerFile {
 
 impl PickerFile {
     /// 包装调用方拥有的文件，不接管其清理。
-    #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+    #[cfg(all(
+        any(feature = "desktop", feature = "mobile-runtime"),
+        not(any(target_os = "android", target_os = "ios"))
+    ))]
     pub fn from_existing_path(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         Self {

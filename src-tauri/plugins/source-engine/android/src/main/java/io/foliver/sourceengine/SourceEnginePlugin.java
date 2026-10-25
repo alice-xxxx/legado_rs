@@ -1,6 +1,7 @@
 package io.foliver.sourceengine;
 
 import android.app.Activity;
+import androidx.appcompat.app.AppCompatActivity;
 import app.tauri.annotation.Command;
 import app.tauri.annotation.TauriPlugin;
 import app.tauri.plugin.*;
@@ -15,7 +16,7 @@ public final class SourceEnginePlugin extends Plugin {
     private final ExecutorService workers=Executors.newCachedThreadPool();
     private final SourceBrowser browser;
     public SourceEnginePlugin(Activity activity){super(activity);this.activity=activity;browser=new SourceBrowser(activity);}
-    @Override public void onDestroy(){browser.destroy();workers.shutdownNow();}
+    @Override public void onDestroy(AppCompatActivity activity){browser.destroy();workers.shutdownNow();}
     private interface Decode<Q>{Q run(String json)throws Exception;}
     private interface Run<Q,T>{T run(Q request,String directory,String id)throws Exception;}
     private interface Encode<T>{String run(T result)throws Exception;}

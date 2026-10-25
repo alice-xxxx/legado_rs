@@ -28,6 +28,7 @@ object SourceSerializer:KSerializer<BookSource>{
 @Serializable data class MediaRequest(@Serializable(with=SourceSerializer::class)val source:BookSource,val book:Book,val chapter:BookChapter,val url:String,val headers:Map<String,String> = emptyMap())
 @Serializable data class TtsRequest(val config:HttpTTS,val text:String,val speechRate:Int)
 @Serializable data class LoginRequest(@Serializable(with=SourceSerializer::class)val source:BookSource,val action:LoginAction)
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable @JsonClassDiscriminator("kind") sealed class LoginAction {
     @Serializable @SerialName("open") data object Open:LoginAction()
     @Serializable @SerialName("clear") data object Clear:LoginAction()

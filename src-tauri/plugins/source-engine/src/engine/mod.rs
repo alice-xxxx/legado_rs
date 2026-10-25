@@ -25,8 +25,8 @@ impl<R: Runtime> SourceEngine<R> {
         name: &'static str,
         request: Q,
         context: EngineContext,
-        request_type: &'static str,
-        result_type: &'static str,
+        _request_type: &'static str,
+        _result_type: &'static str,
     ) -> Result<T> {
         let lease = context::Lease::enter(&context, name == "search")?;
         #[cfg(desktop)]
@@ -36,8 +36,8 @@ impl<R: Runtime> SourceEngine<R> {
                 &request,
                 &context,
                 &lease.0,
-                request_type,
-                result_type,
+                _request_type,
+                _result_type,
             )
         })
         .await

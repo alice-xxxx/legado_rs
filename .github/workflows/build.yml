@@ -55,7 +55,8 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
-          cache-read-only: false
+          # 全平台并行时，Linux/macOS 缓存分别由 Android/iOS 写入，避免重复抢占同一个键。
+          cache-read-only: ${{ inputs.platform == 'all' && runner.os != 'Windows' }}
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |

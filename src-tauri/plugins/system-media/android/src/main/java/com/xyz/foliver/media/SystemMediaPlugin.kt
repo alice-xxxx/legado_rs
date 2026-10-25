@@ -93,7 +93,6 @@ class SystemMediaPlugin(private val activity: Activity) : Plugin(activity) {
                 if (next.id != state.id) clearSession()
                 if (session == null) {
                     session = MediaSession(activity, "Foliver").apply {
-                        setFlags(MediaSession.FLAG_HANDLES_MEDIA_BUTTONS or MediaSession.FLAG_HANDLES_TRANSPORT_CONTROLS)
                         setCallback(object : MediaSession.Callback() {
                             override fun onPlay() = command("play")
                             override fun onPause() = command("pause")

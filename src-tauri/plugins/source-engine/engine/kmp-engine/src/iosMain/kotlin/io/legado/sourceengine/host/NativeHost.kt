@@ -7,10 +7,10 @@ import io.foliver.sourceengine.ffi.*
 @kotlin.native.concurrent.ThreadLocal private var local:SourceEngineHost?=null
 internal actual fun currentHost()=local
 internal actual fun setHost(host:SourceEngineHost?){local=host}
-internal actual fun sourceExecutionCancelled(id:String)=memScoped{foliver_source_cancelled(id.cstr.ptr)!=0}
-private fun invoke(value:String,call:(CPointer<ByteVar>?)->CPointer<ByteVar>?)=memScoped{
-    val result=call(value.cstr.ptr)?:error("原生能力未返回结果")
-    try{result.toKString()}finally{foliver_source_free(result)}
+internal actual fun sourceExecutionCancelled(id:String)=foliver_source_cancelled(id)!=0
+private fun invoke(value:String,call:(String?)->CPointer<ByteVar>?):String{
+    val result=call(value)?:error("原生能力未返回结果")
+    return try{result.toKString()}finally{foliver_source_free(result)}
 }
 internal fun image(value:String)=invoke(value,::foliver_source_image)
 internal class IosHost(id:String,directory:String):NativeHost(id,directory){
