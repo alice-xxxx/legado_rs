@@ -68,6 +68,7 @@ data class BookSource(
     // 并发率
     override var concurrentRate: String? = null,
     // 请求头
+    @Serializable(with = RawJsonStringSerializer::class)
     override var header: String? = null,
     // 登录地址
     override var loginUrl: String? = null,
@@ -90,6 +91,7 @@ data class BookSource(
     // 智能排序的权重
     var weight: Int = 0,
     // 发现url
+    @Serializable(with = RawJsonStringSerializer::class)
     var exploreUrl: String? = null,
     // 发现筛选规则
     var exploreScreen: String? = null,

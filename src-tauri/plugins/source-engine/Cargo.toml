@@ -2,14 +2,14 @@
 name = "tauri-plugin-source-engine"
 version = "0.1.0"
 authors = ["Legado Contributors"]
-description = "Rust bridge to the Kotlin Multiplatform book source engine"
+description = "Typed SDK for the Kotlin Multiplatform source engine"
 edition = "2024"
 rust-version = "1.90"
 exclude = ["/examples", "/dist-js", "/guest-js", "/node_modules"]
 links = "tauri-plugin-source-engine"
 
 [features]
-# Kotlin/Native bootstraps mobile Rust archives without enabling the desktop app feature.
+# Kotlin/Native 构建移动端 Rust 静态库时不启用桌面应用特性。
 native-mobile = ["tauri/wry"]
 desktop-runtime = ["tauri/wry"]
 
@@ -17,9 +17,7 @@ desktop-runtime = ["tauri/wry"]
 tauri = { version = "2", default-features = false }
 serde = "1.0"
 serde_json = "1"
-thiserror = "2"
 base64 = "0.23"
-percent-encoding = "2"
 reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stream", "gzip", "brotli", "deflate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "time"] }
 tokio-util = "0.7"

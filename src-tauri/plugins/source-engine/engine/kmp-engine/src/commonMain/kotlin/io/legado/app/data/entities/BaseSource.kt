@@ -2,7 +2,6 @@ package io.legado.app.data.entities
 
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
-import io.legado.app.constant.EventBus
 import io.legado.app.constant.androidId
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.help.JsExtensionsCommon
@@ -13,12 +12,11 @@ import io.legado.app.help.crypto.CryptoHelper
 import io.legado.app.help.source.SourceCacheProviders
 import io.legado.app.help.source.SourceDebugLoggers
 import io.legado.app.help.source.SourceNetworkProviders
-import io.legado.app.help.source.SourceVerificationHelpShared
+import io.legado.app.help.source.VerificationUiProviders
 import io.legado.app.help.source.getShareScope
 import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.buildScriptBindings
-import io.legado.app.utils.FlowBus
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.KS_JSON_STRICT
 import io.legado.app.utils.decodeStringMapOrNull
@@ -334,28 +332,11 @@ interface BaseSource : JsExtensionsCommon {
 
     fun hasLogin(): Boolean = !(loginUrl.isNullOrBlank() && loginUi.isNullOrBlank())
 
-    /**
-     * 请求弹出登录对话框(供 JS source.showLoginDialog() 调用)。
-     * entity 只发纯事件, 弹窗由 app 侧 SourceUiEventBridge 拿 currentActivity 解析。
-     *
-     * JS 线程 (后台) 调用时阻塞到登录界面关闭再返回; UI 菜单入口在主线程调用, 立即返回
-     * —— park 主线程会连登录界面本身都渲染不出来。
-     */
-    fun showLoginDialog() {
-        // 双空时 showSourceLogin 什么都不弹, 等待方只能空转到超时, 故直接返回
-        if (!hasLogin()) return
-        val blocking = !JsExtensionsPlatform.isMainThread()
-        val key = getKey()
-        // 登记早于 tryEmit: 否则 UI 侧的唤醒可能落在 prepare 之前被清掉
-        if (blocking) SourceVerificationHelpShared.prepareLoginWait(key)
-        FlowBus.with(EventBus.SOURCE_UI_REQUEST).tryEmit(SourceUiRequest.Login(this))
-        if (blocking) SourceVerificationHelpShared.awaitLoginFinished(key)
+    /** 脚本请求登录，是否等待由宿主的交互实现决定。 */
+    fun showLoginDialog(){
+        if(hasLogin())VerificationUiProviders.get().showLoginDialog(this)
     }
-
-    /**
-     * 请求弹出源变量对话框(供 JS source.showSourceVariableDialog() 调用)。
-     */
-    fun showSourceVariableDialog() {
-        FlowBus.with(EventBus.SOURCE_UI_REQUEST).tryEmit(SourceUiRequest.SourceVariable(this))
+    fun showSourceVariableDialog(){
+        VerificationUiProviders.get().showSourceVariableDialog(this)
     }
 }

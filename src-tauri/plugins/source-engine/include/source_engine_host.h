@@ -1,25 +1,16 @@
-#ifndef LEGADO_SOURCE_ENGINE_HOST_H
-#define LEGADO_SOURCE_ENGINE_HOST_H
-
+#ifndef FOLIVER_SOURCE_ENGINE_HOST_H
+#define FOLIVER_SOURCE_ENGINE_HOST_H
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-/*
- * 移动端 KMP 通过此稳定 C 边界提交 JSON 请求。
- * Rust 负责网络和应用数据存储，Kotlin 负责书源规则执行。
- * 响应为 UTF-8 JSON：{"ok":true,"value":...} 或 {"ok":false,"error":"..."}。
- * 所有返回指针（包括错误响应）都必须交给对应 free 函数释放。
- */
-char *legado_source_host_http(const char *request_json);
-char *legado_source_host_storage(const char *request_json);
-char *legado_source_host_image(const char *request_json);
-/* Missing/expired execution IDs are cancelled. This callback never performs I/O. */
-int legado_source_host_execution_cancelled(const char *execution_id);
-void legado_source_host_string_free(char *value);
-
+/* 返回字符串必须由 foliver_source_free 释放。 */
+char *foliver_source_http(const char *input);
+char *foliver_source_storage(const char *input);
+char *foliver_source_image(const char *input);
+char *foliver_source_browser(const char *input);
+int foliver_source_cancelled(const char *id);
+void foliver_source_free(char *value);
 #ifdef __cplusplus
 }
 #endif
-
 #endif

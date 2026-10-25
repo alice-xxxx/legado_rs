@@ -92,7 +92,7 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *reserved) {
         initJniValueConvertCache(env);
         JavaObjectClass::initBridgeCache(env);
         initJniCallbacksCache(env);
-        jclass registry = env->FindClass("io/legado/sourceengine/bridge/SourceEngineHostRegistry");
+        jclass registry = env->FindClass("io/legado/sourceengine/host/SourceEngineHostRegistry");
         if (registry) {
             g_sourceHostRegistry = static_cast<jclass>(env->NewGlobalRef(registry));
             g_executionCancelled = env->GetStaticMethodID(registry, "executionCancelled", "()Z");

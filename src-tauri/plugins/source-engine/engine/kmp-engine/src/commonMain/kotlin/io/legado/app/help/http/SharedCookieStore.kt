@@ -1,7 +1,8 @@
 package io.legado.app.help.http
 
 import com.script.jsdispatch.JsApi
-import io.legado.sourceengine.bridge.EngineStorage
+import io.legado.app.help.source.SourceStorageProviders
+import io.legado.app.help.source.SourceStorageNamespace
 import io.legado.app.help.CacheManager
 import io.legado.app.help.http.SharedCookieStore.getCookieNoSession
 import io.legado.app.help.http.SharedCookieStore.getSessionCookie
@@ -14,15 +15,15 @@ import io.legado.app.utils.NetworkUtils
 object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
 
     override fun onInsertCookieToDb(domain: String, cookieStr: String) {
-        EngineStorage.put("cookies", domain, cookieStr)
+        SourceStorageProviders.get().put(SourceStorageNamespace.Cookies, domain, cookieStr)
     }
 
     override fun onDeleteCookieFromDb(domain: String) {
-        EngineStorage.delete("cookies", domain)
+        SourceStorageProviders.get().delete(SourceStorageNamespace.Cookies, domain)
     }
 
     override fun onClearOkHttpCookie() {
-        EngineStorage.deleteContains("cookies", "|")
+        SourceStorageProviders.get().deleteContains(SourceStorageNamespace.Cookies, "|")
     }
 
     // ===== CookieManager 语义 (对照 app 端 CookieManager 同名方法) =====
@@ -31,7 +32,7 @@ object SharedCookieStore : CookieStoreBase(), CookieStoreProvider {
         val domain = NetworkUtils.getSubDomain(url)
         val cacheCookie = CacheManager.getFromMemory("${domain}_cookie") as? String
         return cacheCookie
-            ?: EngineStorage.get("cookies", domain)
+            ?: SourceStorageProviders.get().get(SourceStorageNamespace.Cookies, domain)
             ?: ""
     }
 

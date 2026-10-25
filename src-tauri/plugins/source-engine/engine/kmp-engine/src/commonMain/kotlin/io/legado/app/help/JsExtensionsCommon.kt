@@ -3,7 +3,6 @@ package io.legado.app.help
 import io.legado.app.constant.AppConst
 import io.legado.app.constant.AppLog
 import io.legado.app.constant.AppPattern
-import io.legado.app.constant.EventBus
 import io.legado.app.constant.androidId
 import io.legado.app.constant.dateFormat
 import io.legado.app.data.entities.BaseSource
@@ -42,7 +41,6 @@ import io.legado.app.utils.StringUtils
 import io.legado.app.utils.fromJsonObject
 import io.legado.app.utils.isAbsUrl
 import io.legado.app.utils.mapAsync
-import io.legado.app.utils.postEvent
 import io.legado.app.utils.randomUUIDString
 import io.legado.app.utils.stackTraceStr
 import io.legado.app.utils.toStringArray
@@ -590,21 +588,9 @@ interface JsExtensionsCommon {
         return response
     }
 
-    /**
-     * 刷新 UI (通过 EventBus 通知, login/explore/book)
-     */
-    fun refreshUi(target: String) {
-        JsUiProviders.impl?.let { it.refresh(target); return }
-        val tag = when (target.lowercase()) {
-            "login" -> EventBus.REFRESH_LOGIN_UI
-            "explore" -> EventBus.REFRESH_EXPLORE
-            "book" -> EventBus.REFRESH_BOOK_INFO
-            else -> {
-                AppLog.put("java.refreshUi: 未知 target=$target")
-                return
-            }
-        }
-        postEvent(tag, true)
+    /** 交互更新只交给当前宿主，不发送上游应用事件。 */
+    fun refreshUi(target:String){
+        JsUiProviders.impl?.refresh(target)
     }
 
     /**
@@ -993,11 +979,7 @@ interface JsExtensionsCommon {
     fun startBrowserAwait(url: String, title: String, refetchAfterSuccess: Boolean): StrResponse {
         jsContext.ensureActive()
         val source = getSource() ?: throw NoStackTraceException("startBrowser source cannot be null")
-        VerificationUiProviders.get().awaitBrowser(source, url, title, refetchAfterSuccess)?.let { return it }
-        val body = SourceVerificationHelpShared.getVerificationResult(
-            getSource(), url, title, true, refetchAfterSuccess
-        )
-        return StrResponse(url, body)
+        return VerificationUiProviders.get().awaitBrowser(source,url,title,refetchAfterSuccess)
     }
 
     fun startBrowserAwait(url: String, title: String): StrResponse {

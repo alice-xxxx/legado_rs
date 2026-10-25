@@ -1,77 +1,86 @@
-//! Application-owned source cache, cookies and script variables.
-use super::{Database, WriteMode, db, params};
-use std::{path::Path, sync::Arc};
-use tauri_plugin_source_engine::storage::{KeyFilter, Namespace, StorageHost};
-
+//! 引擎存储端口：键值和过期规则归数据库管理，不接收原生协议。
+use super::*;
+use tauri_plugin_source_engine::{KeyFilter, Namespace, StorageHost};
 pub(crate) struct SourceState(Database);
-
 impl SourceState {
-    pub(crate) fn new(directory: &Path) -> Self {
-        let root = if directory
-            .file_name()
-            .is_some_and(|name| name == "source-engine")
-        {
-            directory.parent().unwrap_or(directory)
-        } else {
-            directory
-        };
+    pub(crate) fn new(root: &Path) -> Self {
         Self(Database {
             root: Arc::new(root.to_owned()),
         })
     }
 }
-
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .min(i64::MAX as u128) as i64
+}
 impl StorageHost for SourceState {
-    fn get(&self, namespace: Namespace, key: &str) -> Result<Option<String>, String> {
-        if !self.0.file_path().is_file() {
-            return Ok(None);
-        }
-        let now = crate::support::now_ms().min(i64::MAX as u64) as i64;
-        db::read(&self.0, |s| {
-            Ok(s.read(
+    fn get(&self, namespace: Namespace, key: &str) -> std::result::Result<Option<String>, String> {
+        db::read(&self.0,|session|{
+            let values=session.read(
                 "SELECT value FROM source_kv WHERE namespace=?1 AND key=?2 AND (expires_at_ms IS NULL OR expires_at_ms>?3)",
-                params![namespace.as_str(), key, now], |r| r.get(0),
-            )?.pop())
-        }).map_err(|error| error.to_string())
+                params![namespace.as_str(),key,now()],|row|row.get(0))?;
+            Ok(values.into_iter().next())
+        }).map_err(|e|e.to_string())
     }
-
     fn put(
         &self,
         namespace: Namespace,
         key: &str,
         value: &str,
         ttl_seconds: Option<u64>,
-    ) -> Result<(), String> {
-        let (key, value) = (key.to_owned(), value.to_owned());
-        let now = crate::support::now_ms().min(i64::MAX as u64) as i64;
-        let expiry = ttl_seconds.filter(|seconds| *seconds > 0).map(|seconds| {
-            now.saturating_add(seconds.saturating_mul(1000).min(i64::MAX as u64) as i64)
-        });
-        db::write(&self.0, WriteMode::Transaction, move |s| {
-            s.write(
-                "INSERT INTO source_kv(namespace,key,value,expires_at_ms) VALUES(?1,?2,?3,?4) ON CONFLICT(namespace,key) DO UPDATE SET value=excluded.value,expires_at_ms=excluded.expires_at_ms WHERE source_kv.value!=excluded.value OR source_kv.expires_at_ms IS NOT excluded.expires_at_ms",
-                params![namespace.as_str(), key, value, expiry],
-            )?;
+    ) -> std::result::Result<(), String> {
+        let key = key.to_owned();
+        let value = value.to_owned();
+        let expiry = ttl_seconds
+            .filter(|v| *v > 0)
+            .map(|v| now().saturating_add(v.saturating_mul(1000).min(i64::MAX as u64) as i64));
+        db::write(&self.0,WriteMode::Transaction,move|session|{
+            session.write(
+                "INSERT INTO source_kv(namespace,key,value,expires_at_ms) VALUES(?1,?2,?3,?4)
+                 ON CONFLICT(namespace,key) DO UPDATE SET value=excluded.value,expires_at_ms=excluded.expires_at_ms",
+                params![namespace.as_str(),key,value,expiry])?;
             Ok(())
-        }).and_then(|pending| pending.wait()).map_err(|error| error.to_string())
+        }).and_then(Pending::wait).map_err(|e|e.to_string())
     }
-
-    fn remove(&self, namespace: Namespace, filter: KeyFilter) -> Result<Vec<String>, String> {
-        let (mode, patterns) = match filter {
-            KeyFilter::Key(key) => (1, vec![key]),
-            KeyFilter::Prefixes(prefixes) => (2, prefixes),
-            KeyFilter::Contains(text) => (3, vec![text]),
-            KeyFilter::All => (0, vec![String::new()]),
-        };
-        db::write(&self.0, WriteMode::Transaction, move |s| {
-            let mut deleted = Vec::new();
-            for pattern in patterns {
-                deleted.extend(s.read(
-                    "DELETE FROM source_kv WHERE namespace=?1 AND (?2=0 OR (?2=1 AND key=?3) OR (?2=2 AND substr(key,1,length(?3))=?3) OR (?2=3 AND instr(key,?3)>0)) RETURNING key",
-                    params![namespace.as_str(), mode, pattern], |r| r.get::<_, String>(0),
-                )?);
+    fn remove(
+        &self,
+        namespace: Namespace,
+        filter: KeyFilter,
+    ) -> std::result::Result<Vec<String>, String> {
+        let condition = match filter {
+            KeyFilter::Key(value) => Some(("key=?2", value)),
+            KeyFilter::Contains(value) => {
+                Some(("instr(CAST(key AS BLOB),CAST(?2 AS BLOB))>0", value))
             }
-            Ok(deleted)
-        }).and_then(|pending| pending.wait()).map_err(|error| error.to_string())
+            // 按字节比较，保留百分号、下划线和空字节的字面含义。
+            KeyFilter::Prefixes(values) => Some((
+                "EXISTS(SELECT 1 FROM json_each(?2) WHERE substr(CAST(source_kv.key AS BLOB),1,length(CAST(value AS BLOB)))=CAST(value AS BLOB))",
+                serde_json::to_string(&values).map_err(|e| e.to_string())?,
+            )),
+            KeyFilter::All => None,
+        };
+        db::write(
+            &self.0,
+            WriteMode::Transaction,
+            move |session| match condition {
+                Some((predicate, value)) => session.read(
+                    &format!(
+                        "DELETE FROM source_kv WHERE namespace=?1 AND {predicate} RETURNING key"
+                    ),
+                    params![namespace.as_str(), value],
+                    |row| row.get(0),
+                ),
+                None => session.read(
+                    "DELETE FROM source_kv WHERE namespace=?1 RETURNING key",
+                    params![namespace.as_str()],
+                    |row| row.get(0),
+                ),
+            },
+        )
+        .and_then(Pending::wait)
+        .map_err(|e| e.to_string())
     }
 }

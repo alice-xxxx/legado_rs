@@ -3,36 +3,7 @@ package io.legado.app.help.http
 import io.legado.app.constant.AppLog
 import io.legado.app.utils.NetworkUtils
 
-/**
- * CookieJarBridge 共享实现 (commonMain), 1:1 复刻 app 端 CookieManager.saveResponse / loadRequest。
- *
- * # 背景
- * app 端 [io.legado.app.help.http.CookieManager] object 实现 [CookieJarBridge],
- * 在 OkHttp / Cronet 拦截器中自动加载/保存 cookie。原实现依赖 app 端 CookieStore/CookieManager
- * (appDb.cookieDao + CacheManager + android.webkit), 无法直接下沉。
- *
- * 本类把 saveResponse/loadResponse 主体逻辑下沉 commonMain, 通过 [CookieStoreProvider]
- * 间接访问各端 cookie 存储:
- * - **Android**: [AndroidCookieStoreProvider] 委托 app 端 CookieStore/CookieManager (含 WebView 同步);
- * - **Desktop/iOS/鸿蒙**: [SharedCookieStore] (Room cookieDao + CacheManager 内存热层)。
- *
- * # 1:1 对照 app 端 CookieManager
- * - [loadRequest]: 对照 `CookieManager.loadRequest` — domain 提取 / getCookie(domain) /
- *   mergeCookies(requestCookie, storeCookie) / header 设置;
- * - [saveResponse]: 对照 `CookieManager.saveResponse` → `saveCookiesFromHeaders` —
- *   parseResponseCookies / persistent·session 分区 / updateSessionCookie + replaceCookie。
- *
- * 通过 CookieStoreProvider 访问存储，发送时保留 Cookie 原值；构造失败不清除存储。
- *
- * # 注册时机
- * 宿主启动早期 (CookieStoreProvider 注册之后) 调 [registerSharedCookieJarBridge] 一次:
- * - app: App.onCreate (紧跟 registerAndroidCookieStoreProvider 之后);
- * - desktop: registerDesktopHttpProvider;
- * - iOS: registerIosProviders;
- * - 鸿蒙: registerOhosProviders。
- *
- * 替代原 desktop DesktopCookieJarBridge (桌面端独立实现), 统一三端桥接逻辑。
- */
+/** 源 Cookie 的请求合并与响应保存；持久化通过源存储端口完成。 */
 class SharedCookieJarBridge : CookieJarBridge {
 
     /**

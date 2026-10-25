@@ -4,7 +4,6 @@ package io.legado.app.model.script
 import io.legado.app.exception.NoStackTraceException
 import io.legado.app.help.http.OkHttpClientProviders
 import io.legado.app.help.http.newCallStrResponse
-import io.legado.app.ui.compose.platform.syncGetString
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.MD5Utils
 import io.legado.app.utils.isAbsUrl
@@ -153,7 +152,7 @@ object NativeQuickJsSharedJsScopeProvider : SharedJsScopeProvider {
                             url(value)
                         }.body
                     } ?: throw NoStackTraceException(
-                        syncGetString("download_jslib_failed", value)
+                        "脚本库下载失败：$value"
                     )
                     if (cached == null) {
                         synchronized(sourceLock) { jsLibContentCache[fileName] = js }

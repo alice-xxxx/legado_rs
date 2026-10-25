@@ -11,7 +11,7 @@ rootProject.allprojects {
 }
 
 extensions.configure<com.android.build.api.dsl.LibraryExtension> {
-    namespace = "io.legado.sourceengine.tauri"
+    namespace = "io.foliver.sourceengine"
     compileSdk = 37
 
     defaultConfig {

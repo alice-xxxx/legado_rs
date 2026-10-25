@@ -2,34 +2,10 @@ package io.legado.app.help
 
 import io.legado.app.utils.InputStream
 
-/**
- * 跨平台 file IO 门面 (expect object)。
- *
- * # 背景
- * 原 app 端 JsExtensions 的 8 个 file IO 方法 (readFile/readTxtFile/deleteFile/
- * getTxtInFolder/downloadFile/cacheFile/importScript) 依赖 [io.legado.app.utils.FileUtilsBase]
- * (jvmAndAndroidMain 专属, 委托 java.io.File)。下沉 commonMain 后, 这些方法需跨端可用,
- * 故抽出本 expect object, 各端 actual 委托本平台 File 实现:
- * - jvmAndAndroidMain: java.io.File (与原 FileUtilsBase 行为一致)
- * - iOS/鸿蒙 nativeMain: kotlin.io.File (POSIX fs, Kotlin/Native 标准库支持)
- *
- * # 设计
- * - 入参统一 String 路径 (避免 commonMain 引入 JDK File 类型, 模式参考 [JsExtensionsPlatform])
- * - 缓存目录走 [io.legado.app.help.file.AppFilesDirs] (commonMain 已下沉)
- * - 使用方: [JsExtensionsCommon] 文件方法 + [io.legado.app.help.book.BookHelpShared]
- *   缓存管理编排 (clearInvalidBookFolders/evictMangaCache, 三端 BookStorage 统一委托),
- *   标记 internal 避免污染公开 API
- *
- * 模式参考 [JsExtensionsPlatform] / [io.legado.app.utils.FileUtilsBase]。
- */
+/** 源脚本的文件 API；目录与文件访问由平台实现及宿主目录端口提供。 */
 expect object FileUtilsCommon {
 
-    /**
-     * 缓存目录绝对路径。
-     *
-     * - Android: externalCacheDir (与原 `appCtx.externalCache.absolutePath` 一致)
-     * - 桌面 JVM / iOS / 鸿蒙: cacheDir (无 externalCache 概念, 走 AppFilesDirs.cacheDir)
-     */
+    /** 当前源调用的私有缓存目录。 */
     fun getCachePath(): String
 
     /**

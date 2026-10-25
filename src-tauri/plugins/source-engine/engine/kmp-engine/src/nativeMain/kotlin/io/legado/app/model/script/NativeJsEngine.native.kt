@@ -55,7 +55,7 @@ import io.legado.app.napi.quickjs.JS_SetPropertyUint32
 import kotlinx.cinterop.staticCFunction
 import io.legado.app.napi.quickjs.JS_SetInterruptHandler
 import io.legado.app.napi.quickjs.JS_CheckExecutionTimeLimit
-import io.legado.sourceengine.bridge.SourceEngineHostRegistry
+import io.legado.sourceengine.host.SourceEngineHostRegistry
 import io.legado.app.napi.quickjs.JS_SetExecutionTimeLimit
 import io.legado.app.napi.quickjs.JS_ClearExecutionTimeLimit
 import io.legado.app.napi.quickjs.JS_HasExecutionTimedOut

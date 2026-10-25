@@ -7,8 +7,8 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
 import io.legado.app.model.webBook.WebBook
-import io.legado.sourceengine.bridge.SourceEngineHostContext
-import io.legado.sourceengine.bridge.SourceEngineHostRegistry
+import io.legado.sourceengine.host.SourceEngineHostContext
+import io.legado.sourceengine.host.SourceEngineHostRegistry
 import kotlinx.coroutines.runBlocking
 import io.legado.app.data.entities.BookChapterLike
 import io.legado.app.data.entities.BookLike

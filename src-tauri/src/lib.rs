@@ -4,7 +4,7 @@
 pub(crate) mod book_import;
 pub(crate) mod database;
 mod file_access;
-pub(crate) use tauri_plugin_source_engine::http_client;
+pub(crate) use tauri_plugin_source_engine::http as http_client;
 #[path = "books/information.rs"]
 pub(crate) mod information;
 #[path = "books/main_text.rs"]
@@ -139,11 +139,6 @@ pub fn run() {
         .plugin(tauri_plugin_source_engine::init())
         .plugin(tauri_plugin_sql::Builder::default().build())
         .setup(move |app| {
-            #[cfg(target_os = "android")]
-            http_client::init_android_tls().map_err(|error| {
-                std::io::Error::other(format!("Android TLS initialization failed: {error}"))
-            })?;
-
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
@@ -170,11 +165,10 @@ pub fn run() {
 
             let app_handle = app.handle().clone();
             let data_dir = app_data_root(app.handle())?;
-            let source_engine_dir = data_dir.join("source-engine");
             let resource_dir = app.path().resource_dir().ok();
-            let executor = std::sync::Arc::new(source_engine::TauriSourceExecutor::new(
+            let executor = std::sync::Arc::new(source_engine::client(
                 app_handle,
-                source_engine_dir,
+                data_dir.clone(),
                 resource_dir,
             ));
             let (database, resources, process_lock) = tauri::async_runtime::block_on(open_data(&data_dir))

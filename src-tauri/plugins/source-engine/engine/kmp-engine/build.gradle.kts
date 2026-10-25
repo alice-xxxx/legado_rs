@@ -342,21 +342,12 @@ kotlin {
         named("androidMain") { dependsOn(jvmAndAndroidMain) }
 
         androidMain.dependencies {
-            implementation("androidx.webkit:webkit:1.14.0")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
-            implementation("androidx.core:core-ktx:1.18.0")
         }
 
         if (isAppleHost) {
             nativeMain {
                 kotlin.exclude(*nativeInteropPatterns.toTypedArray())
-            }
-
-            iosMain {
-                dependencies {
-                    implementation("io.ktor:ktor-client-core:3.5.2")
-                    implementation("io.ktor:ktor-client-darwin:3.5.2")
-                }
             }
 
             iosArm64Main {

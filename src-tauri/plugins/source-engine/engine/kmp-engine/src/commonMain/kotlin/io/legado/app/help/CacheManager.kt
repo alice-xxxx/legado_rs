@@ -1,7 +1,8 @@
 package io.legado.app.help
 
 import com.script.jsdispatch.JsApi
-import io.legado.sourceengine.bridge.EngineStorage
+import io.legado.app.help.source.SourceStorageProviders
+import io.legado.app.help.source.SourceStorageNamespace
 import io.legado.app.model.analyzeRule.QueryTTF
 import io.legado.app.utils.systemCurrentTimeMillis
 
@@ -61,7 +62,7 @@ object CacheManager {
         when (value) {
             is ByteArray -> FileCacheProviders.get().put(key, value, saveTime)
             else -> {
-                EngineStorage.put("source-cache", key, "$deadline\n$value", saveTime.toLong())
+                SourceStorageProviders.get().put(SourceStorageNamespace.Cache, key, "$deadline\n$value", saveTime.toLong())
             }
         }
     }
@@ -85,7 +86,7 @@ object CacheManager {
     }
 
     fun get(key: String): String? {
-        val encoded = EngineStorage.get("source-cache", key) ?: return null
+        val encoded = SourceStorageProviders.get().get(SourceStorageNamespace.Cache, key) ?: return null
         val separator = encoded.indexOf('\n')
         check(separator > 0) { "Invalid source cache entry" }
         val deadline = encoded.substring(0, separator).toLong()
@@ -126,7 +127,7 @@ object CacheManager {
     }
 
     fun delete(key: String) {
-        EngineStorage.delete("source-cache", key)
+        SourceStorageProviders.get().delete(SourceStorageNamespace.Cache, key)
         deleteMemory(key)
         FileCacheProviders.get().remove(key)
     }
