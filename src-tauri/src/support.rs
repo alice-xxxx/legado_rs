@@ -1,4 +1,5 @@
 //! 共享的字段读取、标识校验、哈希与时间函数。
+pub(crate) mod imports;
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};

@@ -1,6 +1,6 @@
 //! 正文请求只读取当前章节及其规则上下文，不加载整本目录。
 use super::*;
-use crate::source_wire::TextOr;
+use tauri_plugin_source_engine::TextOr;
 use std::collections::BTreeMap;
 
 pub(crate) struct ChapterContext {

@@ -683,7 +683,7 @@ async fn fetch_feed(url: &str) -> Result<Feed, String> {
 }
 
 fn standard_feed_url(source: &Value) -> Result<String, String> {
-    ["feedUrl", "sourceUrl", "url"]
+    ["bookSourceUrl", "feedUrl", "sourceUrl", "url"]
         .iter()
         .find_map(|key| source.get(*key).and_then(Value::as_str))
         .map(str::trim)
@@ -785,4 +785,4 @@ pub(crate) async fn open_rss_article(
     Ok(result)
 }
 
-use crate::source_catalog::SourceRecord;
+use crate::sources::SourceRecord;

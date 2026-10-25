@@ -11,15 +11,15 @@ pub(crate) enum ChapterPreparation {
 }
 
 pub(crate) struct MainText {
-    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
-    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    pub(crate) sources: Arc<crate::sources::Catalog>,
+    pub(crate) executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
     pub(crate) text_cancel: tokio::sync::broadcast::Sender<Option<(String, String)>>,
     pub(crate) backup: Arc<crate::backup::state::Operations>,
 }
 impl MainText {
     pub(crate) fn new(
-        sources: Arc<crate::source_catalog::SourceCatalog>,
-        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        sources: Arc<crate::sources::Catalog>,
+        executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
         backup: Arc<crate::backup::state::Operations>,
     ) -> Self {
         Self {
@@ -191,32 +191,32 @@ mod tests {
     use crate::database::{Book, Chapter, Database, Mutation, ProgressInput};
 
     struct NoNetwork;
-    impl crate::source_engine::SourceExecutor for NoNetwork {
-        fn search<'a>(&'a self, _: tauri_plugin_source_engine::SearchRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
+    impl tauri_plugin_source_engine::SourceExecutor for NoNetwork {
+        fn search<'a>(&'a self, _: tauri_plugin_source_engine::SearchRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn explore_kinds<'a>(&'a self, _: tauri_plugin_source_engine::SourceRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ExploreKinds> {
+        fn explore_kinds<'a>(&'a self, _: tauri_plugin_source_engine::SourceRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::ExploreKinds> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn explore<'a>(&'a self, _: tauri_plugin_source_engine::ExploreRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
+        fn explore<'a>(&'a self, _: tauri_plugin_source_engine::ExploreRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::SearchPage> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn detail<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::Book> {
+        fn detail<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::Book> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn chapters<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterList> {
+        fn chapters<'a>(&'a self, _: tauri_plugin_source_engine::BookRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterList> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn content<'a>(&'a self, _: tauri_plugin_source_engine::ContentRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterContent> {
+        fn content<'a>(&'a self, _: tauri_plugin_source_engine::ContentRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::ChapterContent> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn resolve_media<'a>(&'a self, _: tauri_plugin_source_engine::MediaRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::MediaLocation> {
+        fn resolve_media<'a>(&'a self, _: tauri_plugin_source_engine::MediaRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::MediaLocation> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn http_tts_audio<'a>(&'a self, _: tauri_plugin_source_engine::TtsRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::AudioData> {
+        fn http_tts_audio<'a>(&'a self, _: tauri_plugin_source_engine::TtsRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::AudioData> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
-        fn login<'a>(&'a self, _: tauri_plugin_source_engine::LoginRequest, _: tokio_util::sync::CancellationToken) -> crate::source_engine::EngineFuture<'a, tauri_plugin_source_engine::LoginState> {
+        fn login<'a>(&'a self, _: tauri_plugin_source_engine::LoginRequest, _: tokio_util::sync::CancellationToken) -> tauri_plugin_source_engine::EngineFuture<'a, tauri_plugin_source_engine::LoginState> {
             Box::pin(async { Err("Unexpected engine invocation".into()) })
         }
     }
@@ -265,7 +265,7 @@ mod tests {
             .await
             .unwrap();
         let service = MainText::new(
-            Arc::new(crate::source_catalog::SourceCatalog::new(database.clone())),
+            Arc::new(crate::sources::Catalog::new(database.clone())),
             Arc::new(NoNetwork),
             Arc::new(crate::backup::state::Operations::new()),
         );

@@ -1,5 +1,5 @@
 //! 类型化业务数据；这里只声明列和关系，不保存对象副本。
-use crate::source_wire::TextOr;
+use tauri_plugin_source_engine::TextOr;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -269,7 +269,7 @@ impl Change {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct SourceInput {
     pub id: Option<String>,
-    #[serde(deserialize_with = "crate::source_wire::decode")]
+    #[serde(deserialize_with = "crate::database::json::optional")]
     pub definition: Option<SourceDefinition>,
     pub enabled: Option<bool>,
     pub group: Change,
@@ -303,7 +303,7 @@ pub(crate) struct TtsInput {
     pub id: String,
     pub name: String,
     pub enabled: bool,
-    #[serde(deserialize_with = "crate::source_wire::required")]
+    #[serde(deserialize_with = "crate::database::json::required")]
     pub definition: TtsDefinition,
 }
 

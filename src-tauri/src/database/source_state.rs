@@ -1,12 +1,10 @@
 //! 引擎存储端口：键值和过期规则归数据库管理，不接收原生协议。
 use super::*;
 use tauri_plugin_source_engine::{KeyFilter, Namespace, StorageHost};
-pub(crate) struct SourceState(Database);
-impl SourceState {
-    pub(crate) fn new(root: &Path) -> Self {
-        Self(Database {
-            root: Arc::new(root.to_owned()),
-        })
+struct SourceState(Database);
+impl Database {
+    pub(crate) fn source_storage(&self) -> Arc<dyn StorageHost> {
+        Arc::new(SourceState(self.clone()))
     }
 }
 fn now() -> i64 {

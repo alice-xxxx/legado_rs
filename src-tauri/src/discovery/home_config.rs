@@ -17,7 +17,7 @@ pub(crate) async fn validate_home_sources(
     database: &Database,
     document: &HomeConfigDocument,
 ) -> Result<(), String> {
-    let sources = crate::source_catalog::SourceCatalog::new(database.clone());
+    let sources = crate::sources::Catalog::new(database.clone());
     for tab in &document.tabs {
         for section in &tab.sections {
             let source = sources.get(&section.source_id).await?;

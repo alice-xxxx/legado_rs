@@ -5,7 +5,7 @@ use tauri_plugin_source_engine::TtsRequest;
 use base64::Engine as _;
 use serde::Deserialize;
 pub(crate) struct Tts {
-    executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
     tts: tokio::sync::watch::Sender<Option<TtsSession>>,
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
     system: std::sync::Mutex<Option<SystemTts>>,
@@ -13,7 +13,7 @@ pub(crate) struct Tts {
     pub(crate) app: Option<tauri::AppHandle>,
 }
 impl Tts {
-    pub(crate) fn new(executor: Arc<dyn crate::source_engine::SourceExecutor>) -> Self {
+    pub(crate) fn new(executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>) -> Self {
         Self {
             executor,
             tts: tokio::sync::watch::channel(None).0,

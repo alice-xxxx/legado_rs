@@ -13,8 +13,8 @@ mod files;
 mod library;
 mod reading;
 mod types;
+mod json;
 mod source_state;
-pub(crate) use source_state::SourceState;
 pub(crate) use activity::Mutation;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 pub(crate) use db::reader;

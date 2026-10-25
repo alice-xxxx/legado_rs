@@ -1,9 +1,8 @@
 //! 正文转换与离线下载；缓存写入只走 resources.cache。
-use tauri_plugin_source_engine::{ContentRequest, MediaRequest};
+use tauri_plugin_source_engine::{ContentRequest, MediaRequest, SourceExecutor};
 use tokio_util::sync::CancellationToken;
 use crate::{
     resources::ResourceRef,
-    source_engine::SourceExecutor,
 };
 use serde_json::{json, Value};
 use std::collections::{HashMap, VecDeque};
@@ -93,7 +92,7 @@ pub(crate) async fn chapter_content(
     for key in ["resource", "url", "pages", "sources", "protocol", "files"] {
         chapter.as_object_mut().unwrap().remove(key);
     }
-    let kind = crate::source_catalog::content_type(context.source.as_value());
+    let kind = crate::sources::content_type(context.source.as_value());
     let (reference, format) = match kind {
         "image" => {
             let mut pages = Vec::new();

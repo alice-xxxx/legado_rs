@@ -10,15 +10,10 @@ pub(crate) mod information;
 #[path = "books/main_text.rs"]
 pub(crate) mod main_text;
 pub(crate) mod search;
-#[path = "sources/login.rs"]
-pub(crate) mod source_login;
+pub(crate) mod sources;
 
 #[path = "settings/mod.rs"]
 mod settings;
-#[path = "sources/catalog.rs"]
-pub(crate) mod source_catalog;
-#[path = "sources/wire.rs"]
-mod source_wire;
 mod support;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
@@ -33,8 +28,6 @@ pub mod local_books;
 pub mod discovery;
 #[path = "rss/mod.rs"]
 pub mod rss;
-#[path = "sources/source_engine.rs"]
-pub mod source_engine;
 pub(crate) use tauri_plugin_source_engine::http as source_http;
 
 // 阅读配置、资源服务和持久化模型。
@@ -166,19 +159,20 @@ pub fn run() {
             let app_handle = app.handle().clone();
             let data_dir = app_data_root(app.handle())?;
             let resource_dir = app.path().resource_dir().ok();
-            let executor = std::sync::Arc::new(source_engine::client(
-                app_handle,
-                data_dir.clone(),
-                resource_dir,
-            ));
             let (database, resources, process_lock) = tauri::async_runtime::block_on(open_data(&data_dir))
                 .map_err(std::io::Error::other)?;
+            let executor = std::sync::Arc::new(tauri_plugin_source_engine::Client::new(
+                app_handle, tauri_plugin_source_engine::EngineContext {
+                    storage: database.source_storage(), data_dir: data_dir.join("source-engine"),
+                    resource_dir, cancellation: None,
+                },
+            ));
             let backup = std::sync::Arc::new(backup::state::Operations::new());
-            let sources = std::sync::Arc::new(source_catalog::SourceCatalog::new(database.clone()));
+            let sources = std::sync::Arc::new(sources::Catalog::new(database.clone()));
             let search = std::sync::Arc::new(search::Search::new(sources.clone(), executor.clone(), backup.clone()));
             let information = std::sync::Arc::new(information::Information::new(sources.clone(), executor.clone(), search.clone()));
             let text = std::sync::Arc::new(main_text::MainText::new(sources.clone(), executor.clone(), backup.clone()));
-            let mut login = source_login::Login::new(sources.clone(), executor.clone(), backup.clone());
+            let mut login = sources::login::Login::new(sources.clone(), executor.clone(), backup.clone());
             login.app = Some(app.handle().clone());
             let mut tts = reading_tools::tts::Tts::new(executor);
             tts.app = Some(app.handle().clone());
@@ -251,7 +245,7 @@ pub fn run() {
         reading_tools::tts::tts_voices,
         reading_tools::tts::stop_tts,
         reading_tools::tts::submit_tts,
-        source_login::login,
+        sources::login::login,
         search::search,
         search::stop_search,
         search::release_search_results,

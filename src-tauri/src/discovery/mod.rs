@@ -376,4 +376,4 @@ pub(crate) async fn list_discovery_books(
     Ok(result)
 }
 
-use crate::source_catalog::SourceRecord;
+use crate::sources::SourceRecord;

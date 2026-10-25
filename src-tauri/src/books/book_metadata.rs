@@ -8,7 +8,7 @@
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::{source_catalog::SourceRecord, resources::ResourceRef};
+use crate::{sources::SourceRecord, resources::ResourceRef};
 
 const MAX_TITLE_CHARS: usize = 512;
 const MAX_AUTHOR_CHARS: usize = 512;
@@ -73,7 +73,7 @@ pub(crate) fn project_book_metadata(
         ),
         kind: kind_at(engine_book),
         content_type: source.source.is_object()
-            .then(|| crate::source_catalog::content_type(&source.source).to_owned()),
+            .then(|| crate::sources::content_type(&source.source).to_owned()),
         word_count: word_count_at(engine_book),
         latest_chapter: text_at(
             engine_book,

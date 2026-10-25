@@ -1,7 +1,6 @@
-//! Persisted JSON column decoding; source document types are owned by the engine.
+//! 数据库写入参数的 JSON 文本解码，不承担源协议解析。
 use serde::Deserialize;
-pub(crate) use tauri_plugin_source_engine::TextOr;
-pub(crate) fn decode<'de, D, T>(input: D) -> Result<Option<T>, D::Error>
+pub(super) fn optional<'de, D, T>(input: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,
@@ -10,7 +9,7 @@ where
         .map(|text| serde_json::from_str(&text).map_err(serde::de::Error::custom))
         .transpose()
 }
-pub(crate) fn required<'de, D, T>(input: D) -> Result<T, D::Error>
+pub(super) fn required<'de, D, T>(input: D) -> Result<T, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: serde::de::DeserializeOwned,

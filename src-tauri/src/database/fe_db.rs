@@ -14,7 +14,7 @@ pub(crate) async fn fe_db(
     resources: tauri::State<'_, std::sync::Arc<crate::resources::Resources>>,
     app: tauri::AppHandle,
     backup: State<'_, std::sync::Arc<crate::backup::state::Operations>>,
-    sources: State<'_, std::sync::Arc<crate::source_catalog::SourceCatalog>>,
+    sources: State<'_, std::sync::Arc<crate::sources::Catalog>>,
     text: State<'_, std::sync::Arc<crate::main_text::MainText>>,
     operations: Vec<Mutation>,
     completed: Channel<Completion>,
@@ -30,7 +30,7 @@ pub(crate) async fn fe_db(
         .iter()
         .any(|operation| matches!(operation, Mutation::SaveSources { .. }));
     let publication = if sources_changed {
-        Some(sources.publication.clone().lock_owned().await)
+        Some(sources.write_guard().await)
     } else {
         None
     };

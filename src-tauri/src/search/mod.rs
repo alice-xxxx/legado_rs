@@ -2,7 +2,7 @@
 
 use tauri_plugin_source_engine::SearchRequest;
 use crate::{
-    source_catalog::SourceRecord,
+    sources::SourceRecord,
     support::{now_ms, text_at},
 };
 use futures_util::{stream, StreamExt};
@@ -15,16 +15,16 @@ use std::{
 };
 
 pub(crate) struct Search {
-    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
-    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    pub(crate) sources: Arc<crate::sources::Catalog>,
+    pub(crate) executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
     pub(crate) searches: tokio::sync::Mutex<SearchRegistry>,
     search_slots: tokio::sync::Semaphore,
     pub(crate) backup: Arc<crate::backup::state::Operations>,
 }
 impl Search {
     pub(crate) fn new(
-        sources: Arc<crate::source_catalog::SourceCatalog>,
-        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        sources: Arc<crate::sources::Catalog>,
+        executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
         backup: Arc<crate::backup::state::Operations>,
     ) -> Self {
         Self {
@@ -333,7 +333,7 @@ pub(crate) fn project_search_result(
         result_id: result_id.to_owned(),
         source_id: source.id.clone(),
         source_name: source.name.clone(),
-        content_type: crate::source_catalog::content_type(&source.source).to_owned(),
+        content_type: crate::sources::content_type(&source.source).to_owned(),
         title: "Untitled".to_owned(),
         author: None,
         cover_src: None,
@@ -386,7 +386,7 @@ pub(crate) fn search_match_rank(title: &str, author: Option<&str>, keyword: &str
 /// 搜索结果即书籍定位，Vue 无需等待详情 API 返回 ID。
 pub(crate) fn source_book_id(source: &SourceRecord, book: &Value) -> String {
     let url = text_at(book, &["bookUrl", "url", "origin"]).unwrap_or_else(|| book.to_string());
-    let kind = crate::source_catalog::content_type(&source.source);
+    let kind = crate::sources::content_type(&source.source);
     crate::database::online_book_id(&source.id, kind, &url)
 }
 

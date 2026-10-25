@@ -1,6 +1,6 @@
 //! 书源和朗读配置：固定列写入，关系行批量读取。
 use super::*;
-use crate::source_wire::TextOr;
+use tauri_plugin_source_engine::TextOr;
 use std::collections::{BTreeMap, HashMap};
 
 fn script<T>(value: &Option<TextOr<T>>) -> Option<&str> {

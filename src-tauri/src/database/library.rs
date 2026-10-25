@@ -1,6 +1,7 @@
 //! 书籍、目录、引擎列和不可变正文的关系操作。
 use super::*;
-use crate::{resources::ResourceRef, source_wire::TextOr};
+use crate::resources::ResourceRef;
+use tauri_plugin_source_engine::TextOr;
 use std::collections::{BTreeMap, HashMap};
 
 pub(super) fn engine_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<EngineBook> {

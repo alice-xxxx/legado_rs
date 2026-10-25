@@ -2,7 +2,7 @@
 use std::sync::Arc;
 
 use crate::search::source_book_id;
-use crate::source_engine::book_request;
+use tauri_plugin_source_engine::BookRequest;
 use serde_json::json;
 
 impl Information {
@@ -39,7 +39,7 @@ impl Information {
             if !source.enabled {
                 return Err("Book source is disabled".into());
             }
-            let kind = crate::source_catalog::content_type(&source.source);
+            let kind = crate::sources::content_type(&source.source);
             let key = source_book_id(&source, &json!({"bookUrl":book_url}));
             // 搜索已提供的书名等参数可供规则使用，没有时只需书籍 URL。
             let cached = self
@@ -66,7 +66,7 @@ impl Information {
             raw_book["origin"] = source.source["bookSourceUrl"].clone();
             raw_book["originName"] = json!(source.name);
             let info = self.executor.detail(
-                book_request(&source.source, raw_book.clone())?, token.clone(),
+                BookRequest::new((&source.source).try_into()?, serde_json::from_value(raw_book.clone()).map_err(|e| e.to_string())?), token.clone(),
             ).await?;
             let info = serde_json::to_value(info).map_err(|error| error.to_string())?;
             // 详情规则可以只返回部分字段，目录请求仍需保留搜索和已存储的上下文。
@@ -87,7 +87,7 @@ impl Information {
             }
             let book_id = key;
             let chapters = self.executor.chapters(
-                book_request(&source.source, engine_book.clone())?, token.clone(),
+                BookRequest::new((&source.source).try_into()?, serde_json::from_value(engine_book.clone()).map_err(|e| e.to_string())?), token.clone(),
             ).await?.chapters;
             {
                 let database = database.clone();
@@ -133,15 +133,15 @@ impl Information {
 
 /// 不返回详情数据，Vue 等待入库后自行读取业务表。
 pub(crate) struct Information {
-    pub(crate) sources: Arc<crate::source_catalog::SourceCatalog>,
-    pub(crate) executor: Arc<dyn crate::source_engine::SourceExecutor>,
+    pub(crate) sources: Arc<crate::sources::Catalog>,
+    pub(crate) executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
     information_cancel: tokio::sync::broadcast::Sender<Option<(String, String)>>,
     search: Arc<crate::search::Search>,
 }
 impl Information {
     pub(crate) fn new(
-        sources: Arc<crate::source_catalog::SourceCatalog>,
-        executor: Arc<dyn crate::source_engine::SourceExecutor>,
+        sources: Arc<crate::sources::Catalog>,
+        executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
         search: Arc<crate::search::Search>,
     ) -> Self {
         Self {
