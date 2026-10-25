@@ -64,13 +64,15 @@ fn vm(context: &EngineContext) -> Result<&'static JavaVM> {
         .resource_dir
         .as_ref()
         .map(|root| root.join("source-engine"));
-    let root = match bundled.filter(|p| p.join("classpath.txt").is_file()) {
-        Some(root) => root,
-        None if cfg!(debug_assertions) => {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("engine/build/source-engine/runtime")
-        }
-        None => return Err("缺少打包的源引擎运行时".into()),
-    };
+    // 开发模式优先使用刚构建的引擎，避免装载 target 中旧的打包副本。
+    let development = cfg!(debug_assertions).then(|| {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("engine/build/source-engine/runtime")
+    });
+    let root = development
+        .into_iter()
+        .chain(bundled)
+        .find(|p| p.join("classpath.txt").is_file())
+        .ok_or("缺少源引擎运行时")?;
     let java = crate::platform::java_path(&root.join("jre"));
     let library = crate::platform::jvm_library(&java);
     if !library.is_file() {

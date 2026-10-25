@@ -7,7 +7,6 @@ import io.legado.app.data.entities.rule.ExploreKind
 import io.legado.app.data.entities.rule.FlexChildStyle
 import io.legado.app.data.entities.rule.RowUi
 import io.legado.app.help.ExploreKindsCacheProviders
-import io.legado.app.help.coroutine.IoDispatcher
 import io.legado.app.help.coroutine.printStackTraceOnDebug
 import io.legado.app.model.script.runScriptWithContext
 import io.legado.app.utils.GSON
@@ -16,20 +15,9 @@ import io.legado.app.utils.fromJsonArray
 import io.legado.app.utils.isJsonArray
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.coroutines.withContext
 import io.legado.app.utils.concurrent.newConcurrentMap
 
-/*
- * BookSource/BookSourcePart 扩展函数下沉区 (shared commonMain)。
- *
- * exploreKinds() / getExploreKindsKey() (private) / clearExploreKindsCache() 均已下沉,
- * 依赖的 runScriptWithContext / evalJS (BaseSource 成员) / GSON / isJsonArray / printStackTraceOnDebug /
- * MD5Utils 均已在 commonMain 可用, ACache 读写经 [ExploreKindsCacheProviders] provider 转发
- * (app 端注册转发到 ACache.get("explore"), desktop 端 in-memory Map, 行为等价)。
- *
- * 跨模块同包名同签名扩展自动合并, 消费方 import 零改动。
- * 注意: 同包名同签名扩展函数不允许在两个模块同时定义, 需从 app 端删除已下沉的扩展。
- */
+// 发现分类及缓存沿用引擎入口的宿主和协程通道。
 
 private val mutexMap by lazy { hashMapOf<String, Mutex>() }
 
@@ -50,61 +38,68 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
     mutex.withLock {
         exploreKindsMap[exploreKindsKey]?.let { return it }
         val kinds = arrayListOf<ExploreKind>()
-        withContext(IoDispatcher) {
-            kotlin.runCatching {
-                var ruleStr = exploreUrl
-                if (exploreUrl.startsWith("<js>", true)
-                    || exploreUrl.startsWith("@js:", true)
-                ) {
-                    ruleStr = ExploreKindsCacheProviders.impl?.getAsString(exploreKindsKey)
-                    if (ruleStr.isNullOrBlank()) {
-                        val jsStr = if (exploreUrl.startsWith("@")) {
-                            exploreUrl.substring(4)
-                        } else {
-                            exploreUrl.substring(4, exploreUrl.lastIndexOf("<"))
-                        }
-                        ruleStr = runScriptWithContext {
-                            evalJS(jsStr).toString().trim()
-                        }
-                        ExploreKindsCacheProviders.impl?.put(exploreKindsKey, ruleStr)
+        kotlin.runCatching {
+            var ruleStr = exploreUrl
+            if (exploreUrl.startsWith("<js>", true)
+                || exploreUrl.startsWith("@js:", true)
+            ) {
+                ruleStr = ExploreKindsCacheProviders.impl?.getAsString(exploreKindsKey)
+                if (ruleStr.isNullOrBlank()) {
+                    val jsStr = if (exploreUrl.startsWith("@")) {
+                        exploreUrl.substring(4)
+                    } else {
+                        exploreUrl.substring(4, exploreUrl.lastIndexOf("<"))
                     }
+                    ruleStr = runScriptWithContext {
+                        // 发现控件的值按源独立保存，方法不参与 JSON 序列化。
+                        val setup = """
+                            globalThis.infoMap = JSON.parse(source.get('exploreInfoMap') || '{}');
+                            Object.defineProperties(infoMap, {
+                                get: {value: function(key) { return this[key]; }},
+                                put: {value: function(key, value) { var old = this[key]; this[key] = value; return old; }},
+                                save: {value: function() { source.put('exploreInfoMap', JSON.stringify(this)); }}
+                            });
+                        """.trimIndent()
+                        evalJS(setup+"\n"+jsStr).toString().trim()
+                    }
+                    ExploreKindsCacheProviders.impl?.put(exploreKindsKey, ruleStr)
                 }
-                if (ruleStr.isJsonArray()) {
-                    GSON.fromJsonArray<ExploreKind>(ruleStr).getOrThrow().let {
-                        kinds.addAll(it)
-                    }
-                } else {
-                    ruleStr.split("(&&|\n)+".toRegex()).forEach { kindStr ->
-                        val kindCfg = kindStr.split("::")
-                        var title = kindCfg.first()
-                        var type = RowUi.Type.text
-                        var cols: Int? = null
-                        when {
-                            title.startsWith("BUTTON:") -> {
-                                title = title.substring(7)
-                                type = RowUi.Type.button
-                            }
-
-                            title.startsWith("TITLE:") -> {
-                                title = title.substring(6)
-                                type = RowUi.Type.title
-                                cols = 1
-                            }
-                        }
-                        kinds.add(
-                            ExploreKind(
-                                title,
-                                type,
-                                kindCfg.getOrNull(1),
-                                cols?.let { FlexChildStyle(cols = it) }
-                            )
-                        )
-                    }
-                }
-            }.onFailure {
-                kinds.add(ExploreKind("ERROR:${it.message}", url = it.stackTraceToString()))
-                it.printStackTraceOnDebug()
             }
+            if (ruleStr.isJsonArray()) {
+                GSON.fromJsonArray<ExploreKind>(io.legado.app.model.script.RhinoSyntax.json(ruleStr)).getOrThrow().let {
+                    kinds.addAll(it)
+                }
+            } else {
+                ruleStr.split("(&&|\n)+".toRegex()).forEach { kindStr ->
+                    val kindCfg = kindStr.split("::")
+                    var title = kindCfg.first()
+                    var type = RowUi.Type.text
+                    var cols: Int? = null
+                    when {
+                        title.startsWith("BUTTON:") -> {
+                            title = title.substring(7)
+                            type = RowUi.Type.button
+                        }
+
+                        title.startsWith("TITLE:") -> {
+                            title = title.substring(6)
+                            type = RowUi.Type.title
+                            cols = 1
+                        }
+                    }
+                    kinds.add(
+                        ExploreKind(
+                            title,
+                            type,
+                            kindCfg.getOrNull(1),
+                            cols?.let { FlexChildStyle(cols = it) }
+                        )
+                    )
+                }
+            }
+        }.onFailure {
+            kinds.add(ExploreKind("ERROR:${it.message}", url = it.stackTraceToString()))
+            it.printStackTraceOnDebug()
         }
         exploreKindsMap[exploreKindsKey] = kinds
         return kinds
@@ -112,9 +107,7 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
 }
 
 suspend fun BookSource.clearExploreKindsCache() {
-    withContext(IoDispatcher) {
-        val exploreKindsKey = getExploreKindsKey()
-        exploreKindsMap.remove(exploreKindsKey)
-        ExploreKindsCacheProviders.impl?.remove(exploreKindsKey)
-    }
+    val exploreKindsKey = getExploreKindsKey()
+    exploreKindsMap.remove(exploreKindsKey)
+    ExploreKindsCacheProviders.impl?.remove(exploreKindsKey)
 }

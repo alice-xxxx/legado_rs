@@ -43,7 +43,7 @@ fn form(value: &mut LoginForm) -> Result<(), String> {
     if !matches!(value.mode.as_str(), "form" | "web") {
         return Err("登录表单模式无效".into());
     }
-    if value.fields.len() > 64 || value.actions.len() > 64 || value.layout.len() > 192 {
+    if value.fields.len() > 64 || value.actions.len() > 256 || value.layout.len() > 320 {
         return Err("登录表单超过大小限制".into());
     }
     let mut names = HashSet::new();
@@ -63,6 +63,16 @@ fn form(value: &mut LoginForm) -> Result<(), String> {
             return Err("登录表单字段无效".into());
         }
         field.password = field.password || field.r#type == "password";
+        if field.password {
+            field.initial_value = None;
+        }
+        if field
+            .initial_value
+            .as_ref()
+            .is_some_and(|value| value.len() > 16 * 1024)
+        {
+            return Err("登录字段默认值过长".into());
+        }
         if field.label.is_empty() {
             field.label = field.name.clone();
         }
@@ -72,7 +82,7 @@ fn form(value: &mut LoginForm) -> Result<(), String> {
         if action.id > i32::MAX as usize
             || !ids.insert(action.id)
             || action.label.is_empty()
-            || action.label.len() > 128
+            || action.label.chars().count() > 128
         {
             return Err("登录表单按钮无效".into());
         }
@@ -81,10 +91,16 @@ fn form(value: &mut LoginForm) -> Result<(), String> {
     let mut placed_ids = HashSet::new();
     for cell in &value.layout {
         let valid = match cell.kind.as_str() {
-            "field" => cell
-                .name
-                .as_ref()
-                .is_some_and(|name| names.contains(name) && placed_names.insert(name.clone())),
+            "field" => {
+                let name_valid = cell.name.as_ref().is_some_and(|name| {
+                    placed_names.insert(name.clone());
+                    names.contains(name)
+                });
+                let id_valid = cell.id.is_none_or(|id| {
+                    id <= i32::MAX as usize && ids.insert(id) && placed_ids.insert(id)
+                });
+                name_valid && id_valid
+            }
             "action" => cell
                 .id
                 .is_some_and(|id| ids.contains(&id) && placed_ids.insert(id)),
@@ -164,13 +180,17 @@ mod tests {
                 fields: vec![LoginField {
                     name: "密码".into(),
                     r#type: "password".into(),
+                    initial_value: Some("saved-secret".into()),
                     ..Default::default()
                 }],
                 ..Default::default()
             }),
             ..Default::default()
         };
-        update("source", first, false, &mut passwords).unwrap();
+        let first = update("source", first, false, &mut passwords).unwrap();
+        assert!(!serde_json::to_string(&first)
+            .unwrap()
+            .contains("saved-secret"));
         let later = LoginState {
             web: Some(LoginWeb {
                 url: "https://private.example".into(),
@@ -191,5 +211,46 @@ mod tests {
         for private in ["秘密", "session=secret", "private.example"] {
             assert!(!output.contains(private));
         }
+    }
+    #[test]
+    fn repeated_fields_and_large_forms_keep_their_action_ids() {
+        use tauri_plugin_source_engine::{LoginButton, LoginLayout};
+        let mut value = LoginForm {
+            mode: "form".into(),
+            fields: vec![LoginField {
+                name: "shared".into(),
+                r#type: "text".into(),
+                ..Default::default()
+            }],
+            actions: (2..68)
+                .map(|id| LoginButton {
+                    id,
+                    label: format!("action {id}"),
+                })
+                .collect(),
+            layout: (0..2)
+                .map(|id| LoginLayout {
+                    kind: "field".into(),
+                    name: Some("shared".into()),
+                    id: Some(id),
+                    cols: 1,
+                    rows: 1,
+                    label: None,
+                })
+                .chain((2..68).map(|id| LoginLayout {
+                    kind: "action".into(),
+                    id: Some(id),
+                    cols: 2,
+                    rows: 1,
+                    name: None,
+                    label: None,
+                }))
+                .collect(),
+            ..Default::default()
+        };
+        form(&mut value).unwrap();
+        assert_eq!(value.layout.len(), 68);
+        value.layout[1].id = Some(2);
+        assert!(form(&mut value).is_err());
     }
 }

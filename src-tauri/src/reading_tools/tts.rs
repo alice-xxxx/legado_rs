@@ -1,9 +1,9 @@
 //! 朗读会话：开始清空队列，投递后顺序朗读，只有结束才关闭会话。
 use std::sync::Arc;
 
-use tauri_plugin_source_engine::TtsRequest;
 use base64::Engine as _;
 use serde::Deserialize;
+use tauri_plugin_source_engine::TtsRequest;
 pub(crate) struct Tts {
     executor: Arc<dyn tauri_plugin_source_engine::SourceExecutor>,
     tts: tokio::sync::watch::Sender<Option<TtsSession>>,
@@ -30,7 +30,7 @@ use serde_json::json;
 use serde_json::Value;
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 use std::collections::HashMap;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{mpsc, watch};
 
 const MAX_HTTP_TTS_TEXT_CHARS: usize = 20_000;
 const MAX_HTTP_TTS_AUDIO_BYTES: usize = 16 * 1024 * 1024;
@@ -68,20 +68,29 @@ impl TtsSession {
 struct TtsAudio {
     src: String,
     boundaries: watch::Receiver<Vec<(usize, f64)>>,
-    played: oneshot::Sender<()>,
 }
 
 struct TtsStream {
     writer: crate::resources::TtsWriter,
     profile: Option<Mp3StreamProfile>,
     boundaries: watch::Sender<Vec<(usize, f64)>>,
-    played: oneshot::Receiver<()>,
+    source: Option<TtsAudio>,
 }
 
 impl TtsStream {
-    async fn finish(self) -> Result<(), String> {
-        drop(self.writer); // 音频写完才发送 EOF；等播放器读完后再切换下一段资源。
-        self.played.await.map_err(|_| "朗读播放器已关闭".into())
+    async fn publish(&mut self, output: &mpsc::Sender<TtsAudio>) -> Result<(), String> {
+        if let Some(source) = self.source.take() {
+            output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
+        }
+        Ok(())
+    }
+
+    async fn finish(self, output: &mpsc::Sender<TtsAudio>) -> Result<(), String> {
+        drop(self.writer);
+        if let Some(source) = self.source {
+            output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
+        }
+        Ok(())
     }
 }
 
@@ -206,7 +215,6 @@ impl Tts {
                     break;
                 }
             }
-            let _ = source.played.send(());
         }
         Ok(())
     }
@@ -598,7 +606,8 @@ impl Tts {
         let _cancel_on_drop = token.clone().drop_guard();
         let request = TtsRequest {
             config: serde_json::from_value(config.clone()).map_err(|error| error.to_string())?,
-            text: text.to_owned(), speech_rate: ((rate - 0.5) * 10.0).round() as i32,
+            text: text.to_owned(),
+            speech_rate: ((rate - 0.5) * 10.0).round() as i32,
         };
         let result = match self.executor.http_tts_audio(request, token).await {
             Ok(result) => result,
@@ -620,8 +629,7 @@ impl Tts {
         if bytes.is_empty() {
             return Ok((bytes, "audio/mpeg"));
         }
-        let content_type =
-            http_tts_audio_type(&result.content_type, &bytes)?;
+        let content_type = http_tts_audio_type(&result.content_type, &bytes)?;
         Ok((bytes, content_type))
     }
 
@@ -636,10 +644,11 @@ impl Tts {
         assets: &mut Vec<String>,
     ) -> Result<(), String> {
         use futures_util::StreamExt;
+        let mut warmup_texts = texts.len();
         let incoming = futures_util::stream::poll_fn(move |context| input.poll_recv(context))
             .flat_map(futures_util::stream::iter);
         let texts = futures_util::stream::iter(texts).chain(incoming);
-        // 提前请求三段，仍按投递顺序拼流；短段落不会逐次等待网络往返。
+        // 并发预取，按原文顺序直接写入同一条流，不等待播放进度。
         let audio = texts
             .map(|item| async move {
                 let bytes = self.tts_bytes(config, &item.text, rate).await;
@@ -648,78 +657,71 @@ impl Tts {
             .buffered(3);
         futures_util::pin_mut!(audio);
         let mut stream: Option<TtsStream> = None;
-        let mut finishing: Option<oneshot::Receiver<()>> = None;
         while let Some((index, result)) = audio.next().await {
+            warmup_texts = warmup_texts.saturating_sub(1);
             let (bytes, content_type) = result?;
-            if bytes.is_empty() {
-                continue;
-            }
-            let parsed = (content_type == "audio/mpeg")
-                .then(|| mp3_stream_payload(&bytes).ok())
-                .flatten();
-            let (payload, duration, profile) = match parsed {
-                Some((payload, duration, profile)) => (payload, duration, Some(profile)),
-                None => (bytes.as_slice(), f64::INFINITY, None),
-            };
-            if stream
-                .as_ref()
-                .is_some_and(|stream| profile.is_none() || stream.profile != profile)
-            {
-                stream.take().unwrap().finish().await?;
-            }
-            let source = if stream.is_none() {
-                // 下一段已生成，才等待上一段播放完成；非 MP3 也不串行等待请求。
-                if let Some(played) = finishing.take() {
-                    played.await.map_err(|_| "朗读播放器已关闭")?;
-                }
-                let writer = resources
-                    .tts
-                    .create(content_type)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                assets.push(writer.id.clone());
-                let (boundaries, progress) = watch::channel(vec![]);
-                let (played, completion) = oneshot::channel();
-                let source = TtsAudio {
-                    src: format!("{}tts/{}", resources.base_url(), writer.id),
-                    boundaries: progress,
-                    played,
+            if !bytes.is_empty() {
+                let parsed = (content_type == "audio/mpeg")
+                    .then(|| mp3_stream_payload(&bytes).ok())
+                    .flatten();
+                let (payload, duration, profile) = match parsed {
+                    Some((payload, duration, profile)) => (payload, duration, Some(profile)),
+                    None => (bytes.as_slice(), f64::INFINITY, None),
                 };
-                stream = Some(TtsStream {
-                    writer,
-                    profile,
-                    boundaries,
-                    played: completion,
+                if stream
+                    .as_ref()
+                    .is_some_and(|current| current.profile != profile)
+                {
+                    stream.take().unwrap().finish(&output).await?;
+                }
+                if stream.is_none() {
+                    let writer = resources
+                        .tts
+                        .create(content_type)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    assets.push(writer.id.clone());
+                    let (boundaries, progress) = watch::channel(vec![]);
+                    let source = TtsAudio {
+                        src: format!("{}tts/{}", resources.base_url(), writer.id),
+                        boundaries: progress,
+                    };
+                    stream = Some(TtsStream {
+                        writer,
+                        profile,
+                        boundaries,
+                        source: Some(source),
+                    });
+                }
+                let current = stream.as_mut().unwrap();
+                current
+                    .writer
+                    .append(payload)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                current.boundaries.send_modify(|items| {
+                    let end = items.last().map_or(0.0, |(_, end)| *end) + duration;
+                    items.push((index, end));
                 });
-                Some(source)
-            } else {
-                None
-            };
-            let current = stream.as_mut().unwrap();
-            current
-                .writer
-                .append(payload)
-                .await
-                .map_err(|error| error.to_string())?;
-            current.boundaries.send_modify(|items| {
-                let end = items.last().map_or(0.0, |(_, end)| *end) + duration;
-                items.push((index, end));
-            });
-            // 首段就交给播放器，后续音频继续追加到同一条流。
-            if let Some(source) = source {
-                output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
             }
-            if profile.is_none() {
-                let current = stream.take().unwrap();
-                drop(current.writer);
-                finishing = Some(current.played);
+            if let Some(current) = stream.as_mut() {
+                if current.profile.is_none() {
+                    // 非可拼接格式保留独立资源，完成写入后才交给播放器。
+                    stream.take().unwrap().finish(&output).await?;
+                } else if warmup_texts == 0
+                    || current
+                        .boundaries
+                        .borrow()
+                        .last()
+                        .is_some_and(|(_, end)| *end >= 3.0)
+                {
+                    // 缓冲至少三秒再起播；首批文本较短时不等待未投递的内容。
+                    current.publish(&output).await?;
+                }
             }
         }
         if let Some(stream) = stream {
-            stream.finish().await?;
-        }
-        if let Some(played) = finishing {
-            played.await.map_err(|_| "朗读播放器已关闭")?;
+            stream.finish(&output).await?;
         }
         Ok(())
     }
@@ -865,3 +867,6 @@ fn http_tts_audio_type_from_signature(bytes: &[u8]) -> Result<&'static str, Stri
         Err("HTTP TTS returned an unsupported audio signature".to_owned())
     }
 }
+
+#[cfg(test)]
+mod tests;

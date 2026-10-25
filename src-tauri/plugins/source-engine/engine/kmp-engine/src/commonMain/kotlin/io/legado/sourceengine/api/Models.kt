@@ -41,7 +41,7 @@ object SourceSerializer:KSerializer<BookSource>{
 @Serializable data class ChapterContent(val content:String)
 @Serializable data class MediaLocation(val url:String,val headers:Map<String,String>)
 @Serializable data class AudioData(val bytesBase64:String,val contentType:String)
-@Serializable data class LoginField(val name:String,val label:String,val type:String,val password:Boolean,val choices:List<String> = emptyList())
+@Serializable data class LoginField(val name:String,val label:String,val type:String,val password:Boolean,val choices:List<String> = emptyList(),val initialValue:String?=null)
 @Serializable data class LoginButton(val id:Int,val label:String)
 @Serializable data class LoginLayout(val kind:String,val name:String?=null,val id:Int?=null,val label:String?=null,val cols:Int=1,val rows:Int=1)
 @Serializable data class LoginForm(val mode:String,val canLogin:Boolean=false,val fields:List<LoginField> = emptyList(),val actions:List<LoginButton> = emptyList(),val layout:List<LoginLayout> = emptyList())

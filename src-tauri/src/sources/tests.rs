@@ -290,3 +290,93 @@ async fn standard_feed_remains_a_feed_after_database_roundtrip() {
     );
     assert!(import::preview(&persisted.source.to_string()).is_ok());
 }
+
+#[tokio::test]
+async fn exported_scalar_and_rule_shapes_survive_import() {
+    let root = tempfile::tempdir().unwrap();
+    let database = Database::new(root.path()).unwrap();
+    let preview = import::preview(
+        &json!({
+            "bookSourceUrl":"https://example.org/compat","bookSourceName":"旧导出",
+            "bookSourceType":"0","lastUpdateTime":"9223372036854775000",
+            "ruleSearch":[],"ruleToc":"","ruleBookInfo":"{\"name\":\"h1@text\"}",
+            "ruleContent":{"content":"#content@text","replaceRegex":[]}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let input: SourceInput =
+        serde_json::from_value(json!({"definition":preview["sources"][0]})).unwrap();
+    save(&database, input).await;
+    let restored = database.sources().unwrap().remove(0).definition;
+    assert_eq!(restored.last_update_time, Some(9223372036854775000));
+    assert_eq!(restored.rule_book_info.unwrap()["name"], "h1@text");
+    assert_eq!(restored.rule_content.unwrap()["content"], "#content@text");
+    assert!(restored.rule_search.is_none() && restored.rule_toc.is_none());
+}
+
+#[tokio::test]
+async fn batch_import_reports_invalid_sources_without_losing_valid_ones() {
+    let invalid = json!({"bookSourceName":"缺少地址源"});
+    let invalid_type = json!({"bookSourceUrl":"https://example.org/type","bookSourceName":"类型错误源","enabled":"yes"});
+    let valid = json!({"bookSourceUrl":"https://example.org/good","bookSourceName":"有效源"});
+    let preview =
+        import::preview(&json!({"sources":[invalid,valid,invalid_type]}).to_string()).unwrap();
+    assert_eq!(preview["sources"].as_array().unwrap().len(), 1);
+    let errors = preview["errors"].as_array().unwrap();
+    assert_eq!(errors.len(), 2);
+    assert!(errors[0]
+        .as_str()
+        .unwrap()
+        .contains("缺少地址源：源定义缺少 bookSourceUrl"));
+    assert!(errors[1].as_str().unwrap().contains("类型错误源"));
+    assert!(import::preview(&invalid.to_string())
+        .unwrap_err()
+        .contains("缺少地址源"));
+    assert!(import::preview("[]").is_err());
+    let root = tempfile::tempdir().unwrap();
+    let database = Database::new(root.path()).unwrap();
+    save(
+        &database,
+        serde_json::from_value(json!({"definition":preview["sources"][0]})).unwrap(),
+    )
+    .await;
+    assert_eq!(
+        database.sources().unwrap()[0].definition.book_source_name,
+        "有效源"
+    );
+}
+
+#[tokio::test]
+async fn replacement_arrays_keep_order_and_captures_after_database_roundtrip() {
+    let root = tempfile::tempdir().unwrap();
+    let database = Database::new(root.path()).unwrap();
+    for (i, rules) in [
+        json!([["a", "b"], ["(b)", "$1c"]]),
+        json!([{"regex":"x","replacement":""}]),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let preview = import::preview(
+            &json!({"bookSourceUrl":format!("https://example.org/{i}"),
+            "ruleContent":{"content":"#content@text","replaceRegex":rules}})
+            .to_string(),
+        )
+        .unwrap();
+        assert!(preview["errors"].as_array().unwrap().is_empty());
+        let input: SourceInput =
+            serde_json::from_value(json!({"definition":preview["sources"][0]})).unwrap();
+        save(&database, input).await;
+        let definition = database
+            .sources()
+            .unwrap()
+            .into_iter()
+            .find(|s| s.definition.book_source_url.ends_with(&format!("/{i}")))
+            .unwrap()
+            .definition;
+        let restored: Value =
+            serde_json::from_str(&definition.rule_content.unwrap()["replaceRegex"]).unwrap();
+        assert_eq!(restored, rules);
+    }
+}

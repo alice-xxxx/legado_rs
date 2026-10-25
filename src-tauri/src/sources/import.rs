@@ -27,17 +27,17 @@ pub(crate) fn is_document(value: &Value) -> bool {
     }
 }
 /// 同时接受单源、源数组和常用导出容器。
-fn collect(value: Value, output: &mut Vec<Value>) -> Result<(), String> {
+fn collect(value: Value, output: &mut Vec<Value>) {
     match value {
         Value::Array(values) => {
             for value in values {
-                collect(value, output)?
+                collect(value, output)
             }
         }
-        Value::String(text) => collect(
-            serde_json::from_str(&text).map_err(|e| format!("源 JSON 格式错误：{e}"))?,
-            output,
-        )?,
+        Value::String(text) => match serde_json::from_str(&text) {
+            Ok(value) => collect(value, output),
+            Err(_) => output.push(Value::String(text)),
+        },
         Value::Object(mut map) => {
             if !map.contains_key("bookSourceUrl")
                 && !map.contains_key("sourceUrl")
@@ -50,11 +50,10 @@ fn collect(value: Value, output: &mut Vec<Value>) -> Result<(), String> {
                     return collect(map.remove(key).unwrap(), output);
                 }
             }
-            output.push(normalize(Value::Object(map))?);
+            output.push(Value::Object(map));
         }
-        _ => return Err("源内容必须是对象或数组".into()),
+        value => output.push(value),
     }
-    Ok(())
 }
 pub(crate) fn preview(text: &str) -> Result<Value, String> {
     if text.len() > MAX_BYTES {
@@ -63,15 +62,29 @@ pub(crate) fn preview(text: &str) -> Result<Value, String> {
     let value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
         .map_err(|e| format!("源 JSON 格式错误：{e}"))?;
     let mut records = Vec::new();
-    collect(value, &mut records)?;
+    collect(value, &mut records);
     if records.is_empty() {
         return Err("没有可导入的源".into());
     }
-    for record in &records {
-        serde_json::from_value::<SourceDefinition>(record.clone())
-            .map_err(|e| format!("源定义字段无效：{e}"))?;
+    let mut sources = Vec::new();
+    let mut errors = Vec::new();
+    for (index, record) in records.into_iter().enumerate() {
+        let name = text_at(&record, &["bookSourceName", "sourceName", "bookSourceUrl"])
+            .unwrap_or_else(|| format!("第 {} 个源", index + 1));
+        let result = normalize(record).and_then(|record| {
+            serde_json::from_value::<SourceDefinition>(record.clone())
+                .map_err(|e| format!("源定义字段无效：{e}"))?;
+            Ok(record.to_string())
+        });
+        match result {
+            Ok(source) => sources.push(source),
+            Err(error) => errors.push(format!("{name}：{error}")),
+        }
     }
-    Ok(json!({"sources":records.into_iter().map(|v|v.to_string()).collect::<Vec<_>>()}))
+    if sources.is_empty() {
+        return Err(errors.join("\n"));
+    }
+    Ok(json!({"sources":sources,"errors":errors}))
 }
 pub(crate) async fn resolve(input: &str) -> Result<String, String> {
     let mut pending = vec![input.to_owned()];
@@ -128,6 +141,22 @@ pub(crate) fn normalize(mut value: Value) -> Result<Value, String> {
     use tauri_plugin_source_engine::source::{is_legacy_rss_source, is_standard_feed_source};
     if !value.is_object() {
         return Err("源定义必须是 JSON 对象".into());
+    }
+    // 源仓库常把长整数作为字符串导出，保持整数精度并兼容原协议。
+    for field in [
+        "bookSourceType",
+        "lastUpdateTime",
+        "respondTime",
+        "weight",
+        "exploreStyle",
+    ] {
+        if let Some(text) = value[field].as_str() {
+            let number = text
+                .trim()
+                .parse::<i64>()
+                .map_err(|_| format!("源字段 {field} 必须是整数"))?;
+            value[field] = json!(number);
+        }
     }
     if is_legacy_rss_source(&value) {
         let original = value.clone();
@@ -196,5 +225,32 @@ pub(crate) fn normalize(mut value: Value) -> Result<Value, String> {
     let name = text_at(&value, &["bookSourceName"]).unwrap_or_else(|| url.clone());
     value["bookSourceUrl"] = json!(url);
     value["bookSourceName"] = json!(name);
+    // 与引擎的规则双形态解析一致：对象或对象 JSON 字符串，其余容器视为未配置。
+    for field in [
+        "ruleSearch",
+        "ruleExplore",
+        "ruleBookInfo",
+        "ruleToc",
+        "ruleContent",
+        "ruleReview",
+    ] {
+        let Some(mut rule) = value.get(field).cloned() else {
+            continue;
+        };
+        if let Some(text) = rule.as_str() {
+            rule = serde_json::from_str(text).unwrap_or(Value::Null);
+        }
+        if let Some(entries) = rule.as_object_mut() {
+            entries.retain(|_, v| !v.is_null() && !v.as_array().is_some_and(Vec::is_empty));
+            for v in entries.values_mut() {
+                if !v.is_string() {
+                    *v = Value::String(v.to_string());
+                }
+            }
+        } else {
+            rule = Value::Null;
+        }
+        value[field] = rule;
+    }
     Ok(value)
 }

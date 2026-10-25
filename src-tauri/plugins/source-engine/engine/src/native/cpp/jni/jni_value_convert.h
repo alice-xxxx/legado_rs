@@ -45,7 +45,9 @@ public:
      *
      * 返回的 JSValue 需调用方 FreeValue。
      */
-    static JSValue fromJavaObject(JSContext *ctx, JNIEnv *env, jobject javaObj);
+    static JSValue fromJavaObject(JSContext *ctx, JNIEnv *env, jobject javaObj,
+                                  JSValueConst receiver = JS_UNDEFINED);
+    static JSValue fromCollectionElement(JSContext *ctx, JNIEnv *env, jobject javaObj);
 
     /**
      * 获取 JSValue 的类型标签 (供 Java 侧 getTypeTag)。

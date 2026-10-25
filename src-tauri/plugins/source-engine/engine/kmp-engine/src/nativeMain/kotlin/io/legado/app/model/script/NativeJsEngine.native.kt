@@ -274,14 +274,14 @@ object NativeJsEngine : JsEngine {
      * 整体串行化在 [compilerLock] 内 (对齐 JVM compile 的 synchronized)。
      */
     override fun compile(script: String): JsCompiledScript = synchronized(compilerLock) {
-        compileToBytecode(script, getCompilerCtx(), "<compile>")
+        compileToBytecode(RhinoSyntax.normalize(script), getCompilerCtx(), "<compile>")
     }
 
     /** 在指定 scope 上编译 (复用 scope 的 ctx, 符号解析一致, 对齐 JVM compile(script, scope))。 */
     override fun compile(script: String, scope: JsScope): JsCompiledScript {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.compile requires NativeJsScope, got ${scope::class}")
-        return compileToBytecode(script, nativeScope.ctx!!, "<compile>")
+        return compileToBytecode(RhinoSyntax.normalize(script), nativeScope.ctx!!, "<compile>")
     }
 
     /**
@@ -359,7 +359,7 @@ object NativeJsEngine : JsEngine {
      * - 已知限制: user JS 顶层 return 落在 eval 里, 报 "Illegal return statement"。
      */
     override fun wrapJsForEval(jsStr: String): String {
-        val jsLiteral = escapeJsString(jsStr)
+        val jsLiteral = escapeJsString(RhinoSyntax.normalize(jsStr))
         return "(function(){with(__currentBindings()){return eval($jsLiteral);}})()"
     }
 

@@ -266,6 +266,8 @@ pub struct LoginField {
     pub r#type: String,
     pub password: bool,
     pub choices: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub initial_value: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

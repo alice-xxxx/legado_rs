@@ -52,6 +52,7 @@ final class SourceBrowser {
         }
         page.seed(seed.toString(),()->{
             if(page.offline)page.view.loadDataWithBaseURL(page.target,"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:\">"+input.optString("html"),"text/html","UTF-8",null);
+            else if(page.interactive&&!input.optString("html").isEmpty())page.view.loadDataWithBaseURL(page.target,input.optString("html"),"text/html","UTF-8",null);
             else page.view.loadUrl(page.target,requestHeaders);
         });
         if(page.interactive){page.dialog.show();if(!input.optBoolean("waitForResult",true))page.resolve(page.response("",page.target));}

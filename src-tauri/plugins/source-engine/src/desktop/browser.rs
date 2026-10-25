@@ -170,13 +170,26 @@ pub(crate) fn render(request: Request) -> Result<Response> {
     let send_close = send.clone();
     let ready = Arc::new(AtomicBool::new(false));
     let ready_page = ready.clone();
-    let html=serde_json::to_string(&format!("<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:\"><base href=\"{}\">{}",target.as_str().replace('&',"&amp;").replace('"',"&quot;"),request.html)).map_err(|e|e.to_string())?;
+    let offline = request.mode == Mode::Offline;
+    let inline = request.mode == Mode::Interactive && !request.html.is_empty();
+    let content = if offline {
+        format!(
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:\">{}",
+            request.html
+        )
+    } else {
+        request.html.clone()
+    };
+    let html = serde_json::to_string(&format!(
+        "<base href=\"{}\">{content}",
+        target.as_str().replace('&', "&amp;").replace('"', "&quot;")
+    ))
+    .map_err(|e| e.to_string())?;
     let script = serde_json::to_string(&request.java_script).map_err(|e| e.to_string())?;
     let callback_js = serde_json::to_string(&callback).unwrap();
-    let offline = request.mode == Mode::Offline;
     let delay = request.delay_time_ms;
     // 分块导航避免把整页内容塞进受长度限制的单个 URL。
-    let evaluate = format!(
+    let mut evaluate = format!(
         r#"(async()=>{{try{{{prepare}await new Promise(r=>setTimeout(r,{delay}));let value={script} ? await (0,eval)({script}) : document.documentElement.outerHTML;let result=JSON.stringify({{body:String(value??''),finalUrl:location.href}});send(result);}}catch(e){{send(JSON.stringify({{error:String(e)}}));}}function send(value){{const data=btoa(unescape(encodeURIComponent(value)));let index=0;window.__foliverNext=()=>{{const chunk=data.slice(index,index+60000);index+=60000;location.replace({callback_js}+'?done='+(index>=data.length?'1':'0')+'&chunk='+encodeURIComponent(chunk));}};window.__foliverNext();}}}})()"#,
         prepare = if offline {
             format!("document.open();document.write({html});document.close();")
@@ -184,6 +197,16 @@ pub(crate) fn render(request: Request) -> Result<Response> {
             String::new()
         }
     );
+    let interactive = request.mode == Mode::Interactive;
+    if interactive && !request.wait_for_result {
+        evaluate.clear();
+    } else if interactive {
+        let snapshot = evaluate;
+        evaluate = format!(
+            r#"(()=>{{let previous=document.getElementById('__foliverComplete');if(previous)previous.remove();let done=document.createElement('button');done.id='__foliverComplete';done.textContent='完成验证';done.style.cssText='position:fixed;right:16px;bottom:16px;z-index:2147483647;padding:12px 20px;background:#6654db;color:white;border:0;border-radius:8px;cursor:pointer';done.onclick=()=>{{done.remove();{snapshot}}};(document.body||document.documentElement).append(done);}})()"#
+        );
+    }
+    let inline_page = format!("document.open();document.write({html});document.close();{evaluate}");
     let mut builder = WebviewWindowBuilder::new(
         app()?,
         format!("source-browser-{}", uuid::Uuid::new_v4().simple()),
@@ -211,13 +234,21 @@ pub(crate) fn render(request: Request) -> Result<Response> {
         if payload.event() != PageLoadEvent::Finished {
             return;
         }
+        if inline && payload.url().as_str() == "about:blank" {
+            if !ready_page.swap(true, Ordering::SeqCst) {
+                let _ = window.eval(&inline_page);
+            }
+            return;
+        }
         if !offline && payload.url().as_str() == "about:blank" {
             return;
         }
-        if ready_page.swap(true, Ordering::SeqCst) {
+        if !interactive && ready_page.swap(true, Ordering::SeqCst) {
             return;
         }
-        let _ = window.eval(&evaluate);
+        if !evaluate.is_empty() {
+            let _ = window.eval(&evaluate);
+        }
     })
     .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny);
     if let Some(header) = request
@@ -234,7 +265,7 @@ pub(crate) fn render(request: Request) -> Result<Response> {
         }
     });
     let result = (|| {
-        if !offline {
+        if !offline && !inline {
             for header in &request.headers {
                 if header.name.eq_ignore_ascii_case("cookie") {
                     seed(&window, &target, &header.value)?;
@@ -258,7 +289,7 @@ pub(crate) fn render(request: Request) -> Result<Response> {
                 cookie_header: String::new(),
             });
         }
-        let until = Instant::now() + Duration::from_secs(45);
+        let until = Instant::now() + Duration::from_secs(if interactive { 600 } else { 45 });
         let mut data = String::new();
         loop {
             if request

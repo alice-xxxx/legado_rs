@@ -3,10 +3,19 @@ package io.legado.sourceengine.host
 
 import kotlinx.cinterop.*
 import io.foliver.sourceengine.ffi.*
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Runnable
+import kotlin.coroutines.CoroutineContext
 
 @kotlin.native.concurrent.ThreadLocal private var local:SourceEngineHost?=null
 internal actual fun currentHost()=local
 internal actual fun setHost(host:SourceEngineHost?){local=host}
+// Native 没有 JVM 的 ThreadContextElement，恢复调度片段自身的线程状态。
+internal actual fun hostContext(host:SourceEngineHost,dispatcher:CoroutineDispatcher):CoroutineContext=object:CoroutineDispatcher(){
+    override fun dispatch(context:CoroutineContext,block:Runnable){
+        dispatcher.dispatch(context,Runnable{SourceEngineHostRegistry.onThread(host){block.run()}})
+    }
+}
 internal actual fun sourceExecutionCancelled(id:String)=foliver_source_cancelled(id)!=0
 private fun invoke(value:String,call:(String?)->CPointer<ByteVar>?):String{
     val result=call(value)?:error("原生能力未返回结果")

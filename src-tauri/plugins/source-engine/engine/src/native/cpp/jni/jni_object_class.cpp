@@ -265,7 +265,7 @@ namespace {
                 if (elem) env->DeleteLocalRef(elem);
                 return false;
             }
-            *out = JniValueConvert::fromJavaObject(ctx, env, elem);
+            *out = JniValueConvert::fromCollectionElement(ctx, env, elem);
             if (elem) env->DeleteLocalRef(elem);
             return true;
         }
@@ -302,7 +302,7 @@ namespace {
                 if (elem) env->DeleteLocalRef(elem);
                 return false;
             }
-            *out = JniValueConvert::fromJavaObject(ctx, env, elem);
+            *out = JniValueConvert::fromCollectionElement(ctx, env, elem);
             if (elem) env->DeleteLocalRef(elem);
             return true;
         }
@@ -493,7 +493,7 @@ namespace {
                 return JS_ThrowInternalError(ctx, "Array.get threw");
             }
             JSValue args[3] = {
-                    JniValueConvert::fromJavaObject(ctx, env, element),
+                    JniValueConvert::fromCollectionElement(ctx, env, element),
                     JS_NewInt32(ctx, i),
                     JS_DupValue(ctx, this_val)
             };
@@ -558,7 +558,7 @@ namespace {
                     if (elem) env->DeleteLocalRef(elem);
                     continue;
                 }
-                JSValue elemVal = JniValueConvert::fromJavaObject(ctx, env, elem);
+                JSValue elemVal = JniValueConvert::fromCollectionElement(ctx, env, elem);
                 JS_SetPropertyUint32(ctx, arr, jsIndex++, elemVal);
                 if (elem) env->DeleteLocalRef(elem);
             }
@@ -583,7 +583,7 @@ namespace {
                     if (elem) env->DeleteLocalRef(elem);
                     continue;
                 }
-                JSValue elemVal = JniValueConvert::fromJavaObject(ctx, env, elem);
+                JSValue elemVal = JniValueConvert::fromCollectionElement(ctx, env, elem);
                 JS_SetPropertyUint32(ctx, arr, jsIndex++, elemVal);
                 if (elem) env->DeleteLocalRef(elem);
             }
@@ -658,6 +658,8 @@ JSClassID JavaObjectClass::init(JSRuntime *rt, JavaVM *jvm) {
 }
 
 JSClassID JavaObjectClass::getClassId() { return classId; }
+
+bool JavaObjectClass::isSequence(JNIEnv *env, jobject javaObj) { return isJavaListOrArray(env, javaObj); }
 
 void JavaObjectClass::unregisterRuntime(JSRuntime *rt) {
     if (!rt) return;

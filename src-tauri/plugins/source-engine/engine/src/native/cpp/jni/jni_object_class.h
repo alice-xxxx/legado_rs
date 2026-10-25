@@ -30,6 +30,7 @@ public:
     static JSValue wrap(JSContext *ctx, JNIEnv *env, jobject javaObj);
 
     static bool isInstance(JSContext *ctx, JSValueConst val);
+    static bool isSequence(JNIEnv *env, jobject javaObj);
 
     // 取出 jobject (不转移引用)。
     static jobject getJavaObject(JSContext *ctx, JSValueConst val);

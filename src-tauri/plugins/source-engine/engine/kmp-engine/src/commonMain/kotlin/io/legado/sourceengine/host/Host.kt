@@ -23,12 +23,11 @@ object SourceEngineHostRegistry {
     internal fun <T> onThread(host:SourceEngineHost,block:()->T):T {
         val old=currentHost();setHost(host);return try{block()}finally{setHost(old)}
     }
-    internal suspend fun <T> withHost(host:NativeHost,block:suspend()->T):T=withContext(object:CoroutineDispatcher(){
-        override fun dispatch(context:CoroutineContext,block:Runnable){lane.dispatch(context,Runnable{onThread(host){block.run()}})}
-    }+SourceEngineHostContext(host)){try{block()}finally{host.imageScope.close()}}
+    internal suspend fun <T> withHost(host:NativeHost,block:suspend()->T):T=withContext(hostContext(host,lane)+SourceEngineHostContext(host)){try{block()}finally{host.imageScope.close()}}
 }
 internal expect fun currentHost():SourceEngineHost?
 internal expect fun setHost(host:SourceEngineHost?)
+internal expect fun hostContext(host:SourceEngineHost,dispatcher:CoroutineDispatcher):CoroutineContext
 internal expect fun sourceExecutionCancelled(id:String):Boolean
 
 /** 每项原生能力各自实现，不使用事件总线。 */

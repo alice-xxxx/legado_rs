@@ -194,11 +194,12 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceImportBusy.value = true;
     try {
-      if (!await importSourceDefinitionsFrom({ kind: "local" })) return;
+      const result = await importSourceDefinitionsFrom({ kind: "local" });
+      if (!result) return;
       if (revision !== getRestoreFrontendRevision()) return;
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportOpen.value = false;
-      notify("源已导入。");
+      notifySourceImport(result);
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
       notify(`源导入失败：${errorText(error)}`, "error");
@@ -214,18 +215,25 @@ export function useSourceManagementActions(options: SourceManagementOptions) {
     const revision = getRestoreFrontendRevision();
     sourceImportBusy.value = true;
     try {
-      await importSourceDefinitionsFrom({ kind: "url", url });
+      const result = await importSourceDefinitionsFrom({ kind: "url", url });
+      if (!result) return;
       if (revision !== getRestoreFrontendRevision()) return;
       selectedSourceIds.value = bookSourceCandidates.value.map((source) => source.id);
       sourceImportUrl.value = "";
       sourceImportOpen.value = false;
-      notify("源已从链接导入。");
+      notifySourceImport(result);
     } catch (error) {
       if (revision !== getRestoreFrontendRevision()) return;
       notify(`链接导入源失败：${errorText(error)}`, "error");
     } finally {
       sourceImportBusy.value = false;
     }
+  }
+
+  function notifySourceImport(result: { count: number; errors: string[] }): void {
+    const errors = result.errors;
+    notify(`已导入 ${result.count} 个源。${errors.length ? `另有 ${errors.length} 个未导入：\n${errors.join("\n")}` : ""}`,
+      errors.length ? "error" : "success");
   }
 
   async function exportSelectedSources(): Promise<void> {

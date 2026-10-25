@@ -8,7 +8,11 @@ data class RowUi(
     var type: String = "text",
     var action: String? = null,
     var style: FlexChildStyle? = null,
-    var chars: List<String>? = null
+    var chars: List<String>? = null,
+    @kotlinx.serialization.SerialName("default")
+    @Serializable(with = io.legado.app.data.entities.RawJsonStringSerializer::class)
+    var defaultValue: String? = null,
+    var viewName: String? = null
 ) {
 
     @Suppress("ConstPropertyName")

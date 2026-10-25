@@ -54,6 +54,8 @@ final class SourceBrowser {
                     if let rules=rules{page.web.configuration.userContentController.add(rules)}
                     page.web.loadHTMLString(request.html,baseURL:page.target)
                 }
+            }else if request.mode=="INTERACTIVE_PAGE" && !request.html.isEmpty{
+                page.web.loadHTMLString(request.html,baseURL:page.target)
             }else{
                 var input=URLRequest(url:page.target);for header in request.headers where header.name.lowercased() != "cookie"{input.setValue(header.value,forHTTPHeaderField:header.name)}
                 page.web.load(input)

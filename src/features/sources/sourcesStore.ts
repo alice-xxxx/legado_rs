@@ -43,11 +43,11 @@ export async function saveSourceDefinition(id: string | null, json: string): Pro
     .finally(updateSources);
 }
 
-export async function importSourceDefinitionsFrom(source: ConfigurationImportSource): Promise<boolean> {
-  const document = await prepareConfigurationImport<{ sources: string[] }>("sources", source);
-  if (!document) return false;
+export async function importSourceDefinitionsFrom(source: ConfigurationImportSource) {
+  const document = await prepareConfigurationImport<{ sources: string[]; errors: string[] }>("sources", source);
+  if (!document) return null;
   await importSourceDefinitions(document.sources);
-  return true;
+  return { count: document.sources.length, errors: document.errors };
 }
 
 export async function removeSources(sourceIds: string[]): Promise<void> {

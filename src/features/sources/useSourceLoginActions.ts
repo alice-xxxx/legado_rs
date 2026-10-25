@@ -35,7 +35,7 @@ export function useSourceLoginActions({
   function makeCredentials(fields: SourceLoginField[], previous: Record<string, string> = {}) {
     return Object.fromEntries(fields.map(field => [field.name,
       Object.prototype.hasOwnProperty.call(previous, field.name) ? previous[field.name]
-        : field.type === "toggle" ? "false" : field.choices?.[0] ?? "",
+        : field.initialValue ?? field.choices?.[0] ?? (field.type === "toggle" ? "false" : ""),
     ]));
   }
 
@@ -65,7 +65,10 @@ export function useSourceLoginActions({
     const source = sourceLoginTarget.value;
     if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     const current = generation;
-    sourceLoginBusy.value = true;
+    const input = action.type === "submit" && action.button !== undefined &&
+      sourceLoginForm.value?.mode === "form" &&
+      sourceLoginForm.value.layout?.some(row => row.kind === "field" && row.id === action.button);
+    if (!input) sourceLoginBusy.value = true;
     sourceLoginFormError.value = "";
     sourceLoginFeedback.value = "";
     try {
@@ -77,7 +80,7 @@ export function useSourceLoginActions({
     } catch (error) {
       if (current === generation) sourceLoginFormError.value = errorText(error);
     } finally {
-      if (current === generation) {
+      if (!input && current === generation) {
         sourceLoginBusy.value = false;
         if (action.type === "submit" && sourceLoginForm.value?.mode === "web") sourceLoginWebOpen.value = false;
       }
@@ -102,7 +105,7 @@ export function useSourceLoginActions({
     const source = sourceLoginTarget.value;
     if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他源也可能需要重新登录。`)) return;
-    sourceLoginCredentials.value = makeCredentials(sourceLoginForm.value?.mode === "form" ? sourceLoginForm.value.fields : []);
+    sourceLoginCredentials.value = {};
     await run({ type: "clear" });
   }
 

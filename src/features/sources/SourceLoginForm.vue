@@ -35,13 +35,14 @@ function rowStyle(row: SourceLoginLayoutRow) {
   const height = Math.max(1, Math.min(12, row.rows));
   return { gridColumn: `span ${12 / cols}`, gridRow: `span ${height}` };
 }
-function fieldId(name: string): string { return `${instanceId}-${name}`; }
-function change(name: string, value: string): void {
+function fieldId(name: string, index: number): string { return `${instanceId}-${index}-${name}`; }
+function change(name: string, value: string, actionId?: number): void {
   if (props.disabled) return;
   const next = Object.assign(Object.create(null), currentValues) as Record<string, string>;
   next[name] = value;
   currentValues = next;
   emit("update:modelValue", next);
+  if (actionId !== undefined) execute(actionId);
 }
 function togglePassword(name: string): void {
   visiblePasswords.value = visiblePasswords.value.includes(name)
@@ -61,24 +62,25 @@ function execute(actionId?: number): void {
         <button v-else-if="row.action" type="button" class="source-login-rule-button" :disabled="disabled"
           @click="execute(row.action.id)">{{ row.action.label }}</button>
         <template v-else-if="row.field">
-          <label v-if="row.field.type === 'toggle'" class="source-login-toggle" :class="{ 'is-disabled': disabled }" :for="fieldId(row.field.name)">
+          <label v-if="row.field.type === 'toggle'" class="source-login-toggle" :class="{ 'is-disabled': disabled }" :for="fieldId(row.field.name, index)">
             <span>{{ row.field.label }}</span>
-            <input :id="fieldId(row.field.name)" type="checkbox" :disabled="disabled"
-              :checked="modelValue[row.field.name] === 'true'"
-              @change="change(row.field.name, ($event.target as HTMLInputElement).checked ? 'true' : 'false')" />
+            <input :id="fieldId(row.field.name, index)" type="checkbox" :disabled="disabled"
+              :checked="modelValue[row.field.name] === (row.field.choices?.[1] ?? 'true')"
+              @change="change(row.field.name, ($event.target as HTMLInputElement).checked ? (row.field.choices?.[1] ?? 'true') : (row.field.choices?.[0] ?? 'false'), row.kind === 'field' ? row.id : undefined)" />
             <span class="source-login-toggle-track" aria-hidden="true"></span>
           </label>
           <template v-else>
-            <label class="source-login-label" :for="fieldId(row.field.name)">{{ row.field.label }}</label>
-            <select v-if="row.field.type === 'select'" :id="fieldId(row.field.name)" :value="modelValue[row.field.name] ?? ''"
-              :disabled="disabled" @change="change(row.field.name, ($event.target as HTMLSelectElement).value)">
+            <label class="source-login-label" :for="fieldId(row.field.name, index)">{{ row.field.label }}</label>
+            <select v-if="row.field.type === 'select'" :id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''"
+              :disabled="disabled" @change="change(row.field.name, ($event.target as HTMLSelectElement).value, row.kind === 'field' ? row.id : undefined)">
               <option v-for="choice in row.field.choices ?? []" :key="choice" :value="choice">{{ choice }}</option>
             </select>
             <div v-else-if="row.field.password || row.field.type === 'password'" class="source-login-password">
-              <input :id="fieldId(row.field.name)" :value="modelValue[row.field.name] ?? ''"
+              <input :id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''"
                 :type="visiblePasswords.includes(row.field.name) ? 'text' : 'password'" :disabled="disabled"
                 autocomplete="new-password" maxlength="4096"
-                @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
+                @input="change(row.field.name, ($event.target as HTMLInputElement).value)"
+                @change="execute(row.kind === 'field' ? row.id : undefined)" />
               <button type="button" :aria-label="visiblePasswords.includes(row.field.name) ? '隐藏密码' : '显示密码'"
                 :aria-pressed="visiblePasswords.includes(row.field.name)" :disabled="disabled" @click="togglePassword(row.field.name)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -87,12 +89,14 @@ function execute(actionId?: number): void {
                 </svg>
               </button>
             </div>
-            <textarea v-else-if="row.rows > 1" :id="fieldId(row.field.name)" :value="modelValue[row.field.name] ?? ''"
+            <textarea v-else-if="row.rows > 1" :id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''"
               :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off"
-              @input="change(row.field.name, ($event.target as HTMLTextAreaElement).value)" />
-            <input v-else :id="fieldId(row.field.name)" :value="modelValue[row.field.name] ?? ''" type="text"
+              @input="change(row.field.name, ($event.target as HTMLTextAreaElement).value)"
+                @change="execute(row.kind === 'field' ? row.id : undefined)" />
+            <input v-else :id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" type="text"
               :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off" autocapitalize="off"
-              @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
+              @input="change(row.field.name, ($event.target as HTMLInputElement).value)"
+                @change="execute(row.kind === 'field' ? row.id : undefined)" />
           </template>
         </template>
       </div>

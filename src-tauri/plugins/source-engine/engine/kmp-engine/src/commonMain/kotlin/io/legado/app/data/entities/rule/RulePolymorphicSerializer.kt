@@ -55,6 +55,14 @@ class RulePolymorphicSerializer<T : Any>(
         encoder.encodeSerializableValue(tSerializer, value)
     }
 
+    // 旧 Gson 对所有规则字符串字段统一接受标量、对象和数组。
+    private fun decodeObject(value:JsonObject):T = KS_JSON.decodeFromJsonElement(tSerializer,
+        JsonObject(value.mapValues{(_,entry)->when(entry){
+            is JsonNull -> entry
+            is JsonPrimitive -> if(entry.isString)entry else JsonPrimitive(entry.content)
+            else -> JsonPrimitive(entry.toString())
+        }}))
+
     override fun deserialize(decoder: Decoder): T? {
         require(decoder is JsonDecoder) {
             "RulePolymorphicSerializer 仅支持 JSON 格式，当前 Decoder 非 JsonDecoder"
@@ -62,7 +70,7 @@ class RulePolymorphicSerializer<T : Any>(
         val element = decoder.decodeJsonElement()
         return when (element) {
             is JsonNull -> null
-            is JsonObject -> KS_JSON.decodeFromJsonElement(tSerializer, element)
+            is JsonObject -> decodeObject(element)
             is JsonPrimitive -> {
                 // 字符串形态：parse 字符串为 JsonElement，若为 JsonObject 则反序列化，否则返回 null
                 val parsed = try {
@@ -71,7 +79,7 @@ class RulePolymorphicSerializer<T : Any>(
                     null
                 }
                 if (parsed is JsonObject) {
-                    KS_JSON.decodeFromJsonElement(tSerializer, parsed)
+                    decodeObject(parsed)
                 } else {
                     null
                 }

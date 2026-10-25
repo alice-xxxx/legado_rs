@@ -124,7 +124,7 @@ object QuickJsEngine {
         return withEvalContext(scope, coroutineContext) {
             try {
                 syncDangerousApiIfNeeded(scope)
-                val result = QuickJsNative.nativeEval(scope.ctxPtr, js)
+                val result = QuickJsNative.nativeEval(scope.ctxPtr, io.legado.app.model.script.RhinoSyntax.normalize(js))
                 unwrapReturnValue(result)
             } catch (e: JsNativeException) {
                 // 保留 cause: JsNativeException 的 Java/JNI 调用栈用于区分 JS 脚本问题
@@ -369,7 +369,7 @@ object QuickJsEngine {
     fun compile(script: String): CompiledScript = synchronized(this) {
         val ctxPtr = getCompilerCtx()
         val bytecode = try {
-            QuickJsNative.nativeCompile(ctxPtr, script)
+            QuickJsNative.nativeCompile(ctxPtr, io.legado.app.model.script.RhinoSyntax.normalize(script))
         } catch (e: JsNativeException) {
             // native 层编译失败 (如语法错误) 会抛 JsNativeException 携带实际错误信息,
             // 转为 ScriptException 保持与 eval 路径一致的异常类型; 保留 cause 便于排查引擎侧问题
@@ -392,7 +392,7 @@ object QuickJsEngine {
         val previousThreadContext = QuickJsContext.threadLocalContext.get()
         QuickJsContext.threadLocalContext.set(scope)
         try {
-            val bytecode = QuickJsNative.nativeCompile(scope.ctxPtr, script)
+            val bytecode = QuickJsNative.nativeCompile(scope.ctxPtr, io.legado.app.model.script.RhinoSyntax.normalize(script))
                 ?: throw ScriptException("Compile failed", null)
             return CompiledScript(bytecode)
         } finally {
@@ -639,7 +639,7 @@ object QuickJsEngine {
      * 用于复用 sharedScope 的场景; jsLib 本身在 topScope 上定义, 不需要包裹。
      */
     fun wrapJsForEval(jsStr: String): String {
-        val jsLiteral = JsStringUtils.escape(jsStr)
+        val jsLiteral = JsStringUtils.escape(io.legado.app.model.script.RhinoSyntax.normalize(jsStr))
         return "(function(){with(__currentBindings()){return eval($jsLiteral);}})()"
     }
 

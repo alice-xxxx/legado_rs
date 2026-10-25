@@ -628,6 +628,8 @@ interface JsExtensionsCommon {
         refreshUi("explore")
     }
 
+    fun reLoginView() = refreshUi("login")
+
     fun upLoginData(data: Map<String, Any?>) {
         JsUiProviders.impl?.updateLoginData(data.mapValues { it.value?.toString().orEmpty() })
         refreshUi("login")
@@ -818,6 +820,10 @@ interface JsExtensionsCommon {
      * 底层走 [CookieStoreProviders] (已下沉 commonMain, app 端注册 AndroidCookieStoreProvider
      * 委托 CookieStore)。未注册时返回空串, 与原 app 端 CookieStore.getCookie 等价。
      */
+    fun clearCookie(tag: String) {
+        CookieStoreProviders.get()?.removeCookieStrict(tag)
+    }
+
     fun getCookie(tag: String): String {
         return getCookie(tag, null)
     }

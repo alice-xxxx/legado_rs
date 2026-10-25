@@ -331,7 +331,15 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
     return jstr;
 }
 
-JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject javaObj) {
+// Java 集合中的字符串保留 Java 方法，普通返回值仍转换成 JS 字符串。
+JSValue JniValueConvert::fromCollectionElement(JSContext *ctx, JNIEnv *env, jobject javaObj) {
+    ensureClassCache(env);
+    if (javaObj && env->IsInstanceOf(javaObj, g_StringCls)) return JavaObjectClass::wrap(ctx, env, javaObj);
+    return fromJavaObject(ctx, env, javaObj);
+}
+
+JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject javaObj,
+                                      JSValueConst receiver) {
     ensureClassCache(env);
 
     if (javaObj == nullptr) {
@@ -405,6 +413,9 @@ JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject jav
     }
     env->DeleteLocalRef(cls);
 
+    // 只对对象复用接收者；String.toString()/valueOf() 仍须返回 JS 基本值。
+    jobject previous = JavaObjectClass::getJavaObject(ctx, receiver);
+    if (previous && env->IsSameObject(javaObj, previous)) return JS_DupValue(ctx, receiver);
     // 其他 Java 对象 -> JavaObjectClass.wrap (走 exotic trap)
     return JavaObjectClass::wrap(ctx, env, javaObj);
 }

@@ -69,7 +69,9 @@ class AnalyzeByJSoup(doc: Any) {
         if (ruleStr.isEmpty()) return textS
 
         //拆分规则
-        val sourceRule = SourceRule(ruleStr)
+        // 省略提取方式的 ID/类选择器默认取文本，属性名规则仍保持原义。
+        val selector = ruleStr.trim()
+        val sourceRule = SourceRule(if ('@' !in selector && (selector.startsWith("#") || selector.startsWith("."))) "$selector@text" else ruleStr)
 
         if (sourceRule.elementsRule.isEmpty()) {
 

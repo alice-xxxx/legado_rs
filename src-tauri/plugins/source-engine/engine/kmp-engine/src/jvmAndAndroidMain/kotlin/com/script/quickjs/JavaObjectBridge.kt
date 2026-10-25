@@ -220,22 +220,25 @@ object JavaObjectBridge {
         return handle
     }
 
-    /**
-     * 按完整类名加载 Class。
-     *
-     * @return Class 句柄(>0)或 0(类不存在或被安全名单拦截)
-     */
+    private fun scriptClass(name: String): Class<*> = try {
+        Class.forName(name, false, this.javaClass.classLoader)
+    } catch (missing: ClassNotFoundException) {
+        val alias = when (name) {
+            "android.util.Base64" -> "io.legado.sourceengine.compat.AndroidBase64"
+            "io.legado.app.model.analyzeRule.AnalyzeRule" -> "io.legado.app.model.analyzeRule.AnalyzeRuleCore"
+            else -> throw missing
+        }
+        Class.forName(alias, false, this.javaClass.classLoader)
+    }
+
+    /** 按完整类名加载 Class，返回句柄或 0（不存在或被安全名单拦截）。 */
     fun loadJavaClass(fullClassName: String, dangerousApi: Boolean): Long {
         if (!JsSecurityPolicy.isClassVisible(fullClassName, dangerousApi)) {
             return 0L
         }
         return try {
             // 处理数组类名 [Ljava.lang.String;
-            val clazz = if (fullClassName.startsWith("[")) {
-                Class.forName(fullClassName)
-            } else {
-                Class.forName(fullClassName, false, this.javaClass.classLoader)
-            }
+            val clazz = scriptClass(fullClassName)
             registerClass(clazz)
         } catch (_: ClassNotFoundException) {
             0L
@@ -276,11 +279,7 @@ object JavaObjectBridge {
             return false
         }
         return try {
-            if (fullClassName.startsWith("[")) {
-                Class.forName(fullClassName)
-            } else {
-                Class.forName(fullClassName, false, this.javaClass.classLoader)
-            }
+            scriptClass(fullClassName)
             true
         } catch (_: ClassNotFoundException) {
             false
@@ -455,6 +454,7 @@ object JavaObjectBridge {
         args: Array<Any?>,
         dangerousApi: Boolean
     ): Any? {
+        if (obj is CharSequence && methodName == "toJSON") return obj.toString()
         // JS 的默认类型转换会调用实例 valueOf()；Java 包装类同名的静态
         // valueOf(value) 不能接收这个零参数调用。返回 JS 基本值，保留有参重载。
         if (methodName == "valueOf" && args.isEmpty()) {
@@ -1003,6 +1003,7 @@ object JavaObjectBridge {
         dangerousApi: Boolean
     ): Any? {
         if (!JsSecurityPolicy.isObjectVisible(obj, dangerousApi)) return null
+        if (obj is CharSequence && fieldName == "toJSON") return METHOD_MARKER
 
         val collectionVal = getCollectionField(obj, fieldName)
         if (collectionVal != null) {

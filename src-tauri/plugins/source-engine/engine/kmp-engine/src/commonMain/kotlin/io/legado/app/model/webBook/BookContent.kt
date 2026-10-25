@@ -19,6 +19,8 @@ import io.legado.app.model.analyzeRule.AnalyzeUrlFactories
 import io.legado.app.utils.HtmlFormatter
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.mapAsync
+import io.legado.app.utils.KS_JSON
+import kotlinx.serialization.json.*
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.flow
@@ -143,7 +145,18 @@ object BookContent {
         val replaceRegex = contentRule.replaceRegex
         if (!replaceRegex.isNullOrEmpty()) {
             contentStr = contentStr.split(AppPattern.LFRegex).joinToString("\n") { it.trim() }
-            contentStr = analyzeRule.getString(replaceRegex, contentStr)
+            val replacements = if (replaceRegex.trimStart().startsWith("[")) {
+                runCatching { KS_JSON.parseToJsonElement(replaceRegex) as? JsonArray }.getOrNull()
+            } else null
+            contentStr = if (replacements == null) analyzeRule.getString(replaceRegex, contentStr)
+            else replacements.fold(contentStr) { text, entry ->
+                val pattern = (entry as? JsonArray)?.getOrNull(0) ?: (entry as? JsonObject)?.get("regex")
+                val replacement = (entry as? JsonArray)?.getOrNull(1) ?: (entry as? JsonObject)?.get("replacement")
+                require(pattern is JsonPrimitive && pattern.isString && replacement is JsonPrimitive && replacement.isString) {
+                    "正文替换项必须是 [正则, 替换文本] 或包含 regex、replacement 的对象"
+                }
+                text.replace(Regex(pattern.content), replacement.content)
+            }
             contentStr = contentStr.split(AppPattern.LFRegex).joinToString("\n") { "　　$it" }
         }
         SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "┌获取章节名称")

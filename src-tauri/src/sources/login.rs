@@ -5,7 +5,10 @@ use crate::{backup::state::Operations, support::validate_id};
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{atomic::Ordering, Arc},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
 };
 use tauri_plugin_source_engine::{
     LoginAction as EngineAction, LoginRequest, LoginWeb, SourceExecutor, SourceLoginWebCapture,
@@ -34,6 +37,7 @@ struct Session {
     cancel: CancellationToken,
     serial: Mutex<()>,
     passwords: Mutex<HashSet<String>>,
+    web_open: AtomicBool,
 }
 impl Session {
     #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -97,6 +101,7 @@ impl Login {
             cancel: CancellationToken::new(),
             serial: Mutex::new(()),
             passwords: Mutex::new(HashSet::new()),
+            web_open: AtomicBool::new(false),
         });
         let previous = active.replace(session.clone());
         drop(active);
@@ -162,11 +167,11 @@ impl Login {
             if tauri_plugin_source_engine::source::is_rss_source(&source.source) {
                 return Err("RSS 源不支持书源登录".into());
             }
-            let clearing = matches!(action, Action::Clear);
             let action = match action {
                 Action::Open => EngineAction::Open,
                 Action::Clear => {
                     self.close_browser(session.clone()).await?;
+                    session.web_open.store(false, Ordering::SeqCst);
                     EngineAction::Clear
                 }
                 Action::Submit { fields, button } => {
@@ -179,34 +184,44 @@ impl Login {
                 source: (&source.source).try_into()?,
                 action,
             };
+            let completing = session.web_open.load(Ordering::SeqCst)
+                && matches!(request.action, EngineAction::Submit { button: None, .. });
+            if completing {
+                let captured = self.capture_browser(session.clone()).await?;
+                if captured.source_revision != session.revision
+                    || captured.restore_epoch != session.epoch
+                {
+                    return Err("原生登录会话已失效".into());
+                }
+                validate_web(&captured.login_url, &captured.cookie_header)?;
+                request.action = EngineAction::ImportCookies {
+                    url: captured.login_url,
+                    cookies: captured.cookie_header,
+                };
+            }
             let mut response = self
                 .executor
                 .login(request.clone(), session.cancel.clone())
                 .await?;
-            let web = response.web.take();
-            let web_open = web.is_some() && opening;
-            if let Some(web) = web {
-                if opening {
-                    self.open_browser(session.clone(), web).await?;
-                } else if !clearing {
-                    let captured = self.capture_browser(session.clone()).await?;
-                    if captured.source_revision != session.revision
-                        || captured.restore_epoch != session.epoch
-                    {
-                        return Err("原生登录会话已失效".into());
-                    }
-                    validate_web(&captured.login_url, &captured.cookie_header)?;
-                    request.action = EngineAction::ImportCookies {
-                        url: captured.login_url,
-                        cookies: captured.cookie_header,
-                    };
-                    response = self.executor.login(request, session.cancel.clone()).await?;
-                }
+            if completing {
+                self.close_browser(session.clone()).await?;
+                session.web_open.store(false, Ordering::SeqCst);
+                request.action = EngineAction::Open;
+                response.form = self
+                    .executor
+                    .login(request, session.cancel.clone())
+                    .await?
+                    .form;
+            }
+            if let Some(web) = response.web.take() {
+                self.open_browser(session.clone(), web).await?;
+                session.web_open.store(true, Ordering::SeqCst);
                 response.form = Some(tauri_plugin_source_engine::LoginForm {
                     mode: "web".into(),
                     ..Default::default()
                 });
             }
+            let web_open = session.web_open.load(Ordering::SeqCst);
             let update = view::update(
                 source_id,
                 response,

@@ -20,7 +20,7 @@ data class ContentRule(
     var nextContentUrl: String? = null,
     var webJs: String? = null,
     var sourceRegex: String? = null,
-    var replaceRegex: String? = null, //替换规则
+    var replaceRegex: String? = null, // 文本规则或按顺序执行的替换数组
     var imageStyle: String? = null,   //默认大小居中,FULL最大宽度
     var imageDecode: String? = null, //图片bytes二次解密js, 返回解密后的bytes
     var payAction: String? = null,    //购买操作,js或者包含{{js}}的url

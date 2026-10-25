@@ -295,16 +295,10 @@ static JSValue jsMethodCallable(JSContext *ctx, JSValueConst this_val,
         JS_FreeCString(ctx, methodName);
         return exc;
     }
+    bool element = std::strcmp(methodName, "get") == 0 && JavaObjectClass::isSequence(env, javaObj);
     JS_FreeCString(ctx, methodName);
-
-    // "返回 this" 复用: sb.append/list.add 这类方法 result 与 javaObj 同一对象时,
-    // 直接 dup this_val, 省一次 wrap (NewGlobalRef + JS_NewObjectClass)。
-    if (result && env->IsSameObject(result, javaObj)) {
-        env->DeleteLocalRef(result);
-        return JS_DupValue(ctx, this_val);
-    }
-
-    JSValue ret = JniValueConvert::fromJavaObject(ctx, env, result);
+    JSValue ret = element ? JniValueConvert::fromCollectionElement(ctx, env, result)
+                          : JniValueConvert::fromJavaObject(ctx, env, result, this_val);
     if (result) env->DeleteLocalRef(result);
     return ret;
 }

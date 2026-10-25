@@ -37,6 +37,7 @@ export interface SourceLoginField {
   type: "text" | "password" | "select" | "toggle";
   password: boolean;
   choices?: string[];
+  initialValue?: string;
 }
 
 export interface SourceLoginAction {
@@ -45,7 +46,7 @@ export interface SourceLoginAction {
 }
 
 export type SourceLoginLayoutRow = (
-  { kind: "field"; name: string } |
+  { kind: "field"; name: string; id?: number } |
   { kind: "action"; id: number } |
   { kind: "title"; label: string }
 ) & { cols: number; rows: number };

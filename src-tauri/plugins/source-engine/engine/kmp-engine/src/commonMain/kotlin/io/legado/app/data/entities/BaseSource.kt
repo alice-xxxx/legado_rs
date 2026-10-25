@@ -14,6 +14,9 @@ import io.legado.app.help.source.SourceDebugLoggers
 import io.legado.app.help.source.SourceNetworkProviders
 import io.legado.app.help.source.VerificationUiProviders
 import io.legado.app.help.source.getShareScope
+import io.legado.sourceengine.host.SourceEngineHostRegistry
+import io.legado.sourceengine.host.SourceEngineHostContext
+import kotlin.coroutines.EmptyCoroutineContext
 import io.legado.app.model.script.JsBindings
 import io.legado.app.model.script.JsEngines
 import io.legado.app.model.script.buildScriptBindings
@@ -90,9 +93,9 @@ interface BaseSource : JsExtensionsCommon {
         val uiStr = loginUi ?: return null
         val json = try {
             when {
-                uiStr.startsWith("@js:") -> evalJS(uiStr.substring(4)).toString()
+                uiStr.startsWith("@js:") -> evalJS(getLoginJs().orEmpty()+"\n;"+uiStr.substring(4)).toString()
                 uiStr.startsWith("<js>") -> evalJS(
-                    uiStr.substring(4, uiStr.lastIndexOf("<"))
+                    getLoginJs().orEmpty()+"\n;"+uiStr.substring(4, uiStr.lastIndexOf("<"))
                 ).toString()
 
                 else -> uiStr
@@ -104,7 +107,7 @@ interface BaseSource : JsExtensionsCommon {
         // 复刻原 GSON.fromJsonArray<RowUi>(json).onFailure { it.printStackTraceOnDebug() }.getOrNull()
         // KS_JSON.decodeFromString 抛异常时打印 debug 并返回 null
         return try {
-            KS_JSON.decodeFromString<List<RowUi>>(json)
+            KS_JSON.decodeFromString<List<RowUi>>(io.legado.app.model.script.RhinoSyntax.json(json))
         } catch (e: Exception) {
             e.printStackTraceOnDebug()
             null
@@ -309,7 +312,8 @@ interface BaseSource : JsExtensionsCommon {
             bindings.apply(bindingsConfig)
             bindings.dangerousApi = enableDangerousApi == true
         }
-        val sharedScope = getShareScope(null, bindings)
+        val context = SourceEngineHostRegistry.current()?.let(::SourceEngineHostContext) ?: EmptyCoroutineContext
+        val sharedScope = getShareScope(context, bindings)
         // - sharedScope == null: 创建独立 scope, bindings 注入 globalThis
         // - sharedScope 路径: SharedJsScope 缓存的 topScope (ThreadLocal 线程独占),
         //   bindings 注入该 topScope 的 globalThis 后再执行, evalInSubScope 内部清理,
@@ -318,7 +322,7 @@ interface BaseSource : JsExtensionsCommon {
             val scope = JsEngines.get().getRuntimeScope(bindings)
             val wrappedJs = JsEngines.get().wrapJsForEval(jsStr)
             try {
-                JsEngines.get().eval(wrappedJs, scope, null)
+                JsEngines.get().eval(wrappedJs, scope, context)
             } finally {
                 // 无 jsLib 时创建的独立 scope 必须显式 close,
                 // 否则 native JSRuntime/JSContext 只能等 GC + PhantomReference 异步释放
@@ -326,7 +330,7 @@ interface BaseSource : JsExtensionsCommon {
             }
         } else {
             val compiled = JsEngines.get().compileForSubScope(jsStr)
-            JsEngines.get().evalInSubScope(compiled, sharedScope, bindings, null)
+            JsEngines.get().evalInSubScope(compiled, sharedScope, bindings, context)
         }
     }
 
