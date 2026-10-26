@@ -38,11 +38,7 @@ pub(crate) async fn text(input: &str, limit: usize) -> Result<String, String> {
         .timeout(Duration::from_secs(30))
         .build()
         .map_err(request_error)?;
-    let mut response = client
-        .get(target)
-        .send()
-        .await
-        .map_err(request_error)?;
+    let mut response = client.get(target).send().await.map_err(request_error)?;
     let final_url = url(response.url().as_str())?;
     if https && final_url.scheme() != "https" {
         return Err("HTTPS 导入链接不能降级为 HTTP".into());
@@ -82,7 +78,10 @@ fn request_error(error: reqwest::Error) -> String {
 mod tests {
     #[test]
     fn request_error_includes_the_underlying_cause() {
-        let error = crate::http_client::raw_builder().user_agent("\n").build().unwrap_err();
+        let error = crate::http_client::raw_builder()
+            .user_agent("\n")
+            .build()
+            .unwrap_err();
         let message = super::request_error(error);
         assert!(message.contains("builder error"));
         assert!(message.contains("failed to parse header value"));

@@ -102,13 +102,15 @@ final class SourceBrowser {
             if(evaluated||closed)return;evaluated=true;
             String script=input.optString("javaScript"),bridge=(String)view.getTag();long delay=input.optLong("delayTimeMs");
             String js="(async()=>{try{await new Promise(r=>setTimeout(r,"+delay+"));let value="+JSONObject.quote(script)+"?await(0,eval)("+JSONObject.quote(script)+"):document.documentElement.outerHTML;window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({body:String(value??''),finalUrl:location.href}));}catch(e){window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({error:String(e)}));}})()";
-            view.evaluateJavascript(js,null);
+            run(()->view.evaluateJavascript(js,null));
         }
+        // CookieManager 回调与 WebView 回调不经过插件命令的异常边界。
+        void run(Runnable action){if(closed)return;try{action.run();}catch(Exception error){close(error.toString());}}
         void seed(String header,Runnable next){
             List<String> values=new ArrayList<>();for(String pair:header.split(";"))if(pair.trim().contains("="))values.add(pair.trim()+"; Path=/");
             seed(values,0,next);
         }
-        void seed(List<String> values,int index,Runnable next){if(closed)return;if(index==values.size()){next.run();return;}cookies.setCookie(target,values.get(index),ignored->seed(values,index+1,next));}
+        void seed(List<String> values,int index,Runnable next){run(()->{if(index==values.size()){next.run();return;}cookies.setCookie(target,values.get(index),ignored->seed(values,index+1,next));});}
         String cookie(){String value=cookies.getCookie(target);return value==null?"":value;}
         JSObject response(String body,String finalUrl){JSObject result=new JSObject();try{result.put("capabilityId",input.getString("capabilityId"));result.put("finalUrl",finalUrl);result.put("body",body);result.put("cookieHeader",offline?"":cookie());}catch(JSONException error){throw new IllegalStateException(error);}return result;}
         void resolve(JSObject result){if(!returned){returned=true;invoke.resolve(result);}}
@@ -116,8 +118,9 @@ final class SourceBrowser {
             if(closed)return;closed=true;handler.removeCallbacks(timeout);handler.removeCallbacks(cancellation);pages.remove(this);
             if(login)sessions.remove(input.optString("sessionId"));
             if(!returned){returned=true;invoke.reject(error==null?"浏览器会话已结束":error);}
-            dialog.dismiss();view.stopLoading();view.destroy();
-            try{ProfileStore.getInstance().deleteProfile(profile);}catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理浏览器 profile 失败",failure);}
+            for(Runnable cleanup:new Runnable[]{dialog::dismiss,view::stopLoading,view::destroy,()->ProfileStore.getInstance().deleteProfile(profile)}){
+                try{cleanup.run();}catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理书源浏览器失败",failure);}
+            }
         }
     }
 }

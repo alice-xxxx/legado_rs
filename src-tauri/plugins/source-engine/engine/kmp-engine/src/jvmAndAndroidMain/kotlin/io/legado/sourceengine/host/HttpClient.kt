@@ -9,6 +9,7 @@ import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okio.Buffer
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -23,7 +24,7 @@ internal object HostHttpClient:OkHttpClientProvider,OkHttpProxyClientProvider {
         return OkHttpClient.Builder()
             .connectTimeout(15,TimeUnit.SECONDS).writeTimeout(15,TimeUnit.SECONDS)
             .readTimeout(15,TimeUnit.SECONDS).callTimeout(15,TimeUnit.SECONDS)
-            .addInterceptor{chain->
+            .addInterceptor{chain->try{
                 val original=chain.request()
                 val host=original.tag(SourceEngineHost::class.java)?:SourceEngineHostRegistry.current()?:error("缺少请求宿主")
                 SourceEngineHostRegistry.onThread(host){
@@ -38,7 +39,10 @@ internal object HostHttpClient:OkHttpClientProvider,OkHttpProxyClientProvider {
                     val request=if(cookies)bridge?.loadRequest(builder.build())?:builder.build() else builder.build()
                     chain.proceed(request).also{if(cookies)bridge?.saveResponse(it)}
                 }
-            }
+            }catch(error:Exception){
+                // OkHttp 会重抛非 IOException，必须在整个宿主请求链的边界转换。
+                throw if(error is IOException)error else IOException(error.message,error)
+            }}
             .addInterceptor(DecompressInterceptor)
             .addInterceptor{chain->
                 val request=chain.request()

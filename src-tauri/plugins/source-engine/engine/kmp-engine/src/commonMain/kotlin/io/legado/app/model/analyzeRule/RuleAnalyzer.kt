@@ -185,7 +185,7 @@ class RuleAnalyzer(data: String, code: Boolean = false) {
             pos = st //位置推移到筛选器处
             val next = if (queue[pos] == '[') ']' else ')' //平衡组末尾字符
 
-            if (!chompBalanced(queue[pos], next)) throw Error(
+            if (!chompBalanced(queue[pos], next)) throw IllegalArgumentException(
                 queue.substring(0, start) + "后未平衡"
             ) //拉出一个筛选器,不平衡则报错
 
@@ -242,7 +242,7 @@ class RuleAnalyzer(data: String, code: Boolean = false) {
             pos = st //位置推移到筛选器处
             val next = if (queue[pos] == '[') ']' else ')' //平衡组末尾字符
 
-            if (!chompBalanced(queue[pos], next)) throw Error(
+            if (!chompBalanced(queue[pos], next)) throw IllegalArgumentException(
                 queue.substring(0, start) + "后未平衡"
             ) //拉出一个筛选器,不平衡则报错
 
