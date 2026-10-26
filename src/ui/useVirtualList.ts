@@ -9,7 +9,8 @@ export function useVirtualList<T>(items: Readonly<Ref<readonly T[]>>, container:
   let attached: HTMLElement | null = null;
   function measure(): void {
     frame = 0;
-    if (!container.value || !list.value) return;
+    // 隐藏时保留原窗口，重新显示的第一帧即可沿用滚动位置。
+    if (!container.value || !list.value || !container.value.clientHeight) return;
     offset.value = Math.max(0, container.value.getBoundingClientRect().top - list.value.getBoundingClientRect().top);
     height.value = container.value.clientHeight;
   }

@@ -21,7 +21,7 @@ const blocked = computed(() => backupBusy.value !== null || shelfBatchRecoveryRe
 
 async function openHistoryBook(bookId: string): Promise<void> {
   if (blocked.value) return;
-  const requestId = requestBookDetailOpen({ kind: "cached-book", bookId, initialTab: "catalog" });
+  const requestId = requestBookDetailOpen({ kind: "cached-book", bookId });
   try {
     const failure = await router.push({ name: routeNames.bookDetail });
     if (failure) discardBookDetailOpenRequest(requestId);

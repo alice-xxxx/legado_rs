@@ -96,7 +96,7 @@ const {
 const currentSearchResultDetails = computed(() => searchResultDetails.value ?? {
   result: openRequest?.kind === "search-result" ? openRequest.result : null,
   bookId: openRequest && openRequest.kind !== "search-result" ? openRequest.bookId : null,
-  initialTab: openRequest && openRequest.kind !== "search-result" ? openRequest.initialTab ?? "catalog" : "info",
+  initialTab: openRequest && openRequest.kind !== "search-result" ? openRequest.initialTab ?? "info" : "info",
   error: pageResourceError.value,
 });
 const searchDetailSourceCandidates = computed(() => {
@@ -216,7 +216,7 @@ const catalogAction = ref<BookAction | null>(null);
 const catalogRefreshBusy = computed(() => catalogAction.value === "refresh");
 const catalogCheckBusy = computed(() => catalogAction.value === "check");
 let information: ReturnType<typeof moreInformation> | null = null;
-const bookDetailTab = ref<"catalog" | "info" | "sources">("catalog");
+const bookDetailTab = ref<"catalog" | "info" | "sources">("info");
 const bookDetailMenuOpen = ref(false);
 const bookDetailMenuElement = ref<HTMLElement | null>(null);
 useOutsidePointerDismiss(
@@ -237,7 +237,7 @@ function selectBookDetailTab(tab: "catalog" | "info" | "sources"): void {
   });
 }
 watch(() => searchResultDetails.value, (details) => {
-  bookDetailTab.value = details?.initialTab ?? "catalog";
+  bookDetailTab.value = details?.initialTab ?? "info";
   bookDetailMenuOpen.value = false;
 }, { immediate: true });
 watch(() => readerVisible.value, (visible) => {

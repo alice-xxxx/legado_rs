@@ -54,7 +54,7 @@ async function continueReading(bookId: string): Promise<void> {
 
 async function openBookInfo(bookId: string): Promise<void> {
   if (mutationLocked.value) return;
-  const requestId = requestBookDetailOpen({ kind: "shelf-book", bookId, initialTab: "catalog" });
+  const requestId = requestBookDetailOpen({ kind: "shelf-book", bookId });
   try {
     const failure = await router.push({ name: routeNames.bookDetail });
     if (failure) discardBookDetailOpenRequest(requestId);

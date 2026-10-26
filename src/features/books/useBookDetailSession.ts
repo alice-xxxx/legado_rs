@@ -173,7 +173,7 @@ export function useBookDetailSession(dependencies: BookDetailSessionDependencies
     await openSearchResultDetails(candidate, "sources", true);
   }
 
-  async function openShelfBook(bookId: string, initialTab: BookDetailTab = "catalog", fromShelf = true): Promise<void> {
+  async function openShelfBook(bookId: string, initialTab: BookDetailTab = "info", fromShelf = true): Promise<void> {
     sourceGroup.value = null;
     const request = beginSession({
       result: null,

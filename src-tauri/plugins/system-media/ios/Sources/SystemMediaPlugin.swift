@@ -99,15 +99,12 @@ final class SystemMediaPlugin: Plugin {
             do {
                 let changedSession = self.state?.id != next.id
                 let changedCover = changedSession || self.state?.artwork != next.artwork
-                if changedSession { self.resumeAfterInterruption = false }
-                if changedSession || self.state?.actions != next.actions { self.bindCommands(next.actions) }
-                if !next.paused && (self.state?.paused != false || changedSession) {
-                    let audio = AVAudioSession.sharedInstance()
-                    try audio.setCategory(.playback, mode: .default)
-                    try audio.setActive(true)
-                } else if next.paused && self.state?.paused == false && !self.resumeAfterInterruption {
-                    try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+                if changedSession {
+                    // WebKit 管理播放会话的激活和停用；状态同步只配置类型。
+                    try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
+                    self.resumeAfterInterruption = false
                 }
+                if changedSession || self.state?.actions != next.actions { self.bindCommands(next.actions) }
                 self.state = next
                 if changedCover {
                     self.coverTask?.cancel(); self.cover = nil
@@ -150,7 +147,6 @@ final class SystemMediaPlugin: Plugin {
         for (command, target) in targets { command.removeTarget(target); command.isEnabled = false }
         targets.removeAll()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }

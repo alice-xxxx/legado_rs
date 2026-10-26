@@ -33,7 +33,6 @@ export function openMediaSession(metadata: MediaMetadataInit, actions: Actions, 
       if (active === session) await invoke("plugin:system-media|update", { state });
     }).catch(error => {
       if (active !== session) return;
-      if (!state.paused) run("pause");
       onError(error);
     });
   };

@@ -112,11 +112,15 @@ export function installNativeBackNavigation(): () => void {
     const syncGestures = () => {
       if (tabPushPending) return;
       const route = router.currentRoute.value;
+      const layer = topBackLayer();
+      // 本地二级页面使用交互式返回，露出仍挂载在下方的父页面。
+      if (layer) {
+        void requestGestureState(true, true);
+        return;
+      }
       if (readerAction?.isOpen()) {
-        const layer = topBackLayer();
-        // The menu uses WebKit's real history preview of the library. Local
-        // subpages slide over the still-mounted reading menu underneath.
-        void requestGestureState(readerAction.menuOpen() || !!layer, !!layer);
+        // The reading menu uses WebKit's real history preview of the library.
+        void requestGestureState(readerAction.menuOpen());
         return;
       }
       const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
@@ -161,7 +165,7 @@ export function installNativeBackNavigation(): () => void {
     });
     const localGesture = createLocalBackGesture(() => {
       const layer = topBackLayer();
-      if (!readerAction?.isOpen() || !layer) return null;
+      if (!layer) return null;
       const action = localBackAction();
       if (!action) return null;
       return { element: layer.closest<HTMLElement>("[data-back-layer],.modal-backdrop,.overlay-backdrop") ?? layer,
@@ -169,13 +173,13 @@ export function installNativeBackNavigation(): () => void {
     });
     removeGestureSync = () => { observer.disconnect(); removeAfterEach(); localGesture.cancel(); prepareTabGesture = undefined; };
     void onBackGesture(async event => {
-      if (disposed || !readerAction?.isOpen()) return;
+      if (disposed) return;
       if (event.phase === "start") {
         if (handling) return;
         handling = true;
       } else if (!handling) return;
       try { await localGesture.handle(event); }
-      catch (error) { localGesture.cancel(); handling = false; console.error("Reader back gesture failed:", error); }
+      catch (error) { localGesture.cancel(); handling = false; console.error("Local back gesture failed:", error); }
       finally { if (event.phase === "end") handling = false; }
     }).then(unlisten => {
       if (disposed) void unlisten();

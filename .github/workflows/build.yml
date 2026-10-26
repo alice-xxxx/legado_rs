@@ -119,7 +119,7 @@ jobs:
           packages: 'platform-tools build-tools;${{ env.ANDROID_BUILDTOOLS }} ndk;${{ env.ANDROID_NDK }} cmake;${{ env.ANDROID_CMAKE }}'
       - name: Install Android compile platform
         run: |
-          sdkmanager --install "platforms;android-${{ env.ANDROID_PLATFORM }}" --channel=${{ env.ANDROID_CHANNEL }}
+          sdkmanager --install "platforms;android-${{ env.ANDROID_SDK_PLATFORM }}" --channel=${{ env.ANDROID_CHANNEL }}
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK }}" >> "$GITHUB_ENV"
           echo "NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK }}" >> "$GITHUB_ENV"
       - name: Build Android engine AAR and QuickJS JNI

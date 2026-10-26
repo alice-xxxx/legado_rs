@@ -36,5 +36,8 @@ if (process.argv.includes("--github-env")) {
   if (!process.env.GITHUB_ENV) throw new Error("GITHUB_ENV is unavailable");
   await appendFile(process.env.GITHUB_ENV, Object.entries(toolchain)
     .map(([key, value]) => `${key.replaceAll(".", "_").toUpperCase()}=${value}\n`).join(""));
-  await appendFile(process.env.GITHUB_ENV, `IPHONEOS_DEPLOYMENT_TARGET=${toolchain["ios.deploymentTarget"]}\n`);
+  // NDK/CMake uses the minimum API level, independently of the installed SDK platform.
+  await appendFile(process.env.GITHUB_ENV,
+    `ANDROID_PLATFORM=android-${toolchain["android.minSdk"]}\n` +
+    `IPHONEOS_DEPLOYMENT_TARGET=${toolchain["ios.deploymentTarget"]}\n`);
 }
