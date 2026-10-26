@@ -59,7 +59,6 @@ const bookSourceSwitchActions = useBookSourceSwitch({
   readingBook: readerFeatures.readingBook,
   readerVisible: readerFeatures.readerVisible,
   readingChapterIndex: readerFeatures.readingChapterIndex,
-  readerPageIndex: readerFeatures.readerPageIndex,
   readingContent: readerFeatures.readingContent,
   readerProgressDirty: readerFeatures.readerProgressDirty,
   readerControlsOpen: readerFeatures.readerControlsOpen,

@@ -37,12 +37,12 @@ pub(crate) async fn text(input: &str, limit: usize) -> Result<String, String> {
     let client = crate::http_client::builder_with_user_agent(!no_ua)
         .timeout(Duration::from_secs(30))
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(request_error)?;
     let mut response = client
         .get(target)
         .send()
         .await
-        .map_err(|e| format!("获取导入内容失败：{e}"))?;
+        .map_err(request_error)?;
     let final_url = url(response.url().as_str())?;
     if https && final_url.scheme() != "https" {
         return Err("HTTPS 导入链接不能降级为 HTTP".into());
@@ -54,7 +54,7 @@ pub(crate) async fn text(input: &str, limit: usize) -> Result<String, String> {
         return Err("导入内容超过大小限制".into());
     }
     let mut bytes = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
         if bytes.len().saturating_add(chunk.len()) > limit {
             return Err("导入内容超过大小限制".into());
         }
@@ -66,4 +66,25 @@ pub(crate) async fn text(input: &str, limit: usize) -> Result<String, String> {
     String::from_utf8(bytes)
         .map(|v| v.trim_start_matches('\u{feff}').to_owned())
         .map_err(|_| "导入内容必须使用 UTF-8 编码".into())
+}
+
+fn request_error(error: reqwest::Error) -> String {
+    let mut cause: Option<&dyn std::error::Error> = Some(&error);
+    let mut messages = Vec::new();
+    while let Some(error) = cause {
+        messages.push(error.to_string());
+        cause = error.source();
+    }
+    format!("获取导入内容失败：{}", messages.join("："))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn request_error_includes_the_underlying_cause() {
+        let error = crate::http_client::raw_builder().user_agent("\n").build().unwrap_err();
+        let message = super::request_error(error);
+        assert!(message.contains("builder error"));
+        assert!(message.contains("failed to parse header value"));
+    }
 }

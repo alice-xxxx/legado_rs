@@ -115,16 +115,20 @@ export async function readBookPreview(id: string): Promise<BookPreview> {
   return preview(rows![0]);
 }
 export async function readLibrary(): Promise<ContentLibrary> {
-  const [books, groups, members] = await tables([
+  const [books, groups, members, lastChapters] = await tables([
     { table: "book_previews b JOIN library_books l ON l.book_id=b.id LEFT JOIN chapter_positions c ON c.book_id=b.id AND c.id=b.chapter_id", fields: "b.id b.kind b.title b.author b.cover b.readable_count:total b.latest_title:latest b.updated_at_ms:updatedAt b.progress_updated_at_ms:readAt coalesce(c.read_position,b.chapter_index+1):read", where: "ORDER BY l.position" },
     { table: "library_groups", fields: "name", where: "ORDER BY position" },
     { table: "library_group_books g JOIN library_books b ON b.book_id=g.book_id", fields: "g.group_name:name g.book_id:id", where: "ORDER BY b.position" },
+    { table: "library_books l JOIN chapters c ON c.book_id=l.book_id AND c.position=(SELECT max(position) FROM chapters WHERE book_id=l.book_id AND volume=0)", fields: "c.book_id:id c.title:title" },
   ]);
   const library: ContentLibrary = {};
+  const lastTitles = new Map(lastChapters!.map(row => [row.id, row.title]));
   for (const row of books!) {
     const kind = row["b.kind"] as ContentType, id = row["b.id"] as string;
+    const latest = row.latest?.trim();
     (library[kind] ??= []).push({ id, title: row["b.title"], author: row["b.author"] ?? undefined, cover: row["b.cover"] ?? undefined,
-      total: row.total, latest: row.latest ?? undefined, updatedAt: row.updatedAt ? Math.floor(row.updatedAt / 1000) : undefined,
+      total: row.total, latest: !latest || /^共\s*\d+\s*[章节话集期页]?$/.test(latest) ? lastTitles.get(id) : latest,
+      updatedAt: row.updatedAt ? Math.floor(row.updatedAt / 1000) : undefined,
       readAt: row.readAt ? Math.floor(row.readAt / 1000) : undefined, read: row.readAt ? row.read ?? 0 : undefined });
   }
   const groupMembers = new Map<string, string[]>();

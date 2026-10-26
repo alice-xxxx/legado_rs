@@ -242,13 +242,11 @@ if (!mainActivity.includes(activityZoomMarker)) {
   await writeFile(mainActivityFile, mainActivity, "utf8");
 }
 
+// HTTP sources, loopback resources and signed CA revocation lists all require cleartext access.
+// HTTPS requests still use the platform certificate verifier.
 const networkConfig = `<?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false" />
-    <domain-config cleartextTrafficPermitted="true">
-        <domain includeSubdomains="false">127.0.0.1</domain>
-        <domain includeSubdomains="false">localhost</domain>
-    </domain-config>
+    <base-config cleartextTrafficPermitted="true" />
 </network-security-config>
 `;
 const networkManifestMarker = 'android:networkSecurityConfig="@xml/network_security_config"';
@@ -263,23 +261,13 @@ if (nativeBackAttribute.test(applicationMatch[1])) {
 } else {
   manifest = manifest.replace(applicationTag, '<application$1\n        android:enableOnBackInvokedCallback="true">');
 }
-await writeFile(manifestFile, manifest, "utf8");
 if (!applicationMatch[1].includes(networkManifestMarker)) {
   if (/android:networkSecurityConfig\s*=/.test(applicationMatch[1])) {
     throw new Error(`Unexpected Android network security config in ${manifestFile.pathname}`);
   }
   manifest = manifest.replace(applicationTag, `<application$1\n        ${networkManifestMarker}>`);
-  await writeFile(manifestFile, manifest, "utf8");
 }
+await writeFile(manifestFile, manifest, "utf8");
 
 await mkdir(new URL("../gen/android/app/src/main/res/xml/", import.meta.url), { recursive: true });
-let previousNetworkConfig;
-try {
-  previousNetworkConfig = await readFile(networkConfigFile, "utf8");
-} catch (error) {
-  if (error?.code !== "ENOENT") throw error;
-}
-if (previousNetworkConfig !== undefined && previousNetworkConfig !== networkConfig) {
-  throw new Error(`Unexpected Android network security policy in ${networkConfigFile.pathname}`);
-}
-if (previousNetworkConfig === undefined) await writeFile(networkConfigFile, networkConfig, "utf8");
+await writeFile(networkConfigFile, networkConfig, "utf8");

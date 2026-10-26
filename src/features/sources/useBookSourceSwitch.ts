@@ -5,7 +5,7 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { search, stopSearch, releaseSearchResults } from "../../api/search";
 import { mainText, cancelMainText } from "../../api/mainText";
 import { saveChapter } from "../../api/books";
-import { modifyDatabase } from "../../api/feDb";
+import { modifyDatabase, type DatabaseOperation } from "../../api/feDb";
 import { moreInformation } from "../../api/moreInformation";
 import { readChapter, readMoreInformation } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
@@ -13,13 +13,13 @@ import { compareSearchSources, presentSearchResults } from "../discovery/searchP
 import { type BookResource, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
 import { refreshOpenedBook, refreshOpenedChapter, replaceOpenedBook, openedBook } from "../books/bookDetailState";
+import { sourceSwitchProgress } from "./sourceSwitchProgress";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
   readingBook: Ref<BookResource | null>;
   readerVisible: Ref<boolean>;
   readingChapterIndex: Ref<number>;
-  readerPageIndex: Ref<number>;
   readingContent: Ref<CachedChapterContent | null>;
   readerProgressDirty: Ref<boolean>;
   readerControlsOpen: Ref<boolean>;
@@ -35,7 +35,6 @@ export function useBookSourceSwitch({
   readingBook,
   readerVisible,
   readingChapterIndex,
-  readerPageIndex,
   readingContent,
   readerProgressDirty,
   readerControlsOpen,
@@ -394,17 +393,25 @@ export function useBookSourceSwitch({
       if (!current()) return;
       const cached = await readMoreInformation(candidate.sourceId, candidate.bookUrl);
       if (!current()) return;
+      const previous = bookSourceSwitchBook.value;
+      if (!previous) return;
+      const progress = sourceSwitchProgress(previous, cached);
+      const operations: DatabaseOperation[] = [progress
+        ? { operation: "saveProgress", bookId: cached.id, progress }
+        : { operation: "resetProgress", bookId: cached.id }];
       const alternatives = [{ resultId: book.id, sourceId: book.sourceId!, sourceName: book.sourceName ?? "", bookUrl: book.bookUrl!,
         title: book.title, author: book.author, coverSrc: book.coverSrc, latestChapter: book.latestChapter }, ...bookSourceCandidateResults.value]
         .filter(source => source.sourceId !== cached.sourceId);
       // 只在上架的新来源上保存关联；未上架时只保留内存中的来源列表。
       if (libraryType(book.id)) {
-        await modifyDatabase([
+        operations.push(
           { operation: "saveBooks", books: alternatives.map(source => ({ sourceId: source.sourceId, bookUrl: source.bookUrl, title: source.title, author: source.author, cover: source.coverSrc, latest: source.latestChapter })) },
           { operation: "saveBook", bookId: cached.id, changes: { alternatives: alternatives.map(source => source.resultId) } },
-        ], { wait: true });
-        if (!current()) return;
+        );
       }
+      await modifyDatabase(operations, { wait: true });
+      if (!current()) return;
+      cached.progress = progress;
       cached.alternatives = alternatives.map(source => ({ ...source, cover: source.coverSrc, latest: source.latestChapter }));
       bookSourceSwitchCancellable.value = false;
       // 整书换源只替换书架条目，书架现有监听负责持久化；两本书的缓存各自保留。
@@ -415,8 +422,7 @@ export function useBookSourceSwitch({
       notify(`已切换到“${candidate.sourceName}”。`);
       if (readerWasOpen) {
         readingBook.value = cached;
-        readingChapterIndex.value = cached.progress?.chapterIndex ?? 0;
-        readerPageIndex.value = cached.progress?.offset ?? 0;
+        readingChapterIndex.value = cached.progress?.chapterIndex ?? cached.chapters.find(chapter => !chapter.volume)?.index ?? 0;
         readingContent.value = null;
         await loadReaderChapter(readingChapterIndex.value);
       }

@@ -19,8 +19,6 @@ interface ShelfBatchActionsOptions {
   visibleBooks: ComputedRef<ShelfResource["books"]>;
   groups: ComputedRef<string[]>;
   recoveryRequired: Ref<boolean>;
-  recoveryTitle: Ref<string>;
-  recoveryMessage: Ref<string>;
   isShelfScreen: () => boolean;
   getRestoreRevision: () => number;
   notify: (message: string, kind?: "success" | "error") => void;

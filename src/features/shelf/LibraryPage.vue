@@ -2,11 +2,10 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
-import type { AppBootstrap, ShelfResource, ShelfSortKey, ShelfSortOrder } from "../../api/types";
+import type { ShelfSortKey, ShelfSortOrder } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
-import ShelfLoadState from "./ShelfLoadState.vue";
 import { contentLibrary, librarySort, librarySortOrder } from "../books/contentLibraryState";
 import { shelfBooks as shelf } from "./shelfBooks";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
@@ -14,7 +13,7 @@ import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
-import { readingProgressPercent } from "../books/readingProgress";
+import LibraryBookInfo from "./LibraryBookInfo.vue";
 import { getReaderSession } from "../reader/readerSession";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import ShelfOrganizer from "./ShelfOrganizer.vue";
@@ -24,12 +23,7 @@ import { useShelfGroupActions } from "./useShelfGroupActions";
 const route = useRoute();
 const readerSession = getReaderSession();
 const activeGroup = ref("");
-const loading = ref(true);
-const loadError = ref("");
-const recoveryRequired = ref(false);
-const mutationLocked = computed(() => shelfBatchRecoveryRequired.value || recoveryRequired.value);
-const recoveryTitle = ref("需要重启应用完成恢复");
-const recoveryMessage = ref("");
+const mutationLocked = shelfBatchRecoveryRequired;
 let restoreRevision = 0;
 const unlisteners: UnlistenFn[] = [];
 
@@ -64,30 +58,10 @@ async function openBookInfo(bookId: string): Promise<void> {
   }
 }
 
-async function loadShelf(): Promise<void> {
-  loading.value = false;
-}
-
-async function loadRestoredState(): Promise<void> {
-  restoreRevision += 1;
-  const currentRestoreRevision = restoreRevision;
-  try {
-    if (currentRestoreRevision !== restoreRevision) return;
-    recoveryRequired.value = false;
-    recoveryMessage.value = "";
-  } catch (error) {
-    if (currentRestoreRevision !== restoreRevision) return;
-    recoveryRequired.value = true;
-    recoveryTitle.value = "恢复后的书架载入失败";
-    recoveryMessage.value = `恢复已提交，但无法完整载入书架和任务：${errorText(error)}。请重启应用。`;
-    notify(recoveryMessage.value, "error");
-  }
-}
-
 async function setupEvents(): Promise<void> {
   try {
-    unlisteners.push(await listen<AppBootstrap>("app-state-updated", () => {
-      void loadRestoredState();
+    unlisteners.push(await listen("app-state-updated", () => {
+      restoreRevision += 1;
     }));
   } catch (error) {
     // Browser preview does not provide native events; command results remain authoritative.
@@ -116,9 +90,7 @@ function changeShelfSort(key: ShelfSortKey, order = shelfSortOrder.value): void 
 const shelfBatch = reactive(useShelfBatchActions({
   visibleBooks,
   groups,
-  recoveryRequired,
-  recoveryTitle,
-  recoveryMessage,
+  recoveryRequired: mutationLocked,
   isShelfScreen: () => route.name === routeNames.shelf,
   getRestoreRevision: () => restoreRevision,
   notify,
@@ -150,10 +122,7 @@ const shelfView = reactive({
 
 onBeforeRouteLeave(() => !shelfBatch.batchBusy);
 
-onMounted(() => {
-  void setupEvents();
-  void loadShelf();
-});
+onMounted(setupEvents);
 
 onBeforeUnmount(() => {
   restoreRevision += 1;
@@ -169,19 +138,13 @@ const typeFilters: { key: LibraryType; title: string }[] = [
   { key: "image", title: "图片" },
   { key: "html", title: "HTML" },
   { key: "pdf", title: "PDF" },
-
 ];
 const activeType = ref<LibraryType>("all");
 const manageGroupsOpen = ref(false);
 
-/** 只使用 Rust 投影的书籍类型；未知类型归入小说/文本，不按书名猜测。 */
-function bookType(book: ShelfResource["books"][number]): Exclude<LibraryType, "all"> {
-  const type = bookContentType(book) ?? "text";
-  return type;
-}
 const displayedBooks = computed(() => shelfBatch.selectionMode || activeType.value === "all"
   ? shelfView.visibleBooks
-  : shelfView.visibleBooks.filter((book) => bookType(book) === activeType.value));
+  : shelfView.visibleBooks.filter(book => (bookContentType(book) ?? "text") === activeType.value));
 
 function enterManageMode(): void {
   // The prototype management workspace always starts with the complete shelf.
@@ -205,246 +168,231 @@ function groupBookCount(group: string): number {
   return group ? shelfView.shelf.books.filter((book) => book.groups?.includes(group)).length
     : shelfView.shelf.books.length;
 }
-function chapterCountLabel(book: ShelfResource["books"][number]): string {
-  const unit = book.contentType === "image" ? "话" : book.contentType === "audio" ? "期"
-    : book.contentType === "video" ? "集" : book.contentType === "pdf" ? "页" : "章";
-  if (!book.chapterCount) return "目录待更新";
-  return book.progress?.updatedAtMs
-    ? `${(book.progress.chapterIndex ?? 0) + 1} / ${book.chapterCount} ${unit}`
-    : `${book.chapterCount} ${unit}`;
-}
 </script>
 
 <template>
-  <ShelfLoadState v-if="loading || loadError" :loading="loading" :error="loadError" :retry="loadShelf" />
-  <template v-else>
-    <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }" data-back-page>
-      <PrimaryNavigation v-if="!shelfBatch.selectionMode" />
-      <main class="shelf-page-main">
-        <section class="shelf-view" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
-          <header v-if="shelfBatch.selectionMode" class="library-manage-heading">
-            <div class="library-manage-title">
-              <BackButton data-back-local label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
-              <span><strong>整理内容库</strong><small>分组与批量管理</small></span>
-            </div>
-            <button type="button" class="library-done-button" :disabled="shelfBatch.batchBusy"
-              @click.stop="exitManageMode()">完成</button>
-          </header>
-          <div v-else class="library-topbar">
-            <nav class="library-type-filter">
-              <button v-for="filter in typeFilters" :key="filter.key" type="button"
-                :class="{ active: activeType === filter.key }" @click.stop="activeType = filter.key">{{ filter.title
-                }}</button>
-            </nav>
-            <div class="library-top-actions">
-              <button class="library-round-action" type="button" title="导入 TXT / EPUB / CBZ / PDF"
-                :disabled="mutationLocked" @click.stop="openImport()">
-                <PrototypeIcon name="import" />
-              </button>
-              <button class="library-round-action" type="button" title="整理内容库"
-                :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="enterManageMode()">
-                <PrototypeIcon name="tune" />
-              </button>
-            </div>
+  <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }" data-back-page>
+    <PrimaryNavigation v-if="!shelfBatch.selectionMode" />
+    <main class="shelf-page-main">
+      <section class="shelf-view" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
+        <header v-if="shelfBatch.selectionMode" class="library-manage-heading">
+          <div class="library-manage-title">
+            <BackButton data-back-local label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
+            <span><strong>整理内容库</strong><small>分组与批量管理</small></span>
           </div>
-          <div v-if="shelfBatch.selectionMode" class="library-manage-workspace">
-            <aside class="library-manage-rail">
-              <nav class="library-manage-group-list">
-                <button type="button" :class="{ active: !shelfGroup.shelfActiveGroup }" :disabled="shelfBatch.batchBusy"
-                  @click.stop="shelfGroup.shelfActiveGroup = ''">
-                  <span>全部内容</span><small>{{ groupBookCount('') }}</small>
-                </button>
-                <button v-for="group in shelfGroup.shelfGroups" :key="group" type="button"
-                  :class="{ active: shelfGroup.shelfActiveGroup === group }" :disabled="shelfBatch.batchBusy"
-                  @click.stop="shelfGroup.shelfActiveGroup = group">
-                  <span>{{ group }}</span><small>{{ groupBookCount(group) }}</small>
-                </button>
-              </nav>
-              <button type="button" class="library-manage-groups-button"
-                :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="manageGroupsOpen = !manageGroupsOpen">
-                {{ manageGroupsOpen ? '收起分组编辑' : '编辑分组' }}
+          <button type="button" class="library-done-button" :disabled="shelfBatch.batchBusy"
+            @click.stop="exitManageMode()">完成</button>
+        </header>
+        <div v-else class="library-topbar">
+          <nav class="library-type-filter">
+            <button v-for="filter in typeFilters" :key="filter.key" type="button"
+              :class="{ active: activeType === filter.key }" @click.stop="activeType = filter.key">{{ filter.title
+              }}</button>
+          </nav>
+          <div class="library-top-actions">
+            <button class="library-round-action" type="button" title="导入 TXT / EPUB / CBZ / PDF"
+              :disabled="mutationLocked" @click.stop="openImport()">
+              <PrototypeIcon name="import" />
+            </button>
+            <button class="library-round-action" type="button" title="整理内容库"
+              :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="enterManageMode()">
+              <PrototypeIcon name="tune" />
+            </button>
+          </div>
+        </div>
+        <div v-if="shelfBatch.selectionMode" class="library-manage-workspace">
+          <aside class="library-manage-rail">
+            <nav class="library-manage-group-list">
+              <button type="button" :class="{ active: !shelfGroup.shelfActiveGroup }" :disabled="shelfBatch.batchBusy"
+                @click.stop="shelfGroup.shelfActiveGroup = ''">
+                <span>全部内容</span><small>{{ groupBookCount('') }}</small>
               </button>
-              <ShelfOrganizer v-if="manageGroupsOpen" :groups="shelfGroup.shelfGroups"
-                :active-group="shelfGroup.shelfActiveGroup" :manage-groups-open="true"
-                @filter-group="shelfGroup.shelfActiveGroup = $event" @create-group="shelfGroup.createGroup"
-                @rename-group="shelfGroup.renameGroup" @delete-group="shelfGroup.removeShelfGroup" />
-            </aside>
-            <main class="library-manage-content">
-              <div class="shelf-batch-toolbar library-manage-selectbar">
-                <label class="library-select-all">
-                  <input type="checkbox" :checked="shelfBatch.allVisibleBooksSelected"
-                    :disabled="shelfBatch.batchBusy || !shelfView.visibleBooks.length"
-                    @change="shelfBatch.allVisibleBooksSelected ? shelfBatch.clearVisibleBookSelection() : shelfBatch.selectVisibleBooks()" />
-                  <span>全选</span>
+              <button v-for="group in shelfGroup.shelfGroups" :key="group" type="button"
+                :class="{ active: shelfGroup.shelfActiveGroup === group }" :disabled="shelfBatch.batchBusy"
+                @click.stop="shelfGroup.shelfActiveGroup = group">
+                <span>{{ group }}</span><small>{{ groupBookCount(group) }}</small>
+              </button>
+            </nav>
+            <button type="button" class="library-manage-groups-button"
+              :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="manageGroupsOpen = !manageGroupsOpen">
+              {{ manageGroupsOpen ? '收起分组编辑' : '编辑分组' }}
+            </button>
+            <ShelfOrganizer v-if="manageGroupsOpen" :groups="shelfGroup.shelfGroups"
+              :active-group="shelfGroup.shelfActiveGroup" :manage-groups-open="true"
+              @filter-group="shelfGroup.shelfActiveGroup = $event" @create-group="shelfGroup.createGroup"
+              @rename-group="shelfGroup.renameGroup" @delete-group="shelfGroup.removeShelfGroup" />
+          </aside>
+          <main class="library-manage-content">
+            <div class="shelf-batch-toolbar library-manage-selectbar">
+              <label class="library-select-all">
+                <input type="checkbox" :checked="shelfBatch.allVisibleBooksSelected"
+                  :disabled="shelfBatch.batchBusy || !shelfView.visibleBooks.length"
+                  @change="shelfBatch.allVisibleBooksSelected ? shelfBatch.clearVisibleBookSelection() : shelfBatch.selectVisibleBooks()" />
+                <span>全选</span>
+              </label>
+              <strong class="library-selection-count">已选 {{ shelfBatch.selectedVisibleBookIds.length }} 项</strong>
+              <div class="library-manage-primary-actions">
+                <button type="button" class="library-move-button"
+                  :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
+                  @click="shelfBatch.openGroups">移动到</button>
+                <button type="button" class="library-remove-button"
+                  :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
+                  @click="shelfBatch.openRemovalConfirm">移除</button>
+              </div>
+            </div>
+            <div v-if="shelfBatch.selectedVisibleBookIds.length > 256" class="shelf-batch-error">
+              每次最多处理 256 本书，请减少选择。
+            </div>
+            <p v-if="shelfBatch.batchError && !shelfBatch.groupsOpen" class="shelf-batch-error">{{
+              shelfBatch.batchError }}</p>
+            <details class="library-manage-more">
+              <summary>更多批量操作</summary>
+              <div class="library-manage-extra-actions">
+                <button type="button" :disabled="shelfBatch.batchBusy || !shelfBatch.selectedVisibleBookIds.length"
+                  @click="shelfBatch.clearVisibleBookSelection">取消本组选择</button>
+                <button type="button"
+                  :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
+                  @click="shelfBatch.refreshSelectedInformation()">更新目录</button>
+                <button type="button"
+                  :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
+                  @click="shelfBatch.cacheSelectedBooks()">下载章节</button>
+                <label class="library-manage-sort-label">排序
+                  <select :value="shelfView.shelfSortKey" :disabled="shelfBatch.batchBusy || mutationLocked"
+                    @change="shelfView.changeShelfSort(($event.target as HTMLSelectElement).value as ShelfSortKey)">
+                    <option value="updatedAt">最近阅读</option>
+                    <option value="title">书名</option>
+                    <option value="author">作者</option>
+                    <option value="latestChapter">最新章节</option>
+                    <option value="progress">阅读进度</option>
+                    <option value="custom">自定义顺序</option>
+                  </select>
                 </label>
-                <strong class="library-selection-count">已选 {{ shelfBatch.selectedVisibleBookIds.length }} 项</strong>
-                <div class="library-manage-primary-actions">
-                  <button type="button" class="library-move-button"
-                    :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.openGroups">移动到</button>
-                  <button type="button" class="library-remove-button"
-                    :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.openRemovalConfirm">移除</button>
-                </div>
+                <button type="button" :disabled="shelfBatch.batchBusy || mutationLocked"
+                  @click="shelfView.changeShelfSort(shelfView.shelfSortKey, shelfView.shelfSortOrder === 'ascending' ? 'descending' : 'ascending')">
+                  {{ shelfView.shelfSortOrder === 'ascending' ? '升序' : '降序' }}
+                </button>
+                <span v-if="shelfBatch.selectedLocalBooks.length">所选包含 {{ shelfBatch.selectedLocalBooks.length }}
+                  本本地书，不支持在线任务。</span>
               </div>
-              <div v-if="shelfBatch.selectedVisibleBookIds.length > 256" class="shelf-batch-error">
-                每次最多处理 256 本书，请减少选择。
-              </div>
-              <p v-if="shelfBatch.batchError && !shelfBatch.groupsOpen" class="shelf-batch-error">{{
-                shelfBatch.batchError }}</p>
-              <details class="library-manage-more">
-                <summary>更多批量操作</summary>
-                <div class="library-manage-extra-actions">
-                  <button type="button" :disabled="shelfBatch.batchBusy || !shelfBatch.selectedVisibleBookIds.length"
-                    @click="shelfBatch.clearVisibleBookSelection">取消本组选择</button>
-                  <button type="button"
-                    :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.refreshSelectedInformation()">更新目录</button>
-                  <button type="button"
-                    :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                    @click="shelfBatch.cacheSelectedBooks()">下载章节</button>
-                  <label class="library-manage-sort-label">排序
-                    <select :value="shelfView.shelfSortKey" :disabled="shelfBatch.batchBusy || mutationLocked"
-                      @change="shelfView.changeShelfSort(($event.target as HTMLSelectElement).value as ShelfSortKey)">
-                      <option value="updatedAt">最近阅读</option>
-                      <option value="title">书名</option>
-                      <option value="author">作者</option>
-                      <option value="latestChapter">最新章节</option>
-                      <option value="progress">阅读进度</option>
-                      <option value="custom">自定义顺序</option>
-                    </select>
-                  </label>
-                  <button type="button" :disabled="shelfBatch.batchBusy || mutationLocked"
-                    @click="shelfView.changeShelfSort(shelfView.shelfSortKey, shelfView.shelfSortOrder === 'ascending' ? 'descending' : 'ascending')">
-                    {{ shelfView.shelfSortOrder === 'ascending' ? '升序' : '降序' }}
-                  </button>
-                  <span v-if="shelfBatch.selectedLocalBooks.length">所选包含 {{ shelfBatch.selectedLocalBooks.length }}
-                    本本地书，不支持在线任务。</span>
-                </div>
-              </details>
-              <section v-if="shelfBatch.cacheResult" class="shelf-batch-result-inline">
-                <span class="muted">缓存完成 {{ shelfBatch.cacheResult.completed.length }} 本；失败 {{ shelfBatch.cacheResult.failed.length }} 本；本地书跳过 {{ shelfBatch.cacheResult.skipped }} 本。</span>
-                <button class="text-button" @click="shelfBatch.cacheResult = null">关闭结果</button>
-                <p v-for="book in shelfBatch.cacheResult.failed" :key="book.id" class="error">{{ book.title }}：{{ book.message }}</p>
-              </section>
-              <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
-                <label v-for="book in shelfView.visibleBooks" :key="book.id" class="library-manage-book"
-                  :class="{ selected: shelfBatch.selectedBookIds.includes(book.id) }">
+            </details>
+            <section v-if="shelfBatch.cacheResult" class="shelf-batch-result-inline">
+              <span class="muted">缓存完成 {{ shelfBatch.cacheResult.completed.length }} 本；失败 {{ shelfBatch.cacheResult.failed.length }} 本；本地书跳过 {{ shelfBatch.cacheResult.skipped }} 本。</span>
+              <button class="text-button" @click="shelfBatch.cacheResult = null">关闭结果</button>
+              <p v-for="book in shelfBatch.cacheResult.failed" :key="book.id" class="error">{{ book.title }}：{{ book.message }}</p>
+            </section>
+            <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
+              <label v-for="book in shelfView.visibleBooks" :key="book.id" class="library-manage-book"
+                :class="{ selected: shelfBatch.selectedBookIds.includes(book.id) }">
+                <span class="library-manage-cover">
+                  <img v-if="book.coverSrc" :src="book.coverSrc" loading="lazy" decoding="async" />
+                  <span v-else class="library-abstract-cover" :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
+                </span>
+                <span class="library-manage-info">
                   <input type="checkbox" :checked="shelfBatch.selectedBookIds.includes(book.id)"
                     :disabled="shelfBatch.batchBusy" @change="shelfBatch.toggleBookSelection(book.id)" />
-                  <span class="library-manage-cover" :class="`cover-tone-${Math.abs(book.title.length) % 5}`">
-                    <img v-if="book.coverSrc" :src="book.coverSrc" loading="lazy" decoding="async" />
-                    <span v-else class="library-manage-cover-fallback"></span>
-                    <span class="library-manage-tick">✓</span>
-                  </span>
-                  <strong>{{ book.title }}</strong><small>{{ book.author || '作者未知' }}</small>
-                </label>
-              </div>
-              <div v-else class="page-empty-state library-manage-empty">
-                <strong>{{ shelfView.shelf.books.length ? '分组暂无内容' : '暂无内容' }}</strong>
-                <button v-if="shelfView.shelf.books.length" type="button" class="button secondary small"
-                  @click="shelfGroup.shelfActiveGroup = ''">查看全部</button>
-                <button v-else type="button" class="button secondary small" @click="exitManageMode()">返回内容库</button>
-              </div>
-            </main>
-          </div>
-          <div v-if="!shelfBatch.selectionMode && displayedBooks.length" class="book-grid">
-            <article v-for="book in displayedBooks" :key="book.id" class="shelf-card">
-              <button class="cover-button" type="button" title="点击阅读，长按查看书籍信息"
-                @pointerdown="shelfGroup.startShelfCoverLongPress(book.id, $event)"
-                @pointermove="shelfGroup.trackShelfCoverLongPress" @pointerup="shelfGroup.finishShelfCoverLongPress"
-                @pointercancel="shelfGroup.cancelShelfCoverLongPress"
-                @pointerleave="shelfGroup.handleShelfCoverPointerLeave" @contextmenu.prevent
-                @click="shelfGroup.handleShelfCoverClick(book.id)">
-                <img v-if="book.coverSrc" :src="book.coverSrc" class="book-cover" loading="lazy" />
-                <span v-else class="cover-fallback library-abstract-cover"
-                  :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
-                <span v-if="readingProgressPercent(book.progress, book.chapterCount) > 0"
-                  class="cover-progress-inset"><i
-                    :style="{ width: `${readingProgressPercent(book.progress, book.chapterCount)}%` }"></i></span>
-              </button>
-              <div class="shelf-card-info library-cardcopy">
-                <button class="book-title-button" :aria-label="`查看《${book.title}》详情`" @click="openBookInfo(book.id)">{{ book.title }}</button>
-                <span class="book-author">{{ book.author || '作者未知' }}</span>
-                <div class="book-card-meta"><span>{{ chapterCountLabel(book) }}</span></div>
-              </div>
-            </article>
-          </div>
-          <div v-else-if="!shelfBatch.selectionMode && shelfView.shelf.books.length" class="page-empty-state library-filter-empty">
-            <strong>暂无匹配内容</strong>
-            <button class="button secondary small"
-              @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</button>
-          </div>
-          <div v-else-if="!shelfBatch.selectionMode" class="page-empty-state library-filter-empty">
-            暂无内容
-          </div>
-        </section>
-      </main>
-    </div>
-
-    <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
-      <article class="app-modal shelf-batch-remove-modal">
-        <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
-        <p class="eyebrow">批量移除</p>
-        <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
-        <p class="modal-description">将从书架中移除所选书籍、阅读进度、书签和本地缓存。请核对书名；取消不会修改书架。</p>
-        <ul class="shelf-batch-remove-targets">
-          <li v-for="book in shelfBatch.removalTargets" :key="book.id">
-            <strong>{{ book.title }}</strong><span>{{ book.author || '作者未知' }}</span>
-          </li>
-        </ul>
-        <div class="modal-actions">
-          <button class="button secondary" :disabled="shelfBatch.batchBusy"
-            @click="shelfBatch.cancelRemoval">取消</button>
-          <button class="button danger" :disabled="shelfBatch.batchBusy || mutationLocked"
-            @click="shelfBatch.submitRemoval">{{ shelfBatch.batchBusy ? '正在移除…' : `确认移除
-            ${shelfBatch.removalTargets.length} 本书` }}</button>
+                  <LibraryBookInfo :book="book" />
+                </span>
+              </label>
+            </div>
+            <div v-else class="page-empty-state library-manage-empty">
+              <strong>{{ shelfView.shelf.books.length ? '分组暂无内容' : '暂无内容' }}</strong>
+              <button v-if="shelfView.shelf.books.length" type="button" class="button secondary small"
+                @click="shelfGroup.shelfActiveGroup = ''">查看全部</button>
+              <button v-else type="button" class="button secondary small" @click="exitManageMode()">返回内容库</button>
+            </div>
+          </main>
         </div>
-      </article>
-    </section>
-
-    <section v-if="shelfBatch.groupsOpen" class="modal-backdrop" @click.self="shelfBatch.closeGroups">
-      <article class="app-modal shelf-batch-group-modal">
-        <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</button>
-        <p class="eyebrow">批量整理</p>
-        <h2 id="shelf-batch-group-title">移动 {{ shelfBatch.groupBookIds.length }} 本内容至分组</h2>
-        <p class="modal-description">所选分组将完整替换这些内容当前的分组，可同时指定多个分组。其他内容和空分组不受影响。</p>
-        <div class="shelf-batch-group-list">
-          <label v-for="group in shelfGroup.shelfGroups" :key="group" class="shelf-batch-group-option"
-            :class="{ selected: shelfBatch.groupDraft.includes(group) }">
-            <input type="checkbox" :checked="shelfBatch.groupDraft.includes(group)"
-              :disabled="shelfBatch.batchBusy || mutationLocked || shelfBatch.clearGroups"
-              @change="shelfBatch.toggleGroup(group)" />
-            <span>{{ group }}</span>
-          </label>
-          <p v-if="!shelfGroup.shelfGroups.length" class="shelf-batch-groups-empty">还没有分组。可以在下方直接添加，或选择清空分组。</p>
+        <div v-if="!shelfBatch.selectionMode && displayedBooks.length" class="book-grid">
+          <article v-for="book in displayedBooks" :key="book.id" class="shelf-card">
+            <button class="cover-button" type="button" title="点击阅读，长按查看书籍信息"
+              @pointerdown="shelfGroup.startShelfCoverLongPress(book.id, $event)"
+              @pointermove="shelfGroup.trackShelfCoverLongPress" @pointerup="shelfGroup.finishShelfCoverLongPress"
+              @pointercancel="shelfGroup.cancelShelfCoverLongPress"
+              @pointerleave="shelfGroup.handleShelfCoverPointerLeave" @contextmenu.prevent
+              @click="shelfGroup.handleShelfCoverClick(book.id)">
+              <img v-if="book.coverSrc" :src="book.coverSrc" class="book-cover" loading="lazy" />
+              <span v-else class="library-abstract-cover"
+                :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
+            </button>
+            <button class="book-info-button" :aria-label="`查看《${book.title}》详情`" @click="openBookInfo(book.id)">
+              <LibraryBookInfo :book="book" />
+            </button>
+          </article>
         </div>
-        <form class="shelf-batch-new-group" @submit.prevent="shelfBatch.addGroup">
-          <label for="shelf-batch-new-group-input">添加并应用一个新分组</label>
-          <div>
-            <input id="shelf-batch-new-group-input" v-model="shelfBatch.newGroup" maxlength="128" autocomplete="off"
-              placeholder="输入分组名称" :disabled="shelfBatch.batchBusy || mutationLocked" />
-            <button class="button secondary small" type="submit"
-              :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.newGroup.trim()">添加</button>
-          </div>
-        </form>
-        <label class="shelf-batch-clear-option">
-          <input type="checkbox" :checked="shelfBatch.clearGroups" :disabled="shelfBatch.batchBusy || mutationLocked"
-            @change="shelfBatch.setClearGroups(($event.target as HTMLInputElement).checked)" />
-          <span><strong>清空所选书的全部分组</strong><small>会把所选书籍的分组完整替换为空列表。</small></span>
+        <div v-else-if="!shelfBatch.selectionMode && shelfView.shelf.books.length" class="page-empty-state library-filter-empty">
+          <strong>暂无匹配内容</strong>
+          <button class="button secondary small"
+            @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</button>
+        </div>
+        <div v-else-if="!shelfBatch.selectionMode" class="page-empty-state library-filter-empty">
+          暂无内容
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
+    <article class="app-modal shelf-batch-remove-modal">
+      <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
+      <p class="eyebrow">批量移除</p>
+      <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
+      <p class="modal-description">将从书架中移除所选书籍、阅读进度、书签和本地缓存。请核对书名；取消不会修改书架。</p>
+      <ul class="shelf-batch-remove-targets">
+        <li v-for="book in shelfBatch.removalTargets" :key="book.id">
+          <strong>{{ book.title }}</strong><span>{{ book.author || '作者未知' }}</span>
+        </li>
+      </ul>
+      <div class="modal-actions">
+        <button class="button secondary" :disabled="shelfBatch.batchBusy"
+          @click="shelfBatch.cancelRemoval">取消</button>
+        <button class="button danger" :disabled="shelfBatch.batchBusy || mutationLocked"
+          @click="shelfBatch.submitRemoval">{{ shelfBatch.batchBusy ? '正在移除…' : `确认移除
+          ${shelfBatch.removalTargets.length} 本书` }}</button>
+      </div>
+    </article>
+  </section>
+
+  <section v-if="shelfBatch.groupsOpen" class="modal-backdrop" @click.self="shelfBatch.closeGroups">
+    <article class="app-modal shelf-batch-group-modal">
+      <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</button>
+      <p class="eyebrow">批量整理</p>
+      <h2 id="shelf-batch-group-title">移动 {{ shelfBatch.groupBookIds.length }} 本内容至分组</h2>
+      <p class="modal-description">所选分组将完整替换这些内容当前的分组，可同时指定多个分组。其他内容和空分组不受影响。</p>
+      <div class="shelf-batch-group-list">
+        <label v-for="group in shelfGroup.shelfGroups" :key="group" class="shelf-batch-group-option"
+          :class="{ selected: shelfBatch.groupDraft.includes(group) }">
+          <input type="checkbox" :checked="shelfBatch.groupDraft.includes(group)"
+            :disabled="shelfBatch.batchBusy || mutationLocked || shelfBatch.clearGroups"
+            @change="shelfBatch.toggleGroup(group)" />
+          <span>{{ group }}</span>
         </label>
-        <p v-if="shelfBatch.batchError" class="shelf-batch-error shelf-batch-modal-error">{{ shelfBatch.batchError }}
-        </p>
-        <div class="modal-actions">
-          <button class="button secondary" :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">取消</button>
-          <button class="button primary"
-            :disabled="shelfBatch.batchBusy || mutationLocked || (!shelfBatch.groupDraft.length && !shelfBatch.clearGroups)"
-            @click="shelfBatch.submitGroups">{{ shelfBatch.batchBusy ? '正在保存…' : `确认移动 ${shelfBatch.groupBookIds.length}
-            项` }}</button>
+        <p v-if="!shelfGroup.shelfGroups.length" class="shelf-batch-groups-empty">还没有分组。可以在下方直接添加，或选择清空分组。</p>
+      </div>
+      <form class="shelf-batch-new-group" @submit.prevent="shelfBatch.addGroup">
+        <label for="shelf-batch-new-group-input">添加并应用一个新分组</label>
+        <div>
+          <input id="shelf-batch-new-group-input" v-model="shelfBatch.newGroup" maxlength="128" autocomplete="off"
+            placeholder="输入分组名称" :disabled="shelfBatch.batchBusy || mutationLocked" />
+          <button class="button secondary small" type="submit"
+            :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.newGroup.trim()">添加</button>
         </div>
-      </article>
-    </section>
-  </template>
+      </form>
+      <label class="shelf-batch-clear-option">
+        <input type="checkbox" :checked="shelfBatch.clearGroups" :disabled="shelfBatch.batchBusy || mutationLocked"
+          @change="shelfBatch.setClearGroups(($event.target as HTMLInputElement).checked)" />
+        <span><strong>清空所选书的全部分组</strong><small>会把所选书籍的分组完整替换为空列表。</small></span>
+      </label>
+      <p v-if="shelfBatch.batchError" class="shelf-batch-error shelf-batch-modal-error">{{ shelfBatch.batchError }}
+      </p>
+      <div class="modal-actions">
+        <button class="button secondary" :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">取消</button>
+        <button class="button primary"
+          :disabled="shelfBatch.batchBusy || mutationLocked || (!shelfBatch.groupDraft.length && !shelfBatch.clearGroups)"
+          @click="shelfBatch.submitGroups">{{ shelfBatch.batchBusy ? '正在保存…' : `确认移动 ${shelfBatch.groupBookIds.length}
+          项` }}</button>
+      </div>
+    </article>
+  </section>
 </template>
 
 <style scoped>
@@ -472,7 +420,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 .shelf-view {
-  --library-card-min-width: clamp(104px, 15vw, 176px);
+  --library-card-min-width: clamp(136px, 18vw, 168px);
   width: 100%;
   max-width: 1120px;
   margin: 0 auto;
@@ -492,80 +440,40 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 .book-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(var(--library-card-min-width), 1fr));
-  gap: 22px clamp(10px, 1.4vw, 16px);
+  gap: 28px 20px;
 }
 
 .shelf-card { min-width: 0; }
 
 .cover-button {
+  position: relative;
   display: block;
   width: 100%;
-  aspect-ratio: 4 / 5;
-  overflow: hidden;
+  aspect-ratio: 5 / 7;
   padding: 0;
   border: 0;
   cursor: pointer;
 }
 
-.book-cover {
+.book-cover,
+.library-manage-cover img {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
-  object-fit: cover;
-}
-
-.book-cover,
-.library-manage-cover img {
+  object-fit: contain;
   -webkit-touch-callout: none;
   -webkit-user-drag: none;
   -webkit-user-select: none;
   user-select: none;
 }
 
-.cover-progress-inset {
-  position: absolute;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
-  height: 4px;
-}
-
-.shelf-card-info {
-  min-width: 0;
-  padding-top: 8px;
-}
-
-.book-title-button,
-.book-author {
+.book-info-button {
   display: block;
-  min-width: 0;
-  max-width: 100%;
-}
-
-.book-title-button {
   width: 100%;
-  white-space: normal;
-  overflow-wrap: anywhere;
   text-align: left;
-  line-height: 1.4;
-}
-
-.book-author {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.book-card-meta {
-  display: flex;
-  gap: 7px;
-  overflow: hidden;
-  margin-top: 4px;
-  font-size: var(--ui-font-caption);
-}
-
-.library-cover-control {
-  flex: 1 1 100%;
+  cursor: pointer;
 }
 
 .library-topbar {
@@ -635,39 +543,13 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
   height: 20px;
 }
 
-.library-cardcopy {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-}
-
-.library-cardcopy .book-title-button {
-  font-size: var(--ui-font-body);
-  font-weight: 750;
-}
-
-.library-cardcopy .book-author {
-  margin: 0;
-  font-size: var(--ui-font-caption);
-}
-
-.library-cardcopy .book-card-meta {
-  margin: 0;
-  font-size: var(--ui-font-caption);
-  color: var(--app-subtle);
-}
-
-.library-cardcopy .book-card-meta span+span::before {
-  display: none;
-}
-
 .library-abstract-cover {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: block;
   overflow: hidden;
-  padding: 0 !important;
-  background: linear-gradient(135deg, #456c6a, #172e31) !important;
+  border-radius: 3px;
+  background: linear-gradient(135deg, #456c6a, #172e31);
 }
 
 .library-abstract-cover::before {
@@ -693,19 +575,19 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 .library-abstract-cover.cover-tone-1 {
-  background: linear-gradient(135deg, #8a6d7f, #393246) !important;
+  background: linear-gradient(135deg, #8a6d7f, #393246);
 }
 
 .library-abstract-cover.cover-tone-2 {
-  background: linear-gradient(135deg, #73939a, #2d4a45) !important;
+  background: linear-gradient(135deg, #73939a, #2d4a45);
 }
 
 .library-abstract-cover.cover-tone-3 {
-  background: linear-gradient(135deg, #384a67, #121a28) !important;
+  background: linear-gradient(135deg, #384a67, #121a28);
 }
 
 .library-abstract-cover.cover-tone-4 {
-  background: linear-gradient(135deg, #91677d, #362432) !important;
+  background: linear-gradient(135deg, #91677d, #362432);
 }
 
 .library-filter-empty {
@@ -742,10 +624,6 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
     border-radius: 11px;
   }
 
-  .library-manage-sort {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
 }
 
 /*Dedicated management workspace, following prototype manage()/manage-layout.*/
@@ -1014,19 +892,21 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 4px;
   min-width: 0;
   cursor: pointer;
 }
 
-.library-manage-book>input {
-  position: absolute;
-  z-index: 2;
-  left: 9px;
-  top: 9px;
+.library-manage-info {
+  display: grid;
+  grid-template-columns: 17px minmax(0, 1fr);
+  align-items: start;
+  gap: 8px;
+}
+
+.library-manage-info>input {
   width: 17px;
   height: 17px;
-  margin: 0;
+  margin: 12px 0 0;
   accent-color: var(--app-accent);
   cursor: pointer;
 }
@@ -1034,105 +914,12 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 .library-manage-cover {
   display: block;
   position: relative;
-  overflow: hidden;
-  aspect-ratio: 4/5;
-  border-radius: 10px;
-  background: linear-gradient(145deg, #406b68, #172e31);
+  aspect-ratio: 5/7;
 }
 
-.library-manage-cover img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.library-manage-cover-fallback {
-  position: absolute;
-  inset: 0;
-}
-
-.library-manage-cover-fallback:before {
-  content: "";
-  position: absolute;
-  right: -25%;
-  top: 14%;
-  width: 72%;
-  height: 72%;
-  border-radius: 50%;
-  background: #fff2;
-}
-
-.library-manage-cover-fallback:after {
-  content: "";
-  position: absolute;
-  left: -20%;
-  right: -18%;
-  bottom: -22%;
-  height: 53%;
-  border-radius: 50%;
-  background: #0003;
-}
-
-.library-manage-cover.cover-tone-1 {
-  background: linear-gradient(145deg, #8a6d7f, #393246);
-}
-
-.library-manage-cover.cover-tone-2 {
-  background: linear-gradient(145deg, #73939a, #2d4a45);
-}
-
-.library-manage-cover.cover-tone-3 {
-  background: linear-gradient(145deg, #384a67, #121a28);
-}
-
-.library-manage-cover.cover-tone-4 {
-  background: linear-gradient(145deg, #91677d, #362432);
-}
-
-.library-manage-tick {
-  position: absolute;
-  display: none;
-  right: 7px;
-  top: 7px;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--app-accent);
-  color: white;
-}
-
-.library-manage-tick {
-  font-size: var(--ui-font-body);
-  font-weight: 800;
-}
-
-.library-manage-book.selected .library-manage-tick {
-  display: flex;
-}
-
-.library-manage-book>strong,
-.library-manage-book>small {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.library-manage-book>strong {
-  margin-top: 2px;
-  color: var(--app-text);
-  font-size: var(--ui-font-caption);
-  white-space: normal;
-  overflow-wrap: anywhere;
-  line-height: 1.4;
-}
-
-.library-manage-book>small {
-  color: var(--app-subtle);
-  font-size: var(--ui-font-caption);
+.library-manage-book.selected .library-manage-cover {
+  outline: 2px solid var(--app-accent);
+  outline-offset: 3px;
 }
 
 .library-manage-more {
