@@ -73,7 +73,7 @@ object RhinoSyntax {
     private fun apply(source:String,edits:List<Edit>):String {
         if(edits.isEmpty())return source
         val result=StringBuilder(source)
-        edits.sortedByDescending{it.start}.forEach{result.replace(it.start,it.end,it.text)}
+        edits.sortedByDescending{it.start}.forEach{result.setRange(it.start,it.end,it.text)}
         return result.toString()
     }
     fun normalize(source:String):String {
