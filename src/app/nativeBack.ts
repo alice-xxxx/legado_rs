@@ -40,14 +40,18 @@ function hasVisibleBackLayer(): boolean {
   )).some(visible);
 }
 
-/** Only local layers belong here. Ordinary pages use the router's real history. */
+function localBackButton(): HTMLButtonElement | undefined {
+  return Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
+    .reverse().find(visible);
+}
+
+/** Local pages and dialogs consume Back; ordinary pages use real history. */
 export function localBackAction(): BackAction | null {
   const layer = topBackLayer();
   if (layer) return buttonAction(Array.from(layer.querySelectorAll<HTMLButtonElement>("button[data-back-action]"))
     .reverse().find(visible));
   if (readerAction?.isOpen()) return readerAction.action;
-  const local = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
-    .reverse().find(visible);
+  const local = localBackButton();
   return local ? buttonAction(local) : null;
 }
 
@@ -123,14 +127,17 @@ export function installNativeBackNavigation(): () => void {
         void requestGestureState(readerAction.menuOpen());
         return;
       }
-      const hasLocalPage = Array.from(document.querySelectorAll<HTMLButtonElement>("button[data-back-local]"))
-        .some(visible);
+      const hasLocalPage = !!localBackButton();
       const sourceEditorEntry = route.name === routeNames.sources && Boolean(route.query.sourceEdit);
+      if (hasLocalPage && !sourceEditorEntry) {
+        void requestGestureState(true, true);
+        return;
+      }
       // A WebKit swipe previews its real history item. Local dialogs and pages
       // without a matching entry must not expose an unrelated screen beneath.
       const enabled = typeof router.options.history.state.back === "string"
         && (Boolean(route.query[readerQuery]) || !isTabRoute(route.name) && route.name != null)
-        && !hasVisibleBackLayer() && (!hasLocalPage || sourceEditorEntry);
+        && !hasVisibleBackLayer();
       void requestGestureState(enabled);
     };
     prepareTabGesture = async () => {
@@ -164,7 +171,7 @@ export function installNativeBackNavigation(): () => void {
       queueGestureSync();
     });
     const localGesture = createLocalBackGesture(() => {
-      const layer = topBackLayer();
+      const layer = topBackLayer() ?? localBackButton()?.closest<HTMLElement>("[data-back-page]");
       if (!layer) return null;
       const action = localBackAction();
       if (!action) return null;
@@ -184,7 +191,7 @@ export function installNativeBackNavigation(): () => void {
     }).then(unlisten => {
       if (disposed) void unlisten();
       else removeGestureListener = unlisten;
-    }).catch(error => console.error("Reader back gesture registration failed:", error));
+    }).catch(error => console.error("Local back gesture registration failed:", error));
   }
   const removeGuard = router.beforeEach(async (to, from) => {
     // During a native history traversal the WebView state already names `to`.

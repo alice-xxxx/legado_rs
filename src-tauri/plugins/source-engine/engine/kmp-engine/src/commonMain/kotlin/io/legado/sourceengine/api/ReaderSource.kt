@@ -27,7 +27,7 @@ object ReaderSource {
         require(r.speechRate in 0..45){"朗读速率无效"}
         val response=HttpTtsRequest.audioResponse(r.config,r.text,r.speechRate,currentCoroutineContext())
         return try {check(response.header("Content-Length")?.toLongOrNull()?.let{it<=16*1024*1024}!=false){"音频超过限制"}
-            val bytes=response.body.bytes();check(bytes.isNotEmpty()&&bytes.size<=16*1024*1024){"音频大小无效"}
+            val bytes=response.body.bytes();check(bytes.size<=16*1024*1024){"音频超过限制"}
             AudioData(Base64.encode(bytes),response.header("Content-Type")?.substringBefore(';').orEmpty())
         }finally{response.close()}
     }

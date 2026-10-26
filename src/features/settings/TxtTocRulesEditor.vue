@@ -571,7 +571,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
           <button type="button" class="txt-toc-editor__text-button txt-toc-editor__delete-button" :disabled="busy || !selectedRules.length" @click="requestBulkDelete">删除</button>
         </footer>
       </aside>
-      <main v-if="showEditor" class="txt-toc-editor__detail">
+      <main v-if="showEditor" class="txt-toc-editor__detail" data-back-page>
         <header class="txt-toc-editor__editor-header safe-area-top">
           <BackButton class="txt-toc-editor__back-button" data-back-local label="返回规则列表" :disabled="busy"
             @click="requestCancelEditor" />
@@ -744,10 +744,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 @media(max-width:860px){
  .txt-toc-editor__topbar{padding-inline:var(--ui-header-gutter)}
  .txt-toc-editor__master{padding:12px 14px}
- .txt-toc-editor:has(.txt-toc-editor__detail){grid-template-rows:minmax(0,1fr)}
- .txt-toc-editor:has(.txt-toc-editor__detail) .txt-toc-editor__topbar{display:none}
- .txt-toc-editor__body:has(.txt-toc-editor__detail) .txt-toc-editor__master{display:none}
- .txt-toc-editor__detail{padding:0 14px 66px}
+ .txt-toc-editor__detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 14px 66px}
  .txt-toc-editor__editor-header{position:sticky;top:0;z-index:30;min-height:64px;gap:8px;margin:0 -14px 17px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--txt-line);background:var(--app-header);backdrop-filter:blur(12px)}
  .txt-toc-editor__back-button{display:inline-flex}
  .txt-toc-editor__editor-title h2{font-size:var(--ui-font-caption)}

@@ -92,7 +92,7 @@ const saveError = ref("");
 </script>
 
 <template>
- <section class="source-edit-screen">
+ <section class="source-edit-screen" data-back-page>
   <header class="source-edit-bar safe-area-top">
    <button type="button" class="source-edit-back" data-back-action data-back-local :disabled="busy" @click="cancel"><PrototypeIcon name="left"/> 返回来源</button>
    <strong>{{ source ? '编辑源' : '新建来源' }}</strong>

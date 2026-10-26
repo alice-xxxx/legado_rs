@@ -218,7 +218,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 <template>
   <ShelfLoadState v-if="loading || loadError" :loading="loading" :error="loadError" :retry="loadShelf" />
   <template v-else>
-    <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }">
+    <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }" data-back-page>
       <PrimaryNavigation v-if="!shelfBatch.selectionMode" />
       <main class="shelf-page-main">
         <section class="shelf-view" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">

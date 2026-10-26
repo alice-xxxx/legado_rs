@@ -521,7 +521,7 @@ function toggleFilterPanel(event: MouseEvent): void {
         <button type="button" class="replacement-text-button replacement-delete-button" :disabled="busy || !selectedRules.length" @click="requestBulkDelete">删除</button>
       </footer>
     </div>
-    <main v-if="draft" class="replacement-detail">
+    <main v-if="draft" class="replacement-detail" data-back-page>
       <header class="replacement-editor-header safe-area-top">
         <BackButton data-back-local label="返回规则列表" @click="requestCloseEditor" />
         <div class="replacement-page-title">
@@ -740,9 +740,7 @@ function toggleFilterPanel(event: MouseEvent): void {
   .replacement-global-header{min-height:64px;padding-inline:14px}
   .replacement-global-title strong{font-size:var(--ui-font-caption)}
   .replacement-master{height:auto;flex:1 1 auto;padding:12px 14px;min-width:0}
-  .replacement-rules-page:has(.replacement-detail)>.replacement-global-header,
-  .replacement-rules-page:has(.replacement-detail)>.replacement-master{display:none}
-  .replacement-detail{height:auto;flex:1 1 auto;padding:0 14px 66px}
+  .replacement-detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 14px 66px}
   .replacement-editor-header{position:sticky;top:0;z-index:32;min-height:64px;margin:0 -14px 15px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--rr-line);background:var(--app-header);backdrop-filter:blur(12px)}
   .replacement-editor-header>.back-button{display:inline-flex}
   .replacement-editor-header .replacement-page-title{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}

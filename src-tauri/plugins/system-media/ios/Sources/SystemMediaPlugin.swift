@@ -20,6 +20,7 @@ private struct UpdateArgs: Decodable { let state: MediaState }
 private struct ClearArgs: Decodable { let id: Double }
 
 final class SystemMediaPlugin: Plugin {
+    private weak var webview: WKWebView?
     private var state: MediaState?
     private var targets: [(MPRemoteCommand, Any)] = []
     private var observers: [NSObjectProtocol] = []
@@ -28,6 +29,7 @@ final class SystemMediaPlugin: Plugin {
     private var resumeAfterInterruption = false
 
     override func load(webview: WKWebView) {
+        self.webview = webview
         let notifications = NotificationCenter.default
         observers.append(notifications.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
             guard let self, let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -99,6 +101,8 @@ final class SystemMediaPlugin: Plugin {
             do {
                 let changedSession = self.state?.id != next.id
                 let changedCover = changedSession || self.state?.artwork != next.artwork
+                let changedMetadata = changedCover || self.state?.title != next.title
+                    || self.state?.artist != next.artist || self.state?.album != next.album
                 if changedSession {
                     // WebKit 管理播放会话的激活和停用；状态同步只配置类型。
                     try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
@@ -106,6 +110,15 @@ final class SystemMediaPlugin: Plugin {
                 }
                 if changedSession || self.state?.actions != next.actions { self.bindCommands(next.actions) }
                 self.state = next
+                if changedMetadata {
+                    // WebKit 也会发布正在播放的信息，与原生会话同步，避免退回网页标题。
+                    let metadata: [String: Any] = ["title": next.title, "artist": next.artist, "album": next.album,
+                        "artwork": next.artwork.isEmpty ? [] : [["src": next.artwork]]]
+                    self.webview?.callAsyncJavaScript(
+                        "if ('mediaSession' in navigator && 'MediaMetadata' in window) { navigator.mediaSession.metadata = new MediaMetadata(metadata); }",
+                        arguments: ["metadata": metadata],
+                        in: nil, in: .page, completionHandler: nil)
+                }
                 if changedCover {
                     self.coverTask?.cancel(); self.cover = nil
                     if let url = URL(string: next.artwork), ["http", "https"].contains(url.scheme ?? "") {
@@ -147,6 +160,8 @@ final class SystemMediaPlugin: Plugin {
         for (command, target) in targets { command.removeTarget(target); command.isEnabled = false }
         targets.removeAll()
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        webview?.callAsyncJavaScript("if ('mediaSession' in navigator) { navigator.mediaSession.metadata = null; }",
+            in: nil, in: .page, completionHandler: nil)
     }
     deinit {
         observers.forEach { NotificationCenter.default.removeObserver($0) }
