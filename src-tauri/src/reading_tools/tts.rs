@@ -35,6 +35,7 @@ use tokio::sync::{mpsc, watch};
 const MAX_HTTP_TTS_TEXT_CHARS: usize = 20_000;
 const MAX_HTTP_TTS_AUDIO_BYTES: usize = 16 * 1024 * 1024;
 const MAX_HTTP_TTS_AUDIO_BASE64_BYTES: usize = ((MAX_HTTP_TTS_AUDIO_BYTES + 2) / 3) * 4;
+const HTTP_TTS_PREFETCH: usize = 3; // 当前片段和后两个片段。
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
 #[derive(Deserialize)]
@@ -68,30 +69,6 @@ impl TtsSession {
 struct TtsAudio {
     src: String,
     boundaries: watch::Receiver<Vec<(usize, f64)>>,
-}
-
-struct TtsStream {
-    writer: crate::resources::TtsWriter,
-    profile: Option<Mp3StreamProfile>,
-    boundaries: watch::Sender<Vec<(usize, f64)>>,
-    source: Option<TtsAudio>,
-}
-
-impl TtsStream {
-    async fn publish(&mut self, output: &mpsc::Sender<TtsAudio>) -> Result<(), String> {
-        if let Some(source) = self.source.take() {
-            output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
-        }
-        Ok(())
-    }
-
-    async fn finish(self, output: &mpsc::Sender<TtsAudio>) -> Result<(), String> {
-        drop(self.writer);
-        if let Some(source) = self.source {
-            output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
-        }
-        Ok(())
-    }
 }
 
 #[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
@@ -488,6 +465,7 @@ pub(crate) async fn tts_voices(service: tauri::State<'_, Arc<Tts>>) -> Result<Ve
 #[tauri::command]
 pub(crate) async fn submit_tts(
     texts: Vec<TtsText>,
+    finished: Option<bool>,
     service: tauri::State<'_, Arc<Tts>>,
 ) -> Result<(), String> {
     validate_texts(&texts)?;
@@ -496,7 +474,13 @@ pub(crate) async fn submit_tts(
     tokio::select! {
         biased;
         _ = cancellation.wait_for(|cancelled| *cancelled) => Err("朗读已结束".into()),
-        result = session.input.send(texts) => result.map_err(|_| "朗读已结束".into()),
+        result = async {
+            session.input.send(texts).await.map_err(|_| "朗读已结束")?;
+            if finished.unwrap_or(false) {
+                session.input.send(vec![]).await.map_err(|_| "朗读已结束")?;
+            }
+            Ok(())
+        } => result,
     }
 }
 
@@ -596,12 +580,7 @@ impl Tts {
     }
 
     // KMP 只执行当前选定的 HTTP 规则；不经过任务系统或临时文件写库。
-    async fn tts_bytes(
-        &self,
-        config: &Value,
-        text: &str,
-        rate: f32,
-    ) -> Result<(Vec<u8>, &'static str), String> {
+    async fn tts_bytes(&self, config: &Value, text: &str, rate: f32) -> Result<Vec<u8>, String> {
         let token = tokio_util::sync::CancellationToken::new();
         let _cancel_on_drop = token.clone().drop_guard();
         let request = TtsRequest {
@@ -612,7 +591,7 @@ impl Tts {
         let result = match self.executor.http_tts_audio(request, token).await {
             Ok(result) => result,
             Err(error) if error.contains("HTTP TTS returned an empty audio response") => {
-                return Ok((vec![], "audio/mpeg"))
+                return Ok(vec![])
             }
             Err(error) => return Err(error),
         };
@@ -626,11 +605,7 @@ impl Tts {
         if bytes.len() > MAX_HTTP_TTS_AUDIO_BYTES {
             return Err("朗读音频超过 16 MiB".into());
         }
-        if bytes.is_empty() {
-            return Ok((bytes, "audio/mpeg"));
-        }
-        let content_type = http_tts_audio_type(&result.content_type, &bytes)?;
-        Ok((bytes, content_type))
+        Ok(bytes)
     }
 
     async fn generate_tts_audio(
@@ -646,227 +621,72 @@ impl Tts {
         use futures_util::StreamExt;
         let mut warmup_texts = texts.len();
         let incoming = futures_util::stream::poll_fn(move |context| input.poll_recv(context))
+            .take_while(|texts| futures_util::future::ready(!texts.is_empty()))
             .flat_map(futures_util::stream::iter);
         let texts = futures_util::stream::iter(texts).chain(incoming);
-        // 并发预取，按原文顺序直接写入同一条流，不等待播放进度。
+        // 生成和播放独立推进，持续提前处理后续片段，按正文顺序写入同一条流。
         let audio = texts
             .map(|item| async move {
-                let bytes = self.tts_bytes(config, &item.text, rate).await;
-                (item.index, bytes)
-            })
-            .buffered(3);
-        futures_util::pin_mut!(audio);
-        let mut stream: Option<TtsStream> = None;
-        while let Some((index, result)) = audio.next().await {
-            warmup_texts = warmup_texts.saturating_sub(1);
-            let (bytes, content_type) = result?;
-            if !bytes.is_empty() {
-                let parsed = (content_type == "audio/mpeg")
-                    .then(|| mp3_stream_payload(&bytes).ok())
-                    .flatten();
-                let (payload, duration, profile) = match parsed {
-                    Some((payload, duration, profile)) => (payload, duration, Some(profile)),
-                    None => (bytes.as_slice(), f64::INFINITY, None),
+                let bytes = self.tts_bytes(config, &item.text, rate).await?;
+                let audio = if bytes.is_empty() {
+                    None
+                } else {
+                    Some(
+                        tokio::task::spawn_blocking(move || audio::decode(bytes))
+                            .await
+                            .map_err(|error| error.to_string())??,
+                    )
                 };
-                if stream
-                    .as_ref()
-                    .is_some_and(|current| current.profile != profile)
-                {
-                    stream.take().unwrap().finish(&output).await?;
-                }
-                if stream.is_none() {
-                    let writer = resources
-                        .tts
-                        .create(content_type)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    assets.push(writer.id.clone());
-                    let (boundaries, progress) = watch::channel(vec![]);
-                    let source = TtsAudio {
-                        src: format!("{}tts/{}", resources.base_url(), writer.id),
-                        boundaries: progress,
-                    };
-                    stream = Some(TtsStream {
-                        writer,
-                        profile,
-                        boundaries,
-                        source: Some(source),
-                    });
-                }
-                let current = stream.as_mut().unwrap();
-                current
-                    .writer
-                    .append(payload)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                current.boundaries.send_modify(|items| {
+                Ok::<_, String>((item.index, audio))
+            })
+            .buffered(HTTP_TTS_PREFETCH);
+        futures_util::pin_mut!(audio);
+        let mut encoder = audio::encoder()?;
+        let mut writer = resources
+            .tts
+            .create("audio/mpeg")
+            .await
+            .map_err(|e| e.to_string())?;
+        assets.push(writer.id.clone());
+        let (boundaries, progress) = watch::channel(vec![]);
+        let mut source = Some(TtsAudio {
+            src: format!("{}tts/{}", resources.base_url(), writer.id),
+            boundaries: progress,
+        });
+        while let Some(result) = audio.next().await {
+            let (index, audio) = result?;
+            warmup_texts = warmup_texts.saturating_sub(1);
+            if let Some(audio) = audio {
+                let duration = audio.frames() as f64 / audio::SAMPLE_RATE as f64;
+                let (next, bytes) = audio::append(encoder, audio).await?;
+                encoder = next;
+                writer.append(&bytes).await.map_err(|e| e.to_string())?;
+                boundaries.send_modify(|items| {
                     let end = items.last().map_or(0.0, |(_, end)| *end) + duration;
                     items.push((index, end));
                 });
             }
-            if let Some(current) = stream.as_mut() {
-                if current.profile.is_none() {
-                    // 非可拼接格式保留独立资源，完成写入后才交给播放器。
-                    stream.take().unwrap().finish(&output).await?;
-                } else if warmup_texts == 0
-                    || current
-                        .boundaries
-                        .borrow()
-                        .last()
-                        .is_some_and(|(_, end)| *end >= 3.0)
-                {
-                    // 缓冲至少三秒再起播；首批文本较短时不等待未投递的内容。
-                    current.publish(&output).await?;
+            if !boundaries.borrow().is_empty()
+                && (warmup_texts == 0 || boundaries.borrow().len() >= HTTP_TTS_PREFETCH)
+            {
+                if let Some(source) = source.take() {
+                    output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
                 }
             }
         }
-        if let Some(stream) = stream {
-            stream.finish(&output).await?;
+        writer
+            .append(&audio::finish(&mut encoder)?)
+            .await
+            .map_err(|e| e.to_string())?;
+        drop(writer);
+        if let Some(source) = source.filter(|_| !boundaries.borrow().is_empty()) {
+            output.send(source).await.map_err(|_| "朗读播放器已关闭")?;
         }
         Ok(())
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct Mp3StreamProfile {
-    version: u32,
-    sample_rate: usize,
-    mono: bool,
-}
-
-/// 解析 MP3 帧的实际时长，拼流前移除每段自己的 ID3 和时长标记。
-fn mp3_stream_payload(bytes: &[u8]) -> Result<(&[u8], f64, Mp3StreamProfile), ()> {
-    let mut cursor = 0usize;
-    if bytes.starts_with(b"ID3") {
-        if bytes.len() < 10 || bytes[6..10].iter().any(|byte| byte & 0x80 != 0) {
-            return Err(());
-        }
-        let size = ((bytes[6] as usize) << 21)
-            | ((bytes[7] as usize) << 14)
-            | ((bytes[8] as usize) << 7)
-            | bytes[9] as usize;
-        cursor = 10 + size + if bytes[5] & 0x10 != 0 { 10 } else { 0 };
-        if cursor > bytes.len() {
-            return Err(());
-        }
-    }
-    let mut start = cursor;
-    let mut duration = 0.0;
-    let mut frames = 0;
-    let mut profile = None;
-    while cursor + 4 <= bytes.len() {
-        let header = u32::from_be_bytes(bytes[cursor..cursor + 4].try_into().map_err(|_| ())?);
-        if header >> 21 != 0x7ff {
-            break;
-        }
-        let version = (header >> 19) & 3;
-        let layer = (header >> 17) & 3;
-        let bitrate_index = ((header >> 12) & 15) as usize;
-        let sample_index = ((header >> 10) & 3) as usize;
-        if version == 1
-            || layer != 1
-            || bitrate_index == 0
-            || bitrate_index == 15
-            || sample_index == 3
-        {
-            break;
-        }
-        let bitrate = if version == 3 {
-            [
-                0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
-            ][bitrate_index]
-        } else {
-            [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160][bitrate_index]
-        };
-        let sample_rate = [44100, 48000, 32000][sample_index]
-            / match version {
-                3 => 1,
-                2 => 2,
-                _ => 4,
-            };
-        let frame_profile = Mp3StreamProfile {
-            version,
-            sample_rate,
-            mono: (header >> 6) & 3 == 3,
-        };
-        if profile.is_some_and(|previous| previous != frame_profile) {
-            return Err(());
-        }
-        profile = Some(frame_profile);
-        let frame_size = (if version == 3 { 144_000 } else { 72_000 }) * bitrate / sample_rate
-            + ((header >> 9) & 1) as usize;
-        if cursor + frame_size > bytes.len() {
-            break;
-        }
-        // Per-file Xing/Info/VBRI metadata advertises only that file's length.
-        // Keeping it makes native players stop at the first generated segment.
-        let side_info = if version == 3 {
-            if frame_profile.mono {
-                17
-            } else {
-                32
-            }
-        } else if frame_profile.mono {
-            9
-        } else {
-            17
-        };
-        let crc = if (header >> 16) & 1 == 0 { 2 } else { 0 };
-        let xing = cursor + 4 + crc + side_info;
-        let vbri = cursor + 36;
-        let metadata = frames == 0
-            && (matches!(bytes.get(xing..xing + 4), Some(b"Xing" | b"Info"))
-                || bytes.get(vbri..vbri + 4) == Some(b"VBRI"));
-        cursor += frame_size;
-        if metadata {
-            start = cursor;
-            continue;
-        }
-        duration += (if version == 3 { 1152.0 } else { 576.0 }) / sample_rate as f64;
-        frames += 1;
-    }
-    if frames < 2 || bytes.len() - cursor > 256 {
-        return Err(());
-    }
-    Ok((&bytes[start..cursor], duration, profile.ok_or(())?))
-}
-
-fn http_tts_audio_type(content_type: &str, bytes: &[u8]) -> Result<&'static str, String> {
-    let content_type = content_type.trim().to_ascii_lowercase();
-    match content_type.as_str() {
-        "audio/mpeg" | "audio/mp3" | "audio/x-mpeg" | "audio/x-mp3" => Ok("audio/mpeg"),
-        "audio/mp4" | "audio/x-m4a" => Ok("audio/mp4"),
-        "audio/aac" | "audio/aacp" => Ok("audio/aac"),
-        "audio/wav" | "audio/x-wav" | "audio/wave" => Ok("audio/wav"),
-        "audio/ogg" => Ok("audio/ogg"),
-        "audio/opus" => Ok("audio/ogg"),
-        "audio/flac" | "audio/x-flac" => Ok("audio/flac"),
-        "" | "application/octet-stream" => http_tts_audio_type_from_signature(bytes),
-        _ => Err(format!(
-            "Unsupported HTTP TTS audio content type: {content_type}"
-        )),
-    }
-}
-
-fn http_tts_audio_type_from_signature(bytes: &[u8]) -> Result<&'static str, String> {
-    if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
-        Ok("audio/wav")
-    } else if bytes.starts_with(b"OggS") {
-        Ok("audio/ogg")
-    } else if bytes.starts_with(b"fLaC") {
-        Ok("audio/flac")
-    } else if bytes.starts_with(b"ID3") {
-        Ok("audio/mpeg")
-    } else if bytes.len() >= 8 && &bytes[4..8] == b"ftyp" {
-        Ok("audio/mp4")
-    } else if bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xf6 == 0xf0 {
-        Ok("audio/aac")
-    } else if bytes.len() >= 2 && bytes[0] == 0xff && bytes[1] & 0xe0 == 0xe0 {
-        Ok("audio/mpeg")
-    } else {
-        Err("HTTP TTS returned an unsupported audio signature".to_owned())
-    }
-}
+mod audio;
 
 #[cfg(test)]
 mod tests;

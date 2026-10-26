@@ -365,7 +365,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
                 <option :value="0">横向封面</option><option :value="1">排行列表</option><option :value="2">无限网格</option><option :value="3">四列卡片</option>
               </select>
             </label>
-            <button type="button" class="home-config-editor__expand" :class="{ 'is-open': expandedSectionId === section.id }"
+            <button type="button" class="home-config-editor__expand"
               @click="expandedSectionId = expandedSectionId === section.id ? null : section.id">
               <PrototypeIcon name="more"/>
             </button>
@@ -503,7 +503,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);
   font-weight:600;white-space:nowrap;cursor:pointer;
 }
-.home-config-editor__tabs button.active{background:var(--app-selected);color:var(--app-on-selected);font-weight:750}
+.home-config-editor__tabs button.active{color:var(--app-text);font-weight:750}
 .home-config-editor__tabs .home-config-editor__tab-add{
   gap:4px;border:1px dashed var(--app-accent-soft);background:var(--app-panel-soft);color:var(--hc-accent);
 }
@@ -588,7 +588,6 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   display:grid;place-items:center;width:36px;height:36px;
   border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer;
 }
-.home-config-editor__expand.is-open{background:var(--app-accent-soft);color:var(--hc-accent)}
 .home-config-editor__expand :deep(svg){width:18px;height:18px}
 .home-config-editor__section-fields{
   display:grid;grid-template-columns:1fr 1fr auto;

@@ -93,31 +93,25 @@ function saveWebDavDraft(): void {
       <div class="backup-page-title"><strong>数据与同步</strong></div>
       <span></span>
     </header>
-    <div class="backup-content">
-    <header class="backup-hero">
-      <div class="backup-hero-copy">
-        <strong>最近备份</strong><span>{{ lastBackup }}</span>
-      </div>
-    </header>
+    <div class="ui-page-content backup-content">
+    <div class="backup-summary">
+      <span>最近备份</span><span>{{ lastBackup }}</span>
+    </div>
 
     <section class="backup-local-section">
-      <header><h3>本地备份</h3></header>
-      <button type="button" class="backup-action-link" :disabled="!!busy || locked" @click="createBackup">
-        <span class="backup-row-icon"><PrototypeIcon name="export"/></span>
-        <span><strong>{{ busy === 'create' ? '正在导出…' : '导出备份文件' }}</strong></span><PrototypeIcon name="right"/>
+      <h2>本地备份</h2>
+      <button type="button" class="settings-menu-row" :disabled="!!busy || locked" @click="createBackup">
+        <PrototypeIcon name="export"/>
+        <span class="settings-menu-copy"><strong>{{ busy === 'create' ? '正在导出…' : '导出备份文件' }}</strong></span><PrototypeIcon name="right"/>
       </button>
-      <button type="button" class="backup-action-link" :disabled="!!busy || locked" @click="restoreBackup">
-        <span class="backup-row-icon"><PrototypeIcon name="import"/></span>
-        <span><strong>{{ busy === 'restore' ? '正在恢复…' : '从备份恢复' }}</strong><small>恢复会替换当前本地数据</small></span><PrototypeIcon name="right"/>
+      <button type="button" class="settings-menu-row" :disabled="!!busy || locked" @click="restoreBackup">
+        <PrototypeIcon name="import"/>
+        <span class="settings-menu-copy"><strong>{{ busy === 'restore' ? '正在恢复…' : '从备份恢复' }}</strong><small>恢复会替换当前本地数据</small></span><PrototypeIcon name="right"/>
       </button>
     </section>
 
     <section class="webdav-settings">
-      <header class="webdav-heading">
-        <div>
-          <h3 id="webdav-backup-heading">WebDAV 备份</h3>
-        </div>
-      </header>
+      <h2 id="webdav-backup-heading">WebDAV 备份</h2>
 
       <form class="webdav-config-form" @submit.prevent="saveWebDavDraft">
         <label class="webdav-setting-row">
@@ -171,45 +165,37 @@ function saveWebDavDraft(): void {
 <style scoped>
 .backup-settings-page{width:100%;min-width:0;color:var(--app-text)}
 .backup-topbar{position:sticky;top:0;z-index:35;min-height:var(--ui-header-height);display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
-.backup-page-title{min-width:0;text-align:center}
+.backup-page-title{min-width:0}
 .backup-page-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750}
-.backup-content{box-sizing:border-box;width:min(640px,100%);margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}
-.backup-hero{padding-bottom:var(--ui-space-5);border-bottom:1px solid var(--app-line)}
-.backup-hero-copy{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;min-width:0}
-.backup-hero-copy strong{font-size:var(--ui-font-body);font-weight:500;color:var(--app-text)}
-.backup-hero-copy>span{font-size:var(--ui-font-caption);color:var(--app-muted);overflow-wrap:anywhere}
-.backup-local-section{margin-top:22px}
-.backup-local-section>header,.webdav-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 6px}
-.backup-local-section>header h3,.webdav-heading h3{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);font-weight:600}
-.backup-action-link{width:100%;display:grid;grid-template-columns:32px minmax(0,1fr) 16px;gap:8px;align-items:center;min-height:56px;padding:8px 0;border:0;border-bottom:1px solid var(--app-line);background:transparent;text-align:left;cursor:pointer}
-.backup-action-link:disabled{opacity:.5;cursor:default}
-.backup-row-icon{display:grid;place-items:center;width:32px;height:32px;color:var(--app-muted)}
-.backup-row-icon :deep(svg){width:18px;height:18px}
-.backup-action-link>span:nth-child(2){display:flex;flex-direction:column;gap:3px;min-width:0}
-.backup-action-link strong{font-size:var(--ui-font-body);font-weight:500;color:var(--app-text)}
-.backup-action-link small{font-size:var(--ui-font-caption);color:var(--app-muted);line-height:1.45}
-.backup-action-link>.prototype-icon{width:16px;height:16px;color:var(--app-subtle)}
-.webdav-settings{margin-top:var(--ui-space-6);background:transparent}
-.webdav-heading{align-items:center}
-.webdav-heading>div{display:flex;align-items:center;gap:8px}
-.webdav-heading h3{font-size:var(--ui-font-caption)}
-.webdav-config-form{display:grid;margin-top:12px}
-.webdav-setting-row{display:grid;grid-template-columns:72px minmax(0,1fr);align-items:center;gap:12px;min-height:0;padding:6px 0}
+.backup-summary{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--ui-space-2);padding-bottom:var(--ui-space-5);border-bottom:1px solid var(--app-line)}
+.backup-summary>span:last-child{color:var(--app-muted);font-size:var(--ui-font-caption);overflow-wrap:anywhere}
+.backup-local-section,.webdav-settings{padding-top:var(--ui-space-4)}
+.backup-content h2{margin:0 0 var(--ui-space-2);font-size:var(--ui-font-body);font-weight:750}
+.backup-local-section .settings-menu-row{padding-inline:0}
+.backup-local-section .settings-menu-row:last-child{border-bottom:0}
+.settings-menu-copy{display:grid;gap:var(--ui-space-1)}
+.settings-menu-copy small{color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5}
+.webdav-settings{border-top:1px solid var(--app-line)}
+.webdav-config-form{display:grid}
+.webdav-setting-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:var(--ui-space-4);min-height:64px;padding:var(--ui-space-3) 0;border-bottom:1px solid var(--app-line)}
 .backup-row-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
-.backup-row-copy strong{font-size:var(--ui-font-body);font-weight:500;color:var(--app-text)}
+.backup-row-copy strong{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
 .backup-row-copy small{font-size:var(--ui-font-caption);color:var(--app-muted);line-height:1.45}
 .webdav-setting-row input,.webdav-setting-row select{box-sizing:border-box;min-width:0;width:100%;min-height:var(--ui-control-height);padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
 .webdav-setting-row input:disabled,.webdav-setting-row select:disabled{opacity:.6}
-.webdav-config-actions,.webdav-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:12px 0}
+.webdav-config-actions,.webdav-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2);padding:var(--ui-space-3) 0}
 .webdav-config-actions .button,.webdav-actions .button{min-height:var(--ui-control-height);font-size:var(--ui-font-body);font-weight:500}
 .webdav-config-state{margin:0;padding:4px 0 8px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5;overflow-wrap:anywhere}
 .webdav-help{color:var(--app-muted);font-size:var(--ui-font-caption);margin:4px 0 16px}
 .webdav-help summary{padding-block:4px;cursor:pointer}
 .webdav-help p{margin:8px 0 0;line-height:1.5}
 .webdav-actions{padding-bottom:0}
-.webdav-auto-setting{grid-template-columns:minmax(0,1fr) 120px;padding:12px 0;border-block:1px solid var(--app-line)}
+.webdav-auto-setting{grid-template-columns:minmax(0,1fr) 120px;border-top:1px solid var(--app-line)}
 .webdav-draft-warning{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:10px 0;padding:9px;border:1px solid var(--app-warning-line);border-radius:9px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption)}
 .webdav-draft-warning button{padding:6px 8px;border:0;border-radius:7px;background:var(--app-surface);color:var(--app-accent);cursor:pointer}
 .webdav-error{margin:0;padding:9px 0;color:var(--app-danger);font-size:var(--ui-font-caption);line-height:1.55}
-.backup-action-link:focus-visible,.webdav-setting-row input:focus-visible,.webdav-setting-row select:focus-visible,.webdav-help summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
+.webdav-setting-row input:focus-visible,.webdav-setting-row select:focus-visible,.webdav-help summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
+@media(max-width:520px){
+  .webdav-config-form .webdav-setting-row{grid-template-columns:minmax(0,1fr);gap:var(--ui-space-2)}
+}
 </style>

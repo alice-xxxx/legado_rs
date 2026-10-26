@@ -142,10 +142,7 @@ Tauri 注册 `foliver` 协议，同时兼容 `legado`、`yuedu` 书源协议。�
 |---|---|
 | `/bookSource`、`/rssSource` | 书源或 RSS 配置勾选导入。 |
 | `/replaceRule`、`/textTocRule`、`/httpTTS` | 对应配置勾选导入。 |
-| `/importonline` | 按 host 区分旧式配置，其他情况自动识别。 |
-| `/read` | 已在内容库则继续阅读，否则准备书籍并打开详情。 |
-| `/addToBookshelf` | 准备详情，由用户决定加入内容库。 |
-| `/theme`、`/dictRule`、`/readConfig` | 提示暂未提供对应导入功能。 |
-| 其他路径 | 自动识别已有配置类型。 |
+| `/importonline` | 仅接受 host 为 `booksource`、`rsssource` 的源和 `replace` 的替换规则。 |
+| 其他路径 | 忽略，不自动识别。 |
 
-`foliver://import-source?url=...` 和 `foliver://import-rules?url=...` 分别导入书源和替换规则。载荷可为 HTTP(S) 地址或 JSON，由 Rust 下载、识别和校验，确认后保存；书籍链接不读取其指定的本地文件。协议注册见 `src-tauri/tauri.conf.json`。
+深度链接仅支持源、TXT 目录规则、替换规则和 HTTP TTS 配置。`foliver://import-source?url=...` 和 `foliver://import-rules?url=...` 分别导入源和替换规则。载荷可为 HTTP(S) 地址或 JSON，由 Rust 下载和校验，确认后保存。手动粘贴普通 HTTP(S) 地址或 JSON 时，仍在这四类配置中自动识别。协议注册见 `src-tauri/tauri.conf.json`。

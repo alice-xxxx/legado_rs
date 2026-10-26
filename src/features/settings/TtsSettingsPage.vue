@@ -537,7 +537,6 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
       <ManagedListToolbar
         v-model:query="configQuery"
         search-placeholder="搜索 TTS 配置"
-        :filter-active="enabledFilter !== 'all'"
         :filter-expanded="filterMenuOpen"
         :actions-expanded="actionsMenuOpen"
         @toggle-filter="toggleFilterMenu"
@@ -562,18 +561,18 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
       </ManagedListToolbar>
       <div class="http-tts-items-scroll" @scroll.passive="openConfigMenuId = null; filterMenuOpen = false; actionsMenuOpen = false">
       <ManagedListRow name="系统朗读" subtitle="不使用远程朗读" :enabled="false"
-        :active="selectedConfigId === ''" :busy="blocked" :show-menu="false"
+        :busy="blocked" :show-menu="false"
         @open="selectPlaybackConfig('')" />
       <ManagedListRow v-for="config in filteredConfigs" :key="config.id"
         :name="config.name" :subtitle="config.enabled ? 'HTTP TTS' : '已停用'" :enabled="config.enabled"
-        :active="selectedConfigId === config.id || (batchMode && selectedConfigIds.includes(config.id))" :busy="actionsBlocked"
+        :busy="actionsBlocked"
         :batch-mode="batchMode" :selected="selectedConfigIds.includes(config.id)"
         :show-menu="!batchMode"
         @open="batchMode ? toggleConfigSelection(config.id) : openEditor(config.id)"
         @select="toggleConfigSelection(config.id)"
       >
         <template #menu-trigger>
-          <button type="button" class="http-tts-config-menu-button" :class="{ 'is-open': openConfigMenuId === config.id }"
+          <button type="button" class="http-tts-config-menu-button"
             :disabled="actionsBlocked"
             @click.stop="toggleConfigMenu(config.id, $event)"><PrototypeIcon name="more"/></button>
         </template>
@@ -775,7 +774,6 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-selection-count{margin-left:auto;color:var(--tts-muted);font-size:var(--ui-font-caption)}
 .http-tts-selection-delete{color:var(--app-danger)}
 .http-tts-config-menu-button{display:grid;place-items:center;width:30px;height:34px;padding:0;border:0;border-radius:8px;background:transparent;color:var(--app-muted);cursor:pointer}
-.http-tts-config-menu-button.is-open{background:var(--app-accent-soft);color:var(--app-accent-ink)}
 .http-tts-config-menu-button:disabled{opacity:.45;cursor:default}
 .http-tts-config-menu-button :deep(svg){width:17px;height:17px}
 .http-tts-config-menu{position:fixed;z-index:1000;box-sizing:border-box;width:min(190px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow-y:auto;padding:5px;border:1px solid var(--tts-line,var(--app-line));border-radius:11px;background:var(--app-surface);box-shadow:0 12px 28px #22223322}

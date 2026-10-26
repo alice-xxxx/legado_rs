@@ -5,7 +5,6 @@ withDefaults(defineProps<{
   name: string;
   subtitle: string;
   enabled?: boolean;
-  active?: boolean;
   busy?: boolean;
   batchMode?: boolean;
   selected?: boolean;
@@ -13,7 +12,6 @@ withDefaults(defineProps<{
   showMenu?: boolean;
 }>(), {
   enabled: undefined,
-  active: false,
   busy: false,
   batchMode: false,
   selected: false,
@@ -29,7 +27,7 @@ const emit = defineEmits<{
 </script>
 
 <template>
-  <article class="managed-list-row" :class="{ 'is-active': active, 'is-batch': batchMode, 'has-menu': showMenu }">
+  <article class="managed-list-row" :class="{ 'is-batch': batchMode, 'has-menu': showMenu }">
     <input
       v-if="batchMode"
       class="managed-list-row__checkbox"
@@ -51,7 +49,6 @@ const emit = defineEmits<{
           class="managed-list-row__menu-button"
           :aria-label="`${name}的更多操作`"
           :aria-expanded="menuOpen"
-          :class="{ 'is-open': menuOpen }"
           :disabled="busy"
           @click.stop="emit('toggle-menu')"
         ><PrototypeIcon name="more" /></button>
@@ -77,10 +74,6 @@ const emit = defineEmits<{
 
 .managed-list-row:not(.has-menu) {
   grid-template-columns: minmax(0, 1fr);
-}
-
-.managed-list-row.is-active {
-  background: var(--app-accent-soft);
 }
 
 .managed-list-row.is-batch {
@@ -172,11 +165,6 @@ const emit = defineEmits<{
   background: transparent;
   color: var(--app-muted);
   cursor: pointer;
-}
-
-.managed-list-row__menu-button.is-open {
-  background: var(--app-accent-soft);
-  color: var(--app-accent-ink);
 }
 
 .managed-list-row__menu-button:disabled {

@@ -415,7 +415,6 @@ onBeforeUnmount(() => {
   <div class="source-workspace-frame" :class="{ 'source-workspace-frame--editing': management.sourceEditorOpen }">
   <SourceManagerPage
     :editor-open="management.sourceEditorOpen"
-    :editing-source-id="management.editingSource?.id"
     :sources="management.sources"
     :selected-ids="management.selectedSourceRows"
     :batch-busy="management.sourceBatchBusy || management.sourceEditBusy || management.sourceRemovalBusy"
@@ -570,7 +569,7 @@ onBeforeUnmount(() => {
 
 
 
-    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><div class="confirm-symbol source-confirm"><PrototypeIcon name="trash"/></div><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
+    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
 </template>
 <style scoped>
 .source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}
@@ -607,8 +606,6 @@ onBeforeUnmount(() => {
 .source-login-storage>summary{width:max-content;padding:4px 0;cursor:pointer}
 .source-login-storage>.button{min-height:var(--ui-compact-control-height);margin-top:8px;border-color:var(--app-danger-line);background:var(--app-surface);color:var(--app-danger);font-weight:500}
 .source-login-heading>button:focus-visible,.source-login-retry:focus-visible,.source-login-state>button:focus-visible,.source-login-storage>summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
-.source-confirm{color:var(--app-warning);background:var(--app-panel-soft)}
-.source-confirm svg{width:22px;height:22px}
 .detail-close svg{width:18px;height:18px}
 .source-import-modal{width:min(420px,100%);box-sizing:border-box;padding:22px}
 .source-import-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}

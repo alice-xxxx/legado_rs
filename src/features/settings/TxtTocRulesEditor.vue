@@ -511,7 +511,6 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
         <ManagedListToolbar
           v-model:query="query"
           search-placeholder="搜索目录规则"
-          :filter-active="enabledFilter !== 'all'"
           :filter-expanded="filterPanelOpen"
           :actions-expanded="actionsMenuOpen"
           @toggle-filter="toggleFilterPanel"
@@ -547,7 +546,6 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
             :name="rule.name || '未命名规则'"
             :subtitle="`优先级 ${rule.serialNumber} · ${rule.enable ? '已启用' : '已停用'}`"
             :enabled="rule.enable"
-            :active="showEditor && editingId === rule.id"
             :busy="busy"
             :batch-mode="batchMode"
             :selected="selectedIds.includes(rule.id)"

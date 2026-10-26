@@ -6,14 +6,9 @@ import type { UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import { type DisplayReplacementRule, type HttpTtsConfigEntry, type TxtTocRule } from "../../api/types";
 import { prepareDeepLinkImport } from "../../api/settings";
-import { readMoreInformation, readSources, readSourceDefinition } from "../../api/database";
-import { moreInformation } from "../../api/moreInformation";
-import { libraryType } from "../books/contentLibraryState";
 import { importSourceDefinitions } from "../sources/sourcesStore";
 import { replacementRuleStore, txtTocRuleStore, httpTtsStore } from "../settings/configurationStores";
-import { requestBookDetailOpen, discardBookDetailOpenRequest } from "../books/bookDetailOpenRequest";
 import { parseDeepLink, parseImportInput, deepLinkLabels, type ImportKind, type PendingImportLink } from "./deepLinks";
-import router, { routeNames } from "../../router";
 import type { ReaderSession } from "../reader/readerSession";
 
 type ImportEntry = { key: string; name: string; data: Record<string, unknown>; json?: string };
@@ -108,48 +103,6 @@ export function useExternalImportActions(options: ExternalImportOptions) {
     importLinkOpening.value = true;
     try {
       if (!await closeReaderForImport(revision) || !isCurrent()) return;
-      if (pending.kind === "read" || pending.kind === "addToBookshelf") {
-        const optionStart = pending.url.search(/,\s*\{/);
-        const url = new URL(optionStart < 0 ? pending.url : pending.url.slice(0, optionStart));
-        const origin = optionStart < 0 ? undefined : JSON.parse(pending.url.slice(optionStart + 1)).origin;
-        let sourceId = "";
-        for (const source of (await readSources()).filter(source => source.enabled && !source.isRss)) {
-          const definition = JSON.parse(await readSourceDefinition(source.id));
-          const base = definition.bookSourceUrl;
-          let matches = origin ? base === origin : false;
-          if (!origin) {
-            try { matches = new URL(base).origin === url.origin; } catch { /* 继续按 URL 规则匹配。 */ }
-            if (!matches && definition.bookUrlPattern) {
-              try { matches = new RegExp(`^(?:${definition.bookUrlPattern})$`).test(pending.url); } catch { /* 跳过无效规则。 */ }
-            }
-          }
-          if (matches) { sourceId = source.id; break; }
-        }
-        if (!sourceId) throw new Error("未找到匹配书源");
-        await moreInformation(sourceId, pending.url);
-        if (!isCurrent()) return;
-        const book = await readMoreInformation(sourceId, pending.url);
-        const inShelf = libraryType(book.id) !== undefined;
-        if (pending.kind === "addToBookshelf" && inShelf) throw new Error("已在书架");
-        if (!isCurrent()) return;
-        if (pending.kind === "read" && inShelf) {
-          await router.push({ name: routeNames.shelf });
-          if (isCurrent()) await options.getReaderSession().startReading(book);
-        } else {
-          if (router.currentRoute.value.name === routeNames.bookDetail) await router.push({ name: routeNames.shelf });
-          if (!isCurrent()) return;
-          const requestId = requestBookDetailOpen({ kind: "cached-book", bookId: book.id, initialTab: "info" });
-          try {
-            const failure = await router.push({ name: routeNames.bookDetail });
-            if (failure) throw new Error("无法打开书籍详情");
-          } catch (error) { discardBookDetailOpenRequest(requestId); throw error; }
-        }
-        if (isCurrent()) pendingImportLinks.value.shift();
-        return;
-      }
-      if (pending.kind === "theme" || pending.kind === "dictRule" || pending.kind === "readConfig") {
-        throw new Error("本应用尚未提供原版" + deepLinkLabels[pending.kind] + "导入");
-      }
       activeImportLink.value = pending;
       importError.value = "";
       const prepared = await prepareDeepLinkImport(pending.kind, pending.url);

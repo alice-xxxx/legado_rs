@@ -325,8 +325,7 @@ function clearBackground(): void {
 .appearance-theme-option.theme-dark>span{background:#25272c}
 .appearance-theme-option.theme-system>span{background:linear-gradient(135deg,#fff 50%,#25272c 50%)}
 .appearance-theme-option:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
-.appearance-theme-option.selected{border-color:var(--app-accent);color:var(--app-accent-ink);background:var(--app-accent-soft);font-weight:750}
-.appearance-theme-option.selected>span{box-shadow:0 0 0 1px #b9aef0}
+.appearance-theme-option.selected{color:var(--app-text);font-weight:750}
 .appearance-video-note{margin:8px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
 .appearance-advanced{border-top:1px solid var(--app-line)}
 .appearance-advanced>summary{display:flex;align-items:center;gap:9px;min-height:43px;color:var(--app-text);font-size:var(--ui-font-caption);font-weight:650;cursor:pointer;list-style:none}

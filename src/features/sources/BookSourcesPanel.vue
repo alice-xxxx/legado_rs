@@ -51,7 +51,7 @@ const sourceCandidates = computed<SearchResultSource[]>(() => {
       </p>
       <p v-if="message" class="status-notice is-error">{{ message }} <button v-if="error" type="button" class="text-button" @click="emit('retry')">重试</button></p>
       <div class="source-candidates">
-        <article v-for="candidate in sourceCandidates" :key="candidate.resultId" class="source-candidate" :class="{ 'is-current': candidate.sourceId === (book.sourceId ?? '') }" :data-result-id="candidate.resultId">
+        <article v-for="candidate in sourceCandidates" :key="candidate.resultId" class="source-candidate" :data-result-id="candidate.resultId">
           <span class="source-cover" aria-hidden="true">
             <span>{{ candidate.title.slice(0, 1) }}</span>
             <img v-if="candidate.coverSrc" :src="candidate.coverSrc" loading="lazy" decoding="async" alt=""
@@ -105,6 +105,4 @@ button .prototype-icon { width: 16px; height: 16px; }
 .source-latency { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .source-actions { display: flex; }
 .source-actions button { min-width: 64px; border-color: transparent; background: var(--app-panel-soft); }
-.source-candidate.is-current .source-actions button { background: var(--app-accent-soft); }
-button:hover:not(:disabled) { border-color: var(--app-accent); }
 </style>

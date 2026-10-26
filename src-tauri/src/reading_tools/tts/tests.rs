@@ -1,4 +1,4 @@
-//! 验证真实 HTTP 流的拼接和缓冲；人工 MP3 帧不用于听感验收。
+//! Real audio fixtures exercise decoding, continuous encoding and the HTTP stream.
 use super::*;
 use crate::{database::Database, resources::Resources};
 use serde_json::json;
@@ -7,8 +7,17 @@ use tauri_plugin_source_engine::*;
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
+const FORMATS: &[(&str, &[u8])] = &[
+    ("audio/wav", include_bytes!("fixtures/tone.wav")),
+    ("audio/mpeg", include_bytes!("fixtures/tone.mp3")),
+    ("audio/aac", include_bytes!("fixtures/tone.aac")),
+    ("audio/mp4", include_bytes!("fixtures/tone.m4a")),
+    ("audio/flac", include_bytes!("fixtures/tone.flac")),
+    ("audio/ogg", include_bytes!("fixtures/tone.ogg")),
+    ("audio/opus", include_bytes!("fixtures/tone.opus")),
+];
+
 struct AudioEngine {
-    frames: usize,
     empty_second: bool,
 }
 macro_rules! unexpected {
@@ -34,52 +43,21 @@ impl SourceExecutor for AudioEngine {
     ) -> EngineFuture<'a, AudioData> {
         Box::pin(async move {
             let index = request.text.parse::<usize>().unwrap();
-            // 故意乱序完成，请求结果仍须按正文顺序写入。
+            // Complete out of order, but preserve the original text order in the stream.
             sleep(Duration::from_millis(if index % 3 == 1 { 30 } else { 5 })).await;
-            let bytes = if self.empty_second && index == 1 {
-                vec![]
-            } else if self.frames == 0 {
-                [
-                    b"RIFF".as_slice(),
-                    &44u32.to_le_bytes(),
-                    b"WAVEfmt ",
-                    &16u32.to_le_bytes(),
-                    &[1, 0, 1, 0],
-                    &8000u32.to_le_bytes(),
-                    &16000u32.to_le_bytes(),
-                    &[2, 0, 16, 0],
-                    b"data",
-                    &8u32.to_le_bytes(),
-                    &[index as u8; 8],
-                ]
-                .concat()
-            } else {
-                mp3(index, self.frames)
-            };
+            let (content_type, bytes) = FORMATS[index % FORMATS.len()];
             Ok(AudioData {
-                bytes_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
-                content_type: if self.frames == 0 {
-                    "audio/wav"
-                } else {
-                    "audio/mpeg"
-                }
-                .into(),
+                bytes_base64: base64::engine::general_purpose::STANDARD.encode(
+                    if self.empty_second && index == 1 {
+                        &[]
+                    } else {
+                        bytes
+                    },
+                ),
+                content_type: content_type.into(),
             })
         })
     }
-}
-
-fn mp3(index: usize, frames: usize) -> Vec<u8> {
-    let mut bytes = b"ID3\x04\0\0\0\0\0\0".to_vec();
-    for number in 0..=frames {
-        let mut frame = vec![(index + 1) as u8; 417];
-        frame[..4].copy_from_slice(&[0xff, 0xfb, 0x90, 0]);
-        if number == 0 {
-            frame[36..40].copy_from_slice(b"Info");
-        }
-        bytes.extend(frame);
-    }
-    bytes
 }
 fn texts(count: usize) -> Vec<TtsText> {
     (0..count)
@@ -97,10 +75,9 @@ async fn resources() -> (tempfile::TempDir, Resources) {
 }
 
 #[tokio::test]
-async fn prepared_audio_is_appended_without_playback_feedback() {
+async fn mixed_formats_continue_in_one_stream_without_playback_feedback() {
     let (_root, resources) = resources().await;
     let service = Tts::new(Arc::new(AudioEngine {
-        frames: 40,
         empty_second: false,
     }));
     let (input, mut incoming) = mpsc::channel(1);
@@ -120,27 +97,17 @@ async fn prepared_audio_is_appended_without_playback_feedback() {
     assert_send(&generating);
     let consuming = async {
         let mut source = sources.recv().await.unwrap();
-        assert!(source.boundaries.borrow().last().unwrap().1 >= 3.0);
+        assert!(source.boundaries.borrow().len() >= 3);
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let mut response = client.get(&source.src).send().await.unwrap();
+        let response = client.get(&source.src).send().await.unwrap();
+        assert_eq!(response.headers()["content-type"], "audio/mpeg");
         assert_eq!(response.headers()["accept-ranges"], "none");
-        // 不发送播放事件，所有预取结果也必须已经进入同一条流。
+        // The producer must keep appending before any playback progress is reported.
         source
             .boundaries
             .wait_for(|items| items.len() == 8)
             .await
             .unwrap();
-        let expected: Vec<_> = (0..8)
-            .flat_map(|index| mp3_stream_payload(&mp3(index, 40)).unwrap().0.to_vec())
-            .collect();
-        let mut body = vec![];
-        while body.len() < expected.len() {
-            body.extend(response.chunk().await.unwrap().unwrap());
-        }
-        assert_eq!(body, expected);
-        assert!(timeout(Duration::from_millis(40), response.chunk())
-            .await
-            .is_err());
         input
             .send(vec![TtsText {
                 text: "8".into(),
@@ -153,21 +120,30 @@ async fn prepared_audio_is_appended_without_playback_feedback() {
             .wait_for(|items| items.len() == 9)
             .await
             .unwrap();
-        drop(input);
-        let mut tail = vec![];
-        while let Some(bytes) = response.chunk().await.unwrap() {
-            tail.extend(bytes);
-        }
-        assert_eq!(tail, mp3_stream_payload(&mp3(8, 40)).unwrap().0);
+        // Finish the audio stream while the session remains open for user controls.
+        input.send(vec![]).await.unwrap();
+        let bytes = response.bytes().await.unwrap();
         assert!(sources.recv().await.is_none());
-        let items = source.boundaries.borrow();
+        let items = source.boundaries.borrow().clone();
         assert_eq!(
             items.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
             (0..9).collect::<Vec<_>>()
         );
         assert!(items.windows(2).all(|pair| pair[0].1 < pair[1].1));
+        let decoded = audio::decode(bytes.to_vec()).unwrap();
+        let duration = decoded.frames() as f64 / audio::SAMPLE_RATE as f64;
+        assert!((duration - items.last().unwrap().1).abs() < 0.1);
+        // A valid continuous audio signal must span every input format boundary.
+        for (_, end) in items.iter().take(8) {
+            let center = (*end * audio::SAMPLE_RATE as f64) as usize;
+            let samples = &decoded.data[0]
+                [center.saturating_sub(4410)..(center + 4410).min(decoded.frames())];
+            let energy =
+                samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32;
+            assert!(energy > 0.001, "silent audio boundary at {end}");
+        }
     };
-    let (result, ()) = timeout(Duration::from_secs(5), async {
+    let (result, ()) = timeout(Duration::from_secs(15), async {
         tokio::join!(generating, consuming)
     })
     .await
@@ -178,12 +154,9 @@ async fn prepared_audio_is_appended_without_playback_feedback() {
 
 #[tokio::test]
 async fn short_batch_and_empty_audio_do_not_wait_for_more_text() {
-    for (count, empty_second) in [(1, false), (2, true)] {
+    for (count, empty_second) in [(1, false), (2, false), (2, true)] {
         let (_root, resources) = resources().await;
-        let service = Tts::new(Arc::new(AudioEngine {
-            frames: 4,
-            empty_second,
-        }));
+        let service = Tts::new(Arc::new(AudioEngine { empty_second }));
         let (input, mut incoming) = mpsc::channel(1);
         let (output, mut sources) = mpsc::channel(1);
         let mut assets = vec![];
@@ -199,27 +172,34 @@ async fn short_batch_and_empty_audio_do_not_wait_for_more_text() {
         );
         let consuming = async {
             let source = sources.recv().await.unwrap();
-            let items = source.boundaries.borrow().clone();
+            let expected: Vec<_> = (0..count)
+                .filter(|index| !(empty_second && *index == 1))
+                .collect();
             assert_eq!(
-                items.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-                vec![0]
+                source
+                    .boundaries
+                    .borrow()
+                    .iter()
+                    .map(|(index, _)| *index)
+                    .collect::<Vec<_>>(),
+                expected
             );
-            assert!(items.last().unwrap().1 < 3.0);
-            drop(input);
-            let body = reqwest::get(source.src)
+            input.send(vec![]).await.unwrap();
+            let bytes = reqwest::Client::builder()
+                .no_proxy()
+                .build()
+                .unwrap()
+                .get(source.src)
+                .send()
                 .await
                 .unwrap()
                 .bytes()
                 .await
                 .unwrap();
-            let expected: Vec<_> = [0]
-                .into_iter()
-                .flat_map(|index| mp3_stream_payload(&mp3(index, 4)).unwrap().0.to_vec())
-                .collect();
-            assert_eq!(body.as_ref(), expected);
+            assert!(audio::decode(bytes.to_vec()).unwrap().frames() > 0);
             assert!(sources.recv().await.is_none());
         };
-        let (result, ()) = timeout(Duration::from_secs(5), async {
+        let (result, ()) = timeout(Duration::from_secs(15), async {
             tokio::join!(generating, consuming)
         })
         .await
@@ -229,49 +209,14 @@ async fn short_batch_and_empty_audio_do_not_wait_for_more_text() {
     }
 }
 
-#[tokio::test]
-async fn independent_formats_are_sealed_before_playback() {
-    let (_root, resources) = resources().await;
-    let service = Tts::new(Arc::new(AudioEngine {
-        frames: 0,
-        empty_second: false,
-    }));
-    let (input, mut incoming) = mpsc::channel(1);
-    drop(input);
-    let (output, mut sources) = mpsc::channel(1);
-    let mut assets = vec![];
-    let config = json!({});
-    let generating = service.generate_tts_audio(
-        &resources,
-        &config,
-        1.0,
-        texts(3),
-        &mut incoming,
-        output,
-        &mut assets,
-    );
-    let consuming = async {
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        for index in 0..3 {
-            let source = sources.recv().await.unwrap();
-            assert_eq!(source.boundaries.borrow()[0].0, index);
-            let response = client
-                .get(source.src)
-                .header("Range", "bytes=0-3")
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status(), 206);
-            assert_eq!(response.headers()["content-length"], "4");
-            assert_eq!(response.bytes().await.unwrap().as_ref(), b"RIFF");
-        }
-        assert!(sources.recv().await.is_none());
-    };
-    let (result, ()) = timeout(Duration::from_secs(5), async {
-        tokio::join!(generating, consuming)
-    })
-    .await
-    .unwrap();
-    result.unwrap();
-    assert_eq!(assets.len(), 3);
+#[test]
+fn all_input_formats_decode_to_the_same_sample_rate() {
+    for (format, bytes) in FORMATS {
+        let audio =
+            audio::decode(bytes.to_vec()).unwrap_or_else(|error| panic!("{format}: {error}"));
+        assert_eq!(audio.sample_rate.get(), audio::SAMPLE_RATE);
+        let duration = audio.frames() as f64 / audio::SAMPLE_RATE as f64;
+        assert!((0.45..0.65).contains(&duration), "{format}: {duration}");
+    }
+    assert!(audio::decode(b"invalid audio".to_vec()).is_err());
 }

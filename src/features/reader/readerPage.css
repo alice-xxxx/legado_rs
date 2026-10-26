@@ -72,7 +72,6 @@
   opacity: .45;
   cursor: default;
 }
-.reader-tool-button:hover { background: var(--app-panel-soft); }
 .reader-tool-button:focus-visible,
 .reader-nav-action:focus-visible,
 .reader-dialog-close:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
@@ -175,7 +174,6 @@
 .reader-nav-action small { font-size: var(--ui-font-caption); }
 .reader-nav-action.active {
   color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 .reader-nav-action > span { display: grid; width: 24px; height: 24px; place-items: center; }
 .reader-comic-page-counter { position: absolute; z-index: 3; right: 20px; bottom: 70px; }
@@ -232,7 +230,7 @@
 .range-control input { min-width: 0; flex: 1; }
 .theme-options { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .theme-option { min-height: 32px; padding: 4px 8px; border: 1px solid var(--reader-chrome-border); border-radius: 8px; color: var(--reader-chrome-text); background: var(--reader-chrome-bg); cursor: pointer; }
-.theme-option.selected { border-color: var(--app-accent); color: var(--app-accent-ink); background: var(--app-accent-soft); }
+.theme-option.selected { color: var(--reader-chrome-text); font-weight: 600; }
 
 .reader-settings-popover input:not([type="range"]):not([type="checkbox"]),
 .reader-settings-popover select {
@@ -262,9 +260,7 @@
 .pdf-scale-control > div > button.selected,
 .comic-scale-control > div > button.selected,
 .comic-mode-control > button.selected {
-  border-color: var(--app-accent);
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
+  font-weight: 600;
 }
 
 .reader-audio-console {
@@ -319,7 +315,6 @@
 .reader-audio-utilities small { font-size: var(--ui-font-caption); }
 .reader-audio-utilities strong { font-size: var(--ui-font-body); }
 .reader-audio-utilities svg { width: 18px; height: 18px; }
-.reader-audio-utilities > button:hover { color: var(--app-text); background: var(--app-panel-soft); }
 .reader-audio-playback > button:focus-visible,
 .reader-audio-utilities > button:focus-visible,
 .reader-video-episodes button:focus-visible,
@@ -360,9 +355,7 @@
   cursor: pointer;
 }
 .reader-video-episodes nav > button.active {
-  border-color: var(--app-accent);
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
+  font-weight: 600;
 }
 
 .pdf-scale-control, .comic-scale-control { display: grid; gap: 8px; }
@@ -456,7 +449,6 @@
   background: transparent;
   cursor: pointer;
 }
-.reader-dialog-close:hover { color: var(--app-text); background: var(--app-panel-soft); }
 .reader-bookmark-sheet-position {
   display: grid;
   gap: 4px;

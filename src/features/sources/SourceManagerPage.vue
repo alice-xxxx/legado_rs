@@ -17,7 +17,6 @@ const props = defineProps<{
   locked: boolean;
   searchBusy: boolean;
   editorOpen?: boolean;
-  editingSourceId?: string;
 }>();
 
 const emit = defineEmits<{
@@ -54,7 +53,6 @@ const writeLocked = computed(() => toolbarBusy.value || props.locked);
 
 const groups = computed(() => [...new Set(props.sources.map((source) => source.group).filter((group): group is string => Boolean(group)))].sort());
 const enabledCount = computed(() => props.sources.filter((source) => source.enabled).length);
-const sourceFiltersActive = computed(() => Boolean(groupFilter.value || statusFilter.value !== "all"));
 const sourceCapabilities = [
   { key: "search", icon: "search", label: "搜索" },
   { key: "detail", icon: "info", label: "详情" },
@@ -176,7 +174,6 @@ useOutsidePointerDismiss(
         <ManagedListToolbar
           v-model:query="query"
           search-placeholder="搜索名称、分组或标识"
-          :filter-active="sourceFiltersActive"
           :filter-expanded="filterMenuOpen"
           :actions-expanded="actionsMenuOpen"
           @toggle-filter="filterMenuOpen = !filterMenuOpen; actionsMenuOpen = false; addMenuOpen = false; openSourceMenuId = null"
@@ -215,7 +212,6 @@ useOutsidePointerDismiss(
           <ManagedListRow v-for="source in visibleSources" :key="source.id"
             :name="source.name" :subtitle="`${sourceKindLabel(source)} · ${source.group || '未分组'}`"
             :enabled="source.enabled"
-            :active="editorOpen ? editingSourceId === source.id : activeSource?.id === source.id"
             :busy="writeLocked" :batch-mode="batchMode" :selected="selectedSourceSet.has(source.id)"
             :menu-open="openSourceMenuId === source.id"
             @open="editorOpen ? emit('switch-editor', source) : activateSource(source)"
@@ -300,7 +296,7 @@ useOutsidePointerDismiss(
         <section class="source-inspector-section">
           <small>解析能力</small>
           <div class="source-capabilities">
-            <div v-for="item in sourceCapabilities" :key="item.key" :class="{ configured: !!activeSource.capabilities?.[item.key] }">
+            <div v-for="item in sourceCapabilities" :key="item.key">
               <PrototypeIcon :name="item.icon"/>
               <strong>{{ item.label }}</strong>
               <small>{{ activeSource.capabilities?.[item.key] ? '已配置' : '未配置' }}</small>
@@ -370,7 +366,7 @@ useOutsidePointerDismiss(
 .source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px; border-right:1px solid var(--app-line); background:var(--app-surface); }
 .source-filter-menu,.source-toolbar-actions-menu{position:absolute;right:0;top:calc(100% + 5px);z-index:70;display:grid;gap:3px;min-width:176px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
 .source-filter-menu>button,.source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);cursor:pointer}
-.source-filter-menu>button.active{color:var(--app-accent-ink);background:var(--app-accent-soft)}
+.source-filter-menu>button.active{color:var(--app-text);font-weight:600}
 .source-filter-menu{max-height:min(480px,calc(100dvh - 180px));max-width:min(280px,calc(100vw - 48px));overflow-y:auto}
 .source-filter-menu>button{overflow-wrap:anywhere}
 .source-filter-menu>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
@@ -449,7 +445,6 @@ useOutsidePointerDismiss(
 .source-large-icon svg{width:24px;height:24px}
 .source-capabilities{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}
 .source-capabilities>div{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:94px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-panel-soft);color:var(--app-subtle);text-align:center}
-.source-capabilities>div.configured{color:var(--app-accent);background:var(--app-accent-soft);border-color:var(--app-accent-soft)}
 .source-capabilities svg{width:21px;height:21px}
 .source-capabilities strong{font-size:var(--ui-font-caption);color:var(--app-text)}
 .source-capabilities small{font-size:var(--ui-font-caption);color:var(--app-subtle)}

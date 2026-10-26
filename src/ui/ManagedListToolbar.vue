@@ -1,15 +1,12 @@
 <script setup lang="ts">
 import PrototypeIcon from "./PrototypeIcon.vue";
 
-withDefaults(defineProps<{
+defineProps<{
   query: string;
   searchPlaceholder: string;
-  filterActive?: boolean;
   filterExpanded: boolean;
   actionsExpanded: boolean;
-}>(), {
-  filterActive: false,
-});
+}>();
 
 const emit = defineEmits<{
   "update:query": [query: string];
@@ -37,7 +34,6 @@ const emit = defineEmits<{
         class="managed-list-toolbar__button"
         aria-label="筛选列表"
         :aria-expanded="filterExpanded"
-        :class="{ 'is-active': filterActive, 'is-open': filterExpanded }"
         @click="emit('toggle-filter', $event)"
       ><PrototypeIcon name="filter" /></button>
       <slot name="filter-menu" />
@@ -46,7 +42,6 @@ const emit = defineEmits<{
       <button
         type="button"
         class="managed-list-toolbar__button"
-        :class="{ 'is-open': actionsExpanded }"
         aria-label="更多列表操作"
         :aria-expanded="actionsExpanded"
         @click="emit('toggle-actions', $event)"
@@ -119,12 +114,6 @@ const emit = defineEmits<{
   background: transparent;
   color: var(--app-text);
   cursor: pointer;
-}
-
-.managed-list-toolbar__button.is-active,
-.managed-list-toolbar__button.is-open {
-  background: var(--app-accent-soft);
-  color: var(--app-accent-ink);
 }
 
 .managed-list-toolbar__button :deep(svg) {

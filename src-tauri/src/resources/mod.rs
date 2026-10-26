@@ -3,7 +3,6 @@ mod io;
 mod reference;
 pub(crate) mod validation;
 pub(crate) use io::settings::protected_resources;
-pub(crate) use io::tts::Writer as TtsWriter;
 pub use reference::{ResourceError, ResourceRef};
 use std::path::{Path, PathBuf};
 pub(crate) use validation::check_path_no_symlink;

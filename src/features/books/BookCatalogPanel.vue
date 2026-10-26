@@ -53,7 +53,7 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
     <div ref="viewport" class="catalog-scroll">
       <div :ref="windowed.list" class="catalog-list">
         <div aria-hidden="true" :style="{ height: `${range.top}px` }"></div>
-        <article v-for="chapter in visibleItems" :key="chapter.id" class="catalog-row-wrap" :class="{ current: chapter.index === activeIndex, volume: chapter.volume, 'can-replace': canReplace }">
+        <article v-for="chapter in visibleItems" :key="chapter.id" class="catalog-row-wrap" :class="{ volume: chapter.volume, 'can-replace': canReplace }">
           <button type="button" class="catalog-row" :data-chapter-index="chapter.index" :disabled="busy || locked || chapter.volume" :aria-current="chapter.index === activeIndex ? 'true' : undefined" @click="emit('select', chapter.index)">
             <strong>{{ chapter.title }}</strong>
             <span v-if="chapter.index === activeIndex" class="catalog-current-label">当前</span>
@@ -82,24 +82,19 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 .catalog-tools-actions { display: flex; gap: 4px; }
 .catalog-tools-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding-inline: 8px; border-radius: var(--ui-radius); color: var(--app-muted); background: transparent; font-size: var(--ui-font-caption); white-space: nowrap; }
 .catalog-tools-actions .prototype-icon { width: 16px; height: 16px; }
-.catalog-tools-actions button[aria-pressed="true"] { color: var(--app-accent-ink); background: var(--app-accent-soft); }
 .catalog-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .catalog-row-wrap { display: grid; position: relative; grid-template-columns: minmax(0, 1fr); height: 56px; border-bottom: 1px solid var(--app-line); }
 .catalog-row-wrap.can-replace { grid-template-columns: minmax(0, 1fr) 40px; }
 .catalog-row { display: flex; align-items: center; gap: 8px; width: 100%; height: 55px; min-width: 0; padding-inline: 10px; color: var(--app-text); text-align: left; }
 .catalog-row strong { flex: 1; min-width: 0; overflow: hidden; font-size: var(--ui-font-body); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
-.catalog-row-wrap.current { background: var(--app-accent-soft); }
-.catalog-row-wrap.current::before { content: ""; position: absolute; top: 14px; bottom: 14px; left: 0; width: 3px; border-radius: 3px; background: var(--app-accent); }
-.catalog-row-wrap.current strong { color: var(--app-accent-ink); font-weight: 600; }
 .catalog-row-wrap.volume strong { color: var(--app-muted); font-weight: 600; }
-.catalog-current-label { flex: none; color: var(--app-accent-ink); font-size: var(--ui-font-caption); }
+.catalog-current-label { flex: none; color: var(--app-muted); font-size: var(--ui-font-caption); }
 .catalog-uncached { display: grid; flex: none; place-items: center; color: var(--app-muted); }
 .catalog-uncached .prototype-icon { width: 16px; height: 16px; }
 .catalog-replace-action { display: grid; align-self: center; place-items: center; width: 40px; height: 44px; border-radius: 8px; color: var(--app-muted); }
 .catalog-replace-action .prototype-icon { width: 18px; height: 18px; }
 button { cursor: pointer; }
 button:disabled { cursor: default; }
-.catalog-row:hover:not(:disabled), .catalog-replace-action:hover:not(:disabled) { background: var(--app-panel-softer); }
 .catalog-row:focus-visible { outline-offset: -2px; }
 @media (max-width: 680px) {
   .catalog-tools-actions button { width: 32px; padding: 0; }

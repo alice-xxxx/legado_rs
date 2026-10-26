@@ -469,7 +469,6 @@ function toggleFilterPanel(event: MouseEvent): void {
       <ManagedListToolbar
         v-model:query="query"
         search-placeholder="替换净化-搜索"
-        :filter-active="statusFilter !== 'all'"
         :filter-expanded="filterPanelOpen"
         :actions-expanded="actionsMenuOpen"
         @toggle-filter="toggleFilterPanel"
@@ -498,7 +497,6 @@ function toggleFilterPanel(event: MouseEvent): void {
           :name="rule.name || '未命名规则'"
           :subtitle="`${scopeLabel(rule.scope)} · ${rule.isRegex ? '正则' : '文本'}`"
           :enabled="rule.enabled"
-          :active="editingRule?.id === rule.id && !!draft"
           :busy="busy"
           :batch-mode="batchMode"
           :selected="selectedIds.includes(rule.id)"

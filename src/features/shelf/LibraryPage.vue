@@ -385,7 +385,6 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
     <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
       <article class="app-modal shelf-batch-remove-modal">
         <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
-        <div class="confirm-symbol">⌫</div>
         <p class="eyebrow">批量移除</p>
         <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
         <p class="modal-description">将从书架中移除所选书籍、阅读进度、书签和本地缓存。请核对书名；取消不会修改书架。</p>
@@ -604,8 +603,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 .library-type-filter button.active {
-  background: var(--app-selected);
-  color: var(--app-on-selected);
+  color: var(--app-text);
 }
 
 .library-top-actions {
@@ -852,8 +850,7 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 }
 
 .library-manage-group-list button.active {
-  background: var(--app-accent-soft);
-  color: var(--app-accent-ink);
+  color: var(--app-text);
 }
 
 .library-manage-group-list button:disabled {
@@ -1114,11 +1111,6 @@ function chapterCountLabel(book: ShelfResource["books"][number]): string {
 
 .library-manage-book.selected .library-manage-tick {
   display: flex;
-}
-
-.library-manage-book.selected .library-manage-cover {
-  outline: 2px solid var(--app-accent);
-  outline-offset: 2px;
 }
 
 .library-manage-book>strong,

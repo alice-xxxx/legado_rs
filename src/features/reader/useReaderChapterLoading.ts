@@ -13,6 +13,7 @@ export type CachedChapterContent = ChapterTextResource | ChapterRichTextResource
 export interface ReaderChapterLoadingOptions {
   reader: {
     chapterIndex: Ref<number>;
+    viewport: Ref<HTMLElement | null>;
     pendingPosition: Ref<ReaderPosition | null>;
     content: Ref<CachedChapterContent | null>;
     pdfPage: Readonly<Ref<PdfPageResource | null>>;
@@ -78,6 +79,14 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     reader.menuOpen.value = true;
     complete(false);
   }
+  // 首次打开的异步阅读页面可能晚于正文加载完成，等视口挂载后再恢复位置。
+  watch([reader.viewport, reader.busy], () => {
+    if (!reader.viewport.value || reader.busy.value || !reader.pendingPosition.value
+      || reader.mediaChapter.value || reader.pdfPage.value) return;
+    if (!reader.imagePage.value) actions.measureReaderPages();
+    actions.restoreReadingPosition(reader.pendingPosition.value);
+    reader.pendingPosition.value = null;
+  }, { flush: "post" });
   watch(() => {
     if (!reader.visible.value) return null;
     const book = openedBook.value;
@@ -119,11 +128,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       reader.busy.value = false;
       await nextTick();
       if (controller.signal.aborted) return;
-      if (!reader.imagePage.value && !reader.mediaChapter.value && !reader.pdfPage.value) actions.measureReaderPages();
-      if (!reader.mediaChapter.value && !reader.pdfPage.value && reader.pendingPosition.value) {
-        actions.restoreReadingPosition(reader.pendingPosition.value);
-      }
-      reader.pendingPosition.value = null;
+      if (reader.mediaChapter.value || reader.pdfPage.value) reader.pendingPosition.value = null;
       actions.beginReadingSession();
       actions.applyPendingReaderFragment();
       complete(true);

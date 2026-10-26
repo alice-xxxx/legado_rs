@@ -121,7 +121,9 @@ export function useReaderTts(options: UseReaderTtsOptions) {
     const start = nextIndex;
     nextIndex += chunks.length;
     chapters.push({ index, start, targets: chunks.map(chunk => chunk.target), revision: options.reader.getLoadRevision() });
-    await submitTts(chunks.map((chunk, index) => ({ text: chunk.text, index: start + index })));
+    const finished = selected || !settings.value.reader.ttsContinueAcrossChapters
+      || !openedBook.value?.chapters.some(chapter => !chapter.volume && chapter.index > index);
+    await submitTts(chunks.map((chunk, index) => ({ text: chunk.text, index: start + index })), finished);
   }
 
   async function startTts(text?: string): Promise<void> {

@@ -26,8 +26,6 @@
   --app-danger: #b4545f;
   --app-shadow: 0 18px 46px rgb(30 33 45 / 8%);
   --app-header: rgb(255 255 255 / 92%);
-  --app-selected: #202126;
-  --app-on-selected: #fff;
   --app-danger-soft: #fff0f2;
   --app-danger-line: #e8c5c8;
   --app-success-soft: #edf5ef;
@@ -95,8 +93,6 @@
   --app-danger: #ed9da7;
   --app-shadow: 0 18px 46px rgb(0 0 0 / 32%);
   --app-header: rgb(23 25 30 / 92%);
-  --app-selected: #e6e8ed;
-  --app-on-selected: #17191e;
   --app-danger-soft: #402b32;
   --app-danger-line: #75505a;
   --app-success-soft: #263b30;
@@ -269,7 +265,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease, transform 100ms ease;
 }
 .button:enabled:active, .back-button:enabled:active, .book-detail-icon-button:enabled:active, .search-result-open:enabled:active { transform: scale(.97); }
-.settings-menu-row:enabled:active, .managed-list-row__main:enabled:active { background: var(--app-panel-soft); }
 .modal-backdrop, .overlay-backdrop { animation: app-scrim-in 140ms ease both; overscroll-behavior: contain; }
 .modal-backdrop > :first-child, .overlay-backdrop > :first-child,
 .reader-book-page, .book-source-switch-page, .reader-settings-popover { animation: app-panel-in 180ms cubic-bezier(.2,.8,.2,1) both; }

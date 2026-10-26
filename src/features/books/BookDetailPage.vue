@@ -745,11 +745,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   cursor: pointer;
 }
 
-.book-detail-icon-button[aria-expanded="true"] {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
-}
-
 .book-detail-menu-wrap {
   position: relative;
 }
@@ -1024,16 +1019,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   line-height: 1.85;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-}
-
-.book-detail-menu-item:hover:not(:disabled),
-.book-detail-icon-button:hover,
-.detail-fact-link:hover {
-  background: var(--app-panel-softer);
-}
-
-.prototype-overview-progress:hover {
-  background: var(--app-panel-softer);
 }
 
 .confirm-modal {

@@ -359,7 +359,7 @@ onBeforeUnmount(() => {
       <p v-if="findError">{{ findError }}</p>
       <div v-if="findPageMatches.length" class="pdf-find-results">
         <button v-for="index in findPageMatches.slice(0,100)" :key="index" type="button"
-          :class="{ active: index === pageIndex }" @click="emit('pageSelected', index)">
+          @click="emit('pageSelected', index)">
           第 {{ index + 1 }} 页
         </button>
       </div>
@@ -369,7 +369,6 @@ onBeforeUnmount(() => {
       <button type="button" class="pdf-thumb-window-control" :disabled="thumbnailStart <= 0" @click="setThumbnailWindow(thumbnailStart - thumbnailPageWindow)">上一组</button>
       <div class="pdf-thumb-list">
         <button v-for="thumbnail in thumbnails" :key="thumbnail.index" type="button"
-          :class="{ active: thumbnail.index === pageIndex }"
           @click="emit('pageSelected',thumbnail.index)">
           <img :src="thumbnail.src" loading="lazy"/>
           <small>{{ thumbnail.index + 1 }}</small>
@@ -425,7 +424,6 @@ onBeforeUnmount(() => {
 .pdf-thumb-window-control { min-height: 32px; flex: none; }
 .pdf-thumb-list { display: flex; min-height: 0; flex: 1; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; }
 .pdf-thumb-list button { display: grid; width: 100%; justify-items: center; gap: 3px; padding: 5px 2px; border: 1px solid transparent; }
-.pdf-thumb-list button.active { border-color: var(--app-accent); }
 .pdf-thumb-list img { display: block; max-width: 100%; max-height: 90px; object-fit: contain; }
 
 .pdf-reader-status { position: absolute; z-index: 2; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
@@ -456,7 +454,6 @@ onBeforeUnmount(() => {
 .pdf-find-panel p { margin: 0; }
 .pdf-find-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
 .pdf-find-results button { min-height: 36px; border: 1px solid transparent; }
-.pdf-find-results button.active { border-color: var(--app-accent); }
 
 @media (max-width: 640px) {
   .pdf-thumbnail-rail { width: 54px; }

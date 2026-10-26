@@ -546,11 +546,6 @@ watch(selectedContentType, clearResultFilters);
   position: relative;
 }
 
-.search-more-button[aria-expanded="true"] {
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
-}
-
 .search-more-button :deep(svg) {
   width: 22px;
   height: 22px;
@@ -671,8 +666,7 @@ watch(selectedContentType, clearResultFilters);
   min-height: 32px;
   padding: 4px 8px;
   border-radius: 6px;
-  color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
+  color: var(--app-muted);
   font-size: var(--ui-font-caption);
   cursor: pointer;
 }
@@ -920,16 +914,6 @@ watch(selectedContentType, clearResultFilters);
   border-bottom: 1px solid var(--app-line);
   text-align: left;
   cursor: pointer;
-}
-
-.result-card:hover:not(:disabled),
-.search-menu-source:hover,
-.search-list-utility:hover {
-  background: var(--app-panel-softer);
-}
-
-.result-card:active:not(:disabled) {
-  background: var(--app-panel-soft);
 }
 
 .result-card:focus-visible {

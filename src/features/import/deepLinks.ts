@@ -1,21 +1,19 @@
 import type { ConfigurationImportKind } from "../../api/settings";
 export type ImportKind = ConfigurationImportKind;
-export type DeepLinkKind = ImportKind | "auto" | "read" | "addToBookshelf" | "theme" | "dictRule" | "readConfig";
-export type PendingImportLink = { kind: DeepLinkKind; url: string };
+export type PendingImportLink = { kind: ImportKind | "auto"; url: string };
 
-export const deepLinkLabels: Record<DeepLinkKind, string> = {
+export const deepLinkLabels: Record<PendingImportLink["kind"], string> = {
   sources: "源", replacementRules: "替换规则", txtTocRules: "TXT 目录规则",
-  httpTtsConfigs: "HTTP TTS", auto: "配置", read: "阅读书籍", addToBookshelf: "书籍详情",
-  theme: "主题", dictRule: "词典规则", readConfig: "ZIP 排版配置",
+  httpTtsConfigs: "HTTP TTS", auto: "配置",
 };
 
-/** Match LegadoDeepLink.parse: first src, form decoding, fragments ignored, missing src ignored. */
+/** 只接收四类配置；兼容链接取第一个 src 参数，缺失时忽略。 */
 export function parseDeepLink(raw: string): PendingImportLink | null {
   const text = raw.trim();
   if (!/^(foliver|legado|yuedu):\/\//.test(text)) return null;
   if (text.length > 4 * 1024 * 1024) throw new Error("导入链接过长。");
   const link = new URL(text);
-  let kind: DeepLinkKind;
+  let kind: ImportKind;
   let parameter = "src";
   if (link.protocol === "foliver:") {
     if (link.username || link.password || link.port || link.hash || (link.pathname && link.pathname !== "/")) {
@@ -31,16 +29,12 @@ export function parseDeepLink(raw: string): PendingImportLink | null {
       case "/replaceRule": kind = "replacementRules"; break;
       case "/textTocRule": kind = "txtTocRules"; break;
       case "/httpTTS": kind = "httpTtsConfigs"; break;
-      case "/read": kind = "read"; break;
-      case "/addToBookshelf": kind = "addToBookshelf"; break;
-      case "/theme": kind = "theme"; break;
-      case "/dictRule": kind = "dictRule"; break;
-      case "/readConfig": kind = "readConfig"; break;
       case "/importonline":
-        kind = link.hostname === "booksource" || link.hostname === "rsssource" ? "sources"
-          : link.hostname === "replace" ? "replacementRules" : "auto";
+        if (link.hostname === "booksource" || link.hostname === "rsssource") kind = "sources";
+        else if (link.hostname === "replace") kind = "replacementRules";
+        else return null;
         break;
-      default: kind = "auto";
+      default: return null;
     }
   }
   const src = link.searchParams.get(parameter);

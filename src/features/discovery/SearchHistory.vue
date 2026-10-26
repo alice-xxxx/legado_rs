@@ -155,7 +155,6 @@ function clearAll(): void {
   outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
-.search-history__entry:hover { border-color: var(--app-accent); }
 .search-history__error {
   margin: 4px 0;
   color: var(--app-danger);

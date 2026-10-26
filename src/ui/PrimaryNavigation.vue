@@ -99,7 +99,6 @@ function navigate(screen: MainScreen): void {
 
 .rail-link.active {
   color: var(--app-accent-ink);
-  background: var(--app-accent-soft);
 }
 
 .glyph {

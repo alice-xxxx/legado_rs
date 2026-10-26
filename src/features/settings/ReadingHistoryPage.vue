@@ -395,7 +395,7 @@ onBeforeUnmount(() => {
 .records-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .record-periods{display:flex;align-items:center;gap:4px}
 .record-periods button{height:30px;min-height:30px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
-.record-periods button.active{color:var(--app-on-selected);background:var(--app-selected);font-weight:750}
+.record-periods button.active{color:var(--app-text);font-weight:750}
 .record-action{padding:7px 9px;border:0;border-radius:8px;background:transparent;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
 .record-action:disabled{opacity:.5;cursor:default}
 .record-delete{color:var(--app-danger)}

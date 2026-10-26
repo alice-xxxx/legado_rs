@@ -407,7 +407,7 @@ watch(readerFindQuery, () => rebuildReaderFind(true));
 
 readerChapterLoading = useReaderChapterLoading({
   reader: {
-    chapterIndex: readingChapterIndex, pendingPosition: readerPendingPosition,
+    chapterIndex: readingChapterIndex, viewport: readerViewport, pendingPosition: readerPendingPosition,
     content: readingContent,
     pdfPage: readingPdfPage,
     pdfZoomOverride: readingPdfZoomOverride,
