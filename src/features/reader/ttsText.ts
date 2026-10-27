@@ -7,17 +7,15 @@ export interface ReaderTtsPiece {
 
 export interface ReaderTtsSegment {
   text: string;
-  target: HTMLElement | null;
+  root: HTMLElement;
   pieces: ReaderTtsPiece[];
   textOffsets: number[];
 }
 
 export interface ReaderTtsChunkTarget {
-  target: HTMLElement | null;
-  startNode: Text | null;
-  startOffset: number;
-  endNode: Text | null;
-  endOffset: number;
+  start: number;
+  end: number;
+  text: string;
 }
 
 export interface ReaderTtsViewportFallback {
@@ -60,7 +58,7 @@ export function collectReaderTtsSegments(
       }
       const text = node as Text;
       const parent = text.parentElement;
-      if (!parent || !text.data.trim() || parent.closest("script,style,noscript,textarea,select,button,audio,video,svg,[hidden]")) {
+      if (!parent || !text.data.length || parent.closest("script,style,noscript,textarea,select,button,audio,video,svg,[hidden]")) {
         return NodeFilter.FILTER_REJECT;
       }
       const style = document.defaultView?.getComputedStyle(parent);
@@ -113,7 +111,7 @@ export function collectReaderTtsSegments(
     const normalized = normalizeTtsText(currentText);
     if (normalized.text) segments.push({
       text: normalized.text,
-      target: currentTarget ?? body,
+      root: body,
       pieces: currentPieces,
       textOffsets: normalized.offsets,
     });
@@ -224,16 +222,41 @@ export function mapTtsSegmentChunks(segment: ReaderTtsSegment): Array<{ text: st
     const rawEnd = segment.textOffsets[chunk.end - 1];
     const startPiece = segment.pieces.find((piece) => rawStart >= piece.flatStart && rawStart < piece.flatEnd);
     const endPiece = [...segment.pieces].reverse().find((piece) => rawEnd >= piece.flatStart && rawEnd < piece.flatEnd);
+    if (!startPiece || !endPiece) throw new Error("朗读片段无法定位到正文。");
+    const range = segment.root.ownerDocument.createRange();
+    range.setStart(startPiece.node, startPiece.nodeStart + rawStart - startPiece.flatStart);
+    range.setEnd(endPiece.node, endPiece.nodeStart + rawEnd - endPiece.flatStart + 1);
+    const prefix = segment.root.ownerDocument.createRange();
+    prefix.selectNodeContents(segment.root);
+    prefix.setEnd(range.startContainer, range.startOffset);
+    const start = prefix.toString().length;
+    const text = range.toString();
     chunks.push({
       text: chunk.text,
-      target: startPiece && endPiece ? {
-        target: segment.target,
-        startNode: startPiece.node,
-        startOffset: startPiece.nodeStart + rawStart - startPiece.flatStart,
-        endNode: endPiece.node,
-        endOffset: endPiece.nodeStart + rawEnd - endPiece.flatStart + 1,
-      } : { target: segment.target, startNode: null, startOffset: 0, endNode: null, endOffset: 0 },
+      target: { start, end: start + text.length, text },
     });
   }
   return chunks;
+}
+
+/** 在当前章节重新解析文字范围，搜索标记或章节重建不再留下失效的文本节点引用。 */
+export function resolveTtsChunkRange(root: HTMLElement, target: ReaderTtsChunkTarget): Range | null {
+  if (target.start < 0 || target.end <= target.start) return null;
+  const walker = root.ownerDocument.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let range: Range | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const end = offset + node.length;
+    if (!range && target.start < end) {
+      range = root.ownerDocument.createRange();
+      range.setStart(node, target.start - offset);
+    }
+    if (range && target.end <= end) {
+      range.setEnd(node, target.end - offset);
+      return range.toString() === target.text ? range : null;
+    }
+    offset = end;
+  }
+  return null;
 }

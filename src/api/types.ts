@@ -570,12 +570,3 @@ export interface HomeTab {
 export interface HomeConfigDocument {
   tabs: HomeTab[];
 }
-
-export type DictionaryLanguage = "zh" | "en";
-
-export interface DictionaryLookupResult {
-  title: string;
-  provider: string;
-  sourceUrl: string;
-  resource: ResourceDescriptor;
-}

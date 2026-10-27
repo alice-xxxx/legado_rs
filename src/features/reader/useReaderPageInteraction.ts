@@ -1,4 +1,4 @@
-import { openedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 import type { Ref } from "vue";
 import { settings } from "../settings/settingsStore";
 import type { PdfPageResource } from "./readerContent";
@@ -60,7 +60,7 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   function resolveSemanticChapterAnchor(anchor: HTMLAnchorElement): { chapterIndex: number; fragment: string } | null {
     const chapterId = anchor.dataset.legadoChapterId?.trim();
     if (!chapterId) return null;
-    const book = openedBook.value;
+    const book = readingBook.value;
     if (!book) return null;
     const chapter = book.chapters.find((entry) => entry.id === chapterId);
     const chapterCount = book.chapterCount || book.chapters.length;
@@ -79,8 +79,8 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   function resolveReaderChapterHref(href: string): { chapterIndex: number; fragment: string } | null {
-    const book = openedBook.value;
-    const currentSrc = openedBook.value?.chapters.find(chapter => chapter.index === reader.chapterIndex.value)?.resource?.src;
+    const book = readingBook.value;
+    const currentSrc = readingBook.value?.chapters.find(chapter => chapter.index === reader.chapterIndex.value)?.resource?.src;
     if (!book || !currentSrc) return null;
     let currentUrl: URL;
     let targetUrl: URL;
@@ -338,7 +338,6 @@ export function useReaderPageInteraction(options: ReaderPageInteractionOptions) 
   }
 
   return {
-    readerSegmentForElement,
     readerSegmentForRect,
     scrollReaderToFragment,
     applyPendingReaderFragment,

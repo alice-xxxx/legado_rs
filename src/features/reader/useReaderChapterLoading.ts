@@ -1,5 +1,5 @@
 import type { ReaderPosition } from "./readerPosition";
-import { openedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 import { nextTick, ref, watch, type Ref } from "vue";
 import { readTextResource } from "../../api/resources";
 import { bookContentType } from "../../api/bookContentType";
@@ -89,7 +89,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
   }, { flush: "post" });
   watch(() => {
     if (!reader.visible.value) return null;
-    const book = openedBook.value;
+    const book = readingBook.value;
     const chapter = book?.chapters.find(entry => entry.index === reader.chapterIndex.value);
     if (!book || !chapter) return null;
     const type = bookContentType(book);
@@ -103,7 +103,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       adoptedIndex = null;
       return;
     }
-    const book = openedBook.value!;
+    const book = readingBook.value!;
     const chapter = book.chapters.find(entry => entry.index === reader.chapterIndex.value)!;
     const controller = new AbortController();
     onCleanup(() => controller.abort());
@@ -141,7 +141,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
 
   async function loadReaderChapter(index: number, offset?: number, fragment?: string, positionHint?: ReaderPosition): Promise<boolean> {
     adoptedIndex = null;
-    const book = openedBook.value;
+    const book = readingBook.value;
     const chapter = book?.chapters.find(entry => entry.index === index);
     if (!book || !chapter || chapter.volume || actions.isBackupRestoreInProgress()) return false;
     if (reader.getMediaElement() && !(await actions.pauseReaderMediaAndSave())) return false;
@@ -170,7 +170,7 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
     const done = new Promise<boolean>(resolve => { finishLoad = resolve; });
     const revision = reader.getLoadRevision();
     void actions.notifyCurrentReading(false, true)
-      .catch(error => { if (reader.getLoadRevision() === revision && openedBook.value?.id === book.id) failPending(actions.errorText(error)); });
+      .catch(error => { if (reader.getLoadRevision() === revision && readingBook.value?.id === book.id) failPending(actions.errorText(error)); });
     request.value += 1;
     return done;
   }
@@ -192,16 +192,16 @@ export function useReaderChapterLoading({ reader, actions }: ReaderChapterLoadin
       target.index === requested ? positionHint : undefined);
   }
   async function reloadCurrentChapter(): Promise<void> {
-    const book = openedBook.value;
+    const book = readingBook.value;
     const chapter = book?.chapters.find(entry => entry.index === reader.chapterIndex.value);
     if (!book || !chapter || !reader.visible.value || reader.busy.value || reader.mediaRetrying.value
       || actions.isBackupRestoreInProgress() || shelfBatchRecoveryRequired.value) return;
     if (!(await actions.pauseReaderMediaAndSave())) return;
-    if (openedBook.value?.id !== book.id || reader.chapterIndex.value !== chapter.index) return;
+    if (readingBook.value?.id !== book.id || reader.chapterIndex.value !== chapter.index) return;
     reader.mediaRetrying.value = true;
     try {
       await actions.notifyCurrentReading(true);
-      if (reader.visible.value && openedBook.value?.id === book.id && reader.chapterIndex.value === chapter.index) {
+      if (reader.visible.value && readingBook.value?.id === book.id && reader.chapterIndex.value === chapter.index) {
         request.value += 1;
       }
     } catch (error) { reader.mediaError.value = actions.errorText(error); actions.notify(reader.mediaError.value, "error"); }

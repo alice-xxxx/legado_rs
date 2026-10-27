@@ -3,7 +3,8 @@ import type { Bookmark, BookResource } from "../../api/types";
 
 /** Small set of reader operations used by screens that start or leave reading. */
 export interface ReaderSession {
-  readerVisible: Ref<boolean>;
+  /** 前台界面是否展开；后台播放仍持有 readingBook。 */
+  readerVisible: Readonly<Ref<boolean>>;
   readerBusy: Readonly<Ref<boolean>>;
   readingBook: Ref<BookResource | null>;
   readerProgressDirty: Ref<boolean>;

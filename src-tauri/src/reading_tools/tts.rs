@@ -98,54 +98,50 @@ impl Tts {
         mut player: TtsPlayer,
     ) {
         let mut assets = vec![];
-        loop {
-            let texts = tokio::select! {
-                biased;
-                _ = cancellation.wait_for(|cancelled| *cancelled) => break,
-                texts = input.recv() => match texts { Some(texts) => texts, None => break },
-            };
-            let reading = async {
-                if let Some(id) = &options.config_id {
-                    let config = database
-                        .tts_config(id)
-                        .map_err(|e| e.to_string())?
-                        .ok_or("朗读配置不存在或已停用")?;
-                    let config = serde_json::to_value(config).map_err(|error| error.to_string())?;
-                    let (sender, receiver) = mpsc::channel(1);
-                    tokio::try_join!(
-                        self.generate_tts_audio(
-                            resources,
-                            &config,
-                            options.rate,
-                            texts,
-                            &mut input,
-                            sender,
-                            &mut assets
-                        ),
-                        self.play_tts_audio(&mut player, receiver),
-                    )?;
-                } else {
-                    self.queue_system_tts(texts, &mut input, &mut player)
-                        .await?;
-                }
-                Ok::<_, String>(())
-            };
-            let result = tokio::select! {
-                biased;
-                _ = cancellation.wait_for(|cancelled| *cancelled) => break,
-                result = reading => result,
-            };
-            player.stop();
-            for id in assets.drain(..) {
-                resources.tts.release(&id);
+        let texts = tokio::select! {
+            biased;
+            _ = cancellation.wait_for(|cancelled| *cancelled) => None,
+            texts = input.recv() => texts,
+        };
+        let Some(texts) = texts else { player.stop(); return; };
+        let reading = async {
+            if let Some(id) = &options.config_id {
+                let config = database
+                    .tts_config(id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("朗读配置不存在或已停用")?;
+                let config = serde_json::to_value(config).map_err(|error| error.to_string())?;
+                let (sender, receiver) = mpsc::channel(1);
+                tokio::try_join!(
+                    self.generate_tts_audio(
+                        resources,
+                        &config,
+                        options.rate,
+                        texts,
+                        &mut input,
+                        sender,
+                        &mut assets
+                    ),
+                    self.play_tts_audio(&mut player, receiver),
+                )?;
+            } else {
+                self.queue_system_tts(texts, &mut input, &mut player).await?;
             }
-            if let Err(error) = result {
-                self.tts_progress(json!(error));
-            }
-        }
+            Ok::<_, String>(())
+        };
+        let result = tokio::select! {
+            biased;
+            _ = cancellation.wait_for(|cancelled| *cancelled) => None,
+            result = reading => Some(result),
+        };
         player.stop();
         for id in assets {
             resources.tts.release(&id);
+        }
+        match result {
+            Some(Ok(())) => self.tts_progress(json!({ "finished": true })),
+            Some(Err(error)) => self.tts_progress(json!(error)),
+            None => (),
         }
     }
 
@@ -159,11 +155,22 @@ impl Tts {
             player.audio(&source.src)?;
             let mut highlighted = None;
             let mut paused = None;
+            let mut buffering = false;
             while let Some(event) = player.events.recv().await {
                 if event["state"] == "error" {
                     return Err(event["error"].as_str().unwrap_or("音频播放失败").to_owned());
                 }
                 let ended = event["state"] == "ended";
+                if event["state"] == "buffering" {
+                    if !buffering { self.tts_progress(json!({ "buffering": true })); }
+                    buffering = true;
+                    continue;
+                }
+                if event["state"] == "playing" {
+                    if buffering { self.tts_progress(json!({ "buffering": false })); }
+                    buffering = false;
+                    continue;
+                }
                 if event["state"] == "time" || event["state"] == "paused" {
                     let next = event["state"] == "paused";
                     if paused != Some(next) {
@@ -515,7 +522,11 @@ impl Tts {
         let mut utterances = HashMap::<String, TtsText>::new();
         let mut append = false;
         let mut paused = false;
+        let mut finished = false;
         loop {
+            if finished && pending.is_empty() && utterances.is_empty() {
+                return Ok(());
+            }
             tokio::select! {
                 biased;
                 Some(event) = player.events.recv() => {
@@ -567,7 +578,10 @@ impl Tts {
                     utterances.insert(id, item);
                     append = true;
                 },
-                texts = input.recv() => match texts { Some(texts) => pending.extend(texts), None => return Ok(()) },
+                texts = input.recv(), if !finished => match texts {
+                    Some(texts) if !texts.is_empty() => pending.extend(texts),
+                    _ => finished = true,
+                },
             }
         }
     }

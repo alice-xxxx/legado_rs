@@ -7,13 +7,14 @@ import { mainText, cancelMainText } from "../../api/mainText";
 import { saveChapter } from "../../api/books";
 import { modifyDatabase, type DatabaseOperation } from "../../api/feDb";
 import { moreInformation } from "../../api/moreInformation";
-import { readChapter, readMoreInformation } from "../../api/database";
+import { readBook, readChapter, readMoreInformation } from "../../api/database";
 import { bookContentType } from "../../api/bookContentType";
 import { compareSearchSources, presentSearchResults } from "../discovery/searchPresentation";
 import { type BookResource, type SearchBookResult } from "../../api/types";
 import type { CachedChapterContent } from "../reader/useReaderChapterLoading";
-import { refreshOpenedBook, refreshOpenedChapter, replaceOpenedBook, openedBook } from "../books/bookDetailState";
+import { refreshOpenedChapter, replaceOpenedBook, openedBook } from "../books/bookDetailState";
 import { sourceSwitchProgress } from "./sourceSwitchProgress";
+import { refreshReadingChapter } from "../reader/readerBookState";
 
 interface BookSourceSwitchDependencies {
   /** 应用共享的任务、书架、阅读器和书签状态。 */
@@ -56,8 +57,10 @@ export function useBookSourceSwitch({
   const bookSourceSwitchConfirmOpen = ref(false);
   const bookSourceSwitchFromReader = ref(false);
   const bookSourceSwitchBookId = ref<string | null>(null);
-  const bookSourceSwitchBook = computed(() => !bookSourceSwitchOpen.value
-    || openedBook.value?.id === bookSourceSwitchBookId.value ? openedBook.value : null);
+  const bookSourceSwitchBook = computed(() => {
+    const book = bookSourceSwitchFromReader.value ? readingBook.value : openedBook.value;
+    return !bookSourceSwitchOpen.value || book?.id === bookSourceSwitchBookId.value ? book : null;
+  });
   const bookSourceEligibleSources = computed(() => {
     const book = bookSourceSwitchBook.value;
     if (!book || book.canChangeSource !== true) return [];
@@ -289,7 +292,7 @@ export function useBookSourceSwitch({
       || bookSourceCheckBusy.value || bookSourceSwitchBusy.value) return;
     const revision = getRestoreRevision(), generation = bookSourceSearchGeneration;
     const current = () => currentRestore(revision) && generation === bookSourceSearchGeneration
-      && bookSourceSwitchOpen.value && openedBook.value?.id === book.id;
+      && bookSourceSwitchOpen.value && bookSourceSwitchBook.value?.id === book.id;
     const previous = new Set(book.chapters.map(chapter => chapter.id));
     bookSourceCheckBusy.value = true;
     bookSourceSwitchError.value = "";
@@ -299,9 +302,11 @@ export function useBookSourceSwitch({
       information = moreInformation(book.sourceId, book.bookUrl);
       await information;
       if (!current()) return;
-      const updated = await refreshOpenedBook(book.id);
+      const updated = await readBook(book.id);
       if (!current() || !updated) return;
+      if (openedBook.value?.id === book.id) replaceOpenedBook(updated);
       if (readerVisible.value && readingBook.value?.id === book.id) {
+        readingBook.value = updated;
         readingChapterIndex.value = updated.progress?.chapterIndex ?? readingChapterIndex.value;
       }
       if (libraryType(book.id)) await refreshContentLibrary();
@@ -348,6 +353,7 @@ export function useBookSourceSwitch({
       await saveChapter(book.id, { ...chapter, contentId: replacement.chapter.contentId });
       if (!current()) return;
       await refreshOpenedChapter(book.id, chapter.id);
+      await refreshReadingChapter(book.id, chapter.id);
       if (!current()) return;
       if (readingBook.value?.id === book.id) {
         if (readerVisible.value && readingChapterIndex.value === chapter.index) {
@@ -483,7 +489,7 @@ export function useBookSourceSwitch({
     bookSourceChapterTargetTitle,
     bookSourceSearchId,
     bookSourceCandidateResults,
-    bookSourceCandidateErrors: computed(() => bookSourceSwitchBookId.value === openedBook.value?.id
+    bookSourceCandidateErrors: computed(() => bookSourceSwitchBookId.value === bookSourceSwitchBook.value?.id
       ? bookSourceCandidateErrors.value : []),
     selectedBookSourceCandidate,
     bookSourceSwitchError,

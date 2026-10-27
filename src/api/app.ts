@@ -5,6 +5,5 @@ export * from "./books";
 export * from "./sources";
 export * from "./search";
 export * from "./settings";
-export * from "./reading";
 export * from "./discovery";
 export * from "./backup";

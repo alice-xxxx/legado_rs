@@ -11,7 +11,7 @@ import { settings } from "../settings/settingsStore";
 import { isReadingMode, isVerticalReadingMode, readingModes } from "../settings/readerModes";
 import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme } from "../settings/themeState";
 import { httpTtsConfigs } from "../settings/configurationStores";
-import { openedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 
 export default defineComponent({
   props: {
@@ -40,12 +40,6 @@ export default defineComponent({
     }
     const horizontalReaderEdges = computed(() => context.readingImagePage.value || context.readingPdfPage.value
       || (!context.readingMediaChapter.value && !isVerticalReadingMode(settings.value.reader.readingMode)));
-    watch(context.bookmarkEditorOpen, open => {
-      if (open) {
-        context.readerControlsOpen.value = false;
-        context.readerDirectoryOpen.value = false;
-      }
-    }, { flush: "post" });
     const audioToolPanel = ref<"speed" | "sleep" | null>(null);
     function openAudioToolPanel(panel: "speed" | "sleep"): void {
       audioToolPanel.value = panel;
@@ -177,7 +171,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), openedBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
+    return { ...context, ctx: proxyRefs(context), readingBook, settings, readingModes, horizontalReaderEdges, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
   },
 });
 </script>
@@ -190,9 +184,10 @@ export default defineComponent({
     @click="onReaderSurfaceClick">
     <header class="reader-topbar">
       <div class="reader-toolbar-row">
-        <BackButton class="reader-back" label="返回内容库" :disabled="readerMediaRetrying" @click="closeReader()" />
+        <BackButton class="reader-back" :label="ctx.canMinimizeReader ? '收起播放器' : '返回内容库'"
+          :disabled="readerMediaRetrying" @click="ctx.canMinimizeReader ? ctx.minimizeReader() : closeReader()" />
         <div class="reader-book-heading"><strong>{{ ctx.readingMediaChapter && !ctx.readingVideoChapter ? '音频播放' :
-          openedBook?.title }}</strong><small v-if="!ctx.readingMediaChapter">{{ currentChapterTitle }}</small></div>
+          readingBook?.title }}</strong><small v-if="!ctx.readingMediaChapter">{{ currentChapterTitle }}</small></div>
         <div class="reader-header-actions">
           <span class="read-save-state" :class="progressSaveState">{{ progressSaveState === 'saving' ? '保存中' :
             progressSaveState === 'saved' ? '已保存' : progressSaveState === 'error' ? '保存失败' : '' }}</span>
@@ -200,11 +195,7 @@ export default defineComponent({
             class="reader-tool-button" aria-label="在本章中查找" @click.stop="ctx.openReaderControls('search')">
             <PrototypeIcon name="search" />
           </button>
-          <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button"
-            class="reader-tool-button" aria-label="添加或编辑当前书签" @click.stop="ctx.toggleCurrentBookmark">
-            <PrototypeIcon name="bookmark" />
-          </button>
-          <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && openedBook?.canChangeSource" type="button"
+          <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && readingBook?.canChangeSource" type="button"
             class="reader-tool-button" aria-label="切换内容来源" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy"
             @click.stop="openBookSourceSwitch(true)">
             <PrototypeIcon name="source-switch" />
@@ -220,8 +211,14 @@ export default defineComponent({
       @wheel="ctx.readerGesturesBlocked && $event.preventDefault()">
       <output v-if="ctx.readingImagePage && comicPageCount" class="reader-comic-page-counter">{{ comicPageIndex }} / {{
         comicPageCount }}</output>
-      <div class="reader-content-frame"
-        :style="ctx.readingImagePage ? { filter: `brightness(${comicBrightness}%)` } : undefined">
+      <div v-if="ctx.bookmarkPullDistance > 0" class="reader-bookmark-pull-hint" :class="{ ready: ctx.bookmarkPullReady }" role="status">
+        <PrototypeIcon name="bookmark" />
+        <span>{{ ctx.bookmarkPullReady ? '松手' : '下拉' }}{{ currentBookmark ? '移除书签' : '添加书签' }}</span>
+      </div>
+      <span v-if="currentBookmark && !readerMenuOpen && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
+        class="reader-bookmark-ribbon" aria-label="当前页已有书签"></span>
+      <div class="reader-content-frame" :class="{ 'reader-bookmark-pulling': ctx.bookmarkPullDistance > 0 }"
+        :style="ctx.readingImagePage ? { filter: `brightness(${comicBrightness}%)` } : ctx.bookmarkPullDistance ? { transform: `translateY(${ctx.bookmarkPullDistance}px)` } : undefined">
         <div v-if="readerBusy && !ctx.readerMediaRetrying" class="reader-loading"><span class="loader-ring"></span>
           <p>{{ readerMediaRetrying ? '正在从源更新缓存…' : '正在打开…' }}</p>
         </div>
@@ -231,10 +228,10 @@ export default defineComponent({
           <div class="reader-load-actions">
             <button type="button" class="button secondary small" :disabled="readerBusy"
               @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试缓存章节</button>
-            <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
+            <button v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
               :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired"
               @click.stop="ctx.reloadCurrentChapter">从源重新获取</button>
-            <button v-if="openedBook?.canChangeSource" type="button" class="button secondary small"
+            <button v-if="readingBook?.canChangeSource" type="button" class="button secondary small"
               :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired"
               @click.stop="ctx.openBookSourceSwitch(true)">切换源</button>
           </div>
@@ -245,10 +242,10 @@ export default defineComponent({
           <div class="reader-load-actions">
             <button type="button" class="button secondary small" :disabled="readerBusy"
               @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试章节</button>
-            <button v-if="openedBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
+            <button v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
               :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired"
               @click.stop="ctx.reloadCurrentChapter">从源重新获取</button>
-            <button v-if="openedBook?.canChangeSource" type="button" class="button secondary small"
+            <button v-if="readingBook?.canChangeSource" type="button" class="button secondary small"
               :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired"
               @click.stop="ctx.openBookSourceSwitch(true)">切换源</button>
           </div>
@@ -260,7 +257,7 @@ export default defineComponent({
       <section v-if="ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && ctx.readingContent"
         class="reader-video-episodes" @click.stop>
         <header>
-          <div><strong>{{ currentChapterTitle }}</strong><small>{{ openedBook?.title }} · {{ readerChapterCount }}
+          <div><strong>{{ currentChapterTitle }}</strong><small>{{ readingBook?.title }} · {{ readerChapterCount }}
               集</small></div>
           <button type="button" @click="ctx.openReaderDirectory">全部选集
             <PrototypeIcon name="right" />
@@ -285,8 +282,8 @@ export default defineComponent({
             </select>
           </label>
         </div>
-        <nav v-if="openedBook?.chapters.length" aria-label="视频选集">
-          <button v-for="chapter in openedBook?.chapters" :key="chapter.id" type="button"
+        <nav v-if="readingBook?.chapters.length" aria-label="视频选集">
+          <button v-for="chapter in readingBook?.chapters" :key="chapter.id" type="button"
             :class="{ active: chapter.index === ctx.readingChapterIndex }"
             :disabled="readerBusy || shelfBatchRecoveryRequired" :title="chapter.title"
             @click="ctx.selectReaderChapter(chapter.index)">
@@ -297,15 +294,15 @@ export default defineComponent({
       <article
         v-if="ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && ctx.readingContent"
         class="reader-audio-console" @click.stop>
-        <img v-if="openedBook?.coverSrc" class="reader-audio-art" :src="openedBook.coverSrc" alt="音频封面" />
+        <img v-if="readingBook?.coverSrc" class="reader-audio-art" :src="readingBook.coverSrc" alt="音频封面" />
         <div v-else class="reader-audio-art reader-audio-fallback">
           <PrototypeIcon name="audio" />
         </div>
         <div class="reader-audio-body">
           <div class="reader-audio-heading">
-            <h2>{{ currentChapterTitle || openedBook?.title }}</h2>
-            <p v-if="currentChapterTitle && currentChapterTitle !== openedBook?.title">{{ openedBook?.title }}</p>
-            <small v-if="openedBook?.author">{{ openedBook.author }}</small>
+            <h2>{{ currentChapterTitle || readingBook?.title }}</h2>
+            <p v-if="currentChapterTitle && currentChapterTitle !== readingBook?.title">{{ readingBook?.title }}</p>
+            <small v-if="readingBook?.author">{{ readingBook.author }}</small>
           </div>
           <div class="reader-audio-progress">
             <input type="range" aria-label="播放进度" min="0" step="1000" :max="Math.max(1000, ctx.readerMediaDurationMs)"
@@ -385,9 +382,6 @@ export default defineComponent({
         <button type="button" class="reader-nav-action" @click="ctx.openReaderControls('appearance')"><span>
             <PrototypeIcon name="appearance" />
           </span><small>显示</small></button>
-        <button type="button" class="reader-nav-action" @click="ctx.toggleCurrentBookmark"><span>
-            <PrototypeIcon name="bookmark" />
-          </span><small>{{ currentBookmark ? '已加书签' : '书签' }}</small></button>
       </nav>
     </footer>
     <footer v-if="!ctx.readingMediaChapter && !ctx.readingImagePage && !ctx.readingPdfPage" class="reader-footer">
@@ -400,7 +394,7 @@ export default defineComponent({
           class="reader-nav-action" :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'tts' }"
           @click="openTtsControls"><span>
             <PrototypeIcon name="tts" />
-          </span><small>{{ ctx.readingMediaChapter ? '倍速与定时' : '朗读' }}</small></button>
+          </span><small>{{ ttsActive ? ctx.ttsPaused ? '已暂停' : '朗读中' : '朗读' }}</small></button>
         <button v-if="!ctx.readingMediaChapter" type="button" class="reader-nav-action"
           :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'appearance' }"
           @click="ctx.openReaderControls('appearance')"><span class="reader-appearance-glyph">Aa</span><small>{{
@@ -411,16 +405,16 @@ export default defineComponent({
     <section v-if="readerTtsSettingsOpen" class="reader-book-page reader-tts-settings" data-back-layer @click.stop>
       <TtsSettingsPage embedded @back="readerTtsSettingsOpen = false" />
     </section>
-    <section v-if="readerDirectoryOpen && openedBook" class="reader-book-page" data-back-layer @click.stop
+    <section v-if="readerDirectoryOpen && readingBook" class="reader-book-page" data-back-layer @click.stop
       @keydown.esc.stop.prevent="readerDirectoryOpen = false">
       <header class="reader-book-page-header">
         <BackButton label="返回阅读菜单" @click="readerDirectoryOpen = false" />
-        <div><strong>目录</strong><small>{{ openedBook.title }}</small></div>
-        <small>{{ openedBook.chapters.length }} 项</small>
+        <div><strong>目录</strong><small>{{ readingBook.title }}</small></div>
+        <small>{{ readingBook.chapters.length }} 项</small>
       </header>
-      <BookCatalogPanel :book="openedBook" :current-index="ctx.readingChapterIndex" :busy="readerBusy" :locked="shelfBatchRecoveryRequired" auto-locate
-        :can-download="openedBook.canChangeSource === true && !!openedBook.sourceId"
-        :can-replace="openedBook.canChangeSource === true && !openedBook.mediaType"
+      <BookCatalogPanel :book="readingBook" :current-index="ctx.readingChapterIndex" :busy="readerBusy" :locked="shelfBatchRecoveryRequired" auto-locate
+        :can-download="readingBook.canChangeSource === true && !!readingBook.sourceId"
+        :can-replace="readingBook.canChangeSource === true && !readingBook.mediaType"
         @select="ctx.selectReaderChapter" @download="ctx.downloadReaderBook" @replace="replaceReaderChapterSource" />
     </section>
     <div v-if="ctx.readerControlsOpen" class="reader-settings-backdrop" data-back-layer @click.self.stop="ctx.readerControlsOpen = false"
@@ -431,7 +425,7 @@ export default defineComponent({
         (ctx.readingMediaChapter ? audioToolPanel === 'speed' ? '播放速度' : audioToolPanel === 'sleep' ? '睡眠定时' : '播放设置'
           : '朗读') : readerControlsMode === 'appearance' ? ctx.readingImagePage ? comicPanel === 'mode' ? '阅读模式' :
             comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><button
-          type="button" data-back-action aria-label="关闭菜单" @click="ctx.readerControlsOpen = false">
+          type="button" data-back-action :aria-label="readerControlsMode === 'tts' && ttsActive ? '收起朗读面板' : '关闭菜单'" @click="ctx.readerControlsOpen = false">
           <PrototypeIcon name="close" />
         </button></div>
       <!-- Chapter seek is available in advanced tools; the reading dock keeps only prototype primary actions. -->
@@ -450,14 +444,12 @@ export default defineComponent({
       </div>
       <div v-if="readerControlsMode === 'settings' && !ctx.readingImagePage && !ctx.readingPdfPage"
         class="setting-control compact-setting">
-        <div><label for="reader-chapter-jump">跳转章节</label><small>共 {{ openedBook?.chapters?.length ?? 0 }} 章</small>
+        <div><label for="reader-chapter-jump">跳转章节</label><small>共 {{ readingBook?.chapters?.length ?? 0 }} 章</small>
         </div>
         <input id="reader-chapter-jump" type="number" inputmode="numeric" min="1"
-          :max="openedBook?.chapters?.length ?? 0" :value="ctx.readingChapterIndex + 1"
+          :max="readingBook?.chapters?.length ?? 0" :value="ctx.readingChapterIndex + 1"
           :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter" />
       </div>
-      <button v-if="readerControlsMode === 'settings'" type="button" class="button secondary small reader-add-bookmark"
-        @click="toggleCurrentBookmark">{{ currentBookmark ? '移除当前书签' : '添加当前页书签' }}</button>
       <div
         v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="setting-control compact-setting">
@@ -504,20 +496,17 @@ export default defineComponent({
       </div>
       <div v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingPdfPage"
         class="reader-source-tools">
-        <button v-if="!ctx.readingImagePage && openedBook?.canChangeSource" type="button" class="button secondary small"
+        <button v-if="!ctx.readingImagePage && readingBook?.canChangeSource" type="button" class="button secondary small"
           :disabled="readerBusy || readerMediaRetrying || bookSourceSwitch.bookSourceSwitchBusy"
           @click.stop="ctx.reloadCurrentChapter">
           <PrototypeIcon name="refresh" />从源重新获取本章
         </button>
-        <button v-if="openedBook?.sourceId" type="button" class="button secondary small"
+        <button v-if="readingBook?.sourceId" type="button" class="button secondary small"
           :disabled="readerBusy || readerBookDownloadBusy || shelfBatchRecoveryRequired"
           @click.stop="ctx.downloadReaderBook">
           <PrototypeIcon name="download" />缓存全部章节
         </button>
       </div>
-      <button
-        v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
-        type="button" class="button secondary small reader-dictionary-open" @click="openReaderDictionary">词典查词</button>
       <div
         v-if="readerControlsMode === 'tts' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="reader-tts-panel">
@@ -565,6 +554,8 @@ export default defineComponent({
             @click="startSelectedTextTts">朗读选中文字</button></div>
         <div class="reader-tts-actions">
           <button v-if="ttsActive" type="button" class="button secondary small"
+            @click="ctx.minimizeReader()">收起播放器</button>
+          <button v-if="ttsActive" type="button" class="button secondary small"
             :disabled="!ttsChunkProgress" @click="ctx.toggleTtsPaused()">{{ ctx.ttsPaused ? '继续朗读' : '暂停' }}</button>
           <button v-if="!ttsActive" type="button" class="button secondary small"
             :disabled="!ttsCanStart" @click="startTts()">开始朗读</button>
@@ -572,11 +563,6 @@ export default defineComponent({
             @click="stopTts()">停止</button>
         </div>
         <p v-if="ttsError">{{ ttsError }}</p>
-      </div>
-      <div v-if="readerControlsMode === 'settings' && currentBookmark" class="reader-current-bookmark">
-        <span>{{ ctx.readingMediaChapter ? (ctx.readingVideoChapter ? '当前视频位置已添加书签' : '当前音频位置已添加书签') : '当前页已添加书签'
-          }}</span>
-        <button type="button" class="button secondary small" @click="editCurrentBookmarkNote">编辑备注</button>
       </div>
       <div
         v-if="readerControlsMode === 'search' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
@@ -665,77 +651,7 @@ export default defineComponent({
     </div>
   </section>
 
-  <section v-if="ctx.readerVisible && ctx.dictionaryOpen" class="modal-backdrop reader-dictionary-backdrop"
-    @click.self="ctx.closeReaderDictionary" @keydown.esc.stop.prevent="ctx.closeReaderDictionary">
-    <article class="dictionary-panel">
-      <header>
-        <div><span>{{ ctx.dictionaryProvider || '维基词典' }}</span>
-          <h2>{{ ctx.dictionaryTitle || '词典查词' }}</h2>
-        </div>
-        <button type="button" class="reader-dialog-close" data-back-action aria-label="关闭词典" @click="ctx.closeReaderDictionary"><PrototypeIcon name="close" /></button>
-      </header>
-      <form class="reader-dictionary-form" @submit.prevent="ctx.lookupReaderDictionary">
-        <div class="reader-dictionary-row">
-          <input v-model="ctx.dictionaryWord" class="reader-dictionary-word" maxlength="128" autocomplete="off"
-            placeholder="输入词语，最多 128 个字符" />
-          <button type="button" class="button secondary small" @click="ctx.useSelectedReaderText">取选中文字</button>
-        </div>
-        <div class="reader-dictionary-row">
-          <label for="reader-dictionary-language" class="reader-dictionary-language-label">词典</label>
-          <select id="reader-dictionary-language" v-model="ctx.dictionaryLanguage" class="reader-dictionary-language">
-            <option value="en">英文维基词典</option>
-            <option value="zh">中文维基词典</option>
-          </select>
-          <button type="submit" class="button primary small" :disabled="ctx.dictionaryBusy">{{ ctx.dictionaryBusy ?
-            '查询中…'
-            : '查询' }}</button>
-          <button v-if="ctx.dictionaryError" type="button" class="button secondary small" :disabled="ctx.dictionaryBusy"
-            @click="ctx.lookupReaderDictionary">重试</button>
-        </div>
-        <p v-if="ctx.dictionaryError" class="reader-dictionary-error">{{ ctx.dictionaryError }}</p>
-      </form>
-      <div v-if="ctx.dictionarySourceUrl" class="reader-dictionary-source">
-        <span>来源：</span><a :href="ctx.dictionarySourceUrl" target="_blank" rel="noopener noreferrer">{{
-          ctx.dictionarySourceUrl }}</a>
-      </div>
-      <div v-if="ctx.dictionaryBusy" class="reader-loading reader-dictionary-status"><span class="loader-ring"></span>
-        <p>正在查询维基词典…</p>
-      </div>
-      <iframe v-else-if="ctx.dictionaryHtml" title="维基词典词条内容" sandbox="allow-same-origin"
-        :srcdoc="ctx.dictionaryHtml"></iframe>
-      <div v-else class="reader-loading reader-dictionary-status">
-        <p>可输入词语，或先在章节内容中选中文字。</p>
-      </div>
-    </article>
-  </section>
-
-  <section v-if="ctx.readerVisible && ctx.bookmarkEditorOpen" class="modal-backdrop reader-bookmark-backdrop"
-    @click.self="ctx.closeBookmarkEditor()" @keydown.esc.stop.prevent="ctx.closeBookmarkEditor()">
-    <form class="app-modal reader-bookmark-sheet" role="dialog" aria-modal="true"
-      aria-labelledby="reader-bookmark-sheet-title" @submit.prevent="ctx.saveBookmark()">
-      <header class="reader-bookmark-sheet-heading">
-        <strong id="reader-bookmark-sheet-title">{{ ctx.bookmarkEditingId ? '编辑书签' : '添加书签' }}</strong>
-        <button type="button" class="reader-dialog-close" data-back-action aria-label="关闭书签" @click="ctx.closeBookmarkEditor()">
-          <PrototypeIcon name="close" />
-        </button>
-      </header>
-      <p class="reader-bookmark-sheet-position">
-        <strong>{{ openedBook?.title }}</strong>
-        <span>{{ ctx.currentChapterTitle }} · {{ ctx.readingMediaChapter ?
-          ctx.formatReaderMediaTime(ctx.readerMediaTimeMs) : `第 ${ctx.readerPageIndex + 1} / ${ctx.readerPageCount} 页` }}</span>
-      </p>
-      <label class="reader-bookmark-sheet-label" for="reader-bookmark-note"><span>备注</span><small>可选</small></label>
-      <textarea id="reader-bookmark-note" v-model="ctx.bookmarkNote" maxlength="300" rows="4"
-        placeholder="写下想记住的内容"></textarea>
-      <small class="reader-bookmark-note-count">{{ ctx.bookmarkNote.length }} / 300</small>
-      <div class="modal-actions">
-        <button type="button" class="button secondary small" @click="ctx.closeBookmarkEditor()">取消</button>
-        <button type="submit" class="button primary small">保存</button>
-      </div>
-    </form>
-  </section>
-
-  <BookSourceSwitchView v-if="ctx.readerVisible" :session="bookSourceSwitch" :locked="shelfBatchRecoveryRequired" />
+  <BookSourceSwitchView v-if="ctx.readerVisible && !ctx.readerMinimized" :session="bookSourceSwitch" :locked="shelfBatchRecoveryRequired" />
 </template>
 
 <style scoped src="./readerPage.css"></style>

@@ -1,4 +1,4 @@
-import { openedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 import type { Ref } from "vue";
 import { clamp } from "./readerContent";
 import type { PdfPageResource } from "./readerContent";
@@ -72,7 +72,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   async function selectReaderChapter(index: number): Promise<boolean> {
     if (!options.readerVisible.value || options.readerBusy.value || options.readerMediaRetrying.value
       || options.shelfBatchRecoveryRequired.value || options.isBackupRestoreInProgress()
-      || !openedBook.value?.chapters.some(chapter => chapter.index === index)) return false;
+      || !readingBook.value?.chapters.some(chapter => chapter.index === index)) return false;
     if (index !== options.readingChapterIndex.value && !(await options.loadReaderChapter(index))) return false;
     options.readerDirectoryOpen.value = false;
     return true;
@@ -82,7 +82,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     const input = event.target as HTMLInputElement;
     const chapterNumber = input.type === "number";
     const index = Number(input.value) - (chapterNumber ? 1 : 0);
-    const count = openedBook.value?.chapters.length ?? 0;
+    const count = readingBook.value?.chapters.length ?? 0;
     if (Number.isInteger(index) && index >= 0 && index < count) await selectReaderChapter(index);
     else options.notify(`请输入 1 到 ${count} 之间的章号。`, "error");
     input.value = String(options.readingChapterIndex.value + (chapterNumber ? 1 : 0));
@@ -91,7 +91,7 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   async function changeChapter(direction: -1 | 1, pageEdge?: "start" | "end"): Promise<void> {
     if (options.readerBusy.value || options.readerMediaRetrying.value) return;
     const nextIndex = options.readingChapterIndex.value + direction;
-    const count = openedBook.value?.chapterCount ?? openedBook.value?.chapters.length ?? 0;
+    const count = readingBook.value?.chapterCount ?? readingBook.value?.chapters.length ?? 0;
     if (nextIndex < 0) {
       options.notify("已经是第一章。");
       return;
@@ -106,10 +106,10 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
   }
 
   async function saveCurrentProgress(): Promise<void> {
-    const book = openedBook.value;
+    const book = readingBook.value;
     if (!book || !options.readerProgressDirty.value || options.isBackupRestoreInProgress()) return;
     const revision = options.getProgressRevision();
-    const isCurrent = () => openedBook.value?.id === book.id && options.getProgressRevision() === revision;
+    const isCurrent = () => readingBook.value?.id === book.id && options.getProgressRevision() === revision;
     options.progressSaveState.value = "saving";
     try {
       await options.notifyCurrentReading();

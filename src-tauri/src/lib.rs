@@ -271,7 +271,6 @@ pub fn run() {
         rss::list_rss_categories,
         rss::list_rss_articles,
         rss::open_rss_article,
-        reading_tools::dictionary::lookup_dictionary,
     ];
     builder
         .invoke_handler(move |invoke| {

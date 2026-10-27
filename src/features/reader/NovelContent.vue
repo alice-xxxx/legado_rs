@@ -94,4 +94,5 @@ onBeforeUnmount(() => { resizeObserver?.disconnect(); emit("ready", null); });
 .novel-reader.vertical :deep(.chapter-content) { display: flow-root; padding-bottom: 2em; }
 .reader-chapter-preview { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .novel-reader.vertical-turn { touch-action: pan-x; }
+.novel-reader:not(.vertical):not(.vertical-turn) { touch-action: none; }
 </style>

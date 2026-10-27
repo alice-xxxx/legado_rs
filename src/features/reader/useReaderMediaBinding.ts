@@ -13,6 +13,8 @@ type ReaderMediaBindingOptions = {
     timeMs: Ref<number>;
     durationMs: Ref<number>;
     playing: Ref<boolean>;
+    buffering: Ref<boolean>;
+    ended: Ref<boolean>;
     error: Ref<string>;
     progressDirty: Ref<boolean>;
     progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
@@ -81,6 +83,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     mediaEventHandlers = [];
     options.reader.setMediaElement(null);
     options.reader.playing.value = false;
+    options.reader.buffering.value = false;
+    options.reader.ended.value = false;
     mediaRevision += 1;
     restoreTargetMs = null;
     options.reader.qualityIndex.value = 0;
@@ -258,8 +262,11 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const onPlay = () => {
       if (!isCurrent()) return;
       options.reader.playing.value = true;
+      options.reader.ended.value = false;
       options.mediaPlayback.syncSession(media);
     };
+    const onWaiting = () => { if (isCurrent() && !media.paused) options.reader.buffering.value = true; };
+    const onPlaying = () => { if (isCurrent()) options.reader.buffering.value = false; };
     const onSeeked = () => {
       if (!isCurrent()) return;
       if (restoreTargetMs != null && Math.abs(Math.round(media.currentTime * 1000) - restoreTargetMs) <= 500) {
@@ -276,6 +283,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const onPause = () => {
       if (isCurrent()) {
         options.reader.playing.value = false;
+        options.reader.buffering.value = false;
         options.mediaPlayback.syncSession(media);
         void flushReaderMediaProgress(media, bindingRevision, loadRevision);
       }
@@ -283,6 +291,8 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     const onEnded = () => {
       if (!isCurrent()) return;
       options.reader.playing.value = false;
+      options.reader.buffering.value = false;
+      options.reader.ended.value = true;
       options.mediaPlayback.syncSession(media);
       void (async () => {
         await flushReaderMediaProgress(media, bindingRevision, loadRevision);
@@ -307,6 +317,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       }
       clearQualityResumeHandler(media);
       options.reader.playing.value = false;
+      options.reader.buffering.value = false;
       options.mediaPlayback.syncSession(media);
       const detail = media.error?.code === MediaError.MEDIA_ERR_NETWORK
         ? "网络读取失败"
@@ -322,6 +333,9 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       ["loadedmetadata", onLoadedMetadata],
       ["ratechange", onRateChange],
       ["play", onPlay],
+      ["waiting", onWaiting],
+      ["stalled", onWaiting],
+      ["playing", onPlaying],
       ["timeupdate", onTimeUpdate],
       ["seeked", onSeeked],
       ["pause", onPause],

@@ -31,7 +31,7 @@ export async function setupTtsOutput(sync: (media: HTMLAudioElement) => void): P
   const stop = (release = true) => {
     ++revision;
     if (audio) {
-      audio.onplay = audio.onpause = audio.ontimeupdate = audio.onended = audio.onerror = audio.onratechange = null;
+      audio.onplay = audio.onplaying = audio.onwaiting = audio.onstalled = audio.onpause = audio.ontimeupdate = audio.onended = audio.onerror = audio.onratechange = null;
       audio.pause();
       if (release) { audio.removeAttribute("src"); audio.load(); }
       audio = null;
@@ -63,6 +63,12 @@ export async function setupTtsOutput(sync: (media: HTMLAudioElement) => void): P
         if (!valid() || !output.paused || output.ended) return;
         sync(output);
         report({ state: "paused" });
+      };
+      output.onwaiting = output.onstalled = () => {
+        if (valid() && !output.paused && !output.ended) report({ state: "buffering" });
+      };
+      output.onplaying = () => {
+        if (valid() && !output.paused && !output.ended) report({ state: "playing" });
       };
       // 只上报实际播放状态；音频预取和拼接由 Rust 独立推进。
       output.onended = () => { if (valid() && output.ended) report({ state: "ended" }); };

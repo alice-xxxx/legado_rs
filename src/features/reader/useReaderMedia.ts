@@ -1,4 +1,4 @@
-import { openedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 import type { Ref } from "vue";
 import type Hls from "hls.js";
 import { openMediaSession } from "./mediaSession";
@@ -67,7 +67,7 @@ export function useReaderMedia(options: UseReaderMediaOptions) {
         });
     };
 
-    const book = openedBook.value;
+    const book = readingBook.value;
     mediaSession = openMediaSession({
       title: options.reader.chapterTitle.value,
       artist: book?.author ?? "",

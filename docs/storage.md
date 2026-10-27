@@ -31,7 +31,7 @@
 
 ## API 与回执
 
-资源由 `resources` 独立提供启动数据、缓存读写与清理统计、代理登记与恢复、TTS 和 HTTP 生命周期；外部只调用 API。`resources/io.rs` 统一鉴权并分发 `cache/{类型}/{id}/{文件}`、`settings.json`、`proxy/{id}`、`tts/{id}`，HTTP 只读。文件写入共用按文件协调的原子替换；代理通过具名数据库 API 保存并按原 ID 恢复，TTS 是临时流。资源与应用共享数据库句柄，资源模块不依赖应用服务；正文转换属于正文业务，词典页面暂不提供。
+资源由 `resources` 独立提供启动数据、缓存读写与清理统计、代理登记与恢复、TTS 和 HTTP 生命周期；外部只调用 API。`resources/io.rs` 统一鉴权并分发 `cache/{类型}/{id}/{文件}`、`settings.json`、`proxy/{id}`、`tts/{id}`，HTTP 只读。文件写入共用按文件协调的原子替换；代理通过具名数据库 API 保存并按原 ID 恢复，TTS 是临时流。资源与应用共享数据库句柄，资源模块不依赖应用服务；正文转换属于正文业务。
 
 Vue 只有 `fe_db(operations, prepareCurrent, completed)` 一个写入口；固定操作列表在一个事务内执行，失败整批回滚。返回表示已入队；独立完成通道在提交或回滚后返回 `{ error }`，为空表示成功。`modifyDatabase` 默认等待入队，`wait: true` 等待提交，`onComplete` 接收完成通知。
 

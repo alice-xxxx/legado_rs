@@ -1,8 +1,9 @@
 import type { ReaderPosition } from "./readerPosition";
-import { computed, ref, type Ref } from "vue";
+import { computed, type Ref } from "vue";
 import type { Bookmark, BookResource } from "../../api/types";
 import { history, removeHistoryBookmark, saveHistoryBookmark, recordReadingSession } from "../settings/historyStore";
-import { openedBook, openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
+import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
+import { readingBook } from "./readerBookState";
 export function useReaderBookmarksAndHistory(options: {
   readingChapterIndex: Ref<number>;
   getReaderCurrentPosition: () => ReaderPosition;
@@ -11,23 +12,34 @@ export function useReaderBookmarksAndHistory(options: {
   startReading: (book: BookResource, index?: number, offset?: number, positionHint?: ReaderPosition) => Promise<void>;
   notify: (message: string, kind?: "success" | "error") => void; errorText: (error: unknown) => string;
 }) {
-  const bookmarkEditorOpen = ref(false), bookmarkNote = ref(""), bookmarkEditingId = ref<string | null>(null);
-  const currentBookmark = computed(() => (history.value.bookmarks[openedBook.value?.id ?? ""] ?? [])
+  const currentBookmark = computed(() => (history.value.bookmarks[readingBook.value?.id ?? ""] ?? [])
     .find(record => record.chapterIndex === options.readingChapterIndex.value && record.offset === options.getReaderCurrentOffset() && record.pageId === options.getReaderCurrentPosition().pageId && record.anchor === options.getReaderCurrentPosition().anchor) ?? null);
   let readingSession: { bookId: string; sessionId: string; startedAtMs: number; restoreRevision: number } | null = null;
-  function closeBookmarkEditor(): void { bookmarkEditorOpen.value = false; bookmarkEditingId.value = null; bookmarkNote.value = ""; }
-  function toggleCurrentBookmark(): void {
-    const bookId = openedBook.value?.id;
-    if (!bookId || options.isBackupRestoreInProgress()) return;
-    if (currentBookmark.value) void removeHistoryBookmark(bookId, currentBookmark.value.id).catch(error=>options.notify(options.errorText(error),"error"));
-    else { bookmarkEditingId.value = null; bookmarkNote.value = ""; bookmarkEditorOpen.value = true; }
-  }
-  function editCurrentBookmarkNote(): void {
-    if (!currentBookmark.value) return;
-    bookmarkEditingId.value = currentBookmark.value.id; bookmarkNote.value = currentBookmark.value.note; bookmarkEditorOpen.value = true;
+  let bookmarkBusy = false;
+  async function toggleCurrentBookmark(): Promise<void> {
+    const book = readingBook.value;
+    const chapter = book?.chapters.find(entry => entry.index === options.readingChapterIndex.value);
+    if (!book || !chapter || bookmarkBusy || options.isBackupRestoreInProgress()) return;
+    const restoreRevision = options.getRestoreRevision();
+    const previous = currentBookmark.value;
+    bookmarkBusy = true;
+    try {
+      if (previous) await removeHistoryBookmark(book.id, previous.id);
+      else {
+        const now = Date.now();
+        await saveHistoryBookmark(book.id, {
+          id: crypto.randomUUID(), chapterId: chapter.id, chapterIndex: chapter.index, chapterTitle: chapter.title,
+          ...options.getReaderCurrentPosition(), note: "", createdAtMs: now, updatedAtMs: now,
+        });
+      }
+      if (readingBook.value?.id === book.id && restoreRevision === options.getRestoreRevision()) {
+        options.notify(previous ? "已移除书签" : "已添加书签", "success");
+      }
+    } catch (error) { options.notify(options.errorText(error), "error"); }
+    finally { bookmarkBusy = false; }
   }
   function beginReadingSession(): void {
-    const bookId = openedBook.value?.id;
+    const bookId = readingBook.value?.id;
     const restoreRevision = options.getRestoreRevision();
     if (!bookId || readingSession && readingSession.bookId === bookId && readingSession.restoreRevision === restoreRevision) return;
     readingSession = { bookId, sessionId: crypto.randomUUID(), startedAtMs: Date.now(), restoreRevision };
@@ -64,18 +76,5 @@ export function useReaderBookmarksAndHistory(options: {
     }
   }
 
-  function saveBookmark(): void {
-    const book = openedBook.value;
-    const chapter = book?.chapters.find(entry => entry.index === options.readingChapterIndex.value);
-    if (!book || !chapter || options.isBackupRestoreInProgress()) return;
-    const now=Date.now();
-    const previous=bookmarkEditingId.value?(history.value.bookmarks[book.id] ?? []).find(record=>record.id===bookmarkEditingId.value):undefined;
-    if(bookmarkEditingId.value && !previous){closeBookmarkEditor();return;}
-    const bookmark=previous?{...previous,note:bookmarkNote.value.trim(),updatedAtMs:now}:
-      {id:crypto.randomUUID(),chapterId:chapter.id,chapterIndex:chapter.index,chapterTitle:chapter.title,...options.getReaderCurrentPosition(),note:bookmarkNote.value.trim(),createdAtMs:now,updatedAtMs:now};
-    void saveHistoryBookmark(book.id,bookmark).catch(error=>options.notify(options.errorText(error),"error"));
-    closeBookmarkEditor();
-  }
-  return { bookmarkEditorOpen, bookmarkNote, bookmarkEditingId, currentBookmark, toggleCurrentBookmark,
-    editCurrentBookmarkNote, closeBookmarkEditor, saveBookmark, beginReadingSession, finishReadingSession, openBookmark };
+  return { currentBookmark, toggleCurrentBookmark, beginReadingSession, finishReadingSession, openBookmark };
 }

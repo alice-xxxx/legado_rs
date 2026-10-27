@@ -73,8 +73,7 @@
   cursor: default;
 }
 .reader-tool-button:focus-visible,
-.reader-nav-action:focus-visible,
-.reader-dialog-close:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
+.reader-nav-action:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; }
 
 .reader-main {
   position: absolute; inset: 0;
@@ -133,7 +132,22 @@
   font-size: var(--ui-font-caption);
 }
 .reader-content-frame, .chapter-frame { width: 100%; height: 100%; }
-.reader-content-frame { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+.reader-content-frame { position: relative; flex: 1; min-height: 0; overflow: hidden; transition: transform .25s cubic-bezier(.33, 1, .68, 1); }
+.reader-content-frame.reader-bookmark-pulling { transition: none; }
+.reader-bookmark-pull-hint {
+  position: absolute; top: calc(20px + var(--safe-top)); left: 0; right: 0;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  color: var(--reader-chrome-text); font-size: var(--ui-font-caption); pointer-events: none;
+}
+.reader-bookmark-pull-hint.ready { color: var(--reader-accent); }
+.reader-bookmark-ribbon {
+  position: absolute; top: var(--safe-top); right: max(16px, 3vw); z-index: 4;
+  width: 18px; height: 30px; background: var(--reader-accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 76%, 0 100%); pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reader-content-frame { transition: none; }
+}
 /* These nodes are created by the animation libraries, outside Vue's scoped DOM. */
 .reader-content-frame :deep(.reader-page-turn-layer) { position: absolute; inset: 0; z-index: 5; overflow: hidden; pointer-events: none; }
 .reader-content-frame :deep(.reader-page-turn-layer.swiper) { margin: 0; }
@@ -215,7 +229,6 @@
 .compact-setting > div:first-child { display: flex; flex-direction: column; }
 .compact-setting small { font-size: var(--ui-font-caption); line-height: 1.5; }
 .reader-source-tools { display: grid; gap: 8px; margin: 8px 0; }
-.reader-current-bookmark { margin-top: 8px; font-size: var(--ui-font-caption); }
 .range-control { display: flex; min-width: 0; align-items: center; gap: 7px; }
 .range-control > button {
   width: 34px;
@@ -377,8 +390,7 @@
 .comic-brightness-control input { width: 100%; min-width: 0; }
 
 #reader-chapter-jump { width: 76px; min-height: 36px; }
-.reader-add-bookmark, .reader-dictionary-open { width: 100%; }
-.reader-audio-rate-control > div, .reader-tts-row, .reader-current-bookmark, .reader-find-actions-row {
+.reader-audio-rate-control > div, .reader-tts-row, .reader-find-actions-row {
   display: flex; align-items: center;
   justify-content: space-between; gap: 8px;
 }
@@ -411,168 +423,8 @@
   .reader-header-actions .read-save-state { display: none; }
   .reader-settings-popover { top: auto; right: 12px; bottom: calc(66px + var(--safe-bottom)); max-height: min(68dvh, calc(100% - 84px - var(--safe-bottom))); }
 }
-
-
-
-.modal-backdrop.reader-dictionary-backdrop {
-  z-index: 40;
-  backdrop-filter: blur(3px);
-}
-
-.reader-bookmark-backdrop {
-  backdrop-filter: blur(2px);
-}
-
-.reader-bookmark-sheet {
-  width: min(420px, 100%);
-  padding: 20px;
-  border-radius: 14px;
-  color: var(--app-text);
-}
-.reader-bookmark-sheet-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.reader-bookmark-sheet-heading > strong { font-size: var(--ui-font-heading); }
-.reader-dialog-close {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  place-items: center;
-  padding: 0;
-  border: 0;
-  border-radius: 8px;
-  color: var(--app-muted);
-  background: transparent;
-  cursor: pointer;
-}
-.reader-bookmark-sheet-position {
-  display: grid;
-  gap: 4px;
-  margin: 12px 0 18px;
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-.reader-bookmark-sheet-position strong { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 500; }
-.reader-bookmark-sheet-label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; font-size: var(--ui-font-body); }
-.reader-bookmark-sheet-label small { color: var(--app-muted); font-size: var(--ui-font-caption); }
-.reader-bookmark-sheet textarea {
-  display: block;
-  width: 100%;
-  min-height: 104px;
-  max-height: 35dvh;
-  padding: 10px 12px;
-  border: 1px solid var(--app-line);
-  border-radius: 10px;
-  outline: none;
-  color: var(--app-text);
-  background: var(--app-panel-softer);
-  font: inherit;
-  font-size: var(--ui-font-body);
-  line-height: 1.6;
-  resize: vertical;
-}
-.reader-bookmark-sheet textarea:focus { border-color: var(--app-accent); box-shadow: 0 0 0 2px var(--app-accent-soft); }
-.reader-bookmark-sheet textarea::placeholder { color: var(--app-subtle); }
-.reader-bookmark-note-count { display: block; margin-top: 6px; color: var(--app-muted); font-size: var(--ui-font-caption); text-align: right; font-variant-numeric: tabular-nums; }
-.reader-bookmark-sheet .modal-actions { margin-top: 12px; }
 .reader-shell[data-reader-mode="audio"] .reader-settings-popover,
 .reader-shell[data-reader-mode="video"] .reader-settings-popover { top: 68px; bottom: auto; }
-
-@media (max-width: 430px) {
-  .reader-bookmark-sheet { padding: 16px; }
-  .reader-bookmark-sheet .modal-actions > button { flex: 1; }
-}
-
-.dictionary-panel {
-  display: flex;
-  width: min(760px, 100%);
-  max-height: min(88dvh, 900px);
-  flex-direction: column;
-  overflow: hidden;
-  border: 1px solid var(--app-line);
-  border-radius: 14px;
-  background: var(--app-surface);
-  box-shadow: 0 18px 46px rgb(30 33 45 / 16%);
-}
-
-.dictionary-panel > header {
-  display: flex;
-  min-height: 58px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.dictionary-panel > header h2 {
-  margin: 2px 0 0;
-  font-size: var(--ui-font-title);
-}
-
-.dictionary-panel iframe {
-  width: 100%;
-  min-height: 0;
-  flex: 1;
-  border: 0;
-  background: var(--app-surface);
-}
-
-.reader-dictionary-form {
-  display: grid;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.reader-dictionary-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.reader-dictionary-word,
-.reader-dictionary-language {
-  min-width: 0;
-  flex: 1;
-}
-
-.reader-dictionary-language-label {
-  white-space: nowrap;
-}
-
-.reader-dictionary-error {
-  margin: 0;
-  color: var(--app-danger);
-  font-size: var(--ui-font-caption);
-}
-
-.reader-dictionary-source {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 16px;
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-}
-
-.reader-dictionary-status {
-  position: relative;
-  min-height: 110px;
-}
-
-@media (max-width: 860px) {
-  .dictionary-panel {
-    width: 100%;
-    max-height: 94dvh;
-  }
-}
 
 .reader-book-page { display: flex; position: absolute; z-index: 34; inset: 0; min-height: 0; flex-direction: column; color: var(--app-text); background: var(--app-background); }
 .reader-book-page-header { display: flex; flex: none; align-items: center; gap: 12px; padding: calc(8px + var(--safe-top)) 12px 8px; border-bottom: 1px solid var(--app-line); background: var(--app-surface); }

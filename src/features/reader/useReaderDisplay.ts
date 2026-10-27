@@ -1,5 +1,5 @@
 import { imagePosition, textPosition, textChapterBounds, readerPageWidth, restoreImagePosition, restoreTextPosition, type ReaderPosition } from "./readerPosition";
-import { onScopeDispose, watch, type Ref } from "vue";
+import { computed, onScopeDispose, ref, watch, type Ref } from "vue";
 import { settings } from "../settings/settingsStore";
 import { hasPageTurnAnimation } from "../settings/readerModes";
 import type { ReaderTouchStartState } from "./useReaderPageInteraction";
@@ -31,9 +31,48 @@ export function useReaderDisplay(options: {
     onTextScroll: () => void;
     chapterPreview: (direction: -1 | 1) => HTMLElement | null;
     commitChapterTurn: (direction: -1 | 1) => void;
+    toggleBookmark: () => void;
   };
 }) {
   const { reader, actions } = options;
+  const bookmarkPullDistance = ref(0);
+  const bookmarkPullReady = computed(() => bookmarkPullDistance.value >= 100);
+  let pullingBookmark = false;
+  let bookmarkPullRejected = false;
+  function updateBookmarkPull(distance: number): void {
+    const travel = Math.max(0, distance);
+    bookmarkPullDistance.value = travel <= 120 ? travel : 120 + (travel - 120) * 0.35;
+  }
+  function clearBookmarkPull(): void {
+    pullingBookmark = false;
+    bookmarkPullRejected = false;
+    bookmarkPullDistance.value = 0;
+  }
+  function canPullBookmark(start: ReaderTouchStartState): boolean {
+    const mode = settings.value.reader.readingMode;
+    return start.y >= 10 && start.viewport.classList.contains("novel-reader")
+      && !reader.imagePage.value && !reader.mediaChapter.value && mode !== "vertical" && mode !== "slide-vertical";
+  }
+  function moveBookmarkPull(start: ReaderTouchStartState, x: number, y: number): boolean {
+    const dx = Math.abs(x - start.x), dy = y - start.y;
+    if (!pullingBookmark) {
+      if (bookmarkPullRejected || pageDrag || !canPullBookmark(start)) return false;
+      if (dy >= 18 && dy > dx) pullingBookmark = true;
+      else {
+        if ((dx >= 18 && dx > Math.abs(dy)) || dy <= -18) bookmarkPullRejected = true;
+        return false;
+      }
+    }
+    updateBookmarkPull(dy);
+    return true;
+  }
+  function releaseBookmarkPull(dy: number): void {
+    reader.setClickSuppressedUntil(Date.now() + 500);
+    updateBookmarkPull(dy);
+    const commit = bookmarkPullReady.value;
+    clearBookmarkPull();
+    if (commit) actions.toggleBookmark();
+  }
   let imageResume: ReaderPosition | null = null;
   let lastPosition: ReaderPosition | null = null;
   let viewportWidth = 0;
@@ -44,13 +83,14 @@ export function useReaderDisplay(options: {
   let measuredMode = settings.value.reader.readingMode;
   let pageDrag: { origin: number; last: number; direction: -1 | 1; cancelled: boolean; target: number; chapter: boolean } | null = null;
   function clearPageTurnAnimation(): void {
+    clearBookmarkPull();
     activePageTurn?.dispose();
     activePageTurn = null;
     pageDrag = null;
     const done = chapterTurnDone; chapterTurnDone = null; done?.(false);
   }
-  onScopeDispose(clearPageTurnAnimation);
-  watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.gesturesBlocked.value], () => {
+  onScopeDispose(clearReaderScrollListeners);
+  watch(() => [settings.value.reader.readingMode, reader.visible.value, reader.gesturesBlocked.value, reader.busy.value, reader.viewport.value], () => {
     clearPageTurnAnimation();
     reader.setTouchStart(null);
   }, { flush: "sync" });
@@ -201,6 +241,10 @@ export function useReaderDisplay(options: {
     const touch = event.touches[0]!;
     const dx = Math.abs(touch.clientX - start.x), dy = Math.abs(touch.clientY - start.y);
     if (dx >= 12 || dy >= 12) start.moved = true;
+    if (moveBookmarkPull(start, touch.clientX, touch.clientY)) {
+      if (event.cancelable) event.preventDefault();
+      return;
+    }
     if (reader.imagePage.value || settings.value.reader.readingMode === "vertical") return;
     const mode = settings.value.reader.readingMode;
     const verticalTurn = mode === "slide-vertical";
@@ -237,6 +281,7 @@ export function useReaderDisplay(options: {
       { x: x - (bounds?.left ?? 0), y: y - (bounds?.top ?? 0) });
   }
   function onReaderFrameTouchCancel(): void {
+    clearBookmarkPull();
     reader.setTouchStart(null);
     reader.setClickSuppressedUntil(Date.now() + 500);
     const turn = pageDrag ? activePageTurn : null;
@@ -253,6 +298,11 @@ export function useReaderDisplay(options: {
     }
     const touch = event.changedTouches[0]!;
     const dx = touch.clientX - start.x, dy = touch.clientY - start.y;
+    if (pullingBookmark) {
+      if (event.cancelable) event.preventDefault();
+      releaseBookmarkPull(dy);
+      return;
+    }
     if (!start.moved && Math.abs(dx) < 12 && Math.abs(dy) < 12) {
       reader.setClickSuppressedUntil(Date.now() + 500);
       if (reader.imagePage.value) return;
@@ -372,6 +422,7 @@ export function useReaderDisplay(options: {
     });
   }
   return { restoreReadingPosition, handleReaderResize, clearReaderScrollListeners, setReaderViewport, onReaderTextChange, onReaderLayout, measureReaderPages,
+    bookmarkPullDistance, bookmarkPullReady,
     scrollReaderFrameToPage, animateChapterTurn, onReaderFrameScroll, shouldIgnoreReaderKeydown,
     onReaderFrameTouchStart, onReaderFrameTouchMove, onReaderFrameTouchEnd, applyComicScrollPosition };
 }

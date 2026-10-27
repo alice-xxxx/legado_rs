@@ -1,6 +1,6 @@
 import { command } from "./ipc";
 
-export type TtsProgress = number | string | { paused: boolean };
+export type TtsProgress = number | string | { paused: boolean } | { buffering: boolean } | { finished: true };
 export interface TtsVoice { voiceURI: string; name: string; lang: string; }
 export const ttsVoices = () => command<TtsVoice[]>("tts_voices");
 

@@ -1,7 +1,7 @@
-import { nextTick, type Ref } from "vue";
+import { nextTick, onScopeDispose, type Ref } from "vue";
 import type { PdfPageResource } from "./readerContent";
 import { textChapterElement } from "./readerPosition";
-import { collectReaderTtsSegments, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
+import { collectReaderTtsSegments, resolveTtsChunkRange, type ReaderTtsChunkTarget, type ReaderTtsSegment } from "./ttsText";
 
 type ReadonlyRef<T> = Readonly<Ref<T>>;
 
@@ -26,7 +26,6 @@ interface UseReaderTtsActionsOptions {
   display: {
     openControls: () => void;
     setPage: (index: number) => void;
-    segmentForElement: (target: Element) => number;
     segmentForRect: (document: Document, rect: DOMRect) => number;
     scrollToPage: () => void;
   };
@@ -34,104 +33,82 @@ interface UseReaderTtsActionsOptions {
 
 /** 管理朗读入口、正文分段和当前朗读位置高亮。 */
 export function useReaderTtsActions(options: UseReaderTtsActionsOptions) {
-  let ttsHighlightElement: HTMLElement | null = null;
-  let ttsHighlightPreviousValue: string | null = null;
-  let ttsHighlightStyle: HTMLStyleElement | null = null;
-  let ttsHighlightDocument: Document | null = null;
+  let disposeHighlight = () => {};
+  onScopeDispose(clearTtsHighlight);
 
   function openTtsControls(): void {
     options.display.openControls();
   }
 
   function clearTtsHighlight(): void {
-    const document = ttsHighlightDocument;
-    if (document) {
-      const view = document.defaultView as unknown as { CSS?: { highlights?: { delete?: (name: string) => boolean } } } | null;
-      try {
-        view?.CSS?.highlights?.delete?.("legado-reader-tts-current");
-      } catch {
-        // 阅读正文可能正在卸载，高亮清理失败时继续释放本地引用。
-      }
-    }
-    if (ttsHighlightElement) {
-      if (ttsHighlightPreviousValue === null) ttsHighlightElement.removeAttribute("data-legado-reader-tts-current");
-      else ttsHighlightElement.setAttribute("data-legado-reader-tts-current", ttsHighlightPreviousValue);
-    }
-    ttsHighlightStyle?.remove();
-    ttsHighlightDocument = null;
-    ttsHighlightElement = null;
-    ttsHighlightPreviousValue = null;
-    ttsHighlightStyle = null;
+    disposeHighlight();
+    disposeHighlight = () => {};
   }
 
   function highlightTtsChunk(target: ReaderTtsChunkTarget | undefined, loadRevision: number): void {
     clearTtsHighlight();
-    const root = options.reader.viewport.value;
-    const document = target?.startNode?.ownerDocument ?? target?.target?.ownerDocument;
-    if (!target || !document || document !== root?.ownerDocument || !root?.contains(target.startNode ?? target.target ?? null) || !options.reader.visible.value
+    const viewport = options.reader.viewport.value;
+    const document = viewport?.ownerDocument;
+    const view = document?.defaultView;
+    const container = viewport?.parentElement;
+    if (!target || !viewport || !document || !view || !container || !options.reader.visible.value
       || loadRevision !== options.reader.getLoadRevision() || options.reader.mediaChapter.value
       || options.reader.imagePage.value || options.reader.pdfPage.value) return;
-
-    let range: Range | null = null;
-    if (target.startNode && target.endNode && target.startNode.isConnected && target.endNode.isConnected) {
-      try {
-        range = document.createRange();
-        range.setStart(target.startNode, target.startOffset);
-        range.setEnd(target.endNode, target.endOffset);
-        if (range.collapsed) range = null;
-      } catch {
-        range = null;
-      }
-    }
-
-    const view = document.defaultView as unknown as {
-      CSS?: { highlights?: { set?: (name: string, value: unknown) => void } };
-      Highlight?: new (...ranges: Range[]) => unknown;
-    } | null;
-    const registry = view?.CSS?.highlights;
-    const HighlightConstructor = view?.Highlight;
-    let highlightedWithRange = false;
-    if (range && registry?.set && HighlightConstructor) {
-      try {
-        const highlight = new HighlightConstructor(range);
-        registry.set("legado-reader-tts-current", highlight);
-        highlightedWithRange = true;
-      } catch {
-        highlightedWithRange = false;
-      }
-    }
-
-    if (highlightedWithRange || target.target) {
-      const style = document.createElement("style");
-      style.textContent = "::highlight(legado-reader-tts-current){background-color:rgba(255,196,0,.48);color:inherit}[data-legado-reader-tts-current=\"true\"]{background-color:rgba(255,196,0,.28)!important;outline:2px solid rgba(224,158,0,.45)!important}";
-      document.head?.appendChild(style);
-      ttsHighlightStyle = style;
-      ttsHighlightDocument = document;
-      if (!highlightedWithRange && target.target) {
-        ttsHighlightElement = target.target;
-        ttsHighlightPreviousValue = target.target.getAttribute("data-legado-reader-tts-current");
-        target.target.setAttribute("data-legado-reader-tts-current", "true");
-      }
-    }
-
-    if (range) {
-      try {
-        const firstCharacter = document.createRange();
-        firstCharacter.setStart(target.startNode!, target.startOffset);
-        firstCharacter.setEnd(target.startNode!, Math.min(target.startOffset + 1, target.startNode!.length));
-        const rects = firstCharacter.getClientRects();
-        const rect = rects.length ? rects[0] : firstCharacter.getBoundingClientRect();
-        options.display.setPage(options.display.segmentForRect(document, rect));
-        options.display.scrollToPage();
+    const range = resolveTtsChunkRange(textChapterElement(viewport), target);
+    if (!range) return;
+    // 与排版 DOM 分离，所有 WebView 都按实际文字矩形绘制，不扩大成整个段落。
+    const namespace = "http://www.w3.org/2000/svg";
+    const layer = document.createElementNS(namespace, "svg");
+    layer.setAttribute("data-reader-tts-highlight", "true");
+    layer.setAttribute("aria-hidden", "true");
+    layer.style.cssText = "position:absolute;inset:0;width:100%;height:100%;overflow:hidden;pointer-events:none;z-index:2;opacity:.4;fill:#ffc400";
+    container.appendChild(layer);
+    let frame: number | null = null;
+    const draw = () => {
+      frame = null;
+      if (options.reader.viewport.value !== viewport || !options.reader.visible.value || loadRevision !== options.reader.getLoadRevision()) {
+        clearTtsHighlight();
         return;
-      } catch {
-        // 文本范围无法测量时，仍保留段落高亮并尝试定位到段落。
       }
-    }
-    if (target.target) {
-      options.display.setPage(options.display.segmentForElement(target.target));
+      layer.replaceChildren();
+      const current = resolveTtsChunkRange(textChapterElement(viewport), target);
+      if (!current) return;
+      const bounds = container.getBoundingClientRect();
+      const clip = viewport.getBoundingClientRect();
+      layer.setAttribute("viewBox", `0 0 ${bounds.width} ${bounds.height}`);
+      for (const rect of current.getClientRects()) {
+        if (rect.width <= 0 || rect.height <= 0 || rect.right <= clip.left || rect.left >= clip.right || rect.bottom <= clip.top || rect.top >= clip.bottom) continue;
+        const mark = document.createElementNS(namespace, "rect");
+        mark.setAttribute("x", String(rect.left - bounds.left));
+        mark.setAttribute("y", String(rect.top - bounds.top));
+        mark.setAttribute("width", String(rect.width));
+        mark.setAttribute("height", String(rect.height));
+        layer.appendChild(mark);
+      }
+    };
+    const schedule = () => { if (frame === null) frame = view.requestAnimationFrame(draw); };
+    const resize = new view.ResizeObserver(schedule);
+    const mutation = new view.MutationObserver(schedule);
+    resize.observe(viewport);
+    mutation.observe(viewport, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["class", "style"] });
+    viewport.addEventListener("scroll", schedule, { passive: true });
+    view.addEventListener("resize", schedule);
+    disposeHighlight = () => {
+      if (frame !== null) view.cancelAnimationFrame(frame);
+      resize.disconnect();
+      mutation.disconnect();
+      viewport.removeEventListener("scroll", schedule);
+      view.removeEventListener("resize", schedule);
+      layer.remove();
+    };
+    const firstCharacter = range.cloneRange();
+    firstCharacter.setEnd(range.startContainer, Math.min(range.startOffset + 1, (range.startContainer as Text).length));
+    const rect = firstCharacter.getClientRects()[0];
+    if (rect) {
+      options.display.setPage(options.display.segmentForRect(document, rect));
       options.display.scrollToPage();
     }
+    draw();
   }
 
   async function waitForReaderTtsSegments(fromCurrentPosition = false): Promise<ReaderTtsSegment[]> {
