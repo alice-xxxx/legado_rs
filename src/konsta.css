@@ -11,7 +11,10 @@
   --font-material: Roboto, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
-body { font-size: var(--ui-font-body); }
+body { font-size: var(--ui-font-body); color: var(--app-text); background: var(--app-background); }
+/* Standalone fields use one 48px row without the list's extra outer gutter. */
+.k-list-input { min-width: 0; padding-block: 0; }
+.k-list-input > :first-child { min-height: 48px; margin-inline: 0; }
 .k-button:focus-visible, .k-link:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 /* Glass surfaces contain scrollable forms and menus. */
 .k-glass:not(.k-toolbar-pane) { touch-action: auto; }

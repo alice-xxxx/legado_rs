@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Toggle as KToggle, Button as KButton } from "konsta/vue";
+import { ListInput as KListInput, Toggle as KToggle, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 首页栏目直接编辑全局设置中的 home 配置。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -325,7 +325,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
         <section class="home-config-editor__tab-settings">
         <label class="home-config-editor__field home-config-editor__tab-name">
           <span>标签页名称</span>
-          <input v-model="activeTab.title" maxlength="128" />
+          <KListInput component="div" maxlength="128" :value="activeTab.title" @input="activeTab.title = ($event.target as HTMLInputElement).value" />
         </label>
         <div class="home-config-editor__tab-actions">
           <KButton rounded inline tonal type="button" class="home-config-editor__button home-config-editor__button--secondary gap-2" :disabled="orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === 0" @click="moveTab(activeTab.id, -1)">上移</KButton>
@@ -350,15 +350,13 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
               title="拖动排序；移动端可使用右侧上下按钮"
               @dragstart="beginSectionDrag($event, section.id)" @dragend="finishSectionDrag"><i></i><i></i><i></i></span>
             <label class="home-config-editor__field home-config-editor__section-title">
-              <input v-model="section.title" maxlength="128"
-                />
+              <KListInput component="div" maxlength="128" :value="section.title" @input="section.title = ($event.target as HTMLInputElement).value" />
               <small :title="sourceName(section.sourceId) + ' · ' + categoryName(section)">{{ sourceName(section.sourceId) }} · {{ categoryName(section) }}</small>
             </label>
             <label class="home-config-editor__compact-style">
-              <select :value="section.style"
-@change="updateSectionStyle(section, $event)">
+              <KListInput component="div" :value="section.style" type="select" @change="updateSectionStyle(section, $event)">
                 <option :value="0">横向封面</option><option :value="1">排行列表</option><option :value="2">无限网格</option><option :value="3">四列卡片</option>
-              </select>
+              </KListInput>
             </label>
             <KButton rounded inline clear type="button" class="home-config-editor__expand gap-2"
               @click="expandedSectionId = expandedSectionId === section.id ? null : section.id">
@@ -369,16 +367,16 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           <div v-if="expandedSectionId === section.id" class="home-config-editor__section-fields">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <select :value="section.sourceId" @change="changeSectionSource(section, ($event.target as HTMLSelectElement).value)">
+              <KListInput component="div" :value="section.sourceId" type="select" @change="changeSectionSource(section, ($event.target as HTMLSelectElement).value)">
                 <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
-              </select>
+              </KListInput>
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <select :value="section.categoryId" :disabled="!section.sourceId" @focus="loadHomeEditorCategories(section.sourceId)" @change="changeSectionCategory(section, ($event.target as HTMLSelectElement).value)">
+              <KListInput component="div" :value="section.categoryId" :disabled="!section.sourceId" @focus="loadHomeEditorCategories(section.sourceId)" type="select" @change="changeSectionCategory(section, ($event.target as HTMLSelectElement).value)">
                 <option value="" disabled>{{ categoryPlaceholder(section.sourceId) }}</option>
                 <option v-for="category in categoryChoices(section)" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
-              </select>
+              </KListInput>
               <small v-if="categoryErrors[section.sourceId]" class="home-config-editor__category-error">{{ categoryErrors[section.sourceId] }} <KButton rounded inline clear class="gap-2" type="button" @click="loadHomeEditorCategories(section.sourceId)">重新读取</KButton></small>
               <small v-else-if="!categoriesLoaded(section.sourceId)">聚焦分类框可读取此来源的其他分类。</small>
             </label>
@@ -410,21 +408,21 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           <div v-if="addingSection" class="home-config-editor__add-grid">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <select v-model="newSectionSourceId" :disabled="!enabledNovelSources.length">
+              <KListInput component="div" :disabled="!enabledNovelSources.length" type="select" :value="newSectionSourceId" @change="newSectionSourceId = ($event.target as HTMLSelectElement).value">
                 <option value="" disabled>选择书籍来源</option>
                 <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
-              </select>
+              </KListInput>
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <select v-model="newSectionCategoryId" :disabled="!newSectionSourceId">
+              <KListInput component="div" :disabled="!newSectionSourceId" type="select" :value="newSectionCategoryId" @change="newSectionCategoryId = ($event.target as HTMLSelectElement).value">
                 <option value="" disabled>{{ categoryPlaceholder(newSectionSourceId) }}</option>
                 <option v-for="category in categoriesForNewSection" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
-              </select>
+              </KListInput>
             </label>
             <label class="home-config-editor__field">
               <span>栏目名称（可选）</span>
-              <input v-model="newSectionTitle" maxlength="128" placeholder="默认使用分类名称" />
+              <KListInput component="div" maxlength="128" placeholder="默认使用分类名称" :value="newSectionTitle" @input="newSectionTitle = ($event.target as HTMLInputElement).value" />
             </label>
             <KButton rounded inline type="button" class="home-config-editor__button home-config-editor__button--primary gap-2" :disabled="!activeTab || activeTab.sections.length >= 64 || !selectedCategory(newSectionSourceId, newSectionCategoryId)" @click="addSection">添加栏目</KButton>
           </div>
@@ -458,13 +456,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__button{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   min-height:34px;padding:0 12px;
-  border:1px solid transparent;border-radius:9px;
-  font-size:var(--ui-font-body);font-weight:650;cursor:pointer;
 }
-.home-config-editor__button:disabled,.home-config-editor__icon-button:disabled{opacity:.45;cursor:default}
-.home-config-editor__button--primary{background:var(--hc-accent);color:var(--app-on-accent)}
-.home-config-editor__button--secondary{border-color:var(--hc-line);background:var(--app-surface);color:var(--app-muted)}
-.home-config-editor__button--danger{background:var(--app-danger-soft);color:var(--app-danger)}
 .home-config-editor__body{
   box-sizing:border-box;width:100%;
   margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width);
@@ -478,13 +470,11 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__tabs button{
   display:inline-flex;align-items:center;justify-content:center;
   flex:none;box-sizing:border-box;height:29px;min-height:29px;
-  padding:0 10px;border:0;border-radius:999px;
-  background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);
-  font-weight:600;white-space:nowrap;cursor:pointer;
+  padding:0 10px;white-space:nowrap;
 }
 .home-config-editor__tabs button.active{color:var(--app-text);font-weight:750}
 .home-config-editor__tabs .home-config-editor__tab-add{
-  gap:4px;border:1px dashed var(--app-accent-soft);background:var(--app-panel-soft);color:var(--hc-accent);
+  gap:4px;
 }
 .home-config-editor__tab-add :deep(svg){width:13px;height:13px}
 .home-config-editor__tab-details{
@@ -507,16 +497,13 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__tab-actions{display:flex;align-items:center;gap:6px}
 .home-config-editor__field{display:flex;flex-direction:column;gap:4px;min-width:0;color:var(--app-muted);font-size:var(--ui-font-caption)}
 .home-config-editor__field>span{font-weight:600}
-.home-config-editor__field input,.home-config-editor__field select{
-  box-sizing:border-box;width:100%;min-width:0;height:36px;min-height:36px;
-  padding:0 9px;border:1px solid var(--hc-line);border-radius:8px;
-  background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);
+.home-config-editor__field .k-list-input{
+  box-sizing:border-box;width:100%;min-width:0;
 }
 .home-config-editor__field small{color:var(--hc-muted);font-size:var(--ui-font-caption);line-height:1.45}
 .home-config-editor__category-error{color:var(--app-danger)!important;font-size:var(--ui-font-caption)}
 .home-config-editor__category-error button{
-  margin-left:4px;border:0;background:transparent;color:var(--hc-accent);
-  font-size:var(--ui-font-body);text-decoration:underline;cursor:pointer;
+  margin-left:4px;text-decoration:underline;
 }
 .home-config-editor__section-heading{
   display:flex;align-items:center;justify-content:space-between;
@@ -549,23 +536,18 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   width:3px;height:13px;border-left:3px dotted var(--app-line);
 }
 .home-config-editor__section-title{display:flex;flex-direction:column;gap:2px;min-width:0}
-.home-config-editor__section-title input{
-  box-sizing:border-box;width:100%;height:20px;min-height:20px;
-  padding:0;border:0;border-radius:0;outline-offset:2px;
-  background:transparent;color:var(--app-text);font-size:var(--ui-font-body);font-weight:700;
+.home-config-editor__section-title .k-list-input{
+  box-sizing:border-box;width:100%;
 }
 .home-config-editor__section-title small{
   min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
   color:var(--app-subtle);font-size:var(--ui-font-caption);font-weight:400;
 }
-.home-config-editor__compact-style select{
-  box-sizing:border-box;width:100%;height:31px;min-height:31px;
-  padding:0 7px;border:1px solid var(--hc-line);border-radius:8px;
-  background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body);
+.home-config-editor__compact-style .k-list-input{
+  box-sizing:border-box;width:100%;
 }
 .home-config-editor__expand{
   display:grid;place-items:center;width:36px;height:36px;
-  border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer;
 }
 .home-config-editor__expand :deep(svg){width:18px;height:18px}
 .home-config-editor__section-fields{
@@ -577,15 +559,12 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   display:flex;align-items:center;gap:6px;min-height:36px;
   color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;
 }
-.home-config-editor__checkbox-field input{width:16px;height:16px;accent-color:var(--hc-accent)}
 .home-config-editor__section-actions{
   display:flex;justify-content:flex-end;align-items:center;
   grid-column:1/-1;gap:5px;
 }
 .home-config-editor__icon-button{
   display:grid;place-items:center;width:32px;height:32px;padding:0;
-  border:1px solid var(--hc-line);border-radius:8px;
-  background:var(--app-surface);color:var(--app-accent-ink);cursor:pointer;
 }
 .home-config-editor__icon-button :deep(svg){width:16px;height:16px}
 .home-config-editor__icon-button .section-arrow-up{transform:rotate(-90deg)}
@@ -593,11 +572,8 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__add-section{margin-top:10px}
 .home-config-editor__add-toggle{
   box-sizing:border-box;width:100%;min-height:41px;
-  border:1px dashed var(--app-accent-soft);border-radius:11px;
-  background:var(--app-panel-soft);color:var(--hc-accent);
-  text-align:center;font-size:var(--ui-font-caption);font-weight:700;cursor:pointer;
+  text-align:center;
 }
-.home-config-editor__add-toggle:disabled{opacity:.5;cursor:default}
 .home-config-editor__add-grid{
   display:grid;grid-template-columns:1fr 1fr 1.1fr auto;
   align-items:end;gap:10px;margin-top:12px;padding:11px;
@@ -610,18 +586,6 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
   font-size:var(--ui-font-caption);line-height:1.6;
 }
 .home-config-editor__validation ul{margin:7px 0 0;padding-left:17px}
-.home-config-editor__discard-mask{
-  position:fixed;inset:0;z-index:120;
-  display:grid;place-items:center;padding:16px;background:var(--app-scrim);
-}
-.home-config-editor__discard-dialog{
-  box-sizing:border-box;width:min(430px,100%);padding:22px;
-  border:1px solid var(--hc-line);border-radius:14px;
-  background:var(--app-surface);box-shadow:0 16px 44px #11142822;
-}
-.home-config-editor__discard-dialog h3{margin:0;color:var(--app-text);font-size:var(--ui-font-title)}
-.home-config-editor__discard-dialog p{margin:10px 0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.65}
-.home-config-editor__discard-dialog footer{display:flex;justify-content:flex-end;gap:8px;margin-top:17px}
 @media(max-width:860px){
   .home-config-editor__body{padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}
   .home-config-editor__section-title-row{grid-template-columns:18px minmax(0,1fr) 100px 32px;gap:8px}

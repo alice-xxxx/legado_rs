@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton } from "konsta/vue";
+import { Popup as KPopup, ListInput as KListInput, Button as KButton } from "konsta/vue";
 import type { ResourceDescriptor, SearchBookResult, BookResource, SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 
@@ -39,7 +39,7 @@ function updateKeyword(event: Event): void {
 
 <template>
   <section class="source-debug-backdrop" data-back-layer @click.self="emit('close')" @keydown.esc.stop.prevent="emit('close')">
-    <article class="source-debug-dialog" role="dialog" aria-modal="true" aria-labelledby="source-debug-title">
+    <KPopup opened :backdrop="false" class="source-debug-dialog z-[80] flex flex-col w-[min(980px,100vw)]! h-[min(92dvh,900px)]!" role="dialog" aria-modal="true" aria-labelledby="source-debug-title">
       <header class="source-debug-header">
         <h2 id="source-debug-title">测试来源</h2>
         <KButton rounded inline clear type="button" class="source-debug-close gap-2 size-11 p-0" data-back-action aria-label="关闭测试" @click="emit('close')"><PrototypeIcon name="close" /></KButton>
@@ -53,14 +53,7 @@ function updateKeyword(event: Event): void {
         </div>
         <label class="source-debug-field">
           <span>关键词</span>
-          <input
-            :value="keyword"
-            maxlength="200"
-            autocomplete="off"
-            placeholder="输入测试关键词"
-            :disabled="busy || keywordLoading"
-            @input="updateKeyword"
-          />
+          <KListInput component="div" :value="keyword" maxlength="200" autocomplete="off" placeholder="输入测试关键词" :disabled="busy || keywordLoading" @input="updateKeyword" />
         </label>
         <div class="source-debug-actions">
           <KButton rounded inline type="submit" class="gap-2" :disabled="busy || keywordLoading || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '处理中…' : keywordLoading ? '读取中…' : '开始测试' }}</KButton>
@@ -105,7 +98,7 @@ function updateKeyword(event: Event): void {
         <iframe v-else :key="chapterResource.resourceId" :src="chapterResource.src" title="源章节正文预览" sandbox="" class="source-debug-frame"></iframe>
       </section>
       </div>
-    </article>
+    </KPopup>
   </section>
 </template>
 
@@ -125,14 +118,8 @@ function updateKeyword(event: Event): void {
 .source-debug-dialog {
   display: flex;
   flex-direction: column;
-  width: min(640px, 100%);
-  max-height: min(88dvh, 840px);
   min-width: 0;
   overflow: hidden;
-  border: 1px solid var(--app-line);
-  border-radius: 12px;
-  background: var(--app-surface);
-  box-shadow: var(--app-shadow);
 }
 
 .source-debug-header {
@@ -156,9 +143,6 @@ function updateKeyword(event: Event): void {
   flex: none;
   width: 36px;
   height: 36px;
-  border-radius: var(--ui-radius);
-  color: var(--app-muted);
-  cursor: pointer;
 }
 
 .source-debug-close :deep(svg) {
@@ -184,16 +168,9 @@ function updateKeyword(event: Event): void {
   gap: 12px;
 }
 
-.source-debug-field input {
+.source-debug-field .k-list-input {
   width: 100%;
   min-width: 0;
-  height: var(--ui-control-height);
-  padding: 0 10px;
-  border: 1px solid var(--app-line);
-  border-radius: var(--ui-radius);
-  color: var(--app-text);
-  background: var(--app-surface);
-  font-size: var(--ui-font-body);
 }
 
 .source-debug-source {
@@ -207,15 +184,7 @@ function updateKeyword(event: Event): void {
   padding-top: 4px;
 }
 
-.source-debug-close:focus-visible,
-.source-debug-field input:focus-visible {
-  outline: 2px solid var(--app-accent);
-  outline-offset: 2px;
-}
-
-.source-debug-search,
-.source-debug-results,
-.source-debug-book-detail {
+.source-debug-search, .source-debug-results, .source-debug-book-detail {
   min-width: 0;
   display: grid;
   gap: 12px;
@@ -230,14 +199,11 @@ function updateKeyword(event: Event): void {
   overflow-wrap: anywhere;
 }
 
-.source-debug-errors p,
-.source-debug-copy {
+.source-debug-errors p, .source-debug-copy {
   margin: 0;
 }
 
-.source-debug-results,
-.source-debug-book-detail,
-.source-debug-preview {
+.source-debug-results, .source-debug-book-detail, .source-debug-preview {
   margin-top: 16px;
 }
 
@@ -282,8 +248,7 @@ function updateKeyword(event: Event): void {
   text-align: left;
 }
 
-.source-debug-json,
-.source-debug-frame {
+.source-debug-json, .source-debug-frame {
   display: block;
   width: 100%;
   margin-top: 8px;

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import SubpageHeader from "../../ui/SubpageHeader.vue";
-import { Button as KButton, Popover as KPopover } from "konsta/vue";
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Popover as KPopover } from "konsta/vue";
 import { computed, ref } from "vue";
 import type { SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
@@ -130,10 +130,14 @@ const saveError = ref("");
    />
   </div>
   <div v-if="discardPrompt" class="source-discard-prompt" data-back-layer>
-    <div><strong>放弃未保存的源修改？</strong><p>未保存的字段修改将丢失。</p>
-      <KButton rounded inline tonal type="button" class="gap-2" data-back-action @click="discardPrompt=false">继续编辑</KButton>
-      <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " @click="emit('cancel')">放弃修改</KButton>
-    </div>
+    <KDialog opened :backdrop="false">
+      <template #title>放弃未保存的源修改？</template>
+      <p>未保存的字段修改将丢失。</p>
+      <template #buttons>
+        <KDialogButton type="button" data-back-action @click="discardPrompt=false">继续编辑</KDialogButton>
+        <KDialogButton strong type="button" class="k-color-brand-danger" @click="emit('cancel')">放弃修改</KDialogButton>
+      </template>
+    </KDialog>
   </div>
  </section>
 </template>
@@ -147,15 +151,12 @@ const saveError = ref("");
 .source-edit-menu>summary::-webkit-details-marker{display:none}
 .source-edit-menu>summary :deep(svg){width:var(--ui-icon-size);height:var(--ui-icon-size)}
 .source-edit-menu-divider{height:1px;margin:4px 6px;background:var(--app-line)}
-.source-edit-menu>summary:focus-visible,.source-edit-menu button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
+.source-edit-menu>summary:focus-visible, .source-edit-menu button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
 .source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0;padding:0;overscroll-behavior:contain}
 .source-edit-body :deep(.source-field-editor){padding-inline:var(--source-editor-inset)}
 .source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:var(--ui-font-body);line-height:1.5}
 .source-edit-error{color:var(--app-danger);background:var(--app-danger-soft)}
 .source-discard-prompt{position:fixed;z-index:90;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
-.source-discard-prompt>div{width:min(440px,100%);box-sizing:border-box;padding:24px;border-radius:14px;background:var(--app-surface);box-shadow:0 18px 48px #1617242a}
-.source-discard-prompt strong{font-size:var(--ui-font-heading);color:var(--app-text)}
-.source-discard-prompt p{font-size:var(--ui-font-caption);line-height:1.6;color:var(--app-muted)}
 @media(max-width:860px){.source-edit-screen{--source-editor-inset:var(--ui-page-gutter)}.source-edit-body{padding-bottom:calc(18px + var(--safe-bottom))}}
 }
 </style>

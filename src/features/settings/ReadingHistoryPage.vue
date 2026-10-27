@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 页面直接显示全局 history 中的阅读记录；改动由 historyStore 自动保存。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -298,7 +298,7 @@ onBeforeUnmount(() => {
           <KButton rounded inline clear v-if="allTimeTotalSessions" type="button" class="record-icon-button gap-2 size-11 p-0" aria-label="搜索阅读历史" @click="toggleHistorySearch"><PrototypeIcon name="search"/></KButton>
           <details v-if="allTimeTotalSessions" class="record-row-menu record-clear-menu rounded-2xl">
             <summary><PrototypeIcon name="more"/></summary>
-            <KGlass class="rounded-2xl" :highlight="false"><KButton rounded inline clear type="button" class="record-delete k-color-brand-danger gap-2 w-full justify-start " :disabled="blocked" @click="historyClearPending = true">清空全部历史记录</KButton></KGlass>
+            <KGlass class="rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" :highlight="false"><KButton rounded inline clear type="button" class="record-delete k-color-brand-danger gap-2 w-full justify-start " :disabled="blocked" @click="historyClearPending = true">清空全部历史记录</KButton></KGlass>
           </details>
         </div>
       </div>
@@ -312,9 +312,9 @@ onBeforeUnmount(() => {
           <div><strong>{{ totalSessions }}</strong><small>打开次数</small></div>
           <div><strong>{{ books.length }}</strong><small>内容数</small></div>
         </div>
-        <label v-if="books.length && historySearchOpen" class="record-search"><PrototypeIcon name="search"/>
-          <input v-model="historyQuery" type="search" placeholder="查找读过的内容"/>
-        </label>
+        <KSearchbar v-if="books.length && historySearchOpen" class="record-search p-0!" aria-label="搜索阅读历史"
+          placeholder="查找读过的内容" :disable-button="false" :value="historyQuery"
+          @input="historyQuery = ($event.target as HTMLInputElement).value" @clear="historyQuery = ''" />
         <div v-if="visibleHistoryBooks.length" class="record-timeline">
           <article v-for="book in visibleHistoryBooks" :key="book.bookId" class="record-timeline-row"
             >
@@ -337,7 +337,7 @@ onBeforeUnmount(() => {
             </div>
             <details class="record-row-menu rounded-2xl">
               <summary><PrototypeIcon name="more"/></summary>
-              <KGlass class="rounded-2xl" :highlight="false">
+              <KGlass class="rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" :highlight="false">
                 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" v-if="canOpenHistoryBook(book.bookId)" type="button"
                   :disabled="blocked"
                   @click="openHistoryBook(book.bookId)">打开内容</KButton>
@@ -383,18 +383,13 @@ onBeforeUnmount(() => {
 .my-records--history{width:min(var(--app-content-width),100%);padding:24px var(--ui-page-gutter) 32px}
 .records-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .record-periods{display:flex;align-items:center;gap:4px}
-.record-periods button{height:30px;min-height:30px;padding:0 10px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
+.record-periods button{height:30px;min-height:30px;padding:0 10px}
 .record-periods button.active{color:var(--app-text);font-weight:750}
-.record-action{padding:7px 9px;border:0;border-radius:8px;background:transparent;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
-.record-action:disabled{opacity:.5;cursor:default}
-.record-delete{color:var(--app-danger)}
 .record-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:18px 0 20px}
 .record-stats>div{display:grid;gap:5px;padding:13px;border:1px solid var(--app-line);border-radius:12px;background:var(--app-surface)}
 .record-stats strong{font-size:var(--ui-font-heading);color:var(--app-text);overflow-wrap:anywhere}
 .record-stats small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
-.record-search{display:flex;align-items:center;gap:9px;box-sizing:border-box;width:min(420px,100%);height:40px;padding:0 11px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface)}
-.record-search>.prototype-icon{width:18px;height:18px;color:var(--app-subtle)}
-.record-search input{flex:1;min-width:0;border:0;outline:0;color:var(--app-text);background:transparent;font-size:var(--ui-font-body)}
+.record-search{width:min(420px,100%);margin:0}
 .record-timeline{margin-top:12px;border-top:1px solid var(--app-line)}
 .record-timeline-row{display:grid;grid-template-columns:88px 45px minmax(0,1fr) 36px;gap:10px;align-items:center;min-height:68px;padding:7px 0;border-bottom:1px solid var(--app-line)}
 .record-timeline-row time{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
@@ -411,7 +406,6 @@ onBeforeUnmount(() => {
 .record-book-copy small{font-size:var(--ui-font-caption);color:var(--app-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .record-state{display:flex;align-items:center;justify-content:center;min-height:105px;padding:20px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);text-align:center}
 .record-error{color:var(--app-danger)}
-.record-error button{border:0;background:none;color:var(--app-accent);cursor:pointer}
 .record-activity{margin:23px 0 0;padding:14px 0;border-top:1px solid var(--app-line)}
 .record-activity summary{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--app-muted);font-size:var(--ui-font-caption)}
 .record-activity summary>.prototype-icon{width:17px;height:17px;color:var(--app-accent)}
@@ -419,17 +413,17 @@ onBeforeUnmount(() => {
 .record-heatmap span{border-radius:3px;background:var(--app-panel-soft)}
 .record-heatmap .heat-1{background:var(--app-accent-soft)}.record-heatmap .heat-2{background:color-mix(in srgb,var(--app-accent) 40%,var(--app-background))}.record-heatmap .heat-3{background:color-mix(in srgb,var(--app-accent) 70%,var(--app-background))}.record-heatmap .heat-4{background:var(--app-accent)}
 .record-activity p{color:var(--app-subtle);font-size:var(--ui-font-caption)}
-.record-load-more{display:block;margin:18px auto 9px;padding:10px 16px;border:1px solid var(--app-accent-soft);border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent);font-size:var(--ui-font-caption);cursor:pointer}
+.record-load-more{display:block;margin:18px auto 9px;padding:10px 16px}
 .record-confirm-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:14px;background:var(--app-scrim)}
 .record-toolbar-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
-.record-icon-button{display:grid;place-items:center;width:35px;height:35px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer}
+.record-icon-button{display:grid;place-items:center;width:35px;height:35px}
 .record-icon-button svg{width:19px;height:19px}
 .record-row-menu{position:relative}
 .record-row-menu summary{display:grid;place-items:center;width:36px;height:36px;border-radius:9px;color:var(--app-muted);cursor:pointer;list-style:none}
 .record-row-menu summary::-webkit-details-marker{display:none}
 .record-row-menu summary svg{width:19px;height:19px}
-.record-row-menu>div{position:absolute;right:0;top:39px;z-index:9;min-width:158px;padding:6px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface);box-shadow:0 14px 32px #25223520}
-.record-row-menu>div button{display:block;width:100%;min-height:34px;padding:6px 9px;border:0;border-radius:6px;background:transparent;text-align:left;font-size:var(--ui-font-body);cursor:pointer}
+.record-row-menu>div{position:absolute;right:0;top:39px;z-index:9;min-width:158px;padding:6px}
+.record-row-menu>div button{display:block;width:100%;min-height:34px;padding:6px 9px;text-align:left}
 @media(max-width:660px){.my-records--history{padding-top:24px}.record-timeline-row{grid-template-columns:76px 45px minmax(0,1fr) 36px;gap:8px}.record-timeline-row time{font-size:var(--ui-font-caption)}.record-book-icon{width:45px;height:54px}.record-book-title{font-size:var(--ui-font-body)}}
 @media(max-width:400px){.record-timeline-row{grid-template-columns:64px 40px minmax(0,1fr) 32px;gap:6px}.record-book-icon{width:40px;height:49px}.record-stats>div{padding:11px 9px}}
 }

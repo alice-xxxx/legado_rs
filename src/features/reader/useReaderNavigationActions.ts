@@ -16,7 +16,6 @@ type ReaderNavigationOptions = {
   readingPdfPage: Readonly<Ref<PdfPageResource | null>>;
   readingChapterIndex: Ref<number>;
   readerProgressDirty: Ref<boolean>;
-  progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
   readerMediaRetrying: Readonly<Ref<boolean>>;
   shelfBatchRecoveryRequired: Readonly<Ref<boolean>>;
   getProgressRevision: () => number;
@@ -49,7 +48,6 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     options.readerPageIndex.value = next;
     options.readerProgressDirty.value = true;
     options.advanceProgressRevision();
-    options.progressSaveState.value = "idle";
     options.scrollReaderFrameToPage(animate, direction);
     void saveCurrentProgress();
   }
@@ -110,12 +108,11 @@ export function useReaderNavigationActions(options: ReaderNavigationOptions) {
     if (!book || !options.readerProgressDirty.value || options.isBackupRestoreInProgress()) return;
     const revision = options.getProgressRevision();
     const isCurrent = () => readingBook.value?.id === book.id && options.getProgressRevision() === revision;
-    options.progressSaveState.value = "saving";
     try {
       await options.notifyCurrentReading();
-      if (isCurrent()) { options.readerProgressDirty.value = false; options.progressSaveState.value = "saved"; }
+      if (isCurrent()) options.readerProgressDirty.value = false;
     } catch (error) {
-      if (isCurrent()) { options.progressSaveState.value = "error"; options.notify('阅读进度保存失败：' + options.errorText(error), "error"); }
+      if (isCurrent()) options.notify('阅读进度保存失败：' + options.errorText(error), "error");
     }
   }
 

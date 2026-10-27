@@ -22,8 +22,8 @@
   --app-on-accent: var(--color-md-light-on-primary);
   --app-icon-background: var(--app-accent-soft);
   --app-icon-ink: var(--app-accent-ink);
-  --app-success: #5f846c;
-  --app-danger: #b4545f;
+  --app-success: #246b43;
+  --app-danger: #ba1a1a;
   --app-shadow: 0 18px 46px rgb(30 33 45 / 8%);
   --app-scrim: rgb(0 0 0 / 36%);
   --app-header: var(--app-surface);
@@ -43,9 +43,9 @@
   --reader-color-scheme: light;
   --app-content-width: 980px;
   --ui-font-caption: 12px;
-  --ui-font-body: 14px;
+  --ui-font-body: 16px;
   --ui-font-heading: 18px;
-  --ui-font-title: 20px;
+  --ui-font-title: 24px;
   --ui-font-code: 14px;
   --ui-space-1: 4px;
   --ui-space-2: 8px;
@@ -62,8 +62,8 @@
   --ui-row-height: 64px;
   --ui-icon-size: 20px;
   --ui-icon-container: 36px;
-  --ui-radius: 8px;
-  --ui-dialog-radius: 16px;
+  --ui-radius: 16px;
+  --ui-dialog-radius: 28px;
   --ui-dialog-width: 560px;
   --ui-confirm-width: 420px;
   --ui-editor-width: 820px;
@@ -114,10 +114,13 @@
   --app-accent-soft: rgb(0 122 255 / 12%);
   --app-accent-ink: var(--color-primary);
   --app-on-accent: #fff;
+  --app-success: #248a3d;
+  --app-danger: #c62d26;
   --ui-radius: 12px;
   --ui-dialog-radius: 28px;
-  --ui-font-body: 15px;
+  --ui-font-body: 17px;
   --ui-font-caption: 13px;
+  --ui-font-title: 28px;
 }
 :root[data-ui-style="ios"][data-theme="dark"] {
   --app-background: var(--color-ios-dark-surface);
@@ -128,6 +131,8 @@
   --app-muted: #aeaeb2;
   --app-line: #38383a;
   --app-accent-soft: rgb(10 132 255 / 20%);
+  --app-danger: #ff6961;
+  --app-success: #65d080;
 }
 
 :root[data-reader-theme="white"] {
@@ -247,7 +252,7 @@ select {
   font: inherit;
 }
 
-button:not(.k-button):not(.k-link) {
+button:not([class*="k-"]) {
   appearance: none;
   margin: 0;
   padding: 0;
@@ -341,7 +346,6 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   border: 1px solid var(--app-line);
   border-radius: var(--ui-dialog-radius);
   background: var(--app-surface);
-  box-shadow: var(--app-shadow);
 }
 
 .modal-actions {

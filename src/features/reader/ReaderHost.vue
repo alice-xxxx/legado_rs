@@ -59,7 +59,7 @@ const readerFeatures = useAppReaderFeatures({
 });
 const player = proxyRefs(readerFeatures);
 const readerPresented = computed(() => player.readerVisible && !player.readerMinimized);
-const audioSession = computed(() => player.readingMediaChapter && !player.readingVideoChapter);
+const audioSession = computed(() => player.readingMediaChapter);
 const showPlaybackBar = computed(() => player.readerVisible && (player.ttsActive || audioSession.value && player.readerMinimized)
   && !player.readerControlsOpen && !player.readerDirectoryOpen && !player.readerTtsSettingsOpen && !player.readerOverlayOpen);
 const playbackPreparing = computed(() => audioSession.value ? player.readerBusy || player.readerMediaBuffering
@@ -320,6 +320,10 @@ function syncReaderFullscreen(visible: boolean): void {
   });
 }
 watch(readerPresented, syncReaderFullscreen);
+watch(() => settings.value.uiStyle, async () => {
+  await nextTick();
+  if (readerPresented.value) readerFeatures.handleReaderResize();
+});
 onBeforeUnmount(() => {
   if (fullscreenUsed) void fullscreenUpdate.catch(() => {}).then(() => setSystemUiHidden(false)).catch(() => {});
 });
@@ -336,10 +340,11 @@ onBeforeUnmount(() => {
   />
   </div>
   <PlaybackBar v-if="showPlaybackBar" :title="player.readingBook?.title ?? ''" :subtitle="player.currentChapterTitle"
-    :icon="audioSession ? 'audio' : 'tts'" :paused="playbackPaused" :preparing="playbackPreparing" :status="playbackStatus"
+    :icon="player.readingVideoChapter ? 'video' : audioSession ? 'audio' : 'tts'" :paused="playbackPaused" :preparing="playbackPreparing" :status="playbackStatus"
     :disabled="audioSession ? player.isReaderMediaControlBlocked() : !player.ttsChunkProgress"
     :error="audioSession ? player.readerMediaError : player.ttsError"
     :menu-open="!player.readerMinimized && player.readerMenuOpen" :global="player.readerMinimized"
+    :navigation="route.name === routeNames.home || route.name === routeNames.shelf || route.name === routeNames.settings"
     @expand="expandPlayback" @toggle="togglePlayback" @stop="stopPlayback" />
 </template>
 

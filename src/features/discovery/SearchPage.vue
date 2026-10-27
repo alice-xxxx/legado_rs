@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import { Searchbar as KSearchbar, Preloader as KPreloader, Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -18,6 +18,7 @@ import {
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 import { useVirtualList } from "../../ui/useVirtualList";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import router, { routeNames } from "../../router";
@@ -110,7 +111,7 @@ const openingResultDetails = ref(false);
 const sourceFilter = ref("");
 const searchOptionsOpen = ref(false);
 const searchOptionsElement = ref<HTMLElement | null>(null);
-const searchOptionsButton = ref<HTMLButtonElement | null>(null);
+const searchOptionsButton = ref<InstanceType<typeof KButton> | null>(null);
 const searchSourceQuery = ref("");
 const searchSourceViewport = ref<HTMLElement | null>(null);
 const filteredSearchSources = computed(() => {
@@ -123,7 +124,7 @@ watch(searchSourceQuery, () => { void sourceWindow.reset(); });
 
 function closeSearchOptions(restoreFocus = false): void {
   searchOptionsOpen.value = false;
-  if (restoreFocus) searchOptionsButton.value?.focus({ preventScroll: true });
+  if (restoreFocus) searchOptionsButton.value?.$el.focus({ preventScroll: true });
 }
 
 function toggleSearchOptions(): void {
@@ -242,25 +243,15 @@ watch(selectedContentType, clearResultFilters);
 
 <template>
   <section class="search-view search-page-prototype">
-    <SubpageHeader class="search-prototype-topbar" back-label="返回" @back="returnFromSearch"><template #title><form class="search-form search-prototype-top-input" @submit.prevent="submitSearch">
-          <PrototypeIcon class="search-input-icon" name="search" aria-hidden="true" />
-          <input :value="searchKeyword" aria-label="搜索关键词" enterkeyhint="search" placeholder="搜索标题、作者或关键词"
-            :disabled="shelfBatchRecoveryRequired" @input="updateKeyword" />
-          <KButton rounded inline clear v-if="searchKeyword" type="button" class="clear-search gap-2" aria-label="清空搜索" title="清空搜索"
-            :disabled="shelfBatchRecoveryRequired" @click="searchKeyword = ''">
-            <PrototypeIcon name="close" />
-          </KButton>
-          <KButton rounded inline class="search-submit gap-2" type="submit"
-            :disabled="!searchKeyword.trim() || activeSearchCancellationPending || shelfBatchRecoveryRequired">搜索</KButton>
-        </form></template>
+    <SubpageHeader title="搜索" class="search-prototype-topbar" back-label="返回" @back="returnFromSearch">
 <template #actions><div ref="searchOptionsElement" class="search-more-control" @keydown.esc.stop.prevent="closeSearchOptions(true)"
           @focusout="onSearchOptionsFocusOut">
-          <button ref="searchOptionsButton" class="search-more-button"
+          <KButton rounded inline clear ref="searchOptionsButton" class="search-more-button size-11 p-0"
             :class="{ 'has-notice': searchErrors.length || sourceFilter }" type="button"
             :aria-label="searchErrors.length ? '搜索选项，有搜索异常' : '搜索选项'" title="搜索选项" :aria-expanded="searchOptionsOpen"
             aria-controls="search-options-panel" @click="toggleSearchOptions">
             <PrototypeIcon name="tune" />
-          </button>
+          </KButton>
 
         </div></template></SubpageHeader>
 <KPopover v-if="searchOptionsOpen" opened :backdrop="false" target=".search-more-button" class="search-options-panel w-[min(360px,calc(100vw-32px))]">
@@ -270,16 +261,12 @@ watch(selectedContentType, clearResultFilters);
               <KButton rounded inline clear type="button" class="search-list-utility gap-2" aria-label="关闭搜索设置" @click="closeSearchOptions(true)">
                 <PrototypeIcon name="close" />
               </KButton>
-            </div><label class="search-precision">
+            </div><div class="search-precision">
               匹配程度
-              <select v-model="precisionSearch"
-                :disabled="activeSearchCancellationPending || shelfBatchRecoveryRequired"
-                @change="searchWasRun && startNewSearch()">
-                <option value="exact">完全匹配</option>
-                <option value="precise">精准搜索</option>
-                <option value="none">不限</option>
-              </select>
-            </label><section class="search-menu-section">
+              <SelectMenu v-model="precisionSearch" label="匹配程度" :disabled="activeSearchCancellationPending || shelfBatchRecoveryRequired"
+                :options="[{ value: 'exact', label: '完全匹配' }, { value: 'precise', label: '精准搜索' }, { value: 'none', label: '不限' }]"
+                @update:model-value="searchWasRun && startNewSearch()" />
+            </div><section class="search-menu-section">
               <div class="search-sidebar-source-heading">
                 <div class="search-sidebar-title-group">
                   <h3 class="search-prototype-sidebar-title">搜索来源</h3>
@@ -288,8 +275,8 @@ watch(selectedContentType, clearResultFilters);
                 <KButton rounded inline clear class="gap-2 text-current" type="button" :disabled="shelfBatchRecoveryRequired || !searchSources.length"
                   @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</KButton>
               </div>
-              <input v-if="searchSources.length > 12" v-model="searchSourceQuery" class="search-source-query"
-                type="search" aria-label="筛选搜索来源" placeholder="筛选来源名称" />
+              <KSearchbar v-if="searchSources.length > 12" class="m-0! w-full! p-0!" aria-label="筛选搜索来源" placeholder="筛选来源名称"
+                :disable-button="false" :value="searchSourceQuery" @input="searchSourceQuery = ($event.target as HTMLInputElement).value" @clear="searchSourceQuery = ''" />
               <div v-if="searchSources.length" ref="searchSourceViewport" class="search-menu-sources">
                 <div :ref="sourceWindow.list">
                   <div aria-hidden="true" :style="{ height: `${searchSourceRange.top}px` }"></div>
@@ -309,12 +296,8 @@ watch(selectedContentType, clearResultFilters);
               class="search-menu-section">
               <label class="search-menu-filter-label" for="search-result-source">结果来源</label>
               <div class="search-list-actions">
-                <select id="search-result-source" v-model="sourceFilter" class="search-source-filter"
-                  :disabled="shelfBatchRecoveryRequired">
-                  <option value="">全部来源</option>
-                  <option v-for="[sourceId, name] in resultSources" :key="sourceId" :value="sourceId">{{ name }}
-                  </option>
-                </select>
+                <SelectMenu id="search-result-source" v-model="sourceFilter" class="search-source-filter" label="结果来源"
+                  :disabled="shelfBatchRecoveryRequired" :options="[{ value: '', label: '全部来源' }, ...resultSources.map(([value, label]) => ({ value, label }))]" />
                 <KButton rounded inline clear v-if="sourceFilter" class="search-list-utility gap-2 text-current" type="button" aria-label="清除来源筛选" title="清除来源筛选"
                   :disabled="shelfBatchRecoveryRequired" @click="clearResultFilters">
                   <PrototypeIcon name="close" />
@@ -335,6 +318,12 @@ watch(selectedContentType, clearResultFilters);
   </div>
 </KPopover>
     <div class="search-prototype-layout">
+      <form class="search-form flex items-center gap-3 px-[var(--ui-page-gutter)] py-3" @submit.prevent="submitSearch">
+        <label class="sr-only" for="search-keyword">搜索关键词</label>
+        <KSearchbar input-id="search-keyword" class="m-0! w-full! min-w-0 p-0!" :value="searchKeyword" placeholder="搜索标题、作者或关键词"
+          :disable-button="false" :inert="shelfBatchRecoveryRequired" @input="updateKeyword" @clear="searchKeyword = ''" />
+        <KButton rounded inline type="submit" class="shrink-0" :disabled="!searchKeyword.trim() || activeSearchCancellationPending || shelfBatchRecoveryRequired">搜索</KButton>
+      </form>
       <nav class="search-type-tabs" aria-label="搜索类型">
         <div class="search-type-options">
           <KButton rounded :tonal="selectedContentType === type.id" :clear="!(selectedContentType === type.id)" inline class="gap-2" v-for="type in contentTypes" :key="type.id" type="button"
@@ -366,11 +355,13 @@ watch(selectedContentType, clearResultFilters);
           :entries="searchHistoryEntries" :busy="shelfBatchRecoveryRequired" @use-query="reuseSearchQuery"
           @delete-query="removeSearchHistoryEntry" @clear-all="removeSearchHistoryEntry()" />
         <div v-else-if="!searchWasRun" class="page-empty-state">
-          {{ searchSources.length ? '输入书名或作者开始搜索' : '请先添加内容来源' }}
+          <span class="empty-state-glyph"><PrototypeIcon name="search" /></span>
+          <strong>{{ searchSources.length ? '输入书名或作者开始搜索' : '请先添加内容来源' }}</strong>
+          <KButton v-if="!searchSources.length" rounded inline @click="openSources">管理来源</KButton>
         </div>
         <div class="results-section">
           <template v-if="searchWasRun">
-            <div v-if="searchBusy && !searchResults.length" class="page-empty-state" role="status">正在搜索…</div>
+            <div v-if="searchBusy && !searchResults.length" class="page-empty-state" role="status"><KPreloader />正在搜索…</div>
             <template v-else-if="searchResults.length">
               <div v-if="visibleSearchResults.length" ref="resultListElement"
                 class="search-results-grid search-prototype-result-list" role="list"
@@ -429,7 +420,6 @@ watch(selectedContentType, clearResultFilters);
   padding-bottom: max(24px, var(--safe-bottom));
 }
 
-.search-back-button,
 .search-more-button {
   flex: none;
   width: 36px;
@@ -439,79 +429,6 @@ watch(selectedContentType, clearResultFilters);
   border-radius: 10px;
   color: var(--app-muted);
   cursor: pointer;
-}
-
-.search-prototype-top-input {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  gap: 8px;
-  min-width: 0;
-  height: 44px;
-  margin: 0;
-  padding: 4px 4px 4px 12px;
-  border: 1px solid var(--app-line);
-  border-radius: 12px;
-  background: var(--app-panel-softer);
-}
-
-.search-prototype-top-input:focus-within {
-  border-color: var(--app-accent);
-  background: var(--app-surface);
-}
-
-.search-input-icon {
-  width: 18px;
-  height: 18px;
-  color: var(--app-muted);
-}
-
-.search-prototype-top-input input {
-  flex: 1;
-  width: 0;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  outline: 0;
-  background: transparent;
-  color: var(--app-text);
-  font-size: var(--ui-font-body);
-}
-
-.search-prototype-top-input input::placeholder {
-  color: var(--app-muted);
-}
-
-.search-submit {
-  flex: none;
-  height: 34px;
-  padding-inline: 12px;
-  border-radius: 8px;
-  color: var(--app-on-accent);
-  background: var(--app-accent);
-  font-size: var(--ui-font-body);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.clear-search,
-.search-more-button,
-.search-list-utility {
-  display: grid;
-  place-items: center;
-  flex: none;
-  cursor: pointer;
-}
-
-.clear-search {
-  width: 28px;
-  height: 34px;
-  color: var(--app-muted);
-}
-
-.clear-search :deep(svg) {
-  width: 16px;
-  height: 16px;
 }
 
 .search-more-control {
@@ -539,12 +456,12 @@ watch(selectedContentType, clearResultFilters);
 }
 
 .search-prototype-layout {
+  max-width: var(--app-content-width);
   width: 100%;
   margin-inline: auto;
 }
 
-.search-type-tabs,
-.search-type-options {
+.search-type-tabs, .search-type-options {
   display: flex;
   align-items: center;
   min-width: 0;
@@ -552,7 +469,7 @@ watch(selectedContentType, clearResultFilters);
 
 .search-type-tabs {
   gap: 20px;
-  padding-inline: var(--ui-space-3);
+  padding-inline: var(--ui-page-gutter);
   border-bottom: 1px solid var(--app-line);
 }
 
@@ -565,26 +482,12 @@ watch(selectedContentType, clearResultFilters);
   position: relative;
   min-height: 48px;
   padding-inline: 6px;
-  color: var(--app-muted);
-  font-size: var(--ui-font-body);
   white-space: nowrap;
-  cursor: pointer;
 }
 
 .search-type-options button.active {
   color: var(--app-accent-ink);
   font-weight: 700;
-}
-
-.search-type-options button.active::after {
-  content: "";
-  position: absolute;
-  right: 6px;
-  bottom: -1px;
-  left: 6px;
-  height: 3px;
-  border-radius: 3px;
-  background: var(--app-accent);
 }
 
 .search-source-summary {
@@ -629,9 +532,6 @@ watch(selectedContentType, clearResultFilters);
 .search-cancel {
   flex: none;
   min-height: 36px;
-  color: var(--app-accent-ink);
-  font-size: var(--ui-font-caption);
-  cursor: pointer;
 }
 
 .search-active-filter {
@@ -641,10 +541,6 @@ watch(selectedContentType, clearResultFilters);
   max-width: 100%;
   min-height: 32px;
   padding: 4px 8px;
-  border-radius: 6px;
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-  cursor: pointer;
 }
 
 .search-active-filter span {
@@ -670,20 +566,14 @@ watch(selectedContentType, clearResultFilters);
   height: 1px;
 }
 
-.search-options-heading,
-.search-sidebar-source-heading,
-.search-sidebar-title-group,
-.search-list-actions,
-.search-precision {
+.search-options-heading, .search-sidebar-source-heading, .search-sidebar-title-group, .search-list-actions, .search-precision {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
 
-.search-options-heading,
-.search-sidebar-source-heading,
-.search-precision {
+.search-options-heading, .search-sidebar-source-heading, .search-precision {
   justify-content: space-between;
 }
 
@@ -698,8 +588,6 @@ watch(selectedContentType, clearResultFilters);
 .search-list-utility {
   width: 32px;
   height: 32px;
-  border-radius: 8px;
-  color: var(--app-muted);
 }
 
 .search-list-utility :deep(svg) {
@@ -708,26 +596,13 @@ watch(selectedContentType, clearResultFilters);
 }
 
 .search-precision {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding-block: 12px;
   border-top: 1px solid var(--app-line);
   font-size: var(--ui-font-body);
-}
-
-.search-precision select,
-.search-source-filter,
-.search-source-query {
-  min-width: 0;
-  min-height: 40px;
-  padding: 0 10px;
-  border: 1px solid var(--app-line);
-  border-radius: 8px;
-  color: var(--app-text);
-  background: var(--app-panel-softer);
-  font-size: var(--ui-font-caption);
-}
-
-.search-precision select {
-  max-width: 70%;
 }
 
 .search-menu-section {
@@ -748,12 +623,8 @@ watch(selectedContentType, clearResultFilters);
   font-size: var(--ui-font-caption);
 }
 
-.search-sidebar-source-heading button,
-.search-sidebar-no-source button {
+.search-sidebar-source-heading button, .search-sidebar-no-source button {
   min-height: 32px;
-  color: var(--app-accent-ink);
-  font-size: var(--ui-font-caption);
-  cursor: pointer;
 }
 
 .search-menu-sources {
@@ -770,14 +641,6 @@ watch(selectedContentType, clearResultFilters);
   padding-inline: 4px;
   font-size: var(--ui-font-body);
   cursor: pointer;
-}
-
-.search-menu-source input {
-  flex: none;
-  width: 18px;
-  height: 18px;
-  margin: 0;
-  accent-color: var(--app-accent);
 }
 
 .search-menu-source span {
@@ -912,8 +775,7 @@ watch(selectedContentType, clearResultFilters);
   min-width: 0;
 }
 
-.result-heading,
-.result-meta {
+.result-heading, .result-meta {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -930,19 +792,13 @@ watch(selectedContentType, clearResultFilters);
   line-height: 1.35;
 }
 
-.result-author,
-.search-result-intro,
-.source-label,
-.result-latency {
+.result-author, .search-result-intro, .source-label, .result-latency {
   font-size: var(--ui-font-caption);
   line-height: 1.4;
   color: var(--app-muted);
 }
 
-.result-title,
-.result-author,
-.search-result-intro,
-.source-label {
+.result-title, .result-author, .search-result-intro, .source-label {
   overflow: hidden;
   margin: 0;
   text-overflow: ellipsis;
@@ -971,20 +827,6 @@ watch(selectedContentType, clearResultFilters);
     --search-gutter: 16px;
   }
 
-  .search-back-button {
-    width: 28px;
-    min-width: 28px;
-  }
-
-  .search-prototype-top-input {
-    gap: 4px;
-    padding-left: 8px;
-  }
-
-  .search-submit {
-    padding-inline: 10px;
-  }
-
   .search-type-tabs {
     gap: 12px;
   }
@@ -996,11 +838,6 @@ watch(selectedContentType, clearResultFilters);
 
   .search-type-options button {
     padding-inline: 10px;
-  }
-
-  .search-type-options button.active::after {
-    right: 10px;
-    left: 10px;
   }
 
   .search-prototype-result-list .result-card {

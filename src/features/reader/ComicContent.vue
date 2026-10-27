@@ -41,8 +41,7 @@ function onClick(event: MouseEvent): void {
 .comic-reader.original :deep(img) { width: auto; max-width: none; }
 .comic-reader.paged { display: flex; flex-flow: row nowrap; overflow-x: auto; overflow-y: hidden; direction: ltr; scroll-snap-type: x mandatory; touch-action: pan-x; scrollbar-width: none; }
 .comic-reader.paged::-webkit-scrollbar { display: none; }
-.comic-reader.paged :deep(img),
-.comic-reader.paged.original :deep(img) { flex: 0 0 100%; width: 100%; height: 100%; max-width: 100%; object-fit: contain; }
+.comic-reader.paged :deep(img), .comic-reader.paged.original :deep(img) { flex: 0 0 100%; width: 100%; height: 100%; max-width: 100%; object-fit: contain; }
 .comic-reader :deep(p) { margin: 0; }
 }
 </style>

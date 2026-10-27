@@ -21,7 +21,8 @@ export function installDialogInteractions(): () => void {
       const returnFocus = focused && focused !== document.body && visible(focused) && !layer.contains(focused)
         ? focused : [...openers].reverse().find(element => visible(element) && !layer.contains(element)) ?? null;
       active.set(layer, returnFocus);
-      const panel = layer.querySelector<HTMLElement>("[role=dialog],.app-modal") ?? layer.firstElementChild as HTMLElement | null;
+      const panel = layer.matches("[role=dialog],.app-modal") ? layer
+        : layer.querySelector<HTMLElement>("[role=dialog],.app-modal") ?? layer.firstElementChild as HTMLElement | null;
       if (panel) {
         panel.setAttribute("role", "dialog");
         panel.setAttribute("aria-modal", "true");

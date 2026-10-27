@@ -29,6 +29,7 @@ const glyphs = {
   "play": "<path d=\"m9 6 9 6-9 6V6Z\"/>",
   "pause": "<path d=\"M9 7v10M15 7v10\"/>",
   "audio": "<path d=\"M9 18V6l9-2v12\"/><circle cx=\"6.5\" cy=\"18\" r=\"2.5\"/><circle cx=\"15.5\" cy=\"16\" r=\"2.5\"/>",
+  "video": "<rect x=\"3\" y=\"5\" width=\"18\" height=\"14\" rx=\"3\"/><path d=\"m10 9 5 3-5 3V9Z\"/>",
   "debug": "<path d=\"M8 8h8v8a4 4 0 0 1-8 0V8Z\"/><path d=\"M9 5l2 3M15 5l-2 3M5 12h3M16 12h3M5 16h3M16 16h3\"/>",
   "login": "<path d=\"M11 5H6v14h5\"/><path d=\"M10 12h9M16 9l3 3-3 3\"/>",
   "edit": "<path d=\"m5 16-.8 3.8L8 19l9.5-9.5-3-3L5 16Z\"/><path d=\"m13.8 7.2 3 3\"/>",

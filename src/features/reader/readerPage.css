@@ -14,8 +14,8 @@
   --reader-text-bottom-inset: var(--safe-bottom);
 }
 
-#reader-host .reader-shell[data-reader-mode="audio"] .reader-settings-popover,
-#reader-host .reader-shell[data-reader-mode="video"] .reader-settings-popover {
+#reader-host .reader-shell[data-reader-mode="audio"] .reader-settings-popover, #reader-host .reader-shell[data-reader-mode="video"] .reader-settings-popover {
+  border-radius: var(--ui-dialog-radius); color: var(--app-text); font-size: var(--ui-font-body);
   top: calc(68px + var(--safe-top));
 }
 
@@ -24,10 +24,7 @@
 }
 
 /* Text reading profiles only apply to the text reader. */
-.reader-shell[data-reader-mode="audio"],
-.reader-shell[data-reader-mode="video"],
-.reader-shell[data-reader-mode="comic"],
-.reader-shell[data-reader-mode="pdf"] {
+.reader-shell[data-reader-mode="audio"], .reader-shell[data-reader-mode="video"], .reader-shell[data-reader-mode="comic"], .reader-shell[data-reader-mode="pdf"] {
   --reader-background: var(--app-background);
   --reader-text: var(--app-text);
   --reader-chrome-bg: var(--app-surface);
@@ -36,7 +33,6 @@
   color-scheme: inherit;
 }
 .reader-header-actions { display: flex; align-items: center; }
-.read-save-state { min-width: 42px; text-align: right; }
 
 .reader-main {
   position: absolute; inset: 0;
@@ -44,17 +40,19 @@
   flex-direction: column; align-items: center;
   padding: 0 20px;
 }
+.reader-shell[data-reader-mode="pdf"].reader-menu-open .reader-main {
+  top: calc(var(--ui-header-height) + var(--safe-top));
+  bottom: calc(var(--ui-nav-height) + var(--safe-bottom));
+}
 
 /* Keep menu taps off the text, links, PDF controls and comic touch handlers. */
 .reader-menu-surface { position: absolute; inset: 0; z-index: 4; touch-action: none; }
 
-.reader-shell[data-reader-mode="audio"],
-.reader-shell[data-reader-mode="video"] {
+.reader-shell[data-reader-mode="audio"], .reader-shell[data-reader-mode="video"] {
   display: flex;
   flex-direction: column;
 }
-.reader-shell[data-reader-mode="audio"] .reader-main,
-.reader-shell[data-reader-mode="video"] .reader-main {
+.reader-shell[data-reader-mode="audio"] .reader-main, .reader-shell[data-reader-mode="video"] .reader-main {
   position: relative;
   inset: auto;
   flex: 1;
@@ -74,8 +72,7 @@
   max-height: 65dvh;
   border-radius: 10px;
 }
-.reader-shell[data-reader-mode="audio"] .reader-media-error,
-.reader-shell[data-reader-mode="video"] .reader-media-error {
+.reader-shell[data-reader-mode="audio"] .reader-media-error, .reader-shell[data-reader-mode="video"] .reader-media-error {
   position: static;
   flex: none;
   display: flex;
@@ -125,8 +122,7 @@
 .chapter-frame { display: block; border: 0; }
 .reader-loading { position: absolute; inset: 0; display: grid; place-content: center; gap: 10px; text-align: center; }
 .reader-loading p { margin: 0; }
-.loader-ring { width: 28px; height: 28px; justify-self: center; border: 2px solid var(--reader-chrome-border); border-top-color: var(--app-accent); border-radius: 50%; animation: reader-loading-spin .8s linear infinite; }
-@keyframes reader-loading-spin { to { transform: rotate(360deg); } }
+@keyframes reader-loading-spin { }
 .reader-load-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .reader-media-error { position: absolute; z-index: 4; right: 10px; bottom: 68px; left: 10px; }
 .reader-chrome-hidden .reader-topbar, .reader-chrome-hidden .reader-footer {
@@ -152,9 +148,7 @@
   top: 68px; right: 12px;
   width: min(320px, calc(100% - 24px)); max-height: min(68dvh, calc(100% - 84px));
   overflow: auto; box-sizing: border-box;
-  padding: 14px; border: 1px solid var(--reader-chrome-border);
-  border-radius: 28px; color: var(--app-text); font-size: var(--ui-font-body);
-  background: var(--reader-chrome-bg); box-shadow: var(--app-shadow);
+  padding: 14px;
   overscroll-behavior: contain;
 }
 .reader-search-popover { top: auto; bottom: 70px; }
@@ -166,14 +160,9 @@
   height: 34px;
   flex: none;
   place-items: center;
-  border-radius: 9px;
-  color: var(--reader-chrome-text);
-  background: var(--app-panel-soft);
-  cursor: pointer;
 }
 .reader-chapter-progress, .reader-audio-progress { display: grid; min-width: 0; gap: 8px; }
 .reader-chapter-position { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.reader-chapter-seek-row input, .reader-audio-progress input { width: 100%; min-width: 0; margin: 0; accent-color: var(--reader-accent); }
 .setting-control { display: grid; gap: 8px; padding: 8px 0; }
 .compact-setting { grid-template-columns: minmax(72px, auto) minmax(0, 1fr); align-items: center; gap: 10px; }
 .compact-setting > div:first-child { display: flex; flex-direction: column; }
@@ -184,42 +173,10 @@
   width: 34px;
   height: 34px;
   flex: none;
-  border: 1px solid var(--reader-chrome-border);
-  border-radius: 9px;
-  color: var(--reader-chrome-text);
-  background: var(--reader-chrome-bg);
-  cursor: pointer;
 }
-.range-control input { min-width: 0; flex: 1; }
-.theme-options { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
-.theme-option { min-height: 32px; padding: 4px 8px; border: 1px solid var(--reader-chrome-border); border-radius: 8px; color: var(--reader-chrome-text); background: var(--reader-chrome-bg); cursor: pointer; }
-.theme-option.selected { color: var(--reader-chrome-text); font-weight: 600; }
-
-.reader-settings-popover input:not([type="range"]):not([type="checkbox"]),
-.reader-settings-popover select {
-  min-height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--reader-chrome-border);
-  border-radius: 9px;
-  color: var(--app-text);
-  background: var(--app-surface);
-  font: inherit;
-}
-.reader-audio-choice-grid > button,
-.pdf-scale-control > div > button,
-.comic-scale-control > div > button {
+.reader-audio-choice-grid > button, .pdf-scale-control > div > button, .comic-scale-control > div > button {
   min-height: 40px;
   padding: 8px 10px;
-  border: 1px solid var(--reader-chrome-border);
-  border-radius: 10px;
-  color: var(--reader-chrome-text);
-  background: var(--app-surface);
-  cursor: pointer;
-}
-.reader-audio-choice-grid > button.selected,
-.pdf-scale-control > div > button.selected,
-.comic-scale-control > div > button.selected {
-  font-weight: 600;
 }
 
 .reader-audio-console {
@@ -239,7 +196,6 @@
 .reader-audio-heading p { margin: 0; color: var(--app-muted); font-size: var(--ui-font-body); line-height: 1.5; overflow-wrap: anywhere; }
 .reader-audio-heading small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.5; overflow-wrap: anywhere; }
 .reader-audio-progress { margin: 0; gap: 4px; }
-.reader-audio-progress input { height: 20px; cursor: pointer; }
 .reader-audio-times { display: flex; justify-content: space-between; color: var(--app-muted); font-size: var(--ui-font-caption); font-variant-numeric: tabular-nums; }
 .reader-audio-playback, .reader-audio-utilities {
   display: flex; align-items: center;
@@ -252,32 +208,20 @@
   flex: none;
   place-items: center;
   padding: 0;
-  border: 0;
-  border-radius: 50%;
-  color: var(--app-text);
-  background: var(--app-panel-soft);
-  cursor: pointer;
 }
 .reader-audio-playback > .reader-audio-main-play {
   width: 64px;
   height: 64px;
-  color: var(--app-on-accent);
-  background: var(--app-accent);
 }
 .reader-audio-main-play svg { width: 26px; height: 26px; }
 .reader-audio-utilities { flex-wrap: wrap; gap: 8px; }
 .reader-audio-utilities > button {
   display: flex; min-height: 40px; align-items: center; justify-content: center; gap: 6px;
-  padding: 0 12px; border: 0; border-radius: 999px;
-  color: var(--app-muted); background: transparent; cursor: pointer;
+  padding: 0 12px;
 }
 .reader-audio-utilities small { font-size: var(--ui-font-caption); }
 .reader-audio-utilities strong { font-size: var(--ui-font-body); }
 .reader-audio-utilities svg { width: 18px; height: 18px; }
-.reader-audio-playback > button:focus-visible,
-.reader-audio-utilities > button:focus-visible,
-.reader-video-episodes button:focus-visible,
-.reader-video-option select:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
 .reader-audio-choice-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 
 .reader-video-episodes { display: grid; flex: none; gap: 14px; width: min(960px, 100%); }
@@ -287,36 +231,21 @@
 .reader-video-episodes > header small { color: var(--app-muted); font-size: var(--ui-font-caption); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .reader-video-episodes > header > button {
   display: flex; flex: none; min-height: 36px; align-items: center; gap: 4px;
-  padding: 0 8px; border: 0; border-radius: 8px;
-  color: var(--app-accent-ink); background: transparent; font-size: var(--ui-font-caption);
-  cursor: pointer;
+  padding: 0 8px;
 }
 .reader-video-episodes nav { display: flex; gap: 8px; overflow-x: auto; padding: 3px; overscroll-behavior-x: contain; }
 .reader-video-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.reader-video-option { display: flex; min-width: 0; align-items: center; gap: 6px; color: var(--app-muted); font-size: var(--ui-font-caption); }
-.reader-video-option select {
-  min-width: 64px; max-width: 180px; min-height: 32px; padding: 0 8px;
-  border: 1px solid var(--app-line); border-radius: 8px;
-  color: var(--app-text); background: var(--app-surface); font-size: var(--ui-font-body);
-}
+.reader-video-option { display: flex; min-width: 140px; align-items: center; gap: 12px; color: var(--app-muted); font-size: var(--ui-font-caption); }
+.reader-video-option > span { flex: none; }
 .reader-video-episodes nav > button {
   flex: none;
   min-width: 36px;
   min-height: 36px;
-  border: 1px solid var(--reader-chrome-border);
-  border-radius: 9px;
-  color: var(--reader-chrome-text);
-  background: var(--reader-chrome-bg);
-  cursor: pointer;
-}
-.reader-video-episodes nav > button.active {
-  font-weight: 600;
 }
 
 .pdf-scale-control, .comic-scale-control { display: grid; gap: 8px; }
 .pdf-scale-control > div, .comic-scale-control > div { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 6px; }
 .comic-brightness-control { display: grid; grid-template-columns: 60px minmax(0, 1fr) 50px; align-items: center; gap: 10px; }
-.comic-brightness-control input { width: 100%; min-width: 0; }
 
 #reader-chapter-jump { width: 76px; min-height: 36px; }
 .reader-audio-rate-control > div, .reader-tts-row, .reader-find-actions-row {
@@ -324,15 +253,11 @@
   justify-content: space-between; gap: 8px;
 }
 .reader-tts-description { display: grid; gap: 4px; }
-.reader-tts-panel select { width: 100%; min-width: 0; }
 .reader-tts-row > label { flex: none; min-width: 4em; }
-.reader-tts-row > select { flex: 1; width: 0; }
-.reader-tts-rate input { flex: 1; min-width: 0; }
 .reader-tts-continuous { display: flex; align-items: center; gap: 7px; }
 .reader-tts-actions, .reader-find-buttons { display: flex; justify-content: flex-end; gap: 7px; }
 .reader-tts-panel > p { margin: 0; }
 .reader-find-control { grid-template-columns: minmax(0, 1fr); }
-#reader-find-input { width: 100%; min-width: 0; }
 .reader-audio-element { display: none; }
 
 @media (max-width: 700px) {
@@ -350,11 +275,9 @@
   .reader-audio-body { gap: 12px; }
 }
 @media (max-width: 640px) {
-  .reader-header-actions .read-save-state { display: none; }
   .reader-settings-popover { top: auto; right: 12px; bottom: calc(66px + var(--safe-bottom)); max-height: min(68dvh, calc(100% - 84px - var(--safe-bottom))); }
 }
-.reader-shell[data-reader-mode="audio"] .reader-settings-popover,
-.reader-shell[data-reader-mode="video"] .reader-settings-popover { top: 68px; bottom: auto; }
+.reader-shell[data-reader-mode="audio"] .reader-settings-popover, .reader-shell[data-reader-mode="video"] .reader-settings-popover { top: 68px; bottom: auto; }
 
 .reader-book-page { display: flex; position: absolute; z-index: 34; inset: 0; min-height: 0; flex-direction: column; color: var(--app-text); background: var(--app-background); }
 .reader-book-page-header { display: flex; flex: none; align-items: center; gap: 12px; padding: calc(8px + var(--safe-top)) 12px 8px; border-bottom: 1px solid var(--app-line); background: var(--app-surface); }

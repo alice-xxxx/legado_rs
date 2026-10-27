@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { Checkbox as KCheckbox, Button as KButton, Popover as KPopover } from "konsta/vue";
+import { ref } from "vue";
 import PrototypeIcon from "./PrototypeIcon.vue";
 
 withDefaults(defineProps<{
@@ -25,6 +26,7 @@ const emit = defineEmits<{
   "toggle-menu": [];
   select: [selected: boolean];
 }>();
+const menuButton = ref<InstanceType<typeof KButton>>();
 </script>
 
 <template>
@@ -37,13 +39,13 @@ const emit = defineEmits<{
       @click.stop
       @change="emit('select', ($event.target as HTMLInputElement).checked)"
      ><span class="sr-only">选择{{ name }}</span></KCheckbox>
-    <button type="button" class="managed-list-row__main" :disabled="busy" @click="emit('open')">
+    <KButton inline clear type="button" class="managed-list-row__main grid! h-auto! justify-start! rounded-xl! px-0! text-start! text-current" :disabled="busy" @click="emit('open')">
       <span class="managed-list-row__status" :class="{ 'is-disabled': enabled !== true }"></span>
       <span class="managed-list-row__copy"><strong>{{ name }}</strong><small>{{ subtitle }}</small></span>
-    </button>
+    </KButton>
     <div v-if="showMenu" class="managed-list-row__menu-wrap">
       <slot name="menu-trigger">
-        <KButton rounded inline clear
+        <KButton ref="menuButton" rounded inline clear
           type="button"
           class="managed-list-row__menu-button size-11 p-0 text-current"
           :aria-label="`${name}的更多操作`"
@@ -52,9 +54,9 @@ const emit = defineEmits<{
           @click.stop="emit('toggle-menu')"
         ><PrototypeIcon name="more" /></KButton>
       </slot>
-      <KGlass component="div" :highlight="false" v-if="menuOpen" class="managed-list-row__menu rounded-2xl" @click.stop>
-        <slot name="menu" />
-      </KGlass>
+      <KPopover v-if="menuOpen" opened :backdrop="false" :target="menuButton?.$el" class="managed-list-row__menu w-56 max-w-[calc(100vw-32px)]" @click.stop>
+        <div class="grid gap-1 p-2"><slot name="menu" /></div>
+      </KPopover>
     </div>
   </article>
 </template>
@@ -89,7 +91,6 @@ const emit = defineEmits<{
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--app-accent);
 }
 
 .managed-list-row__main {
@@ -131,8 +132,7 @@ const emit = defineEmits<{
   gap: 3px;
 }
 
-.managed-list-row__copy strong,
-.managed-list-row__copy small {
+.managed-list-row__copy strong, .managed-list-row__copy small {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -160,59 +160,11 @@ const emit = defineEmits<{
   width: 29px;
   height: 32px;
   padding: 0;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--app-muted);
-  cursor: pointer;
-}
-
-.managed-list-row__menu-button:disabled {
-  cursor: default;
-  opacity: .45;
 }
 
 .managed-list-row__menu-button :deep(svg) {
   width: 18px;
   height: 18px;
-}
-
-.managed-list-row__menu {
-  position: absolute;
-  top: calc(100% + 3px);
-  right: 0;
-  z-index: 60;
-  display: grid;
-  gap: 2px;
-  min-width: 148px;
-  max-width: min(220px, calc(100vw - 16px));
-  padding: 6px;
-  border: 1px solid var(--app-line);
-  border-radius: 10px;
-  background: var(--app-surface);
-  box-shadow: 0 12px 30px #22223824;
-}
-
-.managed-list-row__menu :slotted(button) {
-  min-height: 34px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--app-text);
-  text-align: left;
-  font: inherit;
-  font-size: var(--ui-font-body);
-  cursor: pointer;
-}
-
-.managed-list-row__menu :slotted(button.is-danger) {
-  color: var(--app-danger);
-}
-
-.managed-list-row__menu :slotted(button:disabled) {
-  cursor: default;
-  opacity: .5;
 }
 @media (pointer: coarse) {
   .managed-list-row.has-menu { grid-template-columns: minmax(0, 1fr) 44px; }

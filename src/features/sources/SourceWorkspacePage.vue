@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
 import SourceDebugPanel from "./SourceDebugPanel.vue";
 import SourceManagerPage from "./SourceManagerPage.vue";
 import SourceMetadataEditorPage from "./SourceMetadataEditorPage.vue";
@@ -421,15 +421,12 @@ onBeforeUnmount(() => {
     :batch-busy="management.sourceBatchBusy || management.sourceEditBusy || management.sourceRemovalBusy"
     :export-busy="management.sourceExportBusy"
     :locked="recoveryRequired"
-    :search-busy="searchBusy"
     @selection-change="management.selectedSourceRows = $event"
     @toggle-source="management.toggleSourceRow"
     @change-enabled="management.changeSourceEnabled"
     @create-open="requestEditorSwitch()"
     @import-local="management.importSourceFileFromPicker()"
     @import-url-open="openSourceImport"
-    @login="login.openSelectedSourceLogin"
-    @debug="debug.openSelectedSourceDebug"
     @set-group="management.setSelectedSourcesGroup"
     @set-enabled="management.setSelectedSourcesEnabled"
     @export="management.exportSelectedSources"
@@ -469,7 +466,7 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-if="management.sourceImportOpen" class="modal-backdrop" @click.self="closeSourceImport">
-      <KGlass component="article" :highlight="false" class="app-modal source-import-modal"
+      <KGlass component="article" :highlight="false" class="app-modal source-import-modal material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2"
 @keydown.esc="closeSourceImport">
         <header class="source-import-heading">
           <h2 id="source-import-title">从网络链接导入</h2>
@@ -478,10 +475,7 @@ onBeforeUnmount(() => {
         </header>
         <form class="source-import-url" @submit.prevent="submitSourceImport">
           <label for="source-import-url">内容来源 JSON 链接</label>
-          <input id="source-import-url" v-model="management.sourceImportUrl"
-            type="url" inputmode="url" autocomplete="url" maxlength="4096"
-            placeholder="https://example.com/source.json"
-            :class="{ 'is-invalid': !!urlImportError }" :disabled="importLocked"/>
+          <KListInput component="div" input-id="source-import-url" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/source.json" :class="{ 'is-invalid': !!urlImportError }" :disabled="importLocked" :value="management.sourceImportUrl" @input="management.sourceImportUrl = ($event.target as HTMLInputElement).value" />
           <KButton rounded inline type="submit" class="gap-2"
             :disabled="importLocked || !management.sourceImportUrl.trim() || !!urlImportError">
             {{ management.sourceImportBusy ? '下载并导入中…' : '下载并导入' }}
@@ -497,7 +491,7 @@ onBeforeUnmount(() => {
     </section>
     <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="login.closeSourceLogin()"
       @keydown.esc.stop.prevent="login.closeSourceLogin()">
-      <KGlass component="article" :highlight="false" class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
+      <KGlass component="article" :highlight="false" class="app-modal source-login-modal material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
         <header class="source-login-heading">
           <div><h2 id="source-login-title">来源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
           <KButton rounded inline clear class="gap-2" type="button" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></KButton>
@@ -581,46 +575,39 @@ onBeforeUnmount(() => {
  .source-workspace-frame :deep(.source-edit-screen){--source-editor-inset:24px}
 }
 .source-leave-guard{z-index:150}
-.source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);min-width:0;max-height:min(88dvh,800px);padding:0;overflow:hidden;border-radius:12px}
+.source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);min-width:0;max-height:min(88dvh,800px);padding:0;overflow:hidden}
 .source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--app-line)}
 .source-login-heading>div{min-width:0}
 .source-login-heading h2{margin:0;color:var(--app-text);font-size:var(--ui-font-heading);font-weight:650}
 .source-login-heading p{margin:4px 0 0;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.source-login-heading>button{display:grid;place-items:center;flex:none;width:36px;height:36px;border-radius:var(--ui-radius);background:transparent;color:var(--app-muted);cursor:pointer}
+.source-login-heading>button{display:grid;place-items:center;flex:none;width:36px;height:36px}
 .source-login-heading svg{width:var(--ui-icon-size);height:var(--ui-icon-size)}
 .source-login-body{display:grid;gap:12px;min-width:0;min-height:0;padding:16px 20px 20px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;overflow-wrap:anywhere}
-.source-login-note{margin:0;color:var(--app-muted);font-size:var(--ui-font-body);line-height:1.5}
 .source-login-load-state{display:flex;align-items:flex-start;gap:12px;min-width:0}
 .source-login-load-state>.source-login-error{flex:1;min-width:0}
-.source-login-retry{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px;border-radius:var(--ui-radius);color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
-.source-login-retry svg,.source-login-state button svg{width:16px;height:16px}
+.source-login-retry{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px}
+.source-login-retry svg, .source-login-state button svg{width:16px;height:16px}
 .source-login-web-hint{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
 .source-login-web-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:12px}
-.source-login-feedback,.source-login-error{margin:0;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap}
+.source-login-feedback, .source-login-error{margin:0;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap}
 .source-login-feedback{color:var(--app-accent-ink)}
 .source-login-error{color:var(--app-danger)}
 .source-login-state{display:flex;align-items:center;gap:8px;min-width:0;padding-top:8px;border-top:1px solid var(--app-line)}
 .source-login-state>span{flex:none;width:7px;height:7px;border-radius:50%;background:var(--app-accent-soft)}
 .source-login-state>span.saved{background:var(--app-success)}
 .source-login-state>p{flex:1;min-width:0;margin:0;font-size:var(--ui-font-caption);color:var(--app-muted)}
-.source-login-state>button{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px;border-radius:var(--ui-radius);color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
+.source-login-state>button{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px}
 .source-login-storage{color:var(--app-muted);font-size:var(--ui-font-caption)}
 .source-login-storage>summary{width:max-content;padding:4px 0;cursor:pointer}
-.source-login-heading>button:focus-visible,.source-login-retry:focus-visible,.source-login-state>button:focus-visible,.source-login-storage>summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
-.detail-close svg{width:18px;height:18px}
+.source-login-heading>button:focus-visible, .source-login-retry:focus-visible, .source-login-state>button:focus-visible, .source-login-storage>summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 .source-import-modal{width:min(420px,100%);box-sizing:border-box;padding:22px}
 .source-import-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .source-import-heading h2{margin:0;font-size:var(--ui-font-title);color:var(--app-text)}
-.source-import-close{display:grid;place-items:center;flex:none;width:33px;height:33px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);cursor:pointer}
+.source-import-close{display:grid;place-items:center;flex:none;width:33px;height:33px}
 .source-import-close svg{width:18px;height:18px}
-.source-import-close:disabled{opacity:.45;cursor:default}
 .source-import-url{display:grid;gap:9px;margin-top:10px}
-.source-import-modal--url .source-import-heading h2{font-size:var(--ui-font-heading)}
-.source-import-url label,.source-import-new label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
-.source-import-modal--new{width:min(820px,100%)}
-.source-new-discard-mask{z-index:150}
-.source-import-url input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid var(--app-line);border-radius:9px;background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body)}
-.source-import-url input.is-invalid{border-color:var(--app-danger-line)}
+.source-import-url label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
+.source-import-url .k-list-input{box-sizing:border-box;width:100%}
 .source-import-url>small{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
 .source-import-url>button{justify-self:start}
 .source-import-error{margin:0;color:var(--app-danger);font-size:var(--ui-font-caption)}

@@ -26,7 +26,7 @@ defineProps<{
 
 <style scoped>
 @layer components {
-.modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--app-scrim); backdrop-filter: blur(3px); }
+.modal-backdrop { position: fixed; z-index: 50; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; background: var(--app-scrim); }
 h2 { margin: 0; font: inherit; }
 p { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.55; }
 }

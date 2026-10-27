@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Popover as KPopover, Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { ListInput as KListInput, Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 // 书源页管理本地筛选和选择视图；保存、登录、导入等副作用交给应用层处理。
 import { computed, ref, watch } from "vue";
 import { useVirtualList } from "../../ui/useVirtualList";
@@ -16,7 +16,6 @@ const props = defineProps<{
   batchBusy: boolean;
   exportBusy: boolean;
   locked: boolean;
-  searchBusy: boolean;
   editorOpen?: boolean;
 }>();
 
@@ -28,8 +27,6 @@ const emit = defineEmits<{
   "create-open": [];
   "import-local": [];
   "import-url-open": [];
-  login: [];
-  debug: [];
   "set-group": [group: string | null];
   "set-enabled": [enabled: boolean];
   export: [];
@@ -44,8 +41,6 @@ const statusFilter = ref<"all" | "enabled" | "disabled">("all");
 const filterMenuOpen = ref(false);
 const actionsMenuOpen = ref(false);
 const batchGroup = ref("");
-const activeSourceId = ref("");
-const mobileInspectorOpen = ref(false);
 const batchMode = ref(false);
 const addMenuOpen = ref(false);
 const openSourceMenuId = ref<string | null>(null);
@@ -54,12 +49,6 @@ const writeLocked = computed(() => toolbarBusy.value || props.locked);
 
 const groups = computed(() => [...new Set(props.sources.map((source) => source.group).filter((group): group is string => Boolean(group)))].sort());
 const enabledCount = computed(() => props.sources.filter((source) => source.enabled).length);
-const sourceCapabilities = [
-  { key: "search", icon: "search", label: "搜索" },
-  { key: "detail", icon: "info", label: "详情" },
-  { key: "toc", icon: "list", label: "目录" },
-  { key: "content", icon: "file", label: "正文" },
-] as const;
 function sourceKindLabel(source: SourceMetadata): string {
   if (source.isRss) return "RSS";
   if (source.contentType === "image") return "图片";
@@ -83,37 +72,12 @@ const filteredSources = computed(() => {
   });
 });
 const sourceViewport = ref<HTMLElement | null>(null);
-const sourceWindow = useVirtualList(filteredSources, sourceViewport, 54);
+const sourceWindow = useVirtualList(filteredSources, sourceViewport, 64);
 const { range: sourceRange, visibleItems: visibleSources } = sourceWindow;
 watch([query, groupFilter, statusFilter], () => { void sourceWindow.reset(); });
 const selectedSourceSet = computed(() => new Set(props.selectedIds));
 const allFilteredSelected = computed(() => filteredSources.value.length > 0
   && filteredSources.value.every((source) => selectedSourceSet.value.has(source.id)));
-const activeSource = computed(() =>
-  filteredSources.value.find((source) => source.id === activeSourceId.value)
-  ?? filteredSources.value[0]
-  ?? null);
-
-function activateSource(source: SourceMetadata): void {
-  activeSourceId.value = source.id;
-  emit("edit", source);
-}
-
-function runActiveAction(action: "login" | "debug" | "export"): void {
-  const source = activeSource.value;
-  if (!source || writeLocked.value) return;
-  emit("selection-change", [source.id]);
-  if (action === "login") emit("login");
-  else if (action === "debug") emit("debug");
-  else emit("export");
-}
-
-function removeActiveSource(): void {
-  const source = activeSource.value;
-  if (!source || writeLocked.value) return;
-  emit("remove", [source.id]);
-}
-
 function toggleFilteredSelection(): void {
   if (props.batchBusy || props.exportBusy) return;
   const next = new Set(props.selectedIds);
@@ -170,7 +134,7 @@ useOutsidePointerDismiss(
 </KPopover>
     <div v-if="locked" class="source-recovery-notice">资源恢复尚未完成。修改来源的操作暂时不可用，请重启应用完成恢复。</div>
 
-    <div class="source-workbench" :class="{ 'inspector-open': mobileInspectorOpen, 'is-editing': editorOpen }">
+    <div class="source-workbench" :class="{ 'is-editing': editorOpen }">
       <aside class="source-master">
         <div class="source-filter-summary">
           <span>{{ enabledCount }} 个启用</span><small>{{ sources.length }} 个配置</small>
@@ -184,7 +148,7 @@ useOutsidePointerDismiss(
           @toggle-actions="actionsMenuOpen = !actionsMenuOpen; filterMenuOpen = false; addMenuOpen = false; openSourceMenuId = null"
         >
           <template #filter-menu>
-            <KGlass component="div" :highlight="false" v-if="filterMenuOpen" class="source-filter-menu rounded-2xl">
+            <KPopover opened :backdrop="false" v-if="filterMenuOpen" class="source-filter-menu w-60 max-w-[calc(100vw-32px)]" target=".managed-list-toolbar [aria-label='筛选列表']"><div class="grid gap-1 p-2">
               <KButton rounded :tonal="statusFilter === 'all'" :clear="!(statusFilter === 'all')" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: statusFilter === 'all' }"
                 @click="statusFilter = 'all'; filterMenuOpen = false">全部来源</KButton>
               <KButton rounded :tonal="statusFilter === 'enabled'" :clear="!(statusFilter === 'enabled')" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: statusFilter === 'enabled' }"
@@ -199,15 +163,15 @@ useOutsidePointerDismiss(
                   :aria-pressed="groupFilter === group" :aria-label="`分组：${group}`"
                   @click="groupFilter = group; filterMenuOpen = false">{{ group }}</KButton>
               </template>
-            </KGlass>
+            </div></KPopover>
           </template>
           <template #actions-menu>
-            <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="source-toolbar-actions-menu rounded-2xl">
+            <KPopover opened :backdrop="false" v-if="actionsMenuOpen" class="source-toolbar-actions-menu w-60 max-w-[calc(100vw-32px)]" target=".managed-list-toolbar [aria-label='更多列表操作']"><div class="grid gap-1 p-2">
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="toolbarBusy || editorOpen"
                 @click="batchMode = !batchMode; emit('selection-change', []); actionsMenuOpen = false">
                 {{ batchMode ? '退出批量管理' : '批量管理' }}
               </KButton>
-            </KGlass>
+            </div></KPopover>
           </template>
         </ManagedListToolbar>
         <div v-if="filteredSources.length" ref="sourceViewport" class="source-master-list" @scroll.passive="filterMenuOpen = false; actionsMenuOpen = false; openSourceMenuId = null">
@@ -218,7 +182,7 @@ useOutsidePointerDismiss(
             :enabled="source.enabled"
             :busy="writeLocked" :batch-mode="batchMode" :selected="selectedSourceSet.has(source.id)"
             :menu-open="openSourceMenuId === source.id"
-            @open="editorOpen ? emit('switch-editor', source) : activateSource(source)"
+            @open="editorOpen ? emit('switch-editor', source) : emit('edit', source)"
             @select="emit('toggle-source', source.id)"
             @toggle-menu="openSourceMenuId = openSourceMenuId === source.id ? null : source.id; addMenuOpen = false; filterMenuOpen = false; actionsMenuOpen = false"
           >
@@ -256,8 +220,7 @@ useOutsidePointerDismiss(
             <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeSelected">移除</KButton>
           </div>
           <div class="source-master-batch-group">
-            <input v-model="batchGroup" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称"
-              :disabled="writeLocked"/>
+            <KListInput component="div" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称" :disabled="writeLocked" :value="batchGroup" @input="batchGroup = ($event.target as HTMLInputElement).value" />
             <KButton rounded inline clear class="gap-2" type="button" title="设置分组" aria-label="设置分组" :disabled="writeLocked||!batchGroup.trim()"
               @click="emit('set-group', batchGroup)">应用</KButton>
             <KButton rounded inline clear type="button" class="source-group-clear gap-2" :disabled="writeLocked" @click="emit('set-group', null)">清空分组</KButton>
@@ -266,73 +229,6 @@ useOutsidePointerDismiss(
       </aside>
 
       <slot name="editor"></slot>
-      <main v-if="!editorOpen && activeSource && mobileInspectorOpen" class="source-inspector">
-        <header class="source-inspector-head">
-          <KButton rounded inline clear class="source-mobile-back gap-2" type="button" @click="mobileInspectorOpen = false"><PrototypeIcon name="left"/></KButton>
-          <div class="source-inspector-identity">
-            <span class="source-large-icon"><PrototypeIcon :name="activeSource.isRss ? 'rss' : activeSource.mediaType === 'video' ? 'play' : activeSource.mediaType === 'audio' ? 'audio' : 'book'"/></span>
-            <div><strong>{{ activeSource.name }}</strong></div>
-          </div>
-          <label class="source-switch">
-            <KCheckbox component="span" :checked="activeSource.enabled" :disabled="writeLocked" @change="emit('change-enabled', activeSource, ($event.target as HTMLInputElement).checked)"  />
-            <span></span>
-          </label>
-        </header>
-
-        <p class="source-inspector-status" :class="{ off: !activeSource.enabled }"><span class="source-dot" :class="{ off: !activeSource.enabled }"></span>{{ activeSource.enabled ? '此来源已启用' : '此来源已停用，不会参与新的搜索' }}</p>
-        <div class="source-inspector-actions">
-          <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')"><PrototypeIcon name="debug"/><span>测试</span></KButton>
-          <KButton rounded inline clear class="gap-2" v-if="!activeSource.isRss" type="button" :disabled="writeLocked" @click="runActiveAction('login')"><PrototypeIcon name="login"/><span>登录</span></KButton>
-          <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('edit', activeSource)"><PrototypeIcon name="edit"/><span>编辑</span></KButton>
-          <KButton rounded inline clear class="gap-2" type="button" :disabled="toolbarBusy" @click="runActiveAction('export')"><PrototypeIcon name="export"/><span>导出</span></KButton>
-        </div>
-
-        <section class="source-inspector-section">
-          <small>来源信息</small>
-          <div class="source-facts">
-            <span><small>类型</small><strong>{{ sourceKindLabel(activeSource) }}</strong></span>
-            <span><small>分组</small><strong>{{ activeSource.group || '未分组' }}</strong></span>
-            <span><small>状态</small><strong>{{ activeSource.enabled ? '已启用' : '已停用' }}</strong></span>
-            <span><small>User-Agent</small><strong>{{ activeSource.userAgentOverride ? '自定义' : '默认' }}</strong></span>
-          </div>
-        </section>
-
-        <section class="source-inspector-section">
-          <small>解析能力</small>
-          <div class="source-capabilities">
-            <div v-for="item in sourceCapabilities" :key="item.key">
-              <PrototypeIcon :name="item.icon"/>
-              <strong>{{ item.label }}</strong>
-              <small>{{ activeSource.capabilities?.[item.key] ? '已配置' : '未配置' }}</small>
-            </div>
-          </div>
-        </section>
-        <section class="source-inspector-section">
-          <small>运行验证</small>
-          <div class="source-verification-state">
-            <span class="source-verification-icon"><PrototypeIcon name="info"/></span>
-            <div><strong>查看真实解析结果</strong><small>字段已配置不代表网站请求成功，点击测试验证实际规则。</small></div>
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')">运行测试</KButton>
-          </div>
-        </section>
-        <section v-if="selectedIds.length > 1" class="source-inspector-section source-batch-panel">
-          <small>批量操作 · 已选 {{ selectedIds.length }}</small>
-          <div class="source-batch-group-row">
-            <input v-model="batchGroup" maxlength="100" placeholder="分组名称" :disabled="writeLocked" />
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || !batchGroup.trim()" @click="emit('set-group', batchGroup)">应用分组</KButton>
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-group', null)">清除分组</KButton>
-          </div>
-          <div class="source-batch-actions">
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">批量启用</KButton>
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">批量停用</KButton>
-            <KButton rounded inline clear class="gap-2" type="button" :disabled="toolbarBusy" @click="emit('export')">{{ exportBusy ? '导出中…' : '导出所选' }}</KButton>
-            <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeSelected">移除所选</KButton>
-          </div>
-        </section>
-
-        <KButton rounded inline clear type="button" class="source-danger-row k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeActiveSource">删除这个来源</KButton>
-      </main>
-
     </div>
   </section>
 </template>
@@ -345,9 +241,8 @@ useOutsidePointerDismiss(
 .source-manager-page > :deep(.subpage-header){position:sticky;top:0;z-index:10;min-height:var(--ui-header-height);margin:0;padding-inline:var(--ui-header-gutter);padding-bottom:4px;border-bottom:1px solid var(--app-line);background:var(--app-background)}
 .source-manager-page :deep(.subpage-header__copy h2){color:var(--app-text);font-size:var(--ui-font-heading);line-height:1.25}
 
-.source-header-import{display:flex;align-items:center;gap:5px;min-height:40px;padding:0 12px;border:0;border-radius:10px;background:var(--app-accent);color:var(--app-on-accent);font-size:var(--ui-font-caption);font-weight:700;cursor:pointer}
+.source-header-import{display:flex;align-items:center;gap:5px;min-height:40px;padding:0 12px}
 .source-header-import svg{width:17px;height:17px}
-.source-header-import:disabled{opacity:.5;cursor:default}
 .source-header-add{position:relative}
 .source-recovery-notice { margin-bottom:12px; border:1px solid var(--app-warning-line); border-radius:10px; padding:12px; color:var(--app-warning); background:var(--app-panel-soft); font-size:var(--ui-font-caption); }
 .source-filter-summary { display:flex; align-items:center; justify-content:space-between; padding:8px 3px 10px; color:var(--app-subtle); font-size:var(--ui-font-caption); }
@@ -355,116 +250,44 @@ useOutsidePointerDismiss(
 .source-master-empty { align-content:center; justify-items:center; gap:10px; padding:18px; }
 .source-master-empty strong { color:var(--app-text); font-size:var(--ui-font-body); }
 .source-master-empty p { margin:0; line-height:1.5; }
-.source-master-empty button { min-height:36px; padding:0 12px; border:0; border-radius:9px; color:var(--app-accent); background:var(--app-accent-soft); cursor:pointer; }
+.source-master-empty button { min-height:36px; padding:0 12px; }
 .source-selected-summary { display:flex; align-items:center; gap:8px; white-space:nowrap; }
-.source-inspector-status { display:inline-flex; align-items:center; gap:7px; margin:13px 0 0; color:var(--app-accent); font-size:var(--ui-font-caption); }
-.source-inspector-status.off { color:var(--app-subtle); }
 
 .source-workbench { min-width:0;min-height:400px;height:calc(100dvh - 64px - var(--safe-top));display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;border:0;border-radius:0;background:var(--app-background); }
 .source-manager-page:not(.source-manager-page--editing) .source-workbench{flex:1 1 auto;min-height:0;height:auto}
 .source-manager-page--editing .source-workbench{flex:1 1 auto;height:auto;min-height:0;border-top:1px solid var(--app-line)}
 .source-manager-page--editing .source-master{border-right:1px solid var(--app-line);background:var(--app-background)}
-.source-manager-page--editing .source-master-footer button{pointer-events:none;opacity:.4}
+.source-manager-page--editing .source-master-footer button{pointer-events:none}
 .source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px; border-right:1px solid var(--app-line); background:var(--app-background); }
-.source-filter-menu,.source-toolbar-actions-menu{position:absolute;right:0;top:calc(100% + 5px);z-index:70;display:grid;gap:3px;min-width:176px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
-.source-filter-menu>button,.source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);cursor:pointer}
+.source-filter-menu>button, .source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;text-align:left}
 .source-filter-menu>button.active{color:var(--app-text);font-weight:600}
-.source-filter-menu{max-height:min(480px,calc(100dvh - 180px));max-width:min(280px,calc(100vw - 48px));overflow-y:auto}
 .source-filter-menu>button{overflow-wrap:anywhere}
 .source-filter-menu>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
 .source-filter-divider{height:1px;margin:4px 2px;background:var(--app-line)}
 .source-toolbar-actions-menu>button:disabled{opacity:.5;cursor:default}
 .source-master-list { min-height:0; flex:1; margin-right:-14px; padding-right:14px; overflow:auto; }
-.source-dot { width:7px; height:7px; border-radius:50%; background:var(--app-success); }
-.source-dot.off { background:var(--app-track); }
 .source-master-empty { flex:1; display:grid; place-items:center; color:var(--app-subtle); font-size:var(--ui-font-caption); text-align:center; }
 .source-master-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:8px; border-top:1px solid var(--app-line); }
-.source-batch-select-all { display:inline-flex; align-items:center; gap:6px; min-height:var(--ui-compact-control-height); font-size:var(--ui-font-body); white-space:nowrap; cursor:pointer; }
-.source-batch-select-all input { width:14px; height:14px; margin:0; accent-color:var(--app-accent); }
-.source-master-footer button { min-height:var(--ui-compact-control-height); padding:0 4px; border:0; border-radius:var(--ui-radius); color:var(--app-muted); background:transparent; font-size:var(--ui-font-caption); cursor:pointer; }
+.source-master-footer button { min-height:var(--ui-compact-control-height); padding:0 4px; }
 .source-master-footer span { color:var(--app-muted); font-size:var(--ui-font-caption); }
-
-.source-inspector { min-width:0; overflow:auto; padding:30px 34px; }
-.source-inspector-head { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:14px; }
-.source-inspector-identity { min-width:0; display:flex; align-items:center; gap:12px; }
-.source-large-icon { width:46px; height:46px; flex:none; display:grid; place-items:center; border-radius:13px; color:var(--app-accent-ink); background:var(--app-accent-soft); font-size:var(--ui-font-heading); font-weight:800; }
-.source-inspector-identity div { min-width:0; }
-.source-inspector-identity strong,.source-inspector-identity small { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.source-inspector-identity strong { color:var(--app-text); font-size:var(--ui-font-title); }
-.source-inspector-identity small { margin-top:4px; color:var(--app-subtle); font-size:var(--ui-font-caption); }
-.source-switch { position:relative; width:40px; height:24px; }
-.source-switch input { position:absolute; opacity:0; pointer-events:none; }
-.source-switch span { position:absolute; inset:0; border-radius:999px; background:var(--app-track); cursor:pointer; }
-.source-switch span::after { position:absolute; top:3px; left:3px; width:18px; height:18px; border-radius:50%; background:var(--app-surface); box-shadow:0 1px 4px #0002; content:""; transition:transform .15s; }
-.source-switch input:checked + span { background:var(--app-accent); }
-.source-switch input:checked + span::after { transform:translateX(16px); }
-.source-inspector-actions { display:flex; flex-wrap:wrap; gap:7px; margin:22px 0; }
-.source-inspector-actions button { min-height:36px; display:flex; align-items:center; gap:6px; padding:0 11px; border:0; border-radius:9px; color:var(--app-muted); background:var(--app-panel-soft); font-size:var(--ui-font-body); cursor:pointer; }
-.source-inspector-actions button span { font-size:var(--ui-font-body); }
-.source-inspector-section { padding:20px 0; border-top:1px solid var(--app-line); }
-.source-inspector-section > small { display:block; margin-bottom:10px; color:var(--app-subtle); font-size:var(--ui-font-caption); }
-.source-facts { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
-.source-facts > span { min-width:0; padding:12px; border-radius:11px; background:var(--app-panel-soft); }
-.source-facts small,.source-facts strong { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.source-facts small { color:var(--app-subtle); font-size:var(--ui-font-caption); }
-.source-facts strong { margin-top:4px; color:var(--app-text); font-size:var(--ui-font-caption); }
-.source-batch-group-row { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:7px; }
-.source-batch-group-row input { min-width:0; height:38px; padding:0 9px; border:1px solid var(--app-line); border-radius:8px; }
-.source-batch-group-row button,.source-batch-actions button { min-height:38px; padding:0 10px; border:0; border-radius:8px; color:var(--app-muted); background:var(--app-accent-soft); font-size:var(--ui-font-body); cursor:pointer; }
-.source-batch-actions { display:flex; flex-wrap:wrap; gap:7px; margin-top:8px; }
-.source-batch-actions .danger { color:var(--app-danger); background:var(--app-danger-soft); }
-.source-danger-row { width:100%; min-height:44px; margin-top:6px; border:0; border-radius:9px; color:var(--app-danger); background:var(--app-danger-soft); text-align:left; padding:0 12px; cursor:pointer; }
-.source-mobile-back { display:none; }
 
 @media(max-width:860px){
   .source-manager-page > :deep(.subpage-header){padding-right:14px;padding-left:14px}
-  .source-manager-page--editing > :deep(.subpage-header),
-  .source-manager-page--editing .source-recovery-notice,
-  .source-manager-page--editing .source-master{display:none}
+  .source-manager-page--editing > :deep(.subpage-header), .source-manager-page--editing .source-recovery-notice, .source-manager-page--editing .source-master{display:none}
   .source-manager-page--editing .source-workbench{display:flex;flex:1 1 auto;height:auto;min-height:0;overflow:hidden;border:0}
   .source-manager-page--editing :deep(.source-edit-screen){width:100%;min-width:0}
   .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px - var(--safe-top));grid-template-columns:1fr}
   .source-manager-page:not(.source-manager-page--editing) .source-master{border:0}
   .source-master{padding:16px var(--ui-page-gutter)}
 }
-
-@media(max-width:760px) {
-  .source-master { border-right:0; }
-  .source-inspector { display:none; padding:20px 16px; }
-  .source-workbench.inspector-open .source-master { display:none; }
-  .source-workbench.inspector-open .source-inspector { display:block; }
-  .source-inspector-head { grid-template-columns:36px minmax(0,1fr) auto; }
-  .source-mobile-back { width:34px; height:34px; display:grid; place-items:center; border:0; border-radius:9px; color:var(--app-muted); background:var(--app-accent-soft); }
-  .source-mobile-back svg { width:19px;height:19px; }
-  .source-inspector-identity strong { font-size:var(--ui-font-heading); }
-  .source-facts { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .source-batch-group-row { grid-template-columns:1fr 1fr; }
-  .source-batch-group-row input { grid-column:1/-1; }
-}
-
-.source-inspector-actions svg{width:19px;height:19px;stroke-linecap:round;stroke-linejoin:round}
-.source-large-icon svg{width:24px;height:24px}
-.source-capabilities{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-top:12px}
-.source-capabilities>div{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;min-height:94px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-panel-soft);color:var(--app-subtle);text-align:center}
-.source-capabilities svg{width:21px;height:21px}
-.source-capabilities strong{font-size:var(--ui-font-caption);color:var(--app-text)}
-.source-capabilities small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
-.source-verification-state{display:grid;grid-template-columns:37px minmax(0,1fr) auto;gap:11px;align-items:center;margin-top:10px;padding:13px;border:1px solid var(--app-line);border-radius:12px;background:var(--app-surface)}
-.source-verification-icon{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent-ink)}
-.source-verification-state>div{display:grid;gap:4px;min-width:0}
-.source-verification-state strong{font-size:var(--ui-font-caption);color:var(--app-muted)}
-.source-verification-state small{font-size:var(--ui-font-caption);line-height:1.5;color:var(--app-subtle)}
-.source-verification-state button{min-height:34px;padding:5px 9px;border:1px solid var(--app-accent-soft);border-radius:9px;background:var(--app-accent-soft);color:var(--app-accent);cursor:pointer;font-size:var(--ui-font-body)}
-.source-verification-state button:disabled{opacity:.45;cursor:default}
-@media(max-width:700px){.source-capabilities{grid-template-columns:repeat(2,minmax(0,1fr))}.source-verification-state{grid-template-columns:36px minmax(0,1fr)}.source-verification-state button{grid-column:2;justify-self:start}}
 .source-master-batch-actions{display:grid;gap:8px;padding-top:8px}
 .source-batch-buttons{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
-.source-master-batch-actions button{min-height:36px;padding:0 8px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body);white-space:nowrap;cursor:pointer}
+.source-master-batch-actions button{min-height:36px;padding:0 8px;white-space:nowrap}
 .source-master-batch-actions button.danger{color:var(--app-danger);border-color:var(--app-danger-line)}
 .source-master-batch-actions button:disabled{opacity:.5;cursor:default}
 .source-master-batch-group{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px}
-.source-master-batch-group input{min-width:0;width:100%;min-height:36px;padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
-.source-master-batch-actions .source-group-clear{padding:0 4px;border-color:transparent;color:var(--app-muted)}
-.source-master-footer button:focus-visible,.source-batch-select-all input:focus-visible,.source-master-batch-actions button:focus-visible,.source-master-batch-group input:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
+.source-master-batch-group .k-list-input{min-width:0;width:100%}
+.source-master-batch-actions .source-group-clear{padding:0 4px}
+.source-master-footer button:focus-visible, .source-master-batch-actions button:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 }
 </style>

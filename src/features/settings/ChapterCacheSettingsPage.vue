@@ -166,8 +166,7 @@ onMounted(async () => {
   font-size: var(--ui-font-caption);
 }
 
-.cache-refresh,
-.cache-clear {
+.cache-refresh, .cache-clear {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -175,27 +174,15 @@ onMounted(async () => {
   gap: var(--ui-space-2);
   min-height: var(--ui-control-height);
   padding: 0 var(--ui-space-3);
-  border: 1px solid transparent;
-  border-radius: var(--ui-radius);
-  background: transparent;
-  font-size: var(--ui-font-body);
   white-space: nowrap;
-  cursor: pointer;
 }
 
-.cache-refresh {
-  color: var(--app-muted);
-}
-
-.cache-refresh :deep(svg),
-.cache-clear :deep(svg) {
+.cache-refresh :deep(svg), .cache-clear :deep(svg) {
   width: 18px;
   height: 18px;
 }
 
-.cache-refresh:focus-visible,
-.cache-clear:focus-visible,
-.cache-result summary:focus-visible {
+.cache-refresh:focus-visible, .cache-clear:focus-visible, .cache-result summary:focus-visible {
   outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
@@ -240,13 +227,7 @@ onMounted(async () => {
   padding-top: var(--ui-space-5);
 }
 
-.cache-clear {
-  border-color: var(--app-danger-line);
-  color: var(--app-danger);
-}
-
-.cache-error,
-.cache-result {
+.cache-error, .cache-result {
   margin: var(--ui-space-4) 0 0;
   font-size: var(--ui-font-caption);
   overflow-wrap: anywhere;

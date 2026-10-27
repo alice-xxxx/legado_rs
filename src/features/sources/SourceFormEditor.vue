@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Toggle as KToggle, Button as KButton } from "konsta/vue";
+import { Popup as KPopup, ListInput as KListInput, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import { bookSourceTypeOptions } from "./sourceTypeOptions";
@@ -89,25 +90,26 @@ defineExpose({ serialize, reset });
           <KToggle component="span" :checked="draft[field.key] === 'true'" :disabled="disabled"
             @change="draft[field.key] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'"  />
         </label>
-        <select v-else-if="field.kind === 'type'" :id="`source-field-${field.key}`" v-model="draft[field.key]" :disabled="disabled">
+        <KListInput component="div" v-else-if="field.kind === 'type'" :input-id="`source-field-${field.key}`" :disabled="disabled" type="select" :value="draft[field.key]" @change="draft[field.key] = ($event.target as HTMLSelectElement).value">
           <option v-for="option in bookSourceTypeOptions(draft[field.key] ?? '0')" :key="option.value" :value="option.value">{{ option.label }}</option>
-        </select>
-        <input v-else :id="`source-field-${field.key}`" v-model="draft[field.key]" :disabled="disabled"
-          :inputmode="field.kind === 'number' ? 'numeric' : 'text'" type="text" spellcheck="false" autocomplete="off" />
+        </KListInput>
+        <KListInput component="div" v-else :input-id="`source-field-${field.key}`" :disabled="disabled" :inputmode="field.kind === 'number' ? 'numeric' : 'text'" type="text" spellcheck="false" autocomplete="off" :value="draft[field.key]" @input="draft[field.key] = ($event.target as HTMLInputElement).value" />
       </div>
     </div>
     <p v-if="error" class="source-field-error" role="alert">{{ error }}</p>
     <Teleport to="body">
-      <section v-if="editingField" class="source-field-overlay" role="dialog" aria-modal="true"
-        aria-labelledby="source-long-field-title" @keydown="trapFieldFocus" @keydown.esc.stop.prevent="closeField(true)">
-        <header>
-          <KButton rounded inline clear class="gap-2" type="button" data-back-action :disabled="disabled" @click="closeField(true)">取消</KButton>
-          <div><strong id="source-long-field-title">{{ editingField.label }}</strong><small>{{ editingField.key }}</small></div>
+      <KPopup v-if="editingField" opened class="source-field-overlay z-[120]" @backdropclick="closeField(true)">
+        <section class="flex h-full min-h-0 flex-col" role="dialog" aria-modal="true" :aria-label="editingField.label" data-back-layer
+          @keydown="trapFieldFocus" @keydown.esc.stop.prevent="closeField(true)">
+        <SubpageHeader :title="editingField.label" :subtitle="editingField.key" back-label="取消编辑" local-back :back-disabled="disabled" @back="closeField(true)">
+          <template #actions>
           <KButton rounded inline clear class="gap-2" type="button" :disabled="disabled" @click="closeField()">完成</KButton>
-        </header>
-        <textarea v-model="draft[editingField.key]" :disabled="disabled"
-          :aria-label="editingField.label" spellcheck="false" autocapitalize="off" autocomplete="off" />
-      </section>
+          </template>
+        </SubpageHeader>
+        <label class="sr-only" for="source-long-value">{{ editingField.label }}</label>
+        <KListInput component="div" input-id="source-long-value" class="source-code-field" :disabled="disabled" spellcheck="false" autocapitalize="off" autocomplete="off" type="textarea" input-class="h-full! resize-none font-mono leading-7" :value="draft[editingField.key]" @input="draft[editingField.key] = ($event.target as HTMLTextAreaElement).value" />
+        </section>
+      </KPopup>
     </Teleport>
   </div>
 </template>
@@ -116,30 +118,29 @@ defineExpose({ serialize, reset });
 @layer components {
 .source-field-editor{min-width:0;color:var(--app-text,var(--app-text))}
 .source-field-tabs{position:sticky;top:0;z-index:5;display:flex;overflow-x:auto;background:var(--app-background);border-bottom:1px solid var(--app-line);scrollbar-width:none}
-.source-field-tabs>button{flex:1 0 auto;min-height:48px;padding:0 18px;border:0;border-bottom:3px solid transparent;background:transparent;color:var(--app-muted);font:inherit;font-size:var(--ui-font-body);cursor:pointer}
+.source-field-tabs>button{flex:1 0 auto;min-height:48px;padding:0 18px}
 .source-field-tabs>button.active{border-bottom-color:var(--app-accent);color:var(--app-accent);font-weight:650}
 .source-field-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 22px;padding:24px 0}
-.source-field{display:grid;gap:8px;min-width:0;grid-column:1/-1}
+.source-field{display:grid;align-content:start;gap:8px;min-width:0;grid-column:1/-1}
 .source-field--compact{grid-column:auto}
 .source-field-label{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap;font-size:var(--ui-font-body);line-height:1.4;color:var(--app-muted)}
 .source-field-label small{font-size:var(--ui-font-caption);font-weight:400;color:var(--app-subtle);overflow-wrap:anywhere}
-.source-field input:not([type=checkbox]),.source-field select,.source-field-preview{box-sizing:border-box;width:100%;min-width:0;min-height:46px;padding:11px 13px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);line-height:1.5}
-.source-field-preview{display:flex;align-items:center;gap:12px;text-align:left;cursor:pointer}
+.source-field .k-list-input{box-sizing:border-box;width:100%;min-width:0}
+.source-field-preview{box-sizing:border-box;width:100%;min-width:0;min-height:46px;padding:11px 13px;line-height:1.5}
+.source-field-preview{display:flex;align-items:center;gap:12px;text-align:left}
 .source-field-preview>span{flex:1;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;font:var(--ui-font-code)/1.6 ui-monospace,SFMono-Regular,Consolas,monospace}
 .source-field-preview.empty>span{color:var(--app-subtle);font-family:inherit}
 .source-field-preview :deep(svg){flex:none;width:18px;height:18px;color:var(--app-subtle)}
 .source-field-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;cursor:pointer}
-.source-field input:focus-visible,.source-field select:focus-visible,.source-field-preview:focus-visible,.source-field-tabs>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
+.source-field-preview:focus-visible, .source-field-tabs>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
 .source-field :disabled{opacity:.55;cursor:default}
 .source-field-error{padding:12px;background:var(--app-danger-soft);color:var(--app-danger);border-radius:8px;font-size:var(--ui-font-body)}
-.source-field-overlay{position:fixed;z-index:120;inset:0;display:flex;flex-direction:column;padding:var(--safe-top) 0 var(--safe-bottom);background:var(--app-panel-soft)}
-.source-field-overlay>header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:62px;padding:0 20px;border-bottom:1px solid var(--app-line);background:var(--app-surface)}
-.source-field-overlay>header>div{display:grid;min-width:0;gap:3px;text-align:center}
-.source-field-overlay strong{font-size:var(--ui-font-body);color:var(--app-text)}
-.source-field-overlay small{font-size:var(--ui-font-caption);color:var(--app-subtle);overflow:hidden;text-overflow:ellipsis}
-.source-field-overlay button{min-height:44px;padding:0 10px;border:0;background:transparent;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
-.source-field-overlay textarea{flex:1;min-height:0;resize:none;margin:16px;padding:16px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-surface);color:var(--app-text);font:var(--ui-font-code)/1.7 ui-monospace,SFMono-Regular,Consolas,monospace;tab-size:2;outline-offset:2px}
-@media(min-width:1100px){.source-field-overlay{inset:5vh 12vw;border:1px solid var(--app-line);border-radius:12px;box-shadow:0 0 0 100vmax #18203466;overflow:hidden}}
-@media(max-width:700px){.source-field-tabs>button{padding:0 15px}.source-field-list{gap:19px 14px;padding:22px 0}.source-field-label{font-size:var(--ui-font-body);gap:5px}.source-field-overlay>header{padding:0 10px}.source-field-overlay textarea{margin:10px;padding:12px}}
+@media(max-width:700px){.source-field-tabs>button{padding:0 15px}.source-field-list{gap:19px 14px;padding:22px 0}.source-field-label{font-size:var(--ui-font-body);gap:5px}}
+}
+
+@layer components {
+.source-code-field { flex: 1; min-height: 0; padding: 16px; overflow: hidden; }
+.source-code-field :deep(> div), .source-code-field :deep(> div > div), .source-code-field :deep(> div > div > div) { height: 100%; }
+.source-code-field :deep(textarea) { min-height: 100%; }
 }
 </style>

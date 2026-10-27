@@ -9,6 +9,7 @@ import ExternalImportHost from "./features/import/ExternalImportHost.vue";
 import ReaderHost from "./features/reader/ReaderHost.vue";
 import GlobalNoticeHost from "./app/GlobalNoticeHost.vue";
 import RecoveryRuntime from "./app/RecoveryRuntime.vue";
+import StartupError from "./app/StartupError.vue";
 import { loadSettings, settings } from "./features/settings/settingsStore";
 import { initializeTheme, resolvedAppTheme } from "./features/settings/themeState";
 import { loadHistory } from "./features/settings/historyStore";
@@ -103,20 +104,7 @@ void appBootstrap().then((bootstrap) => { initializeDatabase(bootstrap); return 
   console.error("App initialization failed", error);
   if (startupDisposed) return;
   // Show a failure only after an actual error; do not hide the UI behind a timer or reload it automatically.
-  const target = document.getElementById("app");
-  if (!target) return;
-  const panel = document.createElement("div");
-  panel.className = "safe-area-top";
-  panel.style.padding = "24px";
-  panel.setAttribute("role", "alert");
-  const message = document.createElement("p");
-  message.textContent = `启动失败：${asText(error)}`;
-  const retry = document.createElement("button");
-  retry.type = "button";
-  retry.textContent = "重试";
-  retry.addEventListener("click", () => window.location.reload());
-  panel.append(message, retry);
-  target.replaceChildren(panel);
+  mountRoot({ render: () => h(StartupError, { message: asText(error) }) }, "#app", "startup-error");
 });
 
 if (import.meta.hot) {

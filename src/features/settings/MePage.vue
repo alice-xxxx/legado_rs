@@ -32,7 +32,6 @@ function navigate(destination: Item["destination"]): void {
     <PrimaryNavigation />
     <main class="me-page-main">
       <div class="ui-page-content">
-        <h1 class="ui-page-title mb-6">我的</h1>
         <section v-for="group in ([{ title: '内容', items: contentItems }, { title: '应用', items: appItems }])"
           :key="group.title" class="ui-settings-group">
           <h2>{{ group.title }}</h2>

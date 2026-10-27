@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton, List as KList } from "konsta/vue";
+import { ListInput as KListInput, Button as KButton, List as KList } from "konsta/vue";
 // 页面拥有备份 UI 与动作；阅读器只通过窄 session 暴露备份所需能力。
 import { computed, ref, watch } from "vue";
 import { backupBusy } from "./backupState";
@@ -10,6 +10,7 @@ import { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
 import SettingsActionRow from "../../ui/SettingsActionRow.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 
 const {
   webDavBackupConfig: webDavConfig,
@@ -73,10 +74,9 @@ const canEditAutoSchedule = computed(() => Boolean(webDavConfig.value?.url)
 const lastBackup = computed(() => settings.value.lastBackupAtMs
   ? new Date(settings.value.lastBackupAtMs).toLocaleString() : "尚未备份");
 
-function changeAutoBackupInterval(event: Event): void {
+function changeAutoBackupInterval(value: number): void {
   if (!canEditAutoSchedule.value || !settings.value.webdavBackup) return;
-  const raw = (event.target as HTMLSelectElement).value;
-  settings.value.webdavBackup.autoIntervalHours = raw ? Number(raw) : null;
+  settings.value.webdavBackup.autoIntervalHours = value || null;
 }
 
 function saveWebDavDraft(): void {
@@ -111,15 +111,15 @@ function saveWebDavDraft(): void {
       <form class="webdav-config-form" @submit.prevent="saveWebDavDraft">
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>目录地址</strong></span>
-          <input v-model="webDavUrl" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/dav/" :disabled="!!busy || locked" required />
+          <KListInput component="div" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/dav/" :disabled="!!busy || locked" required :value="webDavUrl" @input="webDavUrl = ($event.target as HTMLInputElement).value" />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>用户名</strong></span>
-          <input v-model="webDavUsername" autocomplete="username" maxlength="512" placeholder="输入用户名" :disabled="!!busy || locked" />
+          <KListInput component="div" autocomplete="username" maxlength="512" placeholder="输入用户名" :disabled="!!busy || locked" :value="webDavUsername" @input="webDavUsername = ($event.target as HTMLInputElement).value" />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>密码</strong></span>
-          <input v-model="webDavPassword" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.password ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked" />
+          <KListInput component="div" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.password ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked" :value="webDavPassword" @input="webDavPassword = ($event.target as HTMLInputElement).value" />
         </label>
         <div v-if="configRefreshConflict" class="webdav-draft-warning">
           已保存的 WebDAV 配置发生变化。当前输入仍保留，若要放弃草稿请点击重新读取表单。
@@ -142,9 +142,9 @@ function saveWebDavDraft(): void {
 
       <div class="webdav-setting-row webdav-auto-setting">
         <label class="backup-row-copy" for="webdav-auto-interval"><strong>自动备份</strong><small>应用运行期间备份已保存的数据</small></label>
-        <select id="webdav-auto-interval" :value="autoIntervalHours ?? ''" :disabled="!canEditAutoSchedule" @change="changeAutoBackupInterval">
-          <option value="">关闭</option><option value="6">每 6 小时</option><option value="12">每 12 小时</option><option value="24">每天</option><option value="72">每 3 天</option>
-        </select>
+        <SelectMenu id="webdav-auto-interval" label="自动备份" :model-value="autoIntervalHours ?? 0" :disabled="!canEditAutoSchedule"
+          :options="[{ value: 0, label: '关闭' }, { value: 6, label: '每 6 小时' }, { value: 12, label: '每 12 小时' }, { value: 24, label: '每天' }, { value: 72, label: '每 3 天' }]"
+          @update:model-value="changeAutoBackupInterval" />
       </div>
 
       <div class="webdav-actions">
@@ -162,7 +162,7 @@ function saveWebDavDraft(): void {
 .backup-settings-page{width:100%;min-width:0;color:var(--app-text)}
 .backup-summary{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--ui-space-2);padding-bottom:var(--ui-space-5);border-bottom:1px solid var(--app-line)}
 .backup-summary>span:last-child{color:var(--app-muted);font-size:var(--ui-font-caption);overflow-wrap:anywhere}
-.backup-local-section,.webdav-settings{padding-top:var(--ui-space-4)}
+.backup-local-section, .webdav-settings{padding-top:var(--ui-space-4)}
 .backup-content h2{margin:0 0 var(--ui-space-2);font-size:var(--ui-font-body);font-weight:750}
 .webdav-settings{border-top:1px solid var(--app-line)}
 .webdav-config-form{display:grid}
@@ -170,9 +170,8 @@ function saveWebDavDraft(): void {
 .backup-row-copy{display:flex;flex-direction:column;gap:4px;min-width:0}
 .backup-row-copy strong{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
 .backup-row-copy small{font-size:var(--ui-font-caption);color:var(--app-muted);line-height:1.45}
-.webdav-setting-row input,.webdav-setting-row select{box-sizing:border-box;min-width:0;width:100%;min-height:var(--ui-control-height);padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
-.webdav-setting-row input:disabled,.webdav-setting-row select:disabled{opacity:.6}
-.webdav-config-actions,.webdav-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2);padding:var(--ui-space-3) 0}
+.webdav-setting-row .k-list-input{box-sizing:border-box;min-width:0;width:100%}
+.webdav-config-actions, .webdav-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2);padding:var(--ui-space-3) 0}
 .webdav-config-state{margin:0;padding:4px 0 8px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5;overflow-wrap:anywhere}
 .webdav-help{color:var(--app-muted);font-size:var(--ui-font-caption);margin:4px 0 16px}
 .webdav-help summary{padding-block:4px;cursor:pointer}
@@ -180,9 +179,9 @@ function saveWebDavDraft(): void {
 .webdav-actions{padding-bottom:0}
 .webdav-auto-setting{grid-template-columns:minmax(0,1fr) 120px;border-top:1px solid var(--app-line)}
 .webdav-draft-warning{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin:10px 0;padding:9px;border:1px solid var(--app-warning-line);border-radius:9px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption)}
-.webdav-draft-warning button{padding:6px 8px;border:0;border-radius:7px;background:var(--app-surface);color:var(--app-accent);cursor:pointer}
+.webdav-draft-warning button{padding:6px 8px}
 .webdav-error{margin:0;padding:9px 0;color:var(--app-danger);font-size:var(--ui-font-caption);line-height:1.55}
-.webdav-setting-row input:focus-visible,.webdav-setting-row select:focus-visible,.webdav-help summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
+.webdav-help summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 @media(max-width:520px){
   .webdav-config-form .webdav-setting-row{grid-template-columns:minmax(0,1fr);gap:var(--ui-space-2)}
 }

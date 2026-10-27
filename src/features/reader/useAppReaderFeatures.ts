@@ -88,7 +88,6 @@ const readerFindIndex = ref(-1);
 const readerBusy = ref(false);
 const readerChapterError = ref("");
 const readerProgressDirty = ref(false);
-const progressSaveState = ref<"idle" | "saving" | "saved" | "error">("idle");
 const readerBookDownloadBusy = ref(false);
 let progressRevision = 0;
 let readerLoadRevision = 0;
@@ -195,10 +194,6 @@ function setReaderMediaSleepTimer(minutes: number): void {
     clearReaderMediaSleepTimer();
     if (readerVisible.value && readingBook.value?.id === bookId && readingMediaChapter.value) await readerMediaBinding.pauseReaderMediaAndSave();
   }, minutes * 60_000);
-}
-
-function onReaderMediaSleepTimerChange(event: Event): void {
-  setReaderMediaSleepTimer(Number((event.target as HTMLSelectElement).value));
 }
 
 async function closeReader(discardProgress = false): Promise<void> {
@@ -349,7 +344,6 @@ readerMediaBinding = useReaderMediaBinding({
     ended: readerMediaEnded,
     error: readerMediaError,
     progressDirty: readerProgressDirty,
-    progressSaveState,
     qualityChoices: readerVideoQualityChoices,
     qualityIndex: readerVideoQualityIndex,
     getLoadRevision: () => readerLoadRevision,
@@ -474,7 +468,7 @@ readerChapterLoading = useReaderChapterLoading({
 readerNavigationActions = useReaderNavigationActions({
   comicScaleMode, readingPdfZoomOverride,
   readerPageIndex, readerPageCount, readerVisible, readerBusy, readerDirectoryOpen, readingImagePage, readingMediaChapter,
-  readingPdfPage, readingChapterIndex, readerProgressDirty, progressSaveState,
+  readingPdfPage, readingChapterIndex, readerProgressDirty,
   readerMediaRetrying, shelfBatchRecoveryRequired, notifyCurrentReading,
   getProgressRevision: () => progressRevision,
   advanceProgressRevision: () => { progressRevision += 1; },
@@ -567,7 +561,7 @@ function updateTtsSelection(): void { const selected = selectedReaderText(); if 
 
 const ttsError = computed(() => readerTts.ttsError.value || ttsSelectionError.value);
 const canMinimizeReader = computed(() => readerTts.ttsActive.value
-  || readingMediaChapter.value && !readingVideoChapter.value && !!readingContent.value);
+  || readingMediaChapter.value && !!readingContent.value);
 function minimizeReader(): void {
   if (!canMinimizeReader.value) return;
   readerControlsOpen.value = readerDirectoryOpen.value = readerTtsSettingsOpen.value = readerMenuOpen.value = false;
@@ -643,14 +637,14 @@ return {
   readingBook, readingChapterIndex, readingContent, readingPdfPage, activePdfZoom,
   readingContentType, readingImagePage, readingMediaChapter, readingVideoChapter, readerViewport, readerPageIndex, readerPageCount,
   readerControlsOpen, readerControlsMode, readerDirectoryOpen, readerMenuOpen, readerTtsSettingsOpen, readerOverlayOpen, readerGesturesBlocked,
-  readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty, progressSaveState,
+  readerFindQuery, readerFindMatches, readerFindIndex, readerBusy, readerProgressDirty,
   readerBookDownloadBusy, readerChapterError,
   readerMediaError, readerMediaRetrying, readerMediaPlaying, readerMediaBuffering, readerMediaEnded, readerMediaTimeMs, readerMediaDurationMs,
   readerVideoQualityChoices, readerVideoQualityIndex, readerMediaSleepTimerMinutes, comicScaleMode,
   readerChapterLoading, currentChapterTitle, readerChapterCount,
   onReaderSurfaceClick, moveReaderFind, handleReaderFindKeydown, isReaderMediaControlBlocked,
   setReaderMediaElement, toggleReaderMediaPlayback, seekReaderMedia, skipReaderMedia,
-  clearReaderMediaSleepTimer, setReaderMediaSleepTimer, onReaderMediaSleepTimerChange, closeReader, handleReaderResize,
+  clearReaderMediaSleepTimer, setReaderMediaSleepTimer, closeReader, handleReaderResize,
   loadReaderChapter, startReading, applyBookInformation, setReaderPage, turnPage, saveCurrentProgress,
   formatReaderMediaTime, openReaderDirectory,
   downloadReaderBook, openReaderControls, openHttpTtsSettings,

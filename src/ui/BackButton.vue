@@ -41,10 +41,5 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
   stroke-linecap: round;
   stroke-linejoin: round;
 }
-
-.back-button:disabled {
-  opacity: .45;
-  cursor: default;
-}
 }
 </style>

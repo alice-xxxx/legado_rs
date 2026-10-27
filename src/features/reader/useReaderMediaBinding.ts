@@ -17,7 +17,6 @@ type ReaderMediaBindingOptions = {
     ended: Ref<boolean>;
     error: Ref<string>;
     progressDirty: Ref<boolean>;
-    progressSaveState: Ref<"idle" | "saving" | "saved" | "error">;
     qualityChoices: Readonly<Ref<ChapterMediaSource[]>>;
     qualityIndex: Ref<number>;
     getLoadRevision: () => number;
@@ -127,7 +126,6 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     if (positionMs === options.reader.timeMs.value) return;
     options.reader.timeMs.value = positionMs;
     options.reader.progressDirty.value = true;
-    options.reader.progressSaveState.value = "idle";
     options.reader.incrementProgressRevision();
     if (scheduleSave) scheduleReaderMediaProgressSave(bindingRevision, loadRevision);
   }
@@ -207,13 +205,6 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
       options.reader.qualityIndex.value = previousIndex;
       options.reader.error.value = `切换视频清晰度失败：${options.actions.errorText(error)}`;
       options.actions.notify(options.reader.error.value, "error");
-    }
-  }
-
-  function onReaderVideoQualityChange(event: Event): void {
-    const select = event.currentTarget;
-    if (select && (select as HTMLElement).tagName.toLowerCase() === "select") {
-      selectReaderVideoQuality(Number((select as HTMLSelectElement).value));
     }
   }
 
@@ -354,7 +345,7 @@ export function useReaderMediaBinding(options: ReaderMediaBindingOptions) {
     flushReaderMediaProgress,
     getBindingRevision: () => mediaRevision,
     loadReaderMediaSource,
-    onReaderVideoQualityChange,
+    selectReaderVideoQuality,
     pauseReaderMediaAndSave,
   };
 }

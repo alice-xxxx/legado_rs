@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
+import { Popup as KPopup, ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 书籍展示信息编辑器：收集用户修改并调用应用层的封面选择能力。
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
@@ -200,7 +200,7 @@ function submit(): void {
 <template>
   <Teleport to="body">
     <section class="book-display-editor-backdrop" data-back-layer @click.self="requestClose">
-      <article class="book-display-editor" role="dialog" aria-modal="true" aria-labelledby="book-display-editor-title">
+      <KPopup opened :backdrop="false" class="book-display-editor z-[80] flex flex-col w-[min(980px,100vw)]! h-[min(92dvh,900px)]!" role="dialog" aria-modal="true" aria-labelledby="book-display-editor-title">
         <SubpageHeader class="book-display-editor-toolbar col-span-full row-start-1" title="编辑显示信息" :back-label="returnLabel" :back-disabled="coverPicking" @back="requestClose" >
 <template #actions><KButton rounded inline type="submit" form="book-display-editor-form" class="book-display-editor-save gap-2" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</KButton></template>
 </SubpageHeader>
@@ -215,14 +215,14 @@ function submit(): void {
               <label class="book-display-field">
                 <span>书名</span>
                 <div class="book-display-input-row">
-                  <input v-model="draft.title" autocomplete="off" :disabled="locked" @input="resetFields.title = false" />
+                  <KListInput component="div" autocomplete="off" :disabled="locked" :value="draft.title" @input="draft.title = ($event.target as HTMLInputElement).value; resetFields.title = false" />
                 </div>
               </label>
 
               <label class="book-display-field">
                 <span>作者</span>
                 <div class="book-display-input-row">
-                  <input v-model="draft.author" autocomplete="off" :disabled="locked" @input="resetFields.author = false" />
+                  <KListInput component="div" autocomplete="off" :disabled="locked" :value="draft.author" @input="draft.author = ($event.target as HTMLInputElement).value; resetFields.author = false" />
                 </div>
               </label>
             </div>
@@ -230,13 +230,13 @@ function submit(): void {
 
           <label class="book-display-field">
             <span>简介</span>
-            <textarea v-model="draft.intro" rows="5" :disabled="locked" @input="resetFields.intro = false"></textarea>
+            <KListInput component="div" :disabled="locked" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="draft.intro" @input="draft.intro = ($event.target as HTMLTextAreaElement).value; resetFields.intro = false" />
           </label>
 
           <label class="book-display-field">
             <span>封面地址</span>
             <div class="book-display-input-row">
-              <input v-model="draft.coverSrc" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" @input="resetFields.coverSrc = false; clearCoverPreview()" />
+              <KListInput component="div" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" :value="draft.coverSrc" @input="draft.coverSrc = ($event.target as HTMLInputElement).value; resetFields.coverSrc = false; clearCoverPreview()" />
               <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</KButton>
               <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</KButton>
             </div>
@@ -247,7 +247,7 @@ function submit(): void {
           <KButton rounded inline clear type="button" class="book-display-reset-all gap-2" :disabled="locked" @click="resetAll">全部恢复原值</KButton>
           <p v-if="locked" class="book-display-editor-error">恢复完成前不能继续保存。请重启应用后检查书架。</p>
         </form>
-      </article>
+      </KPopup>
       <div v-if="discardPromptOpen" class="book-display-discard-scrim" data-back-layer>
         <KDialog opened :backdrop="false" class="book-display-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="book-display-discard-title">放弃未保存的书籍信息？</h3></template>
@@ -262,30 +262,24 @@ function submit(): void {
 <style scoped>
 @layer components {
 .book-display-editor-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--app-scrim); }
-.book-display-editor { display: flex; flex-direction: column; width: min(700px, 100%); height: min(860px, 92dvh); overflow: hidden; border: 1px solid var(--app-line); border-radius: 14px; color: var(--app-text); background:var(--app-background); box-shadow: var(--app-shadow); }
-.book-display-editor-save { min-height: 36px; padding-inline: 12px; border-radius: 8px; color: var(--app-on-accent); background: var(--app-accent); font-size: var(--ui-font-body); cursor: pointer; }
+.book-display-editor { display: flex; flex-direction: column; overflow: hidden; color: var(--app-text); }
+.book-display-editor-save { min-height: 36px; padding-inline: 12px; }
 .book-display-editor-form { display: grid; align-content: start; gap: 24px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; }
 .book-display-editor-identity { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: start; gap: 20px; }
 .book-display-identity-fields { display: grid; gap: 16px; min-width: 0; }
 .book-display-field { display: grid; gap: 8px; min-width: 0; color: var(--app-muted); font-size: var(--ui-font-caption); }
-.book-display-field input,
-.book-display-field textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--app-line); border-radius: 8px; color: var(--app-text); background: var(--app-surface); font-size: var(--ui-font-body); line-height: 1.6; }
-.book-display-field input { min-height: 44px; }
-.book-display-field textarea { min-height: 160px; resize: vertical; }
-.book-display-field input:focus,
-.book-display-field textarea:focus { outline: 2px solid var(--app-accent); outline-offset: 1px; background: var(--app-surface); }
+.book-display-field .k-list-input { width: 100%; min-width: 0; }
 .book-display-field small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
 .book-display-input-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
-.book-display-input-row input { flex: 1 1 100%; }
+.book-display-input-row .k-list-input { flex: 1 1 100%; }
 .book-display-cover-preview { display: grid; place-items: center; width: 100px; height: 138px; overflow: hidden; border-radius: 8px; color: var(--app-muted); background: var(--app-panel-soft); font-size: var(--ui-font-caption); text-align: center; }
 .book-display-cover-preview img { width: 100%; height: 100%; object-fit: cover; }
 .book-display-cover-preview span { padding: 8px; overflow-wrap: anywhere; }
-.book-display-reset-all { justify-self: start; min-height: 44px; font-size: var(--ui-font-caption); font-weight: 400; }
+.book-display-reset-all { justify-self: start; min-height: 44px; }
 .book-display-editor-error { margin: 0; padding: 12px; border-radius: 8px; color: var(--app-danger); background: var(--app-danger-soft); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
 .book-display-discard-scrim { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 16px; background: var(--app-scrim); }
 @media (max-width: 600px) {
   .book-display-editor-backdrop { padding: 0; }
-  .book-display-editor { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
   .book-display-editor-form { gap: 20px; padding: 24px var(--ui-page-gutter) max(32px, var(--safe-bottom)); }
   .book-display-editor-identity { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; }
   .book-display-cover-preview { width: 80px; height: 112px; }

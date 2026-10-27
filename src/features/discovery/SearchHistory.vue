@@ -2,6 +2,7 @@
 import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
 import { computed, ref } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 import type { SearchHistoryEntry } from "../../api/types";
 
 const props = withDefaults(defineProps<{
@@ -34,10 +35,8 @@ function clearAll(): void {
   <section class="search-history" aria-label="搜索历史">
     <header class="search-history__row">
       <h2 class="search-history__label">搜索历史</h2>
-      <select v-model="sortMode" class="search-history__sort" aria-label="历史排序" :disabled="busy">
-        <option value="recent">最近</option>
-        <option value="popular">常用</option>
-      </select>
+      <SelectMenu v-model="sortMode" label="历史排序" :disabled="busy"
+        :options="[{ value: 'recent', label: '最近' }, { value: 'popular', label: '常用' }]" />
       <KButton rounded inline clear type="button" class="search-history__clear gap-2" :disabled="busy || !entries.length"
         @click="clearConfirmOpen = true">清空</KButton>
     </header>
@@ -78,7 +77,7 @@ function clearAll(): void {
   min-height: 40px;
   margin-bottom: 8px;
 }
-.search-history__sort, .search-history__clear {
+.search-history__clear {
   flex: none;
   color: var(--app-muted);
 }
@@ -104,19 +103,12 @@ function clearAll(): void {
   border-radius: 8px;
   background: var(--app-panel-softer);
 }
-.search-history button, .search-history select {
-  font: inherit;
-  cursor: pointer;
-}
 .search-history__query {
   min-width: 0;
   max-width: min(240px, 65vw);
   min-height: 36px;
   overflow: hidden;
   padding: 0 4px 0 12px;
-  border: 0;
-  color: var(--app-text);
-  background: transparent;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -127,29 +119,22 @@ function clearAll(): void {
   width: 32px;
   height: 36px;
   padding: 0;
-  border: 0;
-  border-radius: 5px;
-  color: var(--app-muted);
-  background: transparent;
 }
 .search-history__delete svg {
   width: 12px;
   height: 12px;
 }
-.search-history__delete:hover {
-  color: var(--app-danger);
-}
-.search-history__sort, .search-history__clear {
+.search-history__clear {
   min-height: 36px;
   padding: 0 4px;
   border: 0;
   background: transparent;
 }
-.search-history button:disabled, .search-history select:disabled {
+.search-history button:disabled {
   opacity: .5;
   cursor: not-allowed;
 }
-.search-history button:focus-visible, .search-history select:focus-visible {
+.search-history button:focus-visible {
   outline: 2px solid var(--app-accent);
   outline-offset: 2px;
 }
@@ -165,11 +150,6 @@ function clearAll(): void {
   place-items: center;
   padding: 16px;
   background: var(--app-scrim);
-}
-.search-history__confirm-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
 }
 }
 </style>

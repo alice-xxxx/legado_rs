@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton } from "konsta/vue";
+import { Preloader as KPreloader, Button as KButton } from "konsta/vue";
 defineOptions({ name: "HomePage" });
 
 /* 根据栏目配置加载发现内容，并复用搜索页的书目操作。 */
@@ -22,6 +22,7 @@ import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bo
 import router, { routeNames, settingsRouteNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 
 function openSearch(): void {
   void router.push({ name: routeNames.search });
@@ -91,6 +92,7 @@ const visibleResults = computed(() => gridResults.value.filter(
   (item) => activeType.value === "all" || contentType(item) === activeType.value,
 ));
 const gridLoading = computed(() => orderedSections.value.some((section) => sectionRequests.has(section.id)));
+const gridError = computed(() => loadError.value || orderedSections.value.flatMap(section => sectionResources.value[section.id]?.errors ?? []).map(error => error.message).join("；"));
 const pullRefreshThreshold = 72;
 const pullDistance = ref(0);
 const pullRefreshing = ref(false);
@@ -358,7 +360,6 @@ onBeforeUnmount(() => {
     <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
       @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
       <section class="home-discovery" :class="{ 'home-discovery-empty': !visibleResults.length }">
-        <h1 class="ui-page-title mb-5">发现</h1>
         <!-- 标签靠左，分类筛选和操作按钮靠右。 -->
         <div class="discover-filter-bar">
           <nav v-if="orderedTabs.length" class="home-tabs" aria-label="发现页面">
@@ -367,14 +368,8 @@ onBeforeUnmount(() => {
               @click="selectTab(tab.id)">{{ tab.title }}</KButton>
           </nav>
           <div class="discover-controls">
-            <label class="discover-type-picker">
-              <select v-model="activeType" aria-label="内容类型">
-                <option v-for="filter in typeFilters" :key="filter.id" :value="filter.id">
-                  {{ filter.title }}
-                </option>
-              </select>
-              <PrototypeIcon name="chevron-right" />
-            </label>
+            <SelectMenu id="discover-type-button" v-model="activeType" label="内容类型"
+              :options="typeFilters.map(filter => ({ value: filter.id, label: filter.title }))" />
             <KButton rounded inline clear class="discover-icon-button gap-2 size-11 p-0" type="button" aria-label="搜索" title="搜索" @click="openSearch">
               <PrototypeIcon name="search" />
             </KButton>
@@ -412,14 +407,17 @@ onBeforeUnmount(() => {
             </button>
           </article>
         </div>
-        <div v-else-if="gridLoading" class="discover-grid-state">
-          <span class="mini-loader"></span>
+        <div v-else-if="gridLoading" class="page-empty-state discover-grid-state" role="status">
+          <KPreloader />
           <span>正在从源加载发现内容…</span>
         </div>
-        <div v-else class="discover-grid-state">
-          {{ activeType !== 'all' && gridResults.length ? '暂无匹配内容' : '暂无发现内容' }}
+        <div v-else class="page-empty-state discover-grid-state">
+          <span class="empty-state-glyph"><PrototypeIcon :name="gridError ? 'refresh' : 'compass'" /></span>
+          <strong>{{ gridError ? '发现内容暂时无法加载' : activeType !== 'all' && gridResults.length ? '暂无匹配内容' : '发现你的下一本好书' }}</strong>
+          <p>{{ gridError || (orderedSections.length ? '试试其他类型，或刷新当前栏目。' : '添加内容来源并配置栏目，开始探索。') }}</p>
+          <KButton rounded inline @click="orderedSections.length ? refreshGrid() : manageHome()">{{ orderedSections.length ? '重新加载' : '配置发现栏目' }}</KButton>
         </div>
-        <p v-if="loadError" class="discover-grid-warning">{{ loadError }}</p>
+        <p v-if="gridError && visibleResults.length" class="status-notice is-error" role="alert">{{ gridError }}</p>
       </section>
     </main>
   </div>
@@ -443,14 +441,10 @@ onBeforeUnmount(() => {
 .discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
 .home-tabs { display:flex; min-width:0; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .home-tabs::-webkit-scrollbar { display:none; }
-.home-tabs button { flex:none; padding:5px 2px; border:0; background:transparent; color:var(--app-muted); cursor:pointer; font-size:var(--ui-font-body); }
+.home-tabs button { flex:none; padding:5px 2px; }
 .home-tabs button.active { color:var(--app-text); font-weight:600; }
 .discover-controls { display:flex; flex:none; align-items:center; gap:12px; }
-.discover-type-picker { position:relative; display:flex; align-items:center; gap:3px; color:var(--app-muted); }
-.discover-type-picker select { appearance:none; max-width:100px; padding:5px 0; border:0; outline:0; background:transparent; color:inherit; cursor:pointer; font:inherit; font-size:var(--ui-font-body); }
-.discover-type-picker svg { width:14px; height:14px; transform:rotate(90deg); pointer-events:none; }
-.discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; border:0; border-radius:8px; background:transparent; color:var(--app-muted); cursor:pointer; }
-.discover-icon-button:disabled { opacity:.5; cursor:default; }
+.discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; }
 .discover-icon-button svg { width:18px; height:18px; }
 .discovery-content-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:29px 24px; }
 .discovery-cover-card { min-width:0; }
@@ -460,10 +454,6 @@ onBeforeUnmount(() => {
 .discovery-cover-placeholder { position:absolute; inset:0; overflow:hidden; }
 .discovery-cover-placeholder::before { content:""; position:absolute; width:76%; height:72%; right:-28%; top:15%; border-radius:50%; background:#fff2; filter:blur(1px); }
 .discovery-cover-placeholder::after { content:""; position:absolute; left:-25%; right:-20%; bottom:-37%; height:65%; border-radius:50%; background:#0003; }
-.cover-tone-1 { background:linear-gradient(145deg,#84697e,#3d3248); }
-.cover-tone-2 { background:linear-gradient(145deg,#77999b,#31534f); }
-.cover-tone-3 { background:linear-gradient(145deg,#374b6a,#151e2d); }
-.cover-tone-4 { background:linear-gradient(145deg,#8b657d,#342232); }
 /* 封面卡片文字、加载/空状态和错误提示。 */
 .discovery-cover-copy { display:flex; flex-direction:column; min-width:0; padding:8px 1px 0; gap:3px; }
 .discovery-cover-copy strong { overflow:hidden; color:var(--app-text); font-size:var(--ui-font-body); white-space:nowrap; text-overflow:ellipsis; }
@@ -471,8 +461,6 @@ onBeforeUnmount(() => {
 .discovery-cover-copy>span { overflow:hidden; color:var(--app-subtle); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
 .discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; color:var(--app-muted); }
 .home-discovery-empty .discover-grid-state { flex:1; min-height:160px; text-align:center; }
-.discover-grid-warning { font-size:var(--ui-font-caption); color:var(--app-warning); overflow-wrap:anywhere; }
-.mini-loader { display:inline-block; width:16px; height:16px; border:2px solid var(--app-accent-soft); border-top-color:var(--app-accent); border-radius:50%; animation:home-spin .8s linear infinite; }
 @keyframes home-spin { to {transform:rotate(360deg)} }
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:29px 12px; } }
@@ -484,9 +472,7 @@ onBeforeUnmount(() => {
   .discovery-content-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 11px; }
   .discover-filter-bar { gap:8px; margin-bottom:16px; padding-bottom:10px; }
   .home-tabs { gap:8px; }
-  .home-tabs button { font-size:var(--ui-font-body); }
   .discover-controls { gap:5px; }
-  .discover-type-picker select { max-width:72px; font-size:var(--ui-font-body); }
   .discover-icon-button { width:28px; height:28px; }
 }
 }

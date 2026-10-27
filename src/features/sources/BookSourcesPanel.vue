@@ -88,8 +88,8 @@ const sourceCandidates = computed<SearchResultSource[]>(() => {
 .source-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .source-heading h2 { flex: none; margin: 0; color: var(--app-muted); font-size: var(--ui-font-caption); font-weight: 650; }
 .source-heading-actions { display: flex; align-items: center; gap: 6px; }
-button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: var(--ui-compact-control-height); padding: 0 10px; border: 1px solid var(--app-line); border-radius: var(--ui-radius); color: var(--app-accent-ink); background: var(--app-surface); font-size: var(--ui-font-caption); white-space: nowrap; cursor: pointer; }
-.source-heading-actions button { min-height: 28px; padding: 0 4px; border: 0; color: var(--app-muted); background: transparent; }
+button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: var(--ui-compact-control-height); padding: 0 10px; white-space: nowrap; }
+.source-heading-actions button { min-height: 28px; padding: 0 4px; }
 button .prototype-icon { width: 16px; height: 16px; }
 .source-candidates { border-top: 1px solid var(--app-line); }
 .source-candidate { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-height: 88px; padding: 12px 0; border-bottom: 1px solid var(--app-line); }
@@ -106,6 +106,6 @@ button .prototype-icon { width: 16px; height: 16px; }
 .source-latest { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .source-latency { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .source-actions { display: flex; }
-.source-actions button { min-width: 64px; border-color: transparent; background: var(--app-panel-soft); }
+.source-actions button { min-width: 64px; }
 }
 </style>

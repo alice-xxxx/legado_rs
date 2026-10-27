@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton, Glass as KGlass } from "konsta/vue";
+import { Searchbar as KSearchbar, ListInput as KListInput, Button as KButton, Glass as KGlass } from "konsta/vue";
 // PDF 阅读视图持有渲染任务并在卸载时释放，避免跨章节残留画布。
 import "core-js/actual/promise/with-resolvers.js";
 import { getDocument, GlobalWorkerOptions, PasswordResponses, type PDFDocumentLoadingTask, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
@@ -352,10 +352,11 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="stage" class="pdf-reader-stage">
-    <KGlass component="section" :highlight="false" v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel rounded-3xl">
+    <KGlass component="section" :highlight="false" v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
       <header><strong>搜索 PDF 文本</strong><KButton rounded inline clear class="gap-2" type="button" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></KButton></header>
       <label for="pdf-find-input">关键词</label>
-      <input id="pdf-find-input" v-model="findQuery" type="search" placeholder="搜索文档中的文字" autocomplete="off"/>
+      <KSearchbar input-id="pdf-find-input" class="m-0! w-full! p-0!" placeholder="搜索文档中的文字" :disable-button="false"
+        :value="findQuery" @input="findQuery = ($event.target as HTMLInputElement).value" @clear="findQuery = ''" />
       <p>{{ findSearching ? '正在扫描 PDF 页面…' : !findQuery.trim() ? '输入关键词查找包含它的页面' : `找到 ${findPageMatches.length} 页` }}</p>
       <p v-if="findError">{{ findError }}</p>
       <div v-if="findPageMatches.length" class="pdf-find-results">
@@ -388,11 +389,11 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="passwordPromptOpen" class="pdf-password-backdrop" data-back-layer>
-      <KGlass component="form" :highlight="false" class="pdf-password-dialog rounded-3xl" @submit.prevent="submitPassword">
+      <KGlass component="form" :highlight="false" class="pdf-password-dialog rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" @submit.prevent="submitPassword">
         <h2>输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
         <label for="pdf-reader-password">PDF 密码</label>
-        <input id="pdf-reader-password" v-model="passwordInput" type="password" autocomplete="off" />
+        <KListInput component="div" input-id="pdf-reader-password" type="password" autocomplete="off" :value="passwordInput" @input="passwordInput = ($event.target as HTMLInputElement).value" />
         <p v-if="passwordError" class="pdf-password-error">{{ passwordError }}</p>
         <div class="pdf-password-actions">
           <KButton rounded inline tonal type="button" class="gap-2" data-back-action @click="cancelPassword">取消阅读</KButton>
@@ -416,6 +417,10 @@ onBeforeUnmount(() => {
 }
 .pdf-canvas-scroll canvas { display: block; flex: none; background: #fff; }
 .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 82px; }
+@media (max-width: 640px) {
+  .pdf-thumbnail-rail { display: none; }
+  .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 0; }
+}
 
 .pdf-thumbnail-rail {
   position: absolute; z-index: 3;
@@ -425,7 +430,7 @@ onBeforeUnmount(() => {
 }
 .pdf-thumb-window-control { min-height: 32px; flex: none; }
 .pdf-thumb-list { display: flex; min-height: 0; flex: 1; flex-direction: column; align-items: center; gap: 8px; overflow-y: auto; }
-.pdf-thumb-list button { display: grid; width: 100%; justify-items: center; gap: 3px; padding: 5px 2px; border: 1px solid transparent; }
+.pdf-thumb-list button { display: grid; width: 100%; justify-items: center; gap: 3px; padding: 5px 2px; }
 .pdf-thumb-list img { display: block; max-width: 100%; max-height: 90px; object-fit: contain; }
 
 .pdf-reader-status { position: absolute; z-index: 2; inset: 0; display: grid; place-content: center; gap: 12px; text-align: center; }
@@ -438,9 +443,9 @@ onBeforeUnmount(() => {
   place-items: center; padding: 16px;
   background: rgb(0 0 0 / 24%);
 }
-.pdf-password-dialog { display: grid; width: min(380px, 100%); gap: 10px; padding: 22px; background: var(--app-surface); }
+.pdf-password-dialog { display: grid; width: min(380px, 100%); gap: 10px; padding: 22px; }
 .pdf-password-dialog h2, .pdf-password-dialog p { margin: 0; }
-.pdf-password-dialog input { width: 100%; min-height: 44px; box-sizing: border-box; }
+.pdf-password-dialog .k-list-input { width: 100%; box-sizing: border-box; }
 .pdf-password-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 .pdf-find-panel {
@@ -449,13 +454,11 @@ onBeforeUnmount(() => {
   display: grid; width: min(310px, calc(100% - 72px));
   max-height: calc(100% - 70px - var(--safe-top) - var(--safe-bottom)); gap: 8px;
   overflow: auto; padding: 13px;
-  background: var(--app-surface);
 }
 .pdf-find-panel header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-.pdf-find-panel input { width: 100%; min-height: 39px; box-sizing: border-box; }
 .pdf-find-panel p { margin: 0; }
 .pdf-find-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.pdf-find-results button { min-height: 36px; border: 1px solid transparent; }
+.pdf-find-results button { min-height: 36px; }
 
 @media (max-width: 640px) {
   .pdf-thumbnail-rail { width: 54px; }

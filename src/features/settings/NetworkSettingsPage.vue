@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { ListInput as KListInput } from "konsta/vue";
 import { computed } from "vue";
 import { settings } from "./settingsStore";
 import { backupBusy } from "./backupState";
@@ -24,17 +25,12 @@ function changeTimeout(seconds: number): void {
             <label for="source-http-timeout">请求超时</label>
             <small>连接或读取超时后结束请求</small>
           </div>
-          <select
-            id="source-http-timeout"
-            :value="settings.sourceHttpTimeoutSeconds"
-            :disabled="controlsDisabled"
-            @change="changeTimeout(Number(($event.target as HTMLSelectElement).value))"
-          >
+          <KListInput component="div" input-id="source-http-timeout" :value="settings.sourceHttpTimeoutSeconds" :disabled="controlsDisabled" type="select" @change="changeTimeout(Number(($event.target as HTMLSelectElement).value))">
             <option :value="15">15 秒</option>
             <option :value="30">30 秒</option>
             <option :value="60">60 秒</option>
             <option :value="120">120 秒</option>
-          </select>
+          </KListInput>
         </div>
     </div>
   </section>
@@ -66,20 +62,5 @@ function changeTimeout(seconds: number): void {
 .setting-control > div { display: grid; gap: var(--ui-space-1); min-width: 0; }
 .setting-control label { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 500; }
 .setting-control small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.5; }
-.setting-control select {
-  flex: none;
-  width: 100px;
-  min-height: var(--ui-control-height);
-  padding: 0 var(--ui-space-2);
-  border: 1px solid var(--app-line);
-  border-radius: var(--ui-radius);
-  background: var(--app-surface);
-  color: var(--app-text);
-  font-size: var(--ui-font-body);
-}
-.setting-control select:focus-visible {
-  outline: 2px solid var(--app-accent);
-  outline-offset: 2px;
-}
 }
 </style>

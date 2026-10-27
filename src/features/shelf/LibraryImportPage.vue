@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import SubpageHeader from "../../ui/SubpageHeader.vue";
-import { Button as KButton } from "konsta/vue";
+import { ListInput as KListInput, Button as KButton } from "konsta/vue";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import { shelfBooks as shelf } from "./shelfBooks";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -138,10 +138,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
         <h2 id="library-import-link-title">通过链接导入</h2>
         <p>支持源、RSS、替换规则、TXT 目录规则和 HTTP TTS 配置。</p>
         <form class="library-import-form" @submit.prevent="parseLink">
-          <input v-model="linkInput" type="text" inputmode="url" autocomplete="url"
-            placeholder="粘贴链接或 JSON"
-            :disabled="actionsBlocked"
-            @input="linkError = ''"/>
+          <KListInput component="div" type="text" inputmode="url" autocomplete="url" placeholder="粘贴链接或 JSON" :disabled="actionsBlocked" :value="linkInput" @input="linkInput = ($event.target as HTMLInputElement).value; linkError = ''" />
           <KButton rounded inline type="submit" class="library-import-primary gap-2" :disabled="actionsBlocked || !linkInput.trim()">识别</KButton>
         </form>
         <p v-if="linkError" class="library-import-warning">{{ linkError }}</p>
@@ -176,7 +173,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 .library-import-page{width:100%;min-height:100%;color:var(--app-text)}
 .library-import-body{width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
 .library-import-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
-.library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface);cursor:pointer;text-align:left}
+.library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;text-align:left}
 .library-import-grid button strong{font-size:var(--ui-font-body)}
 .library-import-grid button small{color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.4}
 .library-import-file-icon{display:grid;place-items:center;width:38px;height:38px;margin-bottom:auto;border-radius:11px;background:var(--app-accent-soft);color:var(--app-accent-ink)}
@@ -184,17 +181,17 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 .library-import-section{margin-top:28px;padding-top:20px;border-top:1px solid var(--app-line)}
 .library-import-section h2{margin:0;font-size:var(--ui-font-body)}
 .library-import-form{display:flex;gap:8px;margin-top:12px}
-.library-import-form input{flex:1;min-width:0;min-height:39px;padding:0 12px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface);font-size:var(--ui-font-body)}
-.library-import-primary{min-height:39px;padding:0 18px;border:0;border-radius:10px;background:var(--app-accent);color:var(--app-on-accent);font-size:var(--ui-font-caption);font-weight:700;cursor:pointer}
-.library-import-status,.library-import-warning{font-size:var(--ui-font-caption);line-height:1.6}
+.library-import-form .k-list-input{flex:1;min-width:0}
+.library-import-primary{min-height:39px;padding:0 18px}
+.library-import-status, .library-import-warning{font-size:var(--ui-font-caption);line-height:1.6}
 .library-import-warning{color:var(--app-danger)}
-.library-import-retry{margin-left:8px;padding:2px 7px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;font-size:var(--ui-font-caption);cursor:pointer}
+.library-import-retry{margin-left:8px;padding:2px 7px}
 .library-import-recent-list{margin-top:13px}
 .library-import-recent-list article{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:center;min-height:62px;border-bottom:1px solid var(--app-line)}
 .library-import-recent-detail{display:flex;flex-direction:column;gap:5px;min-width:0}
 .library-import-recent-detail strong{font-size:var(--ui-font-caption);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .library-import-recent-detail small{font-size:var(--ui-font-caption);color:var(--app-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.library-import-recent-list article>button{padding:9px 12px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
+.library-import-recent-list article>button{padding:9px 12px}
 .library-import-empty{padding:19px 0;color:var(--app-subtle);font-size:var(--ui-font-caption)}
 @media(max-width:640px){
 .library-import-body{width:100%;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}

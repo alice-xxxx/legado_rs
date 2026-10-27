@@ -7,12 +7,13 @@ const props = defineProps<{
   title: string;
   subtitle: string;
   status: string;
-  icon: "tts" | "audio";
+  icon: "tts" | "audio" | "video";
   paused: boolean;
   preparing: boolean;
   disabled: boolean;
   menuOpen: boolean;
   global: boolean;
+  navigation?: boolean;
   error: string;
 }>();
 defineEmits<{ expand: []; toggle: []; stop: [] }>();
@@ -41,7 +42,7 @@ function onFocusOut(event: FocusEvent): void {
 </script>
 
 <template>
-  <KGlass class="playback-bar" :class="{ 'is-hidden': !visible, 'above-menu': menuOpen, global }"
+  <KGlass class="playback-bar rounded-2xl material:bg-md-light-surface-3 material:dark:bg-md-dark-surface-3" :class="{ 'is-hidden': !visible, 'above-menu': menuOpen, 'with-navigation': navigation, global }"
     :inert="!visible" :aria-hidden="!visible" role="group" aria-label="播放控制"
     @click.stop @pointerdown.stop @touchstart.stop @touchmove.stop @touchend.stop @wheel.stop
     @pointerenter="hovered = true" @pointerleave="hovered = false"
@@ -82,13 +83,10 @@ function onFocusOut(event: FocusEvent): void {
   max-width: 440px;
   margin-inline: auto;
   padding: 6px;
-  border-radius: 16px;
   color: var(--app-text);
-  box-shadow: var(--app-shadow);
   transition: bottom .25s ease, opacity .2s ease;
 }
 .playback-bar.above-menu { bottom: calc(var(--ui-nav-height) + var(--safe-bottom) + 12px); }
-:global([data-ui-style="material"]) .playback-bar { background: var(--app-panel-softer); }
 .playback-bar.global { --reader-chrome-text: var(--app-muted); --reader-accent: var(--app-accent); }
 .playback-bar { pointer-events: auto; }
 .playback-bar.is-hidden { opacity: 0; pointer-events: none; }
@@ -101,9 +99,8 @@ function onFocusOut(event: FocusEvent): void {
 .playback-caption { display: flex; min-width: 0; gap: 8px; color: var(--app-muted); font-size: var(--ui-font-caption); }
 .playback-status { flex: none; }
 .playback-status.error { flex: initial; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--app-danger); }
-.playback-bar .playback-toggle:disabled { cursor: wait; }
 @media (max-width: 860px) {
-  .playback-bar.global { bottom: calc(var(--ui-nav-height) + var(--safe-bottom) + 12px); }
+  .playback-bar.global.with-navigation { bottom: calc(var(--ui-nav-height) + var(--safe-bottom) + 12px); }
 }
 @media (prefers-reduced-motion: reduce) {
   .playback-bar { transition: none; }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 完整书签直接保存在全局 history 中。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -292,9 +292,9 @@ onBeforeUnmount(() => {
           {{ bookmarkManagementOpen ? '完成' : '管理' }}
         </KButton>
       </div>
-      <label v-if="bookmarkSearchOpen" class="record-search"><PrototypeIcon name="search"/>
-        <input v-model="bookmarkQuery" type="search" placeholder="搜索书名、章节或备注" :disabled="mutationBlocked || bookmarkDeleteBusy"/>
-      </label>
+      <KSearchbar v-if="bookmarkSearchOpen" class="record-search p-0!" aria-label="搜索书签" placeholder="搜索书名、章节或备注"
+        :inert="mutationBlocked || bookmarkDeleteBusy" :disable-button="false" :value="bookmarkQuery"
+        @input="bookmarkQuery = ($event.target as HTMLInputElement).value" @clear="bookmarkQuery = ''" />
       <div v-if="bookmarks.length && bookmarkManagementOpen" class="bookmark-operations">
         <label class="bookmark-select-all"><KCheckbox component="span" :checked="allVisibleBookmarksSelected"
           :disabled="mutationBlocked || bookmarkDeleteBusy || !visibleBookmarks.length" @change="toggleVisibleBookmarkSelection" />选择当前结果</label>
@@ -348,16 +348,10 @@ onBeforeUnmount(() => {
 .my-records--bookmarks{box-sizing:border-box;width:min(var(--app-content-width),100%);margin:0 auto;padding:24px var(--ui-page-gutter) 32px;color:var(--app-text)}
 .bookmarks-toolbar{display:flex;align-items:center;justify-content:space-between;min-height:30px;margin:0 0 14px}
 .bookmark-total{margin-right:auto;font-size:var(--ui-font-caption);color:var(--app-subtle)}
-.record-action{padding:7px 9px;border:0;border-radius:8px;background:transparent;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
-.record-action:disabled{opacity:.5;cursor:default}
-.bookmarks-toolbar .record-action{min-height:30px;font-size:var(--ui-font-body)}
-.record-delete{color:var(--app-danger)}
-.record-search{display:flex;align-items:center;gap:9px;box-sizing:border-box;width:min(420px,100%);height:40px;margin:0 0 13px;padding:0 11px;border:1px solid var(--app-line);border-radius:10px;background:var(--app-surface)}
-.record-search>.prototype-icon{width:18px;height:18px;color:var(--app-subtle)}
-.record-search input{flex:1;min-width:0;border:0;outline:0;color:var(--app-text);background:transparent;font-size:var(--ui-font-body)}
+.record-action{padding:7px 9px}
+.bookmarks-toolbar .record-action{min-height:30px}
+.record-search{width:min(420px,100%);margin:0 0 13px}
 .bookmark-operations{display:flex;align-items:center;justify-content:flex-start;flex-wrap:wrap;gap:10px;margin-bottom:14px;padding-bottom:11px;border-bottom:1px solid var(--app-line);font-size:var(--ui-font-caption);color:var(--app-subtle)}
-.bookmark-select-all{display:flex;align-items:center;gap:8px}
-.bookmark-operations input,.bookmark-select{width:17px;height:17px;accent-color:var(--app-accent)}
 .bookmark-groups{display:grid;gap:14px}
 .bookmark-group{overflow:hidden;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface)}
 .bookmark-group>header{box-sizing:border-box;display:flex;align-items:center;gap:10px;min-height:66px;padding:10px 12px;border-bottom:1px solid var(--app-line)}
@@ -378,13 +372,12 @@ onBeforeUnmount(() => {
 .bookmark-target strong{font-size:var(--ui-font-body);color:var(--app-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bookmark-target small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .bookmark-target>.prototype-icon{grid-column:3;grid-row:1;width:16px;height:16px;color:var(--app-subtle)}
-.bookmark-select{flex:none;width:15px;height:15px}
-.bookmark-entry>.record-action{flex:none;font-size:var(--ui-font-body)}
+.bookmark-entry>.record-action{flex:none}
 .record-feedback{font-size:var(--ui-font-caption);color:var(--app-accent)}
 .record-state{display:flex;align-items:center;justify-content:center;min-height:105px;padding:20px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);text-align:center}
-.record-load-more{display:block;margin:18px auto 9px;padding:10px 16px;border:1px solid var(--app-accent-soft);border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent);font-size:var(--ui-font-caption);cursor:pointer}
+.record-load-more{display:block;margin:18px auto 9px;padding:10px 16px}
 .bookmark-confirm-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:14px;background:var(--app-scrim)}
-.record-icon-button{display:grid;place-items:center;width:35px;height:35px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer}
+.record-icon-button{display:grid;place-items:center;width:35px;height:35px}
 .record-icon-button svg{width:19px;height:19px}
 @media(max-width:660px){
   .my-records--bookmarks{padding:24px var(--ui-page-gutter) 32px}

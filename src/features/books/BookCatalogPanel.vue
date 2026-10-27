@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton } from "konsta/vue";
+import { Searchbar as KSearchbar, Button as KButton } from "konsta/vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { BookResource, ChapterResource } from "../../api/types";
 import { useVirtualList } from "../../ui/useVirtualList";
@@ -40,11 +40,11 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 <template>
   <section class="book-catalog-view">
     <div class="catalog-tools">
-      <label class="catalog-search">
-        <PrototypeIcon name="search" aria-hidden="true" />
-        <input v-model="query" type="search" :placeholder="searchPlaceholder" :aria-label="searchPlaceholder" />
-        <KButton rounded inline clear class="gap-2" v-if="query" type="button" aria-label="清空目录搜索" @click="query = ''"><PrototypeIcon name="close" /></KButton>
-      </label>
+      <div class="min-w-0">
+        <label class="sr-only" for="catalog-query">{{ searchPlaceholder }}</label>
+        <KSearchbar input-id="catalog-query" class="m-0! w-full! p-0!" :placeholder="searchPlaceholder" :value="query"
+          :disable-button="false" @input="query = ($event.target as HTMLInputElement).value" @clear="query = ''" />
+      </div>
       <div class="catalog-tools-actions">
         <KButton rounded inline clear class="gap-2" type="button" title="定位当前" aria-label="定位当前" :disabled="activeIndex === undefined" @click="locateCurrent"><PrototypeIcon name="tune" /><span>定位当前</span></KButton>
         <KButton rounded inline clear class="gap-2" type="button" :title="descending ? '切换为正序' : '切换为倒序'" :aria-label="descending ? '切换为正序' : '切换为倒序'" :aria-pressed="descending" @click="descending = !descending"><PrototypeIcon name="filter" /><span>{{ descending ? '倒序' : '正序' }}</span></KButton>
@@ -55,11 +55,11 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
       <div :ref="windowed.list" class="catalog-list">
         <div aria-hidden="true" :style="{ height: `${range.top}px` }"></div>
         <article v-for="chapter in visibleItems" :key="chapter.id" class="catalog-row-wrap" :class="{ volume: chapter.volume, 'can-replace': canReplace }">
-          <button type="button" class="catalog-row" :data-chapter-index="chapter.index" :disabled="busy || locked || chapter.volume" :aria-current="chapter.index === activeIndex ? 'true' : undefined" @click="emit('select', chapter.index)">
+          <KButton inline rounded :tonal="chapter.index === activeIndex" :clear="chapter.index !== activeIndex" type="button" class="catalog-row h-full! justify-start! text-start! text-current" :data-chapter-index="chapter.index" :disabled="busy || locked || chapter.volume" :aria-current="chapter.index === activeIndex ? 'true' : undefined" @click="emit('select', chapter.index)">
             <strong>{{ chapter.title }}</strong>
             <span v-if="chapter.index === activeIndex" class="catalog-current-label">当前</span>
             <span v-if="!chapter.volume && !chapter.resource && !chapter.pages?.length && !chapter.media" class="catalog-uncached" title="未缓存" aria-label="未缓存"><PrototypeIcon name="cloud" /></span>
-          </button>
+          </KButton>
           <KButton rounded inline clear v-if="canReplace && !chapter.volume" type="button" class="catalog-replace-action gap-2" :disabled="busy || locked" :aria-label="`更换《${chapter.title}》的章节来源`" title="更换章节来源" @click="emit('replace', chapter)"><PrototypeIcon name="source-switch" /></KButton>
         </article>
         <div aria-hidden="true" :style="{ height: `${range.bottom}px` }"></div>
@@ -74,15 +74,8 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 @layer components {
 .book-catalog-view { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; color: var(--app-text); background: var(--app-background); }
 .catalog-tools { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--app-line); }
-.catalog-search { display: flex; align-items: center; gap: 6px; min-width: 0; height: 34px; padding-inline: 8px 4px; border: 1px solid var(--app-line); border-radius: var(--ui-radius); color: var(--app-muted); background: var(--app-surface); }
-.catalog-search > .prototype-icon { width: 18px; height: 18px; }
-.catalog-search input { flex: 1; width: 0; min-width: 0; padding: 0; border: 0; outline: 0; color: var(--app-text); background: transparent; font-size: var(--ui-font-body); }
-.catalog-search input::-webkit-search-cancel-button { appearance: none; }
-.catalog-search:focus-within { border-color: var(--app-accent); background: var(--app-surface); }
-.catalog-search button { display: grid; flex: none; place-items: center; width: 32px; height: 32px; color: var(--app-muted); }
-.catalog-search button .prototype-icon { width: 16px; height: 16px; }
 .catalog-tools-actions { display: flex; gap: 4px; }
-.catalog-tools-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding-inline: 8px; border-radius: var(--ui-radius); color: var(--app-muted); background: transparent; font-size: var(--ui-font-caption); white-space: nowrap; }
+.catalog-tools-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding-inline: 8px; white-space: nowrap; }
 .catalog-tools-actions .prototype-icon { width: 16px; height: 16px; }
 .catalog-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .catalog-row-wrap { display: grid; position: relative; grid-template-columns: minmax(0, 1fr); height: 56px; border-bottom: 1px solid var(--app-line); }
@@ -93,9 +86,8 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 .catalog-current-label { flex: none; color: var(--app-muted); font-size: var(--ui-font-caption); }
 .catalog-uncached { display: grid; flex: none; place-items: center; color: var(--app-muted); }
 .catalog-uncached .prototype-icon { width: 16px; height: 16px; }
-.catalog-replace-action { display: grid; align-self: center; place-items: center; width: 40px; height: 44px; border-radius: 8px; color: var(--app-muted); }
+.catalog-replace-action { display: grid; align-self: center; place-items: center; width: 40px; height: 44px; }
 .catalog-replace-action .prototype-icon { width: 18px; height: 18px; }
-button { cursor: pointer; }
 button:disabled { cursor: default; }
 .catalog-row:focus-visible { outline-offset: -2px; }
 @media (max-width: 680px) {

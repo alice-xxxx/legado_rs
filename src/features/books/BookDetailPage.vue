@@ -666,46 +666,11 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   background: var(--app-background);
 }
 
-.book-detail-tabs {
-  display: flex;
-  justify-self: center;
-  align-self: stretch;
-  gap: 24px;
-}
-
-.book-detail-tabs button {
-  position: relative;
-  min-width: 48px;
-  padding-inline: 6px;
-  color: var(--app-muted);
-  font-size: var(--ui-font-body);
-  cursor: pointer;
-}
-
-.book-detail-tabs button.active {
-  color: var(--app-text);
-  font-weight: 650;
-}
-
-.book-detail-tabs button.active::after {
-  content: "";
-  position: absolute;
-  right: 6px;
-  bottom: -1px;
-  left: 6px;
-  height: 3px;
-  border-radius: 3px;
-  background: var(--app-accent);
-}
-
 .book-detail-icon-button {
   display: grid;
   place-items: center;
   width: 44px;
   height: 44px;
-  border-radius: 10px;
-  color: var(--app-muted);
-  cursor: pointer;
 }
 
 .book-detail-menu-wrap {
@@ -718,11 +683,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   gap: 10px;
   min-height: 44px;
   padding: 8px 10px;
-  border-radius: 8px;
-  color: var(--app-text);
-  font-size: var(--ui-font-body);
   text-align: left;
-  cursor: pointer;
 }
 
 .book-detail-menu-item :deep(svg) {
@@ -774,8 +735,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   row-gap: 16px;
 }
 
-.detail-hero>img,
-.detail-cover-fallback {
+.detail-hero>img, .detail-cover-fallback {
   display: grid;
   grid-row: 1 / 3;
   width: 112px;
@@ -808,8 +768,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   overflow-wrap: anywhere;
 }
 
-.detail-author,
-.detail-source-name {
+.detail-author, .detail-source-name {
   margin: 0;
   color: var(--app-muted);
   font-size: var(--ui-font-body);
@@ -963,22 +922,13 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 
 @media (max-width: 600px) {
 
-  .book-detail-tabs {
-    gap: 12px;
-  }
-
-  .book-detail-tabs button {
-    min-width: 44px;
-  }
-
   .detail-hero {
     grid-template-columns: 88px minmax(0, 1fr);
     column-gap: 16px;
     row-gap: 12px;
   }
 
-  .detail-hero>img,
-  .detail-cover-fallback {
+  .detail-hero>img, .detail-cover-fallback {
     width: 88px;
     height: 118px;
   }

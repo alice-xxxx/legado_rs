@@ -15,7 +15,7 @@ const selected = computed({ get: () => props.selectedKeys, set: keys => emit("up
 
 <template>
   <section v-if="open" class="modal-backdrop" @click.self="!busy && emit('cancel')" @keydown.esc="!busy && emit('cancel')">
-    <KGlass component="article" :highlight="false" class="app-modal deep-link-import" role="dialog" aria-modal="true" aria-labelledby="deep-link-import-title">
+    <KGlass component="article" :highlight="false" class="app-modal deep-link-import material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" role="dialog" aria-modal="true" aria-labelledby="deep-link-import-title">
       <header>
         <h2 id="deep-link-import-title">{{ title }}</h2>
         <KButton rounded inline clear class="size-11 p-0 gap-2" :disabled="busy" data-back-action aria-label="关闭" @click="emit('cancel')"><PrototypeIcon name="close" /></KButton>
@@ -49,7 +49,7 @@ const selected = computed({ get: () => props.selectedKeys, set: keys => emit("up
 <style scoped>
 @layer components {
 .deep-link-import{display:flex;flex-direction:column;width:min(560px,100%);max-height:80dvh;padding:0;overflow:hidden}
-.deep-link-import header,.deep-link-import footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:20px 24px}
+.deep-link-import header, .deep-link-import footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex:none;padding:20px 24px}
 .deep-link-import h2{margin:0;font-size:var(--ui-font-heading)}
 .deep-link-import p{padding:0 24px}
 .deep-link-import-list{min-height:0;overflow-y:auto;padding:0 24px}

@@ -6,7 +6,7 @@ export const appThemes: ReadonlyArray<readonly [AppTheme, string]> = [
   ["light", "白天"], ["dark", "夜间"], ["system", "跟随系统"],
 ];
 export const uiStyles: ReadonlyArray<readonly [UiStyle, string]> = [
-  ["material", "Material"], ["ios", "iOS 玻璃"],
+  ["material", "Material"], ["ios", "iOS"],
 ];
 export const readingThemes: ReadonlyArray<readonly [ReadingTheme, string]> = [
   ["white", "纯白"], ["paper", "纸张"], ["sepia", "护眼"], ["dark", "深色"],

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton, Glass as KGlass } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // All pages share the rule document; this form owns only its edit draft.
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -171,7 +171,7 @@ function requestCloseEditor(): void {
 const actionsMenuOpen = ref(false);
 const addMenuOpen = ref(false);
 const filterPanelOpen = ref(false);
-const filterMenuPosition = ref({ top: 0, left: 0 });
+const filterMenuTarget = ref<HTMLElement>();
 const editorSaveError = ref("");
 const openRuleMenuId = ref<string | null>(null);
 // The rules arrive asynchronously. Open the first editable rule once when
@@ -428,15 +428,7 @@ function toggleFilterPanel(event: MouseEvent): void {
   openRuleMenuId.value = null;
   const target = event.currentTarget;
   if (!(target instanceof HTMLElement)) return;
-  const rect = target.getBoundingClientRect();
-  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-  const width = 170;
-  const height = 114;
-  const left = Math.max(8, Math.min(rect.right - width, viewportWidth - width - 8));
-  const below = rect.bottom + 5;
-  const preferredTop = window.innerHeight - below >= height + 8 ? below : rect.top - height - 5;
-  const top = Math.max(8, Math.min(preferredTop, window.innerHeight - height - 8));
-  filterMenuPosition.value = { top, left };
+  filterMenuTarget.value = target;
   filterPanelOpen.value = true;
 }
 
@@ -477,17 +469,17 @@ function toggleFilterPanel(event: MouseEvent): void {
           @toggle-actions="actionsMenuOpen = !actionsMenuOpen; addMenuOpen = false; filterPanelOpen = false; openRuleMenuId = null"
       >
         <template #actions-menu>
-          <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="replacement-menu rounded-2xl">
+          <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="replacement-menu rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
             <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="busy" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
           </KGlass>
         </template>
         <template #filter-menu>
           <Teleport to="body">
-            <KGlass component="div" :highlight="false" v-if="filterPanelOpen" class="replacement-filter-panel rounded-2xl" :style="{ top: filterMenuPosition.top + 'px', left: filterMenuPosition.left + 'px' }">
+            <KPopover opened :backdrop="false" v-if="filterPanelOpen" class="replacement-filter-panel w-60 max-w-[calc(100vw-32px)]" :target="filterMenuTarget"><div class="grid gap-1 p-2">
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'all'; filterPanelOpen = false">全部规则</KButton>
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'enabled'; filterPanelOpen = false">仅启用</KButton>
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'disabled'; filterPanelOpen = false">仅停用</KButton>
-            </KGlass>
+            </div></KPopover>
           </Teleport>
         </template>
       </ManagedListToolbar>
@@ -536,17 +528,17 @@ function toggleFilterPanel(event: MouseEvent): void {
         <section class="replacement-editor-section">
           <header><strong>规则</strong></header>
           <div class="replacement-editor-grid">
-            <label class="replacement-field"><span>名称</span><input v-model="draft.name" maxlength="160" autocomplete="off" :disabled="busy" placeholder="规则名称"/></label>
-            <label class="replacement-field"><span>作用范围</span><select v-model="draft.scope" :disabled="busy"><option v-for="scope in availableScopes" :key="scope.value" :value="scope.value">{{ scope.label }}</option></select></label>
+            <label class="replacement-field"><span>名称</span><KListInput component="div" maxlength="160" autocomplete="off" :disabled="busy" placeholder="规则名称" :value="draft.name" @input="draft.name = ($event.target as HTMLInputElement).value" /></label>
+            <label class="replacement-field"><span>作用范围</span><KListInput component="div" :disabled="busy" type="select" :value="draft.scope" @change="draft.scope = ($event.target as HTMLSelectElement).value"><option v-for="scope in availableScopes" :key="scope.value" :value="scope.value">{{ scope.label }}</option></KListInput></label>
           </div>
-          <label class="replacement-field"><span>查找 / 正则</span><textarea v-model="draft.pattern" rows="4" spellcheck="false" :disabled="busy" placeholder="输入要查找的文字或正则表达式"/></label>
-          <label class="replacement-field"><span>替换为</span><textarea v-model="draft.replacement" rows="4" spellcheck="false" :disabled="busy" placeholder="留空表示删除匹配内容"/></label>
+          <label class="replacement-field"><span>查找 / 正则</span><KListInput component="div" spellcheck="false" :disabled="busy" placeholder="输入要查找的文字或正则表达式" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.pattern" @input="draft.pattern = ($event.target as HTMLTextAreaElement).value" /></label>
+          <label class="replacement-field"><span>替换为</span><KListInput component="div" spellcheck="false" :disabled="busy" placeholder="留空表示删除匹配内容" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.replacement" @input="draft.replacement = ($event.target as HTMLTextAreaElement).value" /></label>
           <div class="replacement-editor-options"><label><KToggle component="span" :checked="!!draft.isRegex" @change="draft.isRegex = ($event.target as HTMLInputElement).checked" :disabled="busy" /> 使用正则表达式</label></div>
           <p v-if="draft.enabled && !draft.pattern.trim()" class="replacement-validation">填写匹配内容后才能启用规则。</p>
         </section>
         <section class="replacement-editor-section">
           <header><strong>测试</strong></header>
-          <label class="replacement-field"><span>输入文本</span><textarea v-model="sampleText" rows="3" spellcheck="false" placeholder="输入一段正文用于测试"/></label>
+          <label class="replacement-field"><span>输入文本</span><KListInput component="div" spellcheck="false" placeholder="输入一段正文用于测试" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '72px' }" :value="sampleText" @input="sampleText = ($event.target as HTMLTextAreaElement).value" /></label>
           <div class="replacement-test-result">
             <template v-if="samplePreview.error">预览失败：{{ samplePreview.error }}</template>
             <template v-else-if="sampleText && draft.pattern">{{ samplePreview.output || '（空文本：匹配内容已全部删除）' }}</template>
@@ -570,15 +562,11 @@ function toggleFilterPanel(event: MouseEvent): void {
     <div v-else class="hidden min-[861px]:grid place-content-center text-[var(--app-muted)]">选择左侧规则进行编辑，或添加新规则</div>
     <div v-if="replacementImportOpen" class="replacement-import-scrim" data-back-layer
       @click.self="!replacementImportBusy && replacementRulesFeature.cancelReplacementRulesUrlImport()">
-      <section class="replacement-import-dialog">
+      <KDialog opened :backdrop="false" class="replacement-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
         <h3 id="replacement-import-title">从网络链接导入</h3>
         <form class="replacement-import-url-form" @submit.prevent="void replacementRulesFeature.importReplacementRulesByUrl()">
           <label for="replacement-import-url">替换与净化规则 JSON 链接</label>
-          <input id="replacement-import-url" v-model="replacementImportUrl" type="url" required
-            inputmode="url" autocomplete="url" maxlength="4096"
-            placeholder="https://example.com/replacement-rules.json"
-            :disabled="replacementImportBusy"
-            @input="replacementImportError = ''" />
+          <KListInput component="div" input-id="replacement-import-url" type="url" required inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/replacement-rules.json" :disabled="replacementImportBusy" :value="replacementImportUrl" @input="replacementImportUrl = ($event.target as HTMLInputElement).value; replacementImportError = ''" />
           <KButton rounded inline type="submit" class="replacement-primary-button gap-2" :disabled="busy || replacementImportBusy || !replacementImportUrl.trim()">
             {{ replacementImportBusy ? '下载并导入中…' : '下载并导入' }}
           </KButton>
@@ -588,7 +576,7 @@ function toggleFilterPanel(event: MouseEvent): void {
         <div class="replacement-import-actions">
           <KButton rounded inline tonal type="button" class="replacement-secondary-button gap-2" :disabled="replacementImportBusy" data-back-action @click="replacementRulesFeature.cancelReplacementRulesUrlImport()">取消</KButton>
         </div>
-      </section>
+      </KDialog>
     </div>
     <div v-if="discardPromptOpen" class="replacement-discard-mask" data-back-layer
       @click.self="keepRuleEditor">
@@ -622,41 +610,33 @@ function toggleFilterPanel(event: MouseEvent): void {
   background:var(--app-background);
   color: var(--rr-ink);
 }
-.replacement-field input,.replacement-field select,.replacement-field textarea { min-width:0; min-height:38px; padding:0 10px; border:1px solid var(--rr-line); border-radius:8px; color:var(--rr-ink); background:var(--rr-bg); font:inherit; font-size:var(--ui-font-body); }
-.replacement-menu { position:absolute; z-index:5; top:calc(100% + 5px); right:0; min-width:170px; display:grid; gap:2px; padding:5px; border:1px solid var(--rr-line); border-radius:10px; background:var(--rr-bg); box-shadow:0 10px 28px rgb(30 42 35 / 15%); }
-.replacement-filter-panel { position:fixed; z-index:1000; box-sizing:border-box; display:grid; width:min(170px,calc(100vw - 16px)); max-height:calc(100vh - 16px); overflow-y:auto; padding:5px; border:1px solid var(--rr-line,var(--app-line)); border-radius:11px; background:var(--app-surface); box-shadow:0 12px 28px #22223322; }
-.replacement-filter-panel button { display:block; width:100%; min-height:34px; padding:0 10px; border:0; border-radius:7px; color:var(--rr-ink,var(--app-text)); background:transparent; text-align:left; font:inherit; font-size:var(--ui-font-body); cursor:pointer; }
-.replacement-menu button { min-height:34px; padding:0 9px; border:0; border-radius:6px; color:var(--rr-ink); background:transparent; text-align:left; font:inherit; font-size:var(--ui-font-body); cursor:pointer; }
+.replacement-field .k-list-input { min-width:0; }
+.replacement-menu { position:absolute; z-index:5; top:calc(100% + 5px); right:0; min-width:170px; display:grid; gap:2px; padding:5px; }
+.replacement-filter-panel button { display:block; width:100%; min-height:34px; padding:0 10px; text-align:left; }
+.replacement-menu button { min-height:34px; padding:0 9px; text-align:left; }
 .replacement-menu button:disabled { opacity:.45; cursor:default; }
 .replacement-rule-list { min-width:0;min-height:0;flex:1 1 auto;display:grid;align-content:start;gap:3px;margin-right:-14px;padding:0 14px 0 0;overflow-y:auto;overscroll-behavior:contain; }
 .replacement-page-message { padding:7px 14px; color:var(--rr-muted); font-size:var(--ui-font-caption); }
 .replacement-page-message.error { color:var(--red); }
-.replacement-text-button,.replacement-secondary-button,.replacement-primary-button { min-height:34px; padding:0 11px; border:1px solid var(--rr-line); border-radius:8px; color:var(--rr-ink); background:var(--rr-bg); font:inherit; font-size:var(--ui-font-body); cursor:pointer; }
-.replacement-text-button { border-color:transparent; background:transparent; }
-.replacement-primary-button { border-color:var(--rr-accent); color:#fff; background:var(--rr-accent); font-weight:650; }
-.replacement-text-button:disabled,.replacement-secondary-button:disabled,.replacement-primary-button:disabled { opacity:.45; cursor:default; }
+.replacement-text-button, .replacement-secondary-button, .replacement-primary-button { min-height:34px; padding:0 11px; }
 .replacement-editor-actions { display:flex; align-items:center; gap:5px; margin-left:auto; }
 .replacement-field { min-width:0; display:grid; gap:6px; color:var(--rr-muted); font-size:var(--ui-font-caption); font-weight:600; }
-.replacement-field input,.replacement-field select { width:100%; }
-.replacement-field textarea { width:100%; min-height:100px; padding:9px 10px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; line-height:1.55; }
+.replacement-field .k-list-input { width:100%; }
 .replacement-editor-options { display:flex; flex-wrap:wrap; gap:18px; color:var(--rr-ink); font-size:var(--ui-font-caption); }
 .replacement-editor-options label { display:flex; align-items:center; gap:7px; }
-.replacement-editor-options input { accent-color:var(--rr-accent); }
 .replacement-validation { margin:0; color:var(--red); font-size:var(--ui-font-caption); }
 
 .replacement-discard-mask{position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 .replacement-import-scrim{position:fixed;inset:0;z-index:2000;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
-.replacement-import-dialog{box-sizing:border-box;width:min(420px,100%);max-height:min(82dvh,700px);overflow:auto;padding:22px;border:1px solid var(--rr-line);border-radius:14px;background:var(--app-surface);box-shadow:0 20px 40px #11112233}
+.replacement-import-dialog{box-sizing:border-box;overflow:auto}
 .replacement-import-dialog h3{margin:0;font-size:var(--ui-font-heading)}
 .replacement-import-url-form{display:grid;gap:9px;margin:10px 0 14px}
 .replacement-import-url-form label{font-size:var(--ui-font-body);font-weight:650}
-.replacement-import-url-form input{box-sizing:border-box;width:100%;min-height:39px;padding:9px 11px;border:1px solid var(--rr-line);border-radius:9px;background:var(--app-surface);color:var(--rr-ink);font:inherit;font-size:var(--ui-font-body)}
+.replacement-import-url-form .k-list-input{box-sizing:border-box;width:100%}
 .replacement-import-url-form button{justify-self:start}
 .replacement-import-url-form small{color:var(--rr-muted);font-size:var(--ui-font-caption);line-height:1.5}
 .replacement-import-error{margin:9px 0 18px;color:var(--red);font-size:var(--ui-font-caption);line-height:1.5}
 .replacement-import-actions{display:flex;justify-content:flex-end;gap:8px}
-.replacement-discard-danger{background:#bc5964}
-.replacement-editor-form input:disabled,.replacement-editor-form textarea:disabled,.replacement-editor-form select:disabled{cursor:not-allowed}
 
 /* Content engine configuration workspace, matched to prototype editorPage('rules'). */
 .replacement-add-wrap{position:relative;min-width:0}
@@ -664,10 +644,6 @@ function toggleFilterPanel(event: MouseEvent): void {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  border-color: var(--rr-accent);
-  background: var(--rr-accent);
-  color: #fff;
-  font-size: var(--ui-font-caption);
 }
 .replacement-global-add .prototype-icon{width:16px;height:16px}
 .replacement-config-summary{display:flex;justify-content:space-between;gap:8px;padding:8px 5px 10px;margin:0}
@@ -676,15 +652,9 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-config-summary small{color:var(--app-subtle);font-size:var(--ui-font-caption)}
 .replacement-selection-bar{position:static;z-index:4;display:flex;flex:none;align-items:center;gap:4px;flex-wrap:wrap;margin-top:auto;padding:8px 4px;border-top:1px solid var(--rr-line);background:var(--app-background)}
 .replacement-selection-count{margin-left:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);white-space:nowrap}
-.replacement-delete-button{color:var(--app-danger)}
 .replacement-rule-empty{align-self:center;justify-self:center;margin:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);text-align:center}
 .replacement-detail{min-width:0;min-height:0;overflow-y:auto;padding:28px 34px 48px;background:var(--app-background)}
 .replacement-enabled-toggle{display:flex;align-items:center;gap:8px;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap}
-.replacement-enabled-toggle input {
-  width: 17px;
-  height: 17px;
-  accent-color: var(--rr-accent);
-}
 .replacement-editor-actions{margin-left:0}
 .replacement-mobile-save{display:none}
 .replacement-editor-form{display:block;padding:0;border:0;border-radius:0;background:transparent}
@@ -693,14 +663,11 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-editor-section>header strong{font-size:var(--ui-font-caption)}
 .replacement-editor-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .replacement-editor-section .replacement-field{margin-bottom:14px;font-size:var(--ui-font-caption);font-weight:500;color:var(--app-muted)}
-.replacement-editor-section .replacement-field input,
-.replacement-editor-section .replacement-field select{box-sizing:border-box;height:36px;font-size:var(--ui-font-body)}
-.replacement-editor-section .replacement-field textarea{min-height:84px;padding:9px;font-size:var(--ui-font-caption)}
+.replacement-editor-section .replacement-field .k-list-input{box-sizing:border-box}
 .replacement-editor-options{margin:0 0 2px;font-size:var(--ui-font-caption)}
 .replacement-test-result{min-height:42px;padding:12px;border:1px solid var(--rr-line);border-radius:10px;background:var(--app-panel-soft);font-size:var(--ui-font-caption);line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
 .replacement-preview-note{margin:8px 0 0;color:var(--rr-muted);font-size:var(--ui-font-caption)}
 .replacement-editor-bottom{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center;padding-top:16px;border-top:1px solid var(--rr-line)}
-.replacement-editor-bottom .replacement-secondary-button{background:var(--app-panel-soft);border-color:transparent}
 .replacement-editor-upstream{display:flex;align-items:center;gap:12px;justify-content:space-between;flex-wrap:wrap;padding:11px 12px;background:var(--app-danger-soft);border:1px solid var(--app-warning-line);border-radius:10px;color:var(--app-warning);font-size:var(--ui-font-caption);line-height:1.55}
 .replacement-editor-upstream>span{flex:1;min-width:200px}
 .replacement-master{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;max-height:none;overflow:hidden}
@@ -718,11 +685,6 @@ function toggleFilterPanel(event: MouseEvent): void {
   .replacement-mobile-save{display:inline-flex;align-items:center;min-height:33px;margin-left:3px}
   .replacement-editor-grid{grid-template-columns:1fr}
   .replacement-editor-bottom{grid-template-columns:1fr auto auto;gap:6px}
-}
-@media(max-width:480px){
-  .replacement-editor-section .replacement-field input,
-  .replacement-editor-section .replacement-field textarea,
-  .replacement-editor-section .replacement-field select{font-size:var(--ui-font-body)}
 }
 
 }
