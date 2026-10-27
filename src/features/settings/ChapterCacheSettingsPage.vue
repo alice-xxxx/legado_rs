@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { errorText, notify } from "../../app/notifications";
@@ -83,9 +84,9 @@ onMounted(async () => {
           </template>
           <p v-else class="cache-caption">{{ chapterCacheUsageBusy ? '正在读取…' : '暂无统计' }}</p>
         </div>
-        <button type="button" class="cache-refresh" :disabled="cacheRefreshBlocked" @click="cacheActions.refreshChapterCacheUsage">
+        <KButton rounded inline clear type="button" class="cache-refresh gap-2" :disabled="cacheRefreshBlocked" @click="cacheActions.refreshChapterCacheUsage">
           <PrototypeIcon name="refresh" />{{ chapterCacheUsageBusy ? '读取中…' : '刷新' }}
-        </button>
+        </KButton>
       </div>
       <dl v-if="chapterCacheUsage" class="cache-breakdown">
         <div>
@@ -99,9 +100,9 @@ onMounted(async () => {
       </dl>
       <p v-if="chapterCacheUsageError" class="cache-error" role="alert">{{ chapterCacheUsageError }}</p>
       <div class="cache-actions">
-        <button type="button" class="cache-clear" :disabled="cacheClearBlocked" @click="pendingShelfChapterCacheClear = true">
+        <KButton rounded inline outline type="button" class="cache-clear k-color-brand-danger gap-2 " :disabled="cacheClearBlocked" @click="pendingShelfChapterCacheClear = true">
           <PrototypeIcon name="trash" />{{ shelfChapterCacheClearBusy ? '清理中…' : '清理在线缓存' }}
-        </button>
+        </KButton>
       </div>
       <div v-if="shelfChapterCacheClearResult" class="cache-result" role="status">
         <p>
@@ -125,6 +126,7 @@ onMounted(async () => {
   />
 </template>
 <style scoped>
+@layer components {
 .settings-detail-page {
   width: 100%;
   min-width: 0;
@@ -273,5 +275,6 @@ onMounted(async () => {
 .cache-result ul {
   margin: var(--ui-space-2) 0 0;
   padding-left: var(--ui-space-5);
+}
 }
 </style>

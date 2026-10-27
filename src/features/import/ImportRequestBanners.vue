@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import { deepLinkLabels, type PendingImportLink } from "./deepLinks";
 
 defineProps<{
@@ -17,14 +18,15 @@ defineProps<{
     <span class="external-import-banner__label">
       收到{{ pendingImportLinks[0] ? deepLinkLabels[pendingImportLinks[0].kind] : '' }}链接<span v-if="pendingImportLinks.length > 1">（待处理 {{ pendingImportLinks.length }} 个）</span>
     </span>
-    <button class="button primary small" :disabled="importLinkBlocked" @click="openPendingImportLink">
+    <KButton rounded inline small class="gap-2" :disabled="importLinkBlocked" @click="openPendingImportLink">
       {{ importLinkOpening ? '正在打开…' : '打开确认页' }}
-    </button>
-    <button class="button secondary small" :disabled="importLinkOpening" @click="ignorePendingImportLink">忽略</button>
+    </KButton>
+    <KButton rounded inline tonal small class="gap-2" :disabled="importLinkOpening" @click="ignorePendingImportLink">忽略</KButton>
   </div>
 </template>
 
 <style scoped>
+@layer components {
 .external-import-banner {
   position: fixed;
   z-index: 60;
@@ -44,4 +46,5 @@ defineProps<{
 }
 
 .external-import-banner__label { min-width: 160px; flex: 1; overflow-wrap: anywhere; }
+}
 </style>

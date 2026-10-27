@@ -8,6 +8,8 @@ pub struct SettingsDocument {
     #[serde(default)]
     pub theme: AppTheme,
     #[serde(default)]
+    pub ui_style: UiStyle,
+    #[serde(default)]
     pub webdav_backup: WebDavBackupConfig,
     pub schema_version: u32,
     #[serde(default = "default_source_http_timeout_seconds")]
@@ -22,6 +24,7 @@ impl Default for SettingsDocument {
             schema_version: SCHEMA_VERSION,
             source_http_timeout_seconds: default_source_http_timeout_seconds(),
             theme: AppTheme::System,
+            ui_style: UiStyle::default(),
             webdav_backup: WebDavBackupConfig::default(),
             reader: ReaderDefaults::default(),
             home: HomeConfigDocument::default(),
@@ -36,6 +39,14 @@ pub enum AppTheme {
     Dark,
     #[default]
     System,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UiStyle {
+    #[default]
+    Material,
+    Ios,
 }
 
 fn default_source_http_timeout_seconds() -> u64 {

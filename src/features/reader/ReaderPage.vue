@@ -1,8 +1,10 @@
 <script lang="ts">
+import { Range as KRange, Checkbox as KCheckbox, Button as KButton, Glass as KGlass, Toolbar as KToolbar, ToolbarPane as KToolbarPane, List as KList, ListItem as KListItem, Radio as KRadio } from "konsta/vue";
 import { computed, defineAsyncComponent, defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
 import type { ReaderContextFeatures } from "./readerContext";
 import type { ChapterResource } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookSourceSwitchView from "../sources/BookSourceSwitchView.vue";
@@ -20,7 +22,7 @@ export default defineComponent({
     bookSourceSwitch: { type: Object as PropType<BookSourceSwitchContract>, required: true },
     shelfBatchRecoveryRequired: { type: Boolean, required: true },
   },
-  components: { BackButton, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel,
+  components: { SubpageHeader, KRange, KCheckbox, KButton, KGlass, KToolbar, KToolbarPane, KList, KListItem, KRadio, BackButton, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel,
     TtsSettingsPage: defineAsyncComponent(() => import("../settings/TtsSettingsPage.vue")) },
   setup(props) {
     const context = {
@@ -182,31 +184,28 @@ export default defineComponent({
     :data-reader-mode="ctx.readingPdfPage ? 'pdf' : ctx.readingVideoChapter ? 'video' : ctx.readingMediaChapter ? 'audio' : ctx.readingImagePage ? 'comic' : 'novel'"
     :class="{ 'reader-menu-open': ctx.readingMediaChapter || readerMenuOpen || readerBusy || ctx.readerChapterError, 'reader-chrome-hidden': !ctx.readingMediaChapter && !readerMenuOpen && !readerBusy && !ctx.readerChapterError, 'audio-console-active': ctx.readingMediaChapter && !ctx.readingVideoChapter && !readerBusy && !ctx.readerChapterError && !!ctx.readingContent }"
     @click="onReaderSurfaceClick">
-    <header class="reader-topbar">
-      <div class="reader-toolbar-row">
-        <BackButton class="reader-back" :label="ctx.canMinimizeReader ? '收起播放器' : '返回内容库'"
-          :disabled="readerMediaRetrying" @click="ctx.canMinimizeReader ? ctx.minimizeReader() : closeReader()" />
-        <div class="reader-book-heading"><strong>{{ ctx.readingMediaChapter && !ctx.readingVideoChapter ? '音频播放' :
-          readingBook?.title }}</strong><small v-if="!ctx.readingMediaChapter">{{ currentChapterTitle }}</small></div>
-        <div class="reader-header-actions">
+    <SubpageHeader class="reader-topbar" :class="ctx.readingMediaChapter ? 'relative shrink-0' : 'absolute'" :title="ctx.readingMediaChapter && !ctx.readingVideoChapter ? '音频播放' : readingBook?.title"
+      :subtitle="!ctx.readingMediaChapter ? currentChapterTitle : undefined"
+      :back-label="ctx.canMinimizeReader ? '收起播放器' : '返回内容库'" :back-disabled="readerMediaRetrying"
+      @back="ctx.canMinimizeReader ? ctx.minimizeReader() : closeReader()">
+      <template #actions><div class="reader-header-actions">
           <span class="read-save-state" :class="progressSaveState">{{ progressSaveState === 'saving' ? '保存中' :
             progressSaveState === 'saved' ? '已保存' : progressSaveState === 'error' ? '保存失败' : '' }}</span>
-          <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button"
-            class="reader-tool-button" aria-label="在本章中查找" @click.stop="ctx.openReaderControls('search')">
+          <KButton rounded inline clear v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage" type="button"
+            class="reader-tool-button size-11 p-0 text-current" aria-label="在本章中查找" @click.stop="ctx.openReaderControls('search')">
             <PrototypeIcon name="search" />
-          </button>
-          <button v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && readingBook?.canChangeSource" type="button"
-            class="reader-tool-button" aria-label="切换内容来源" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy"
+          </KButton>
+          <KButton rounded inline clear v-if="!ctx.readingMediaChapter && !ctx.readingPdfPage && readingBook?.canChangeSource" type="button"
+            class="reader-tool-button size-11 p-0 text-current" aria-label="切换内容来源" :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy"
             @click.stop="openBookSourceSwitch(true)">
             <PrototypeIcon name="source-switch" />
-          </button>
-          <button type="button" class="reader-tool-button" :aria-label="ctx.readingMediaChapter ? '播放设置' : '更多阅读选项'"
+          </KButton>
+          <KButton rounded inline clear type="button" class="reader-tool-button size-11 p-0 text-current" :aria-label="ctx.readingMediaChapter ? '播放设置' : '更多阅读选项'"
             @click.stop="ctx.readingMediaChapter ? openAudioAdvanced() : ctx.openReaderControls(ctx.readingPdfPage ? 'appearance' : 'settings')">
             <PrototypeIcon name="more" />
-          </button>
-        </div>
-      </div>
-    </header>
+          </KButton>
+        </div></template>
+    </SubpageHeader>
     <div class="reader-main" @touchmove="ctx.readerGesturesBlocked && $event.preventDefault()"
       @wheel="ctx.readerGesturesBlocked && $event.preventDefault()">
       <output v-if="ctx.readingImagePage && comicPageCount" class="reader-comic-page-counter">{{ comicPageIndex }} / {{
@@ -226,28 +225,28 @@ export default defineComponent({
           <strong>第 {{ (ctx.readingChapterIndex) + 1 }} 章暂时无法显示</strong>
           <p>{{ ctx.readerChapterError }}</p>
           <div class="reader-load-actions">
-            <button type="button" class="button secondary small" :disabled="readerBusy"
-              @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试缓存章节</button>
-            <button v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
+            <KButton rounded inline tonal small type="button" class="gap-2" :disabled="readerBusy"
+              @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试缓存章节</KButton>
+            <KButton rounded inline tonal small v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="gap-2"
               :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired"
-              @click.stop="ctx.reloadCurrentChapter">从源重新获取</button>
-            <button v-if="readingBook?.canChangeSource" type="button" class="button secondary small"
+              @click.stop="ctx.reloadCurrentChapter">从源重新获取</KButton>
+            <KButton rounded inline tonal small v-if="readingBook?.canChangeSource" type="button" class="gap-2"
               :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired"
-              @click.stop="ctx.openBookSourceSwitch(true)">切换源</button>
+              @click.stop="ctx.openBookSourceSwitch(true)">切换源</KButton>
           </div>
         </div>
         <div v-else-if="!ctx.readingContent && !readerBusy" class="reader-loading reader-load-error">
           <strong>本章正文尚未显示</strong>
           <p>阅读内容没有生成，请重试；仍为空时可以从源重新获取本章。</p>
           <div class="reader-load-actions">
-            <button type="button" class="button secondary small" :disabled="readerBusy"
-              @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试章节</button>
-            <button v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="button secondary small"
+            <KButton rounded inline tonal small type="button" class="gap-2" :disabled="readerBusy"
+              @click.stop="ctx.loadReaderChapter(ctx.readingChapterIndex)">重试章节</KButton>
+            <KButton rounded inline tonal small v-if="readingBook?.sourceId && !ctx.readingMediaChapter" type="button" class="gap-2"
               :disabled="readerBusy || readerMediaRetrying || shelfBatchRecoveryRequired"
-              @click.stop="ctx.reloadCurrentChapter">从源重新获取</button>
-            <button v-if="readingBook?.canChangeSource" type="button" class="button secondary small"
+              @click.stop="ctx.reloadCurrentChapter">从源重新获取</KButton>
+            <KButton rounded inline tonal small v-if="readingBook?.canChangeSource" type="button" class="gap-2"
               :disabled="readerBusy || bookSourceSwitch.bookSourceSwitchBusy || shelfBatchRecoveryRequired"
-              @click.stop="ctx.openBookSourceSwitch(true)">切换源</button>
+              @click.stop="ctx.openBookSourceSwitch(true)">切换源</KButton>
           </div>
         </div>
         <slot v-else :comicReadMode="comicReadMode" :comicCounter="requestComicCounter"
@@ -259,9 +258,9 @@ export default defineComponent({
         <header>
           <div><strong>{{ currentChapterTitle }}</strong><small>{{ readingBook?.title }} · {{ readerChapterCount }}
               集</small></div>
-          <button type="button" @click="ctx.openReaderDirectory">全部选集
+          <KButton rounded inline clear class="gap-2" type="button" @click="ctx.openReaderDirectory">全部选集
             <PrototypeIcon name="right" />
-          </button>
+          </KButton>
         </header>
         <div class="reader-video-options">
           <label v-if="ctx.readerVideoQualityChoices.length > 1" class="reader-video-option">
@@ -283,12 +282,12 @@ export default defineComponent({
           </label>
         </div>
         <nav v-if="readingBook?.chapters.length" aria-label="视频选集">
-          <button v-for="chapter in readingBook?.chapters" :key="chapter.id" type="button"
+          <KButton rounded :tonal="chapter.index === ctx.readingChapterIndex" :clear="!(chapter.index === ctx.readingChapterIndex)" inline class="gap-2" v-for="chapter in readingBook?.chapters" :key="chapter.id" type="button"
             :class="{ active: chapter.index === ctx.readingChapterIndex }"
             :disabled="readerBusy || shelfBatchRecoveryRequired" :title="chapter.title"
             @click="ctx.selectReaderChapter(chapter.index)">
             {{ chapter.index + 1 }}
-          </button>
+          </KButton>
         </nav>
       </section>
       <article
@@ -305,10 +304,10 @@ export default defineComponent({
             <small v-if="readingBook?.author">{{ readingBook.author }}</small>
           </div>
           <div class="reader-audio-progress">
-            <input type="range" aria-label="播放进度" min="0" step="1000" :max="Math.max(1000, ctx.readerMediaDurationMs)"
+            <KRange aria-label="播放进度" :min="0" :step="1000" :max="Math.max(1000, ctx.readerMediaDurationMs)"
               :value="ctx.readerMediaTimeMs"
               :disabled="ctx.isReaderMediaControlBlocked() || ctx.readerMediaDurationMs <= 0"
-              @change="ctx.seekReaderMedia(Number(($event.target as HTMLInputElement).value) / 1000)" />
+              @change="ctx.seekReaderMedia(Number(($event.target as HTMLInputElement).value) / 1000)"  class="min-w-0 flex-1" />
             <div class="reader-audio-times">
               <span>{{ ctx.formatReaderMediaTime(ctx.readerMediaTimeMs) }}</span>
               <span>{{ ctx.readerMediaDurationMs > 0 ? ctx.formatReaderMediaTime(ctx.readerMediaDurationMs) : '—:—'
@@ -316,92 +315,95 @@ export default defineComponent({
             </div>
           </div>
           <div class="reader-audio-playback">
-            <button type="button" :aria-label="`后退 ${settings.reader.audioSkipSeconds} 秒`"
+            <KButton inline clear class="gap-2 rounded-full p-0 size-12" type="button" :aria-label="`后退 ${settings.reader.audioSkipSeconds} 秒`"
               :disabled="ctx.isReaderMediaControlBlocked()"
               @click="ctx.skipReaderMedia(-settings.reader.audioSkipSeconds)">
               <PrototypeIcon name="back15" />
-            </button>
-            <button type="button" class="reader-audio-main-play" :aria-label="ctx.readerMediaPlaying ? '暂停' : '播放'"
+            </KButton>
+            <KButton inline type="button" class="reader-audio-main-play gap-2 rounded-full p-0 size-16" :aria-label="ctx.readerMediaPlaying ? '暂停' : '播放'"
               :disabled="ctx.isReaderMediaControlBlocked()" @click="ctx.toggleReaderMediaPlayback()">
               <PrototypeIcon :name="ctx.readerMediaPlaying ? 'pause' : 'play'" />
-            </button>
-            <button type="button" :aria-label="`前进 ${settings.reader.audioSkipSeconds} 秒`"
+            </KButton>
+            <KButton inline clear class="gap-2 rounded-full p-0 size-12" type="button" :aria-label="`前进 ${settings.reader.audioSkipSeconds} 秒`"
               :disabled="ctx.isReaderMediaControlBlocked()"
               @click="ctx.skipReaderMedia(settings.reader.audioSkipSeconds)">
               <PrototypeIcon name="forward15" />
-            </button>
+            </KButton>
           </div>
           <div class="reader-audio-utilities">
-            <button type="button" @click="openAudioToolPanel('speed')"><strong>{{ settings.reader.audioPlaybackRate
-                }}×</strong><small>倍速</small></button>
-            <button type="button" @click="openAudioToolPanel('sleep')">
+            <KButton rounded inline clear class="gap-2 flex-col h-auto min-h-12" type="button" @click="openAudioToolPanel('speed')"><strong>{{ settings.reader.audioPlaybackRate
+                }}×</strong><small>倍速</small></KButton>
+            <KButton rounded inline clear class="gap-2 flex-col h-auto min-h-12" type="button" @click="openAudioToolPanel('sleep')">
               <PrototypeIcon name="moon" /><small>{{ readerMediaSleepTimerMinutes ? readerMediaSleepTimerMinutes + ' 分钟'
                 : '睡眠定时' }}</small>
-            </button>
-            <button type="button" @click="ctx.openReaderDirectory">
+            </KButton>
+            <KButton rounded inline clear class="gap-2 flex-col h-auto min-h-12" type="button" @click="ctx.openReaderDirectory">
               <PrototypeIcon name="list" /><small>节目</small>
-            </button>
+            </KButton>
           </div>
         </div>
       </article>
       <div v-if="ctx.readingMediaChapter && ctx.readerMediaError" class="reader-media-error">
         <span>{{ ctx.readerMediaError }}</span>
-        <button type="button" class="button secondary small"
+        <KButton rounded inline tonal small type="button" class="gap-2"
           :disabled="readerBusy || ctx.readerMediaRetrying || shelfBatchRecoveryRequired"
-          @click.stop="reloadCurrentChapter">{{ ctx.readerMediaRetrying ? '正在重新加载…' : '重新加载' }}</button>
+          @click.stop="reloadCurrentChapter">{{ ctx.readerMediaRetrying ? '正在重新加载…' : '重新加载' }}</KButton>
       </div>
       <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-left" @click.stop="turnReaderEdge(-1)"></div>
       <div v-if="horizontalReaderEdges" class="reader-edge reader-edge-right" @click.stop="turnReaderEdge(1)"></div>
       <div v-if="readerMenuOpen && !ctx.readingMediaChapter && !readerBusy && !ctx.readerChapterError"
         class="reader-menu-surface" @click.stop="onReaderSurfaceClick" />
     </div>
-    <footer v-if="ctx.readingImagePage" class="reader-footer reader-comic-dock">
-      <nav class="reader-bottom-nav">
-        <button type="button" class="reader-nav-action" @click="ctx.openReaderDirectory"><span>
+    <KToolbar v-if="ctx.readingImagePage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError" :key="settings.uiStyle + '-comic'"
+      component="footer" class="reader-footer reader-comic-dock absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
-          </span><small>选话</small></button>
-        <button type="button" class="reader-nav-action" @click="openComicPanel('mode')"><span>
+          </span><small>选话</small></KButton>
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="openComicPanel('mode')"><span>
             <PrototypeIcon name="layout" />
-          </span><small>阅读模式</small></button>
-        <button type="button" class="reader-nav-action" @click="openComicPanel('fit')"><span>
+          </span><small>阅读模式</small></KButton>
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="openComicPanel('fit')"><span>
             <PrototypeIcon name="appearance" />
-          </span><small>图片适配</small></button>
-        <button type="button" class="reader-nav-action" @click="openComicPanel('brightness')"><span>
+          </span><small>图片适配</small></KButton>
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="openComicPanel('brightness')"><span>
             <PrototypeIcon name="sun" />
-          </span><small>亮度</small></button>
-      </nav>
-    </footer>
-    <footer v-if="ctx.readingPdfPage" class="reader-footer reader-pdf-dock">
-      <nav class="reader-bottom-nav">
-        <button type="button" class="reader-nav-action" @click="ctx.openReaderDirectory"><span>
+          </span><small>亮度</small></KButton>
+      </nav></KToolbarPane>
+    </KToolbar>
+    <KToolbar v-if="ctx.readingPdfPage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError" :key="settings.uiStyle + '-pdf'"
+      component="footer" class="reader-footer reader-pdf-dock absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
-          </span><small>页面</small></button>
-        <button type="button" class="reader-nav-action" @click="ctx.openReaderControls('search')"><span>
+          </span><small>页面</small></KButton>
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderControls('search')"><span>
             <PrototypeIcon name="search" />
-          </span><small>搜索</small></button>
-        <button type="button" class="reader-nav-action" @click="ctx.openReaderControls('appearance')"><span>
+          </span><small>搜索</small></KButton>
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderControls('appearance')"><span>
             <PrototypeIcon name="appearance" />
-          </span><small>显示</small></button>
-      </nav>
-    </footer>
-    <footer v-if="!ctx.readingMediaChapter && !ctx.readingImagePage && !ctx.readingPdfPage" class="reader-footer">
-      <nav class="reader-bottom-nav">
-        <button type="button" class="reader-nav-action" @click="ctx.openReaderDirectory"><span>
+          </span><small>显示</small></KButton>
+      </nav></KToolbarPane>
+    </KToolbar>
+    <KToolbar v-if="!ctx.readingMediaChapter && !ctx.readingImagePage && !ctx.readingPdfPage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError"
+      :key="settings.uiStyle + '-text'" component="footer" class="reader-footer absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
+        <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
           </span><small>{{ ctx.readingPdfPage ? '页面' : ctx.readingVideoChapter ? '剧集' : ctx.readingMediaChapter ? '节目' :
-            ctx.readingImagePage ? '选话' : '目录' }}</small></button>
-        <button v-if="!ctx.readingPdfPage && !ctx.readingImagePage && !ctx.readingVideoChapter" type="button"
-          class="reader-nav-action" :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'tts' }"
+            ctx.readingImagePage ? '选话' : '目录' }}</small></KButton>
+        <KButton rounded :tonal="ctx.readerControlsOpen && readerControlsMode === 'tts'" :clear="!(ctx.readerControlsOpen && readerControlsMode === 'tts')" inline v-if="!ctx.readingPdfPage && !ctx.readingImagePage && !ctx.readingVideoChapter" type="button"
+          class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'tts' }"
           @click="openTtsControls"><span>
             <PrototypeIcon name="tts" />
-          </span><small>{{ ttsActive ? ctx.ttsPaused ? '已暂停' : '朗读中' : '朗读' }}</small></button>
-        <button v-if="!ctx.readingMediaChapter" type="button" class="reader-nav-action"
+          </span><small>{{ ttsActive ? ctx.ttsPaused ? '已暂停' : '朗读中' : '朗读' }}</small></KButton>
+        <KButton rounded :tonal="ctx.readerControlsOpen && readerControlsMode === 'appearance'" :clear="!(ctx.readerControlsOpen && readerControlsMode === 'appearance')" inline v-if="!ctx.readingMediaChapter" type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current"
           :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'appearance' }"
           @click="ctx.openReaderControls('appearance')"><span class="reader-appearance-glyph">Aa</span><small>{{
-            ctx.readingPdfPage ? '缩放' : ctx.readingImagePage ? '图片适配' : '显示' }}</small></button>
+            ctx.readingPdfPage ? '缩放' : ctx.readingImagePage ? '图片适配' : '显示' }}</small></KButton>
         <!-- The header's More action owns advanced settings, as in the prototype. -->
-      </nav>
-    </footer>
+      </nav></KToolbarPane>
+    </KToolbar>
     <section v-if="readerTtsSettingsOpen" class="reader-book-page reader-tts-settings" data-back-layer @click.stop>
       <TtsSettingsPage embedded @back="readerTtsSettingsOpen = false" />
     </section>
@@ -419,15 +421,15 @@ export default defineComponent({
     </section>
     <div v-if="ctx.readerControlsOpen" class="reader-settings-backdrop" data-back-layer @click.self.stop="ctx.readerControlsOpen = false"
       @keydown.esc.stop.prevent="ctx.readerControlsOpen = false">
-    <aside class="reader-settings-popover" @click.stop
+    <KGlass component="aside" :highlight="false" class="reader-settings-popover" @click.stop
       :class="{ 'reader-search-popover': readerControlsMode === 'search' }">
       <div class="popover-title"><span>{{ readerControlsMode === 'settings' ? '更多阅读选项' : readerControlsMode === 'tts' ?
         (ctx.readingMediaChapter ? audioToolPanel === 'speed' ? '播放速度' : audioToolPanel === 'sleep' ? '睡眠定时' : '播放设置'
           : '朗读') : readerControlsMode === 'appearance' ? ctx.readingImagePage ? comicPanel === 'mode' ? '阅读模式' :
-            comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><button
+            comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><KButton rounded inline clear class="gap-2"
           type="button" data-back-action :aria-label="readerControlsMode === 'tts' && ttsActive ? '收起朗读面板' : '关闭菜单'" @click="ctx.readerControlsOpen = false">
           <PrototypeIcon name="close" />
-        </button></div>
+        </KButton></div>
       <!-- Chapter seek is available in advanced tools; the reading dock keeps only prototype primary actions. -->
       <div
         v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingImagePage && !ctx.readingPdfPage"
@@ -436,8 +438,8 @@ export default defineComponent({
           <div class="reader-chapter-position">{{ currentChapterTitle }} <span>（{{ ctx.readingChapterIndex + 1 }} / {{
               readerChapterCount }}）</span></div>
           <div v-if="readerChapterCount > 1" class="reader-chapter-seek-row">
-            <input type="range" min="0" :max="readerChapterCount - 1" step="1" :value="ctx.readingChapterIndex"
-              :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter" />
+            <KRange :min="0" :max="readerChapterCount - 1" :step="1" :value="ctx.readingChapterIndex"
+              :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter"  class="min-w-0 flex-1" />
           </div>
         </div>
 
@@ -462,17 +464,17 @@ export default defineComponent({
       <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && !ctx.readingVideoChapter && !audioToolPanel"
         class="setting-control reader-audio-rate-control">
         <div><label for="reader-audio-rate">播放速度</label><small>{{ settings.reader.audioPlaybackRate }}×</small></div>
-        <input id="reader-audio-rate" type="range" min="0.5" max="3" step="0.25"
+        <KRange input-id="reader-audio-rate" :min="0.5" :max="3" :step="0.25"
           :value="settings.reader.audioPlaybackRate"
-          @input="settings.reader.audioPlaybackRate = Number(($event.target as HTMLInputElement).value)" />
+          @input="settings.reader.audioPlaybackRate = Number(($event.target as HTMLInputElement).value)"  class="min-w-0 flex-1" />
       </div>
       <div
         v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && !ctx.readingVideoChapter && audioToolPanel === 'speed'"
         class="reader-audio-choice-grid">
-        <button v-for="rate in ([0.75, 1, 1.25, 1.5, 1.75, 2] as const)" :key="rate" type="button"
+        <KButton rounded :tonal="Math.abs(settings.reader.audioPlaybackRate - rate) < 0.001" :clear="!(Math.abs(settings.reader.audioPlaybackRate - rate) < 0.001)" inline class="gap-2" v-for="rate in ([0.75, 1, 1.25, 1.5, 1.75, 2] as const)" :key="rate" type="button"
           :class="{ selected: Math.abs(settings.reader.audioPlaybackRate - rate) < 0.001 }"
           :disabled="ctx.isReaderMediaControlBlocked()" @click="settings.reader.audioPlaybackRate = rate">{{ rate
-          }}×</button>
+          }}×</KButton>
       </div>
       <div v-if="readerControlsMode === 'tts' && ctx.readingMediaChapter && audioToolPanel !== 'speed'"
         class="setting-control compact-setting">
@@ -484,28 +486,26 @@ export default defineComponent({
           <option :value="30">30 分钟</option>
           <option :value="60">60 分钟</option>
         </select>
-        <div v-else class="reader-audio-sleep-choices">
-          <button v-for="minutes in ([0, 15, 30, 60] as const)" :key="minutes" type="button"
-            :class="{ selected: readerMediaSleepTimerMinutes === minutes }"
-            :disabled="ctx.isReaderMediaControlBlocked()" @click="ctx.setReaderMediaSleepTimer(minutes)">
-            <span><strong>{{ minutes === 0 ? '关闭' : minutes + ' 分钟' }}</strong><small
-                v-if="minutes === 0">不自动暂停</small></span>
-            <span class="reader-choice-radio"></span>
-          </button>
-        </div>
+        <KList v-else class="col-span-full my-0!">
+          <KListItem v-for="minutes in ([0, 15, 30, 60] as const)" :key="minutes" label
+            :title="minutes === 0 ? '关闭' : minutes + ' 分钟'">
+            <template #after><KRadio component="span" name="reader-sleep" :checked="readerMediaSleepTimerMinutes === minutes"
+              :disabled="ctx.isReaderMediaControlBlocked()" @change="ctx.setReaderMediaSleepTimer(minutes)" /></template>
+          </KListItem>
+        </KList>
       </div>
       <div v-if="readerControlsMode === 'settings' && !ctx.readingMediaChapter && !ctx.readingPdfPage"
         class="reader-source-tools">
-        <button v-if="!ctx.readingImagePage && readingBook?.canChangeSource" type="button" class="button secondary small"
+        <KButton rounded inline tonal small v-if="!ctx.readingImagePage && readingBook?.canChangeSource" type="button" class="gap-2"
           :disabled="readerBusy || readerMediaRetrying || bookSourceSwitch.bookSourceSwitchBusy"
           @click.stop="ctx.reloadCurrentChapter">
           <PrototypeIcon name="refresh" />从源重新获取本章
-        </button>
-        <button v-if="readingBook?.sourceId" type="button" class="button secondary small"
+        </KButton>
+        <KButton rounded inline tonal small v-if="readingBook?.sourceId" type="button" class="gap-2"
           :disabled="readerBusy || readerBookDownloadBusy || shelfBatchRecoveryRequired"
           @click.stop="ctx.downloadReaderBook">
           <PrototypeIcon name="download" />缓存全部章节
-        </button>
+        </KButton>
       </div>
       <div
         v-if="readerControlsMode === 'tts' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
@@ -533,34 +533,34 @@ export default defineComponent({
               {{ item.name }}{{ item.enabled ? '' : '（已停用）' }}</option>
           </optgroup>
         </select>
-        <button v-if="!httpTtsConfigs.some((item) => item.enabled)" type="button" class="text-button"
-          @click="ctx.openHttpTtsSettings">添加网络朗读源</button>
+        <KButton rounded inline clear v-if="!httpTtsConfigs.some((item) => item.enabled)" type="button" class="gap-2"
+          @click="ctx.openHttpTtsSettings">添加网络朗读源</KButton>
         <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label><select
             id="reader-tts-start-position" :value="settings.reader.ttsStartPosition"
             @change="settings.reader.ttsStartPosition = ($event.target as HTMLSelectElement).value === 'chapter' ? 'chapter' : 'current'">
             <option value="current">当前位置</option>
             <option value="chapter">本章开头</option>
           </select></div>
-        <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><input id="reader-tts-rate"
+        <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><KRange input-id="reader-tts-rate"
             :disabled="ttsActive && settings.reader.ttsEngine === 'system'"
-            type="range" min="0.5" :max="settings.reader.ttsEngine === 'system' ? 4 : 5" step="0.1" :value="settings.reader.ttsRate"
-            @input="setTtsRate(Number(($event.target as HTMLInputElement).value))" /><small>{{
+            :min="0.5" :max="settings.reader.ttsEngine === 'system' ? 4 : 5" :step="0.1" :value="settings.reader.ttsRate"
+            @input="setTtsRate(Number(($event.target as HTMLInputElement).value))"  class="min-w-0 flex-1" /><small>{{
               settings.reader.ttsRate.toFixed(1) }}×</small></div>
-        <label class="reader-tts-continuous"><input :checked="settings.reader.ttsContinueAcrossChapters" type="checkbox" :disabled="ttsActive"
-            @change="settings.reader.ttsContinueAcrossChapters = ($event.target as HTMLInputElement).checked" />连续朗读并自动进入下一章</label>
+        <label class="reader-tts-continuous"><KCheckbox component="span" :checked="settings.reader.ttsContinueAcrossChapters" :disabled="ttsActive"
+            @change="settings.reader.ttsContinueAcrossChapters = ($event.target as HTMLInputElement).checked"  />连续朗读并自动进入下一章</label>
         <div class="reader-tts-selection"><small>{{ ttsSelectedText ? `已选中
-            ${ttsSelectedText.length} 个字` : '先在正文中选中文字' }}</small><button v-if="!ttsActive"
-            type="button" class="button secondary small" :disabled="!ttsCanStart || !ttsSelectedText"
-            @click="startSelectedTextTts">朗读选中文字</button></div>
+            ${ttsSelectedText.length} 个字` : '先在正文中选中文字' }}</small><KButton rounded inline tonal small v-if="!ttsActive"
+            type="button" class="gap-2" :disabled="!ttsCanStart || !ttsSelectedText"
+            @click="startSelectedTextTts">朗读选中文字</KButton></div>
         <div class="reader-tts-actions">
-          <button v-if="ttsActive" type="button" class="button secondary small"
-            @click="ctx.minimizeReader()">收起播放器</button>
-          <button v-if="ttsActive" type="button" class="button secondary small"
-            :disabled="!ttsChunkProgress" @click="ctx.toggleTtsPaused()">{{ ctx.ttsPaused ? '继续朗读' : '暂停' }}</button>
-          <button v-if="!ttsActive" type="button" class="button secondary small"
-            :disabled="!ttsCanStart" @click="startTts()">开始朗读</button>
-          <button v-if="ttsActive" type="button" class="button secondary small"
-            @click="stopTts()">停止</button>
+          <KButton rounded inline tonal small v-if="ttsActive" type="button" class="gap-2"
+            @click="ctx.minimizeReader()">收起播放器</KButton>
+          <KButton rounded inline tonal small v-if="ttsActive" type="button" class="gap-2"
+            :disabled="!ttsChunkProgress" @click="ctx.toggleTtsPaused()">{{ ctx.ttsPaused ? '继续朗读' : '暂停' }}</KButton>
+          <KButton rounded inline v-if="!ttsActive" type="button" class="gap-2"
+            :disabled="!ttsCanStart" @click="startTts()">开始朗读</KButton>
+          <KButton rounded inline tonal small v-if="ttsActive" type="button" class="gap-2"
+            @click="stopTts()">停止</KButton>
         </div>
         <p v-if="ttsError">{{ ttsError }}</p>
       </div>
@@ -573,44 +573,45 @@ export default defineComponent({
           <small>{{ readerFindQuery.trim() ? readerFindMatches.length ? `${readerFindIndex + 1} /
             ${readerFindMatches.length}` : '无匹配' : '' }}</small>
           <div class="reader-find-buttons">
-            <button type="button" class="button secondary small" :disabled="!readerFindMatches.length"
-              @click="moveReaderFind(-1)">上一处</button>
-            <button type="button" class="button secondary small" :disabled="!readerFindMatches.length"
-              @click="moveReaderFind(1)">下一处</button>
+            <KButton rounded inline tonal small type="button" class="gap-2" :disabled="!readerFindMatches.length"
+              @click="moveReaderFind(-1)">上一处</KButton>
+            <KButton rounded inline tonal small type="button" class="gap-2" :disabled="!readerFindMatches.length"
+              @click="moveReaderFind(1)">下一处</KButton>
           </div>
         </div>
       </div>
       <div v-if="readerControlsMode === 'appearance' && ctx.readingPdfPage" class="pdf-scale-control">
         <span>PDF 缩放</span>
         <div>
-          <button :class="{ selected: ctx.activePdfZoom === 'page-fit' }" @click="setPdfZoom('page-fit')">整页</button>
-          <button :class="{ selected: ctx.activePdfZoom === 'page-width' }"
-            @click="setPdfZoom('page-width')">适合宽度</button>
-          <button :class="{ selected: ctx.activePdfZoom === 'actual-size' }"
-            @click="setPdfZoom('actual-size')">原始大小</button>
+          <KButton rounded :tonal="ctx.activePdfZoom === 'page-fit'" :clear="!(ctx.activePdfZoom === 'page-fit')" inline class="gap-2" :class="{ selected: ctx.activePdfZoom === 'page-fit' }" @click="setPdfZoom('page-fit')">整页</KButton>
+          <KButton rounded :tonal="ctx.activePdfZoom === 'page-width'" :clear="!(ctx.activePdfZoom === 'page-width')" inline class="gap-2" :class="{ selected: ctx.activePdfZoom === 'page-width' }"
+            @click="setPdfZoom('page-width')">适合宽度</KButton>
+          <KButton rounded :tonal="ctx.activePdfZoom === 'actual-size'" :clear="!(ctx.activePdfZoom === 'actual-size')" inline class="gap-2" :class="{ selected: ctx.activePdfZoom === 'actual-size' }"
+            @click="setPdfZoom('actual-size')">原始大小</KButton>
         </div>
       </div>
-      <div v-if="readerControlsMode === 'appearance' && ctx.readingImagePage && comicPanel === 'mode'"
-        class="comic-mode-control">
-        <button type="button" :class="{ selected: comicReadMode === 'vertical' }"
-          @click="comicReadMode = 'vertical'"><strong>上下连续</strong><small>条漫和连续滚动阅读</small></button>
-        <button type="button" :class="{ selected: comicReadMode === 'paged' }"
-          @click="comicReadMode = 'paged'"><strong>左右翻页</strong><small>单页定位，点击两侧或左右滑动切换</small></button>
-      </div>
+      <KList v-if="readerControlsMode === 'appearance' && ctx.readingImagePage && comicPanel === 'mode'" class="my-0!">
+        <KListItem label title="上下连续" text="条漫和连续滚动阅读">
+          <template #after><KRadio component="span" name="comic-mode" :checked="comicReadMode === 'vertical'" @change="comicReadMode = 'vertical'" /></template>
+        </KListItem>
+        <KListItem label title="左右翻页" text="单页定位，点击两侧或左右滑动切换">
+          <template #after><KRadio component="span" name="comic-mode" :checked="comicReadMode === 'paged'" @change="comicReadMode = 'paged'" /></template>
+        </KListItem>
+      </KList>
       <div v-if="readerControlsMode === 'appearance' && ctx.readingImagePage && comicPanel === 'brightness'"
         class="comic-brightness-control">
         <label for="comic-brightness">亮度</label>
-        <input id="comic-brightness" v-model.number="comicBrightness" type="range" min="50" max="150" step="5" />
+        <KRange input-id="comic-brightness" :value="comicBrightness" @input="comicBrightness = Number(($event.target as HTMLInputElement).value)" :min="50" :max="150" :step="5" class="min-w-0 flex-1" />
         <strong>{{ comicBrightness }}%</strong>
       </div>
       <div v-if="readerControlsMode === 'appearance' && ctx.readingImagePage && comicPanel === 'fit'"
         class="comic-scale-control">
         <span>图片缩放</span>
         <div>
-          <button :class="{ selected: ctx.comicScaleMode === 'fit-width' }"
-            @click="setComicScaleMode('fit-width')">适合宽度</button>
-          <button :class="{ selected: ctx.comicScaleMode === 'actual-size' }"
-            @click="setComicScaleMode('actual-size')">原始大小</button>
+          <KButton rounded :tonal="ctx.comicScaleMode === 'fit-width'" :clear="!(ctx.comicScaleMode === 'fit-width')" inline class="gap-2" :class="{ selected: ctx.comicScaleMode === 'fit-width' }"
+            @click="setComicScaleMode('fit-width')">适合宽度</KButton>
+          <KButton rounded :tonal="ctx.comicScaleMode === 'actual-size'" :clear="!(ctx.comicScaleMode === 'actual-size')" inline class="gap-2" :class="{ selected: ctx.comicScaleMode === 'actual-size' }"
+            @click="setComicScaleMode('actual-size')">原始大小</KButton>
         </div>
       </div>
       <template
@@ -618,16 +619,16 @@ export default defineComponent({
         <div class="setting-control compact-setting">
           <div><label>字号</label><small>{{ settings.reader.fontSizePx }} px</small></div>
           <div class="range-control">
-            <button @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx - 1, 12, 36)">−</button>
-            <input type="range" min="12" max="36" :value="settings.reader.fontSizePx"
-              @input="settings.reader.fontSizePx = Number(($event.target as HTMLInputElement).value)" />
-            <button @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx + 1, 12, 36)">＋</button>
+            <KButton rounded inline clear class="gap-2" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx - 1, 12, 36)">−</KButton>
+            <KRange :min="12" :max="36" :value="settings.reader.fontSizePx"
+              @input="settings.reader.fontSizePx = Number(($event.target as HTMLInputElement).value)"  class="min-w-0 flex-1" />
+            <KButton rounded inline clear class="gap-2" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx + 1, 12, 36)">＋</KButton>
           </div>
         </div>
         <div class="setting-control compact-setting">
           <div><label>行间距</label><small>{{ settings.reader.lineHeight.toFixed(1) }}</small></div>
-          <input type="range" min="1.2" max="2.8" step="0.1" :value="settings.reader.lineHeight"
-            @input="settings.reader.lineHeight = Number(($event.target as HTMLInputElement).value)" />
+          <KRange :min="1.2" :max="2.8" :step="0.1" :value="settings.reader.lineHeight"
+            @input="settings.reader.lineHeight = Number(($event.target as HTMLInputElement).value)"  class="min-w-0 flex-1" />
         </div>
       </template>
       <div
@@ -647,7 +648,7 @@ export default defineComponent({
             :aria-pressed="resolvedReadingTheme === theme[0]" @click="setReaderTheme(theme[0])">{{ theme[1] }}</button>
         </div>
       </div>
-    </aside>
+    </KGlass>
     </div>
   </section>
 

@@ -4,6 +4,7 @@ import type { AppSettingsResource } from "../../api/types";
 export const defaultSettings: AppSettingsResource = {
   schemaVersion: 1,
   theme: "system",
+  uiStyle: "material",
   sourceHttpTimeoutSeconds: 15,
   home: { tabs: [{ id: "tab-home", title: "主页", sortOrder: 0, sections: [] }] },
   reader: {

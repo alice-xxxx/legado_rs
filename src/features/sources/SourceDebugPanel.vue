@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import type { ResourceDescriptor, SearchBookResult, BookResource, SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 
@@ -41,7 +42,7 @@ function updateKeyword(event: Event): void {
     <article class="source-debug-dialog" role="dialog" aria-modal="true" aria-labelledby="source-debug-title">
       <header class="source-debug-header">
         <h2 id="source-debug-title">测试来源</h2>
-        <button type="button" class="source-debug-close" data-back-action aria-label="关闭测试" @click="emit('close')"><PrototypeIcon name="close" /></button>
+        <KButton rounded inline clear type="button" class="source-debug-close gap-2 size-11 p-0" data-back-action aria-label="关闭测试" @click="emit('close')"><PrototypeIcon name="close" /></KButton>
       </header>
       <div class="source-debug-body">
 
@@ -62,7 +63,7 @@ function updateKeyword(event: Event): void {
           />
         </label>
         <div class="source-debug-actions">
-          <button type="submit" class="button primary" :disabled="busy || keywordLoading || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '处理中…' : keywordLoading ? '读取中…' : '开始测试' }}</button>
+          <KButton rounded inline type="submit" class="gap-2" :disabled="busy || keywordLoading || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '处理中…' : keywordLoading ? '读取中…' : '开始测试' }}</KButton>
         </div>
       </form>
 
@@ -82,7 +83,7 @@ function updateKeyword(event: Event): void {
             <p class="source-debug-copy">{{ result.author || '作者未知' }}<span v-if="result.latestChapter"> · 最新：{{ result.latestChapter }}</span></p>
             <small v-if="result.intro">{{ result.intro }}</small>
           </div>
-          <button type="button" class="button secondary small" :disabled="busy" @click="emit('inspectResult', result)">{{ selectedResult?.resultId === result.resultId ? '已选择' : '详情与目录' }}</button>
+          <KButton rounded inline tonal small type="button" class="gap-2" :disabled="busy" @click="emit('inspectResult', result)">{{ selectedResult?.resultId === result.resultId ? '已选择' : '详情与目录' }}</KButton>
         </article>
       </section>
       <p v-if="searched && !results.length && !busy">没有找到匹配结果。</p>
@@ -93,7 +94,7 @@ function updateKeyword(event: Event): void {
         <p v-if="book.intro" class="source-debug-book-intro">{{ book.intro }}</p>
         <strong>章节目录 · {{ chapters.length }}</strong>
         <div v-if="chapters.length" class="source-debug-chapters">
-          <button v-for="chapter in chapters" :key="chapter.index" type="button" class="text-button source-debug-chapter-button" :disabled="busy" @click="emit('previewChapter', chapter)">{{ chapter.index + 1 }}. {{ chapter.title }}{{ selectedChapterIndex === chapter.index ? ' · 已选' : '' }}</button>
+          <KButton rounded inline clear v-for="chapter in chapters" :key="chapter.index" type="button" class="source-debug-chapter-button gap-2" :disabled="busy" @click="emit('previewChapter', chapter)">{{ chapter.index + 1 }}. {{ chapter.title }}{{ selectedChapterIndex === chapter.index ? ' · 已选' : '' }}</KButton>
         </div>
         <p v-else>目录为空。</p>
       </section>
@@ -109,6 +110,7 @@ function updateKeyword(event: Event): void {
 </template>
 
 <style scoped>
+@layer components {
 .source-debug-backdrop {
   position: fixed;
   inset: 0;
@@ -117,7 +119,7 @@ function updateKeyword(event: Event): void {
   align-items: center;
   justify-content: center;
   padding: 16px;
-  background: rgb(25 27 35 / 36%);
+  background: var(--app-scrim);
 }
 
 .source-debug-dialog {
@@ -203,11 +205,6 @@ function updateKeyword(event: Event): void {
   display: flex;
   justify-content: flex-end;
   padding-top: 4px;
-}
-
-.source-debug-actions .button {
-  min-height: var(--ui-control-height);
-  font-weight: 500;
 }
 
 .source-debug-close:focus-visible,
@@ -306,5 +303,6 @@ function updateKeyword(event: Event): void {
 
 .source-debug-frame {
   height: 320px;
+}
 }
 </style>

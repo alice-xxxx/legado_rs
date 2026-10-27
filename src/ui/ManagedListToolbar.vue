@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import PrototypeIcon from "./PrototypeIcon.vue";
 
 defineProps<{
@@ -29,33 +30,34 @@ const emit = defineEmits<{
       />
     </label>
     <div class="managed-list-toolbar__control">
-      <button
+      <KButton rounded inline clear
         type="button"
-        class="managed-list-toolbar__button"
+        class="managed-list-toolbar__button gap-2 size-11 p-0"
         aria-label="筛选列表"
         :aria-expanded="filterExpanded"
         @click="emit('toggle-filter', $event)"
-      ><PrototypeIcon name="filter" /></button>
+      ><PrototypeIcon name="filter" /></KButton>
       <slot name="filter-menu" />
     </div>
     <div class="managed-list-toolbar__control">
-      <button
+      <KButton rounded inline clear
         type="button"
-        class="managed-list-toolbar__button"
+        class="managed-list-toolbar__button gap-2 size-11 p-0"
         aria-label="更多列表操作"
         :aria-expanded="actionsExpanded"
         @click="emit('toggle-actions', $event)"
-      ><PrototypeIcon name="more" /></button>
+      ><PrototypeIcon name="more" /></KButton>
       <slot name="actions-menu" />
     </div>
   </header>
 </template>
 
 <style scoped>
+@layer components {
 .managed-list-toolbar {
   position: relative;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 32px 32px;
+  grid-template-columns: minmax(0, 1fr) 44px 44px;
   align-items: center;
   gap: 5px;
   margin: 0 0 10px;
@@ -67,7 +69,7 @@ const emit = defineEmits<{
   align-items: center;
   gap: 8px;
   min-width: 0;
-  height: 38px;
+  height: var(--ui-control-height);
   padding: 0 10px;
   border: 1px solid var(--app-line);
   border-radius: 10px;
@@ -123,17 +125,18 @@ const emit = defineEmits<{
 
 @media (max-width: 520px) {
   .managed-list-toolbar {
-    grid-template-columns: minmax(0, 1fr) 30px 30px;
+    grid-template-columns: minmax(0, 1fr) 44px 44px;
     gap: 4px;
   }
 
   .managed-list-toolbar__search {
-    height: 36px;
+    height: var(--ui-control-height);
   }
 }
 @media (pointer: coarse) {
   .managed-list-toolbar { grid-template-columns: minmax(0, 1fr) 44px 44px; }
   .managed-list-toolbar__button { width: 44px; height: 44px; }
   .managed-list-toolbar__search { height: 44px; }
+}
 }
 </style>

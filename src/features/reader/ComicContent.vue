@@ -35,6 +35,7 @@ function onClick(event: MouseEvent): void {
   </div>
 </template>
 <style scoped>
+@layer components {
 .comic-reader { width: 100%; height: 100%; overflow: auto; touch-action: pan-y; background: var(--app-background); }
 .comic-reader :deep(img) { display: block; flex: none; width: 100%; height: auto; scroll-snap-align: start; }
 .comic-reader.original :deep(img) { width: auto; max-width: none; }
@@ -43,4 +44,5 @@ function onClick(event: MouseEvent): void {
 .comic-reader.paged :deep(img),
 .comic-reader.paged.original :deep(img) { flex: 0 0 100%; width: 100%; height: 100%; max-width: 100%; object-fit: contain; }
 .comic-reader :deep(p) { margin: 0; }
+}
 </style>

@@ -1,4 +1,5 @@
-import { createApp, type Component } from "vue";
+import { createApp, h, type Component } from "vue";
+import { Provider as KonstaProvider } from "konsta/vue";
 import { emit } from "@tauri-apps/api/event";
 import { appBootstrap } from "./api/core";
 import router from "./router";
@@ -8,15 +9,15 @@ import ExternalImportHost from "./features/import/ExternalImportHost.vue";
 import ReaderHost from "./features/reader/ReaderHost.vue";
 import GlobalNoticeHost from "./app/GlobalNoticeHost.vue";
 import RecoveryRuntime from "./app/RecoveryRuntime.vue";
-import { loadSettings } from "./features/settings/settingsStore";
-import { initializeTheme } from "./features/settings/themeState";
+import { loadSettings, settings } from "./features/settings/settingsStore";
+import { initializeTheme, resolvedAppTheme } from "./features/settings/themeState";
 import { loadHistory } from "./features/settings/historyStore";
 import { loadConfigurations } from "./features/settings/configurationStores";
 import { initializeBookStore } from "./features/books/bookDetailState";
 import { initializeDatabase } from "./api/database";
 import { loadShelf } from "./features/shelf/shelfStore";
 import { loadSources } from "./features/sources/sourcesStore";
-import "./style.css";
+import "./konsta.css";
 
 const mountedApps: Array<{ unmount: () => void }> = [];
 let startupDisposed = false;
@@ -38,7 +39,13 @@ function asText(value: unknown): string {
 }
 
 function mountRoot(component: Component, target: string, name: string, useRouter = false): void {
-  const app = createApp(component);
+  const app = createApp({
+    setup: () => () => h(KonstaProvider, {
+      theme: settings.value.uiStyle,
+      dark: resolvedAppTheme.value === "dark",
+      autoThemeDetection: false,
+    }, { default: () => h(component) }),
+  });
   if (useRouter) app.use(router);
 
   app.config.errorHandler = (error, _instance, info) => {

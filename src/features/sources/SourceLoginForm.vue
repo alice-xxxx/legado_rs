@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Toggle as KToggle, Button as KButton } from "konsta/vue";
 import { computed, ref, useId, watch } from "vue";
 import type { SourceLoginAction, SourceLoginField, SourceLoginForm, SourceLoginLayoutRow } from "../../api/types";
 
@@ -59,15 +60,14 @@ function execute(actionId?: number): void {
       <div v-for="(row, index) in rows" :key="index" class="source-login-row" :style="rowStyle(row)"
         :class="{ 'source-login-row--title': row.kind === 'title', 'source-login-row--action': row.kind === 'action', 'source-login-row--tall': row.rows > 1 }">
         <p v-if="row.kind === 'title'" class="source-login-section-title">{{ row.label }}</p>
-        <button v-else-if="row.action" type="button" class="source-login-rule-button" :disabled="disabled"
-          @click="execute(row.action.id)">{{ row.action.label }}</button>
+        <KButton rounded inline clear v-else-if="row.action" type="button" class="source-login-rule-button gap-2" :disabled="disabled"
+          @click="execute(row.action.id)">{{ row.action.label }}</KButton>
         <template v-else-if="row.field">
-          <label v-if="row.field.type === 'toggle'" class="source-login-toggle" :class="{ 'is-disabled': disabled }" :for="fieldId(row.field.name, index)">
+          <label v-if="row.field.type === 'toggle'" class="source-login-toggle" :class="{ 'is-disabled': disabled }">
             <span>{{ row.field.label }}</span>
-            <input :id="fieldId(row.field.name, index)" type="checkbox" :disabled="disabled"
+            <KToggle component="span" :disabled="disabled"
               :checked="modelValue[row.field.name] === (row.field.choices?.[1] ?? 'true')"
-              @change="change(row.field.name, ($event.target as HTMLInputElement).checked ? (row.field.choices?.[1] ?? 'true') : (row.field.choices?.[0] ?? 'false'), row.kind === 'field' ? row.id : undefined)" />
-            <span class="source-login-toggle-track" aria-hidden="true"></span>
+              @change="change(row.field.name, ($event.target as HTMLInputElement).checked ? (row.field.choices?.[1] ?? 'true') : (row.field.choices?.[0] ?? 'false'), row.kind === 'field' ? row.id : undefined)"  />
           </label>
           <template v-else>
             <label class="source-login-label" :for="fieldId(row.field.name, index)">{{ row.field.label }}</label>
@@ -81,13 +81,13 @@ function execute(actionId?: number): void {
                 autocomplete="new-password" maxlength="4096"
                 @input="change(row.field.name, ($event.target as HTMLInputElement).value)"
                 @change="execute(row.kind === 'field' ? row.id : undefined)" />
-              <button type="button" :aria-label="visiblePasswords.includes(row.field.name) ? '隐藏密码' : '显示密码'"
+              <KButton rounded inline clear class="gap-2" type="button" :aria-label="visiblePasswords.includes(row.field.name) ? '隐藏密码' : '显示密码'"
                 :aria-pressed="visiblePasswords.includes(row.field.name)" :disabled="disabled" @click="togglePassword(row.field.name)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
                   <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>
                   <path v-if="visiblePasswords.includes(row.field.name)" d="m4 4 16 16"/>
                 </svg>
-              </button>
+              </KButton>
             </div>
             <textarea v-else-if="row.rows > 1" :id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''"
               :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off"
@@ -104,11 +104,12 @@ function execute(actionId?: number): void {
     <p v-if="form.fields.some(field => field.password || field.type === 'password')" class="source-login-password-note">
       密码留空时沿用已保存的密码。
     </p>
-    <button v-if="form.canLogin" type="submit" class="source-login-submit" :disabled="disabled">{{ busy ? '正在处理…' : '登录' }}</button>
+    <KButton rounded inline v-if="form.canLogin" type="submit" class="source-login-submit gap-2" :disabled="disabled">{{ busy ? '正在处理…' : '登录' }}</KButton>
   </form>
 </template>
 
 <style scoped>
+@layer components {
 .source-login-fields{display:grid;gap:12px;min-width:0}
 .source-login-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));grid-auto-rows:minmax(var(--ui-control-height),auto);gap:12px;align-items:stretch}
 .source-login-row{display:flex;flex-direction:column;justify-content:flex-end;gap:6px;min-width:0;overflow-wrap:anywhere}
@@ -123,16 +124,11 @@ function execute(actionId?: number): void {
 .source-login-password>button{display:grid;place-items:center;flex:none;align-self:stretch;width:42px;border:0;background:transparent;color:var(--app-subtle);cursor:pointer}
 .source-login-password svg{width:19px;height:19px}
 .source-login-toggle{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:46px;padding:10px 12px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-panel-soft);font-size:var(--ui-font-body);cursor:pointer}
-.source-login-toggle>input{position:absolute;opacity:0;width:1px;height:1px}
-.source-login-toggle-track{position:relative;flex:none;width:40px;height:24px;border-radius:14px;background:var(--app-accent-soft)}
-.source-login-toggle-track::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--app-surface);box-shadow:0 1px 3px #0002}
-.source-login-toggle input:checked+.source-login-toggle-track{background:var(--app-accent)}
-.source-login-toggle input:checked+.source-login-toggle-track::after{transform:translateX(16px)}
-.source-login-toggle input:focus-visible+.source-login-toggle-track{outline:2px solid var(--app-accent);outline-offset:3px}
 .source-login-toggle.is-disabled{opacity:.55;cursor:default}
 .source-login-rule-button,.source-login-submit{min-height:var(--ui-control-height);padding:10px 12px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font:inherit;font-size:var(--ui-font-body);font-weight:500;line-height:1.4;cursor:pointer;overflow-wrap:anywhere}
 .source-login-row--tall .source-login-rule-button,.source-login-row--tall .source-login-toggle{flex:1}
 .source-login-submit{justify-self:end;padding-inline:16px;border-color:var(--app-accent);background:var(--app-accent);color:var(--app-on-accent)}
 .source-login-password-note{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5}
 .source-login-fields :disabled{opacity:.55;cursor:default}
+}
 </style>

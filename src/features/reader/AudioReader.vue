@@ -22,6 +22,8 @@ onBeforeUnmount(() => { audioElement.value?.pause(); reader.setReaderMediaElemen
   </ReaderPage>
 </template>
 <style scoped>
+@layer components {
 .audio-reader { width: 100%; height: 100%; display: grid; place-items: center; }
 audio { display: block; width: 100%; max-height: 100%;  }
+}
 </style>

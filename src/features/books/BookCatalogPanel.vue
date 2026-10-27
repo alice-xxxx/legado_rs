@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 import type { BookResource, ChapterResource } from "../../api/types";
 import { useVirtualList } from "../../ui/useVirtualList";
@@ -42,12 +43,12 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
       <label class="catalog-search">
         <PrototypeIcon name="search" aria-hidden="true" />
         <input v-model="query" type="search" :placeholder="searchPlaceholder" :aria-label="searchPlaceholder" />
-        <button v-if="query" type="button" aria-label="清空目录搜索" @click="query = ''"><PrototypeIcon name="close" /></button>
+        <KButton rounded inline clear class="gap-2" v-if="query" type="button" aria-label="清空目录搜索" @click="query = ''"><PrototypeIcon name="close" /></KButton>
       </label>
       <div class="catalog-tools-actions">
-        <button type="button" title="定位当前" aria-label="定位当前" :disabled="activeIndex === undefined" @click="locateCurrent"><PrototypeIcon name="tune" /><span>定位当前</span></button>
-        <button type="button" :title="descending ? '切换为正序' : '切换为倒序'" :aria-label="descending ? '切换为正序' : '切换为倒序'" :aria-pressed="descending" @click="descending = !descending"><PrototypeIcon name="filter" /><span>{{ descending ? '倒序' : '正序' }}</span></button>
-        <button type="button" title="缓存全部" aria-label="缓存全部" :disabled="!canDownload || locked || busy" @click="emit('download')"><PrototypeIcon name="download" /><span>缓存全部</span></button>
+        <KButton rounded inline clear class="gap-2" type="button" title="定位当前" aria-label="定位当前" :disabled="activeIndex === undefined" @click="locateCurrent"><PrototypeIcon name="tune" /><span>定位当前</span></KButton>
+        <KButton rounded inline clear class="gap-2" type="button" :title="descending ? '切换为正序' : '切换为倒序'" :aria-label="descending ? '切换为正序' : '切换为倒序'" :aria-pressed="descending" @click="descending = !descending"><PrototypeIcon name="filter" /><span>{{ descending ? '倒序' : '正序' }}</span></KButton>
+        <KButton rounded inline clear class="gap-2" type="button" title="缓存全部" aria-label="缓存全部" :disabled="!canDownload || locked || busy" @click="emit('download')"><PrototypeIcon name="download" /><span>缓存全部</span></KButton>
       </div>
     </div>
     <div ref="viewport" class="catalog-scroll">
@@ -59,17 +60,18 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
             <span v-if="chapter.index === activeIndex" class="catalog-current-label">当前</span>
             <span v-if="!chapter.volume && !chapter.resource && !chapter.pages?.length && !chapter.media" class="catalog-uncached" title="未缓存" aria-label="未缓存"><PrototypeIcon name="cloud" /></span>
           </button>
-          <button v-if="canReplace && !chapter.volume" type="button" class="catalog-replace-action" :disabled="busy || locked" :aria-label="`更换《${chapter.title}》的章节来源`" title="更换章节来源" @click="emit('replace', chapter)"><PrototypeIcon name="source-switch" /></button>
+          <KButton rounded inline clear v-if="canReplace && !chapter.volume" type="button" class="catalog-replace-action gap-2" :disabled="busy || locked" :aria-label="`更换《${chapter.title}》的章节来源`" title="更换章节来源" @click="emit('replace', chapter)"><PrototypeIcon name="source-switch" /></KButton>
         </article>
         <div aria-hidden="true" :style="{ height: `${range.bottom}px` }"></div>
         <div v-if="!book.chapters.length" class="page-empty-state">暂无可显示的目录。</div>
-        <div v-else-if="!chapters.length" class="page-empty-state">没有匹配的内容。<button type="button" class="text-button" @click="query = ''">清空搜索</button></div>
+        <div v-else-if="!chapters.length" class="page-empty-state">没有匹配的内容。<KButton rounded inline clear type="button" class="gap-2" @click="query = ''">清空搜索</KButton></div>
       </div>
     </div>
   </section>
 </template>
 
 <style scoped>
+@layer components {
 .book-catalog-view { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; color: var(--app-text); background: var(--app-background); }
 .catalog-tools { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--app-line); }
 .catalog-search { display: flex; align-items: center; gap: 6px; min-width: 0; height: 34px; padding-inline: 8px 4px; border: 1px solid var(--app-line); border-radius: var(--ui-radius); color: var(--app-muted); background: var(--app-surface); }
@@ -99,5 +101,6 @@ button:disabled { cursor: default; }
 @media (max-width: 680px) {
   .catalog-tools-actions button { width: 32px; padding: 0; }
   .catalog-tools-actions span { display: none; }
+}
 }
 </style>

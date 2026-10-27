@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 import { computed } from "vue";
 import type { BookResource, SearchResultSource } from "../../api/types";
 import type { BookSourceSwitchSession } from "./bookSourceSwitchSession";
@@ -40,16 +41,16 @@ const sourceCandidates = computed<SearchResultSource[]>(() => {
       <header class="source-heading">
         <h2>可更换源</h2>
         <div class="source-heading-actions">
-          <button v-if="canCheck" type="button" :disabled="checkBusy || busy" @click="emit('check')">{{ checkBusy ? '检查中…' : '检查更新' }}</button>
-          <button v-if="canSearch" type="button" :disabled="searching || busy" @click="emit('search')"><PrototypeIcon name="search" /><span>{{ searching ? '正在搜索…' : '搜索更多' }}</span></button>
+          <KButton rounded inline clear class="gap-2" v-if="canCheck" type="button" :disabled="checkBusy || busy" @click="emit('check')">{{ checkBusy ? '检查中…' : '检查更新' }}</KButton>
+          <KButton rounded inline clear class="gap-2" v-if="canSearch" type="button" :disabled="searching || busy" @click="emit('search')"><PrototypeIcon name="search" /><span>{{ searching ? '正在搜索…' : '搜索更多' }}</span></KButton>
         </div>
       </header>
       <p v-if="loading" class="status-notice" role="status">正在加载详情和目录，可直接选择其他来源。</p>
-      <p v-if="searching" class="status-notice" role="status">{{ session.bookSourceSearchStatus }} <button type="button" class="text-button" @click="session.stopBookSourceCandidateSearch">停止搜索</button></p>
+      <p v-if="searching" class="status-notice" role="status">{{ session.bookSourceSearchStatus }} <KButton rounded inline clear type="button" class="gap-2" @click="session.stopBookSourceCandidateSearch">停止搜索</KButton></p>
       <p v-if="session.bookSourceSwitchCancellable" class="status-notice" role="status">
-        正在获取新来源… <button type="button" class="text-button" @click="session.closeBookSourceSwitch">取消换源</button>
+        正在获取新来源… <KButton rounded inline clear type="button" class="gap-2" @click="session.closeBookSourceSwitch">取消换源</KButton>
       </p>
-      <p v-if="message" class="status-notice is-error">{{ message }} <button v-if="error" type="button" class="text-button" @click="emit('retry')">重试</button></p>
+      <p v-if="message" class="status-notice is-error">{{ message }} <KButton rounded inline clear v-if="error" type="button" class="gap-2" @click="emit('retry')">重试</KButton></p>
       <div class="source-candidates">
         <article v-for="candidate in sourceCandidates" :key="candidate.resultId" class="source-candidate" :data-result-id="candidate.resultId">
           <span class="source-cover" aria-hidden="true">
@@ -69,10 +70,10 @@ const sourceCandidates = computed<SearchResultSource[]>(() => {
             </div>
           </div>
           <div v-if="candidate.sourceId === (book.sourceId ?? '')" class="source-actions">
-            <button v-if="canRefresh" type="button" :disabled="refreshBusy || busy" @click="emit('refresh')">{{ refreshBusy ? '刷新中…' : '刷新信息' }}</button>
+            <KButton rounded inline clear class="gap-2" v-if="canRefresh" type="button" :disabled="refreshBusy || busy" @click="emit('refresh')">{{ refreshBusy ? '刷新中…' : '刷新信息' }}</KButton>
           </div>
           <div v-else class="source-actions">
-            <button type="button" :disabled="busy" @click="emit('select', candidate)">{{ session.bookSourceSwitchBusy && session.selectedBookSourceCandidate?.resultId === candidate.resultId ? '正在换源…' : '换源' }}</button>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="busy" @click="emit('select', candidate)">{{ session.bookSourceSwitchBusy && session.selectedBookSourceCandidate?.resultId === candidate.resultId ? '正在换源…' : '换源' }}</KButton>
           </div>
         </article>
       </div>
@@ -82,6 +83,7 @@ const sourceCandidates = computed<SearchResultSource[]>(() => {
 </template>
 
 <style scoped>
+@layer components {
 .book-sources-panel { width: 100%; margin-inline: auto; color: var(--app-text); }
 .source-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .source-heading h2 { flex: none; margin: 0; color: var(--app-muted); font-size: var(--ui-font-caption); font-weight: 650; }
@@ -105,4 +107,5 @@ button .prototype-icon { width: 16px; height: 16px; }
 .source-latency { flex: none; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .source-actions { display: flex; }
 .source-actions button { min-width: 64px; border-color: transparent; background: var(--app-panel-soft); }
+}
 </style>

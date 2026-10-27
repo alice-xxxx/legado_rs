@@ -344,7 +344,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+@layer components {
 .reader-view { display: flex; position: absolute; inset: 0; }
 /* Keep the text layout and audio element alive while the rest of the app is usable. */
 .reader-view.minimized { transform: translateX(-200vw); visibility: hidden; pointer-events: none; }
+}
 </style>

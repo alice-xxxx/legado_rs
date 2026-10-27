@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Popover as KPopover, Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
 // 书源页管理本地筛选和选择视图；保存、登录、导入等副作用交给应用层处理。
 import { computed, ref, watch } from "vue";
 import { useVirtualList } from "../../ui/useVirtualList";
@@ -138,7 +139,7 @@ function chooseAddAction(action: "new" | "file" | "url"): void {
 useOutsidePointerDismiss(
   () => addMenuOpen.value || !!openSourceMenuId.value || filterMenuOpen.value || actionsMenuOpen.value,
   (target) => target instanceof Element
-    && !!target.closest(".source-header-add, .managed-list-toolbar__control, .managed-list-row__menu-wrap"),
+    && !!target.closest(".source-add-menu, .source-header-add, .managed-list-toolbar__control, .managed-list-row__menu-wrap"),
   () => {
   addMenuOpen.value = false;
   openSourceMenuId.value = null;
@@ -153,17 +154,20 @@ useOutsidePointerDismiss(
     <SubpageHeader title="内容引擎" back-label="返回我的" @back="emit('back')">
       <template #actions>
         <div class="source-header-add">
-          <button type="button" class="source-header-import"
+          <KButton rounded inline type="button" class="source-header-import gap-2"
             :disabled="writeLocked"
-            @click="addMenuOpen = !addMenuOpen; openSourceMenuId = null; filterMenuOpen = false; actionsMenuOpen = false"><PrototypeIcon name="plus"/><span>添加</span></button>
-          <div v-if="addMenuOpen" class="source-add-menu">
-            <button type="button" @click="chooseAddAction('new')">新建来源</button>
-            <button type="button" :disabled="editorOpen" @click="chooseAddAction('file')">本地 JSON 导入</button>
-            <button type="button" :disabled="editorOpen" @click="chooseAddAction('url')">网络链接导入</button>
-          </div>
+            @click="addMenuOpen = !addMenuOpen; openSourceMenuId = null; filterMenuOpen = false; actionsMenuOpen = false"><PrototypeIcon name="plus"/><span>添加</span></KButton>
+
         </div>
       </template>
     </SubpageHeader>
+<KPopover v-if="addMenuOpen" opened :backdrop="false" target=".source-header-add" class="source-add-menu w-60 max-w-[calc(100vw-32px)]">
+  <div class="p-2">
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="chooseAddAction('new')">新建来源</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="editorOpen" @click="chooseAddAction('file')">本地 JSON 导入</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="editorOpen" @click="chooseAddAction('url')">网络链接导入</KButton>
+  </div>
+</KPopover>
     <div v-if="locked" class="source-recovery-notice">资源恢复尚未完成。修改来源的操作暂时不可用，请重启应用完成恢复。</div>
 
     <div class="source-workbench" :class="{ 'inspector-open': mobileInspectorOpen, 'is-editing': editorOpen }">
@@ -180,30 +184,30 @@ useOutsidePointerDismiss(
           @toggle-actions="actionsMenuOpen = !actionsMenuOpen; filterMenuOpen = false; addMenuOpen = false; openSourceMenuId = null"
         >
           <template #filter-menu>
-            <div v-if="filterMenuOpen" class="source-filter-menu">
-              <button type="button" :class="{ active: statusFilter === 'all' }"
-                @click="statusFilter = 'all'; filterMenuOpen = false">全部来源</button>
-              <button type="button" :class="{ active: statusFilter === 'enabled' }"
-                @click="statusFilter = 'enabled'; filterMenuOpen = false">仅启用</button>
-              <button type="button" :class="{ active: statusFilter === 'disabled' }"
-                @click="statusFilter = 'disabled'; filterMenuOpen = false">仅停用</button>
+            <KGlass component="div" :highlight="false" v-if="filterMenuOpen" class="source-filter-menu rounded-2xl">
+              <KButton rounded :tonal="statusFilter === 'all'" :clear="!(statusFilter === 'all')" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: statusFilter === 'all' }"
+                @click="statusFilter = 'all'; filterMenuOpen = false">全部来源</KButton>
+              <KButton rounded :tonal="statusFilter === 'enabled'" :clear="!(statusFilter === 'enabled')" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: statusFilter === 'enabled' }"
+                @click="statusFilter = 'enabled'; filterMenuOpen = false">仅启用</KButton>
+              <KButton rounded :tonal="statusFilter === 'disabled'" :clear="!(statusFilter === 'disabled')" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: statusFilter === 'disabled' }"
+                @click="statusFilter = 'disabled'; filterMenuOpen = false">仅停用</KButton>
               <template v-if="groups.length || groupFilter">
                 <div class="source-filter-divider" role="separator"></div>
-                <button type="button" :class="{ active: !groupFilter }" :aria-pressed="!groupFilter"
-                  @click="groupFilter = ''; filterMenuOpen = false">全部分组</button>
-                <button v-for="group in groups" :key="group" type="button" :class="{ active: groupFilter === group }"
+                <KButton rounded :tonal="!groupFilter" :clear="!(!groupFilter)" inline class="gap-2 w-full justify-start text-current" type="button" :class="{ active: !groupFilter }" :aria-pressed="!groupFilter"
+                  @click="groupFilter = ''; filterMenuOpen = false">全部分组</KButton>
+                <KButton rounded :tonal="groupFilter === group" :clear="!(groupFilter === group)" inline class="gap-2 w-full justify-start text-current" v-for="group in groups" :key="group" type="button" :class="{ active: groupFilter === group }"
                   :aria-pressed="groupFilter === group" :aria-label="`分组：${group}`"
-                  @click="groupFilter = group; filterMenuOpen = false">{{ group }}</button>
+                  @click="groupFilter = group; filterMenuOpen = false">{{ group }}</KButton>
               </template>
-            </div>
+            </KGlass>
           </template>
           <template #actions-menu>
-            <div v-if="actionsMenuOpen" class="source-toolbar-actions-menu">
-              <button type="button" :disabled="toolbarBusy || editorOpen"
+            <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="source-toolbar-actions-menu rounded-2xl">
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="toolbarBusy || editorOpen"
                 @click="batchMode = !batchMode; emit('selection-change', []); actionsMenuOpen = false">
                 {{ batchMode ? '退出批量管理' : '批量管理' }}
-              </button>
-            </div>
+              </KButton>
+            </KGlass>
           </template>
         </ManagedListToolbar>
         <div v-if="filteredSources.length" ref="sourceViewport" class="source-master-list" @scroll.passive="filterMenuOpen = false; actionsMenuOpen = false; openSourceMenuId = null">
@@ -219,10 +223,10 @@ useOutsidePointerDismiss(
             @toggle-menu="openSourceMenuId = openSourceMenuId === source.id ? null : source.id; addMenuOpen = false; filterMenuOpen = false; actionsMenuOpen = false"
           >
             <template #menu>
-                <button type="button" :disabled="writeLocked"
-                  @click="openSourceMenuId = null; emit('change-enabled', source, !source.enabled)">{{ source.enabled ? '停用' : '启用' }}</button>
-                <button type="button" class="is-danger" :disabled="writeLocked"
-                  @click="openSourceMenuId = null; emit('remove', [source.id])">删除来源</button>
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked"
+                  @click="openSourceMenuId = null; emit('change-enabled', source, !source.enabled)">{{ source.enabled ? '停用' : '启用' }}</KButton>
+                <KButton rounded inline clear type="button" class="is-danger k-color-brand-danger gap-2 " :disabled="writeLocked"
+                  @click="openSourceMenuId = null; emit('remove', [source.id])">删除来源</KButton>
             </template>
           </ManagedListRow>
           <div aria-hidden="true" :style="{ height: `${sourceRange.bottom}px` }"></div>
@@ -231,32 +235,32 @@ useOutsidePointerDismiss(
         <div v-else class="source-master-empty">
           <strong>{{ sources.length ? '没有匹配的来源' : '还没有来源' }}</strong>
           <p v-if="sources.length">尝试其他关键词、状态或分组。</p>
-          <button v-if="filtersActive" type="button" @click="clearFilters">清除筛选</button>
+          <KButton rounded inline clear class="gap-2" v-if="filtersActive" type="button" @click="clearFilters">清除筛选</KButton>
         </div>
 
         <footer v-if="batchMode" class="source-master-footer">
           <label class="source-batch-select-all" title="全选当前筛选结果">
-            <input type="checkbox" :checked="allFilteredSelected" :disabled="!filteredSources.length || toolbarBusy || editorOpen"
-              aria-label="全选当前筛选结果" @change="toggleFilteredSelection" />全选
+            <KCheckbox component="span" :checked="allFilteredSelected" :disabled="!filteredSources.length || toolbarBusy || editorOpen"
+              aria-label="全选当前筛选结果" @change="toggleFilteredSelection"  />全选
           </label>
           <span class="source-selected-summary">已选 {{ selectedIds.length }}
-            <button v-if="selectedIds.length" type="button" :disabled="toolbarBusy"
-              @click="emit('selection-change', [])">取消选择</button>
+            <KButton rounded inline clear class="gap-2" v-if="selectedIds.length" type="button" :disabled="toolbarBusy"
+              @click="emit('selection-change', [])">取消选择</KButton>
           </span>
         </footer>
         <div v-if="batchMode && selectedIds.length" class="source-master-batch-actions">
           <div class="source-batch-buttons">
-            <button type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">启用</button>
-            <button type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">停用</button>
-            <button type="button" :disabled="toolbarBusy" @click="emit('export')">导出</button>
-            <button type="button" class="danger" :disabled="writeLocked" @click="removeSelected">移除</button>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">启用</KButton>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">停用</KButton>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="toolbarBusy" @click="emit('export')">导出</KButton>
+            <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeSelected">移除</KButton>
           </div>
           <div class="source-master-batch-group">
             <input v-model="batchGroup" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称"
               :disabled="writeLocked"/>
-            <button type="button" title="设置分组" aria-label="设置分组" :disabled="writeLocked||!batchGroup.trim()"
-              @click="emit('set-group', batchGroup)">应用</button>
-            <button type="button" class="source-group-clear" :disabled="writeLocked" @click="emit('set-group', null)">清空分组</button>
+            <KButton rounded inline clear class="gap-2" type="button" title="设置分组" aria-label="设置分组" :disabled="writeLocked||!batchGroup.trim()"
+              @click="emit('set-group', batchGroup)">应用</KButton>
+            <KButton rounded inline clear type="button" class="source-group-clear gap-2" :disabled="writeLocked" @click="emit('set-group', null)">清空分组</KButton>
           </div>
         </div>
       </aside>
@@ -264,23 +268,23 @@ useOutsidePointerDismiss(
       <slot name="editor"></slot>
       <main v-if="!editorOpen && activeSource && mobileInspectorOpen" class="source-inspector">
         <header class="source-inspector-head">
-          <button class="source-mobile-back" type="button" @click="mobileInspectorOpen = false"><PrototypeIcon name="left"/></button>
+          <KButton rounded inline clear class="source-mobile-back gap-2" type="button" @click="mobileInspectorOpen = false"><PrototypeIcon name="left"/></KButton>
           <div class="source-inspector-identity">
             <span class="source-large-icon"><PrototypeIcon :name="activeSource.isRss ? 'rss' : activeSource.mediaType === 'video' ? 'play' : activeSource.mediaType === 'audio' ? 'audio' : 'book'"/></span>
             <div><strong>{{ activeSource.name }}</strong></div>
           </div>
           <label class="source-switch">
-            <input type="checkbox" :checked="activeSource.enabled" :disabled="writeLocked" @change="emit('change-enabled', activeSource, ($event.target as HTMLInputElement).checked)" />
+            <KCheckbox component="span" :checked="activeSource.enabled" :disabled="writeLocked" @change="emit('change-enabled', activeSource, ($event.target as HTMLInputElement).checked)"  />
             <span></span>
           </label>
         </header>
 
         <p class="source-inspector-status" :class="{ off: !activeSource.enabled }"><span class="source-dot" :class="{ off: !activeSource.enabled }"></span>{{ activeSource.enabled ? '此来源已启用' : '此来源已停用，不会参与新的搜索' }}</p>
         <div class="source-inspector-actions">
-          <button type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')"><PrototypeIcon name="debug"/><span>测试</span></button>
-          <button v-if="!activeSource.isRss" type="button" :disabled="writeLocked" @click="runActiveAction('login')"><PrototypeIcon name="login"/><span>登录</span></button>
-          <button type="button" :disabled="writeLocked" @click="emit('edit', activeSource)"><PrototypeIcon name="edit"/><span>编辑</span></button>
-          <button type="button" :disabled="toolbarBusy" @click="runActiveAction('export')"><PrototypeIcon name="export"/><span>导出</span></button>
+          <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')"><PrototypeIcon name="debug"/><span>测试</span></KButton>
+          <KButton rounded inline clear class="gap-2" v-if="!activeSource.isRss" type="button" :disabled="writeLocked" @click="runActiveAction('login')"><PrototypeIcon name="login"/><span>登录</span></KButton>
+          <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('edit', activeSource)"><PrototypeIcon name="edit"/><span>编辑</span></KButton>
+          <KButton rounded inline clear class="gap-2" type="button" :disabled="toolbarBusy" @click="runActiveAction('export')"><PrototypeIcon name="export"/><span>导出</span></KButton>
         </div>
 
         <section class="source-inspector-section">
@@ -308,25 +312,25 @@ useOutsidePointerDismiss(
           <div class="source-verification-state">
             <span class="source-verification-icon"><PrototypeIcon name="info"/></span>
             <div><strong>查看真实解析结果</strong><small>字段已配置不代表网站请求成功，点击测试验证实际规则。</small></div>
-            <button type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')">运行测试</button>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || searchBusy || !activeSource.enabled || activeSource.isRss === true" @click="runActiveAction('debug')">运行测试</KButton>
           </div>
         </section>
         <section v-if="selectedIds.length > 1" class="source-inspector-section source-batch-panel">
           <small>批量操作 · 已选 {{ selectedIds.length }}</small>
           <div class="source-batch-group-row">
             <input v-model="batchGroup" maxlength="100" placeholder="分组名称" :disabled="writeLocked" />
-            <button type="button" :disabled="writeLocked || !batchGroup.trim()" @click="emit('set-group', batchGroup)">应用分组</button>
-            <button type="button" :disabled="writeLocked" @click="emit('set-group', null)">清除分组</button>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked || !batchGroup.trim()" @click="emit('set-group', batchGroup)">应用分组</KButton>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-group', null)">清除分组</KButton>
           </div>
           <div class="source-batch-actions">
-            <button type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">批量启用</button>
-            <button type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">批量停用</button>
-            <button type="button" :disabled="toolbarBusy" @click="emit('export')">{{ exportBusy ? '导出中…' : '导出所选' }}</button>
-            <button type="button" class="danger" :disabled="writeLocked" @click="removeSelected">移除所选</button>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', true)">批量启用</KButton>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="writeLocked" @click="emit('set-enabled', false)">批量停用</KButton>
+            <KButton rounded inline clear class="gap-2" type="button" :disabled="toolbarBusy" @click="emit('export')">{{ exportBusy ? '导出中…' : '导出所选' }}</KButton>
+            <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeSelected">移除所选</KButton>
           </div>
         </section>
 
-        <button type="button" class="source-danger-row" :disabled="writeLocked" @click="removeActiveSource">删除这个来源</button>
+        <KButton rounded inline clear type="button" class="source-danger-row k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeActiveSource">删除这个来源</KButton>
       </main>
 
     </div>
@@ -335,6 +339,7 @@ useOutsidePointerDismiss(
 
 
 <style scoped>
+@layer components {
 .source-manager-page{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;max-width:none;margin:0;padding:0}
 .source-manager-page:not(.source-manager-page--editing){overflow:hidden}
 .source-manager-page > :deep(.subpage-header){position:sticky;top:0;z-index:10;min-height:var(--ui-header-height);margin:0;padding-inline:var(--ui-header-gutter);padding-bottom:4px;border-bottom:1px solid var(--app-line);background:var(--app-background)}
@@ -344,9 +349,6 @@ useOutsidePointerDismiss(
 .source-header-import svg{width:17px;height:17px}
 .source-header-import:disabled{opacity:.5;cursor:default}
 .source-header-add{position:relative}
-.source-add-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:55;display:grid;gap:3px;width:232px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
-.source-add-menu button{display:flex;align-items:center;min-height:40px;padding:9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);font-weight:650;cursor:pointer}
-.source-add-menu button:disabled{opacity:.5;cursor:default}
 .source-recovery-notice { margin-bottom:12px; border:1px solid var(--app-warning-line); border-radius:10px; padding:12px; color:var(--app-warning); background:var(--app-panel-soft); font-size:var(--ui-font-caption); }
 .source-filter-summary { display:flex; align-items:center; justify-content:space-between; padding:8px 3px 10px; color:var(--app-subtle); font-size:var(--ui-font-caption); }
 .source-filter-summary small { color:var(--app-subtle); font-size:var(--ui-font-caption); }
@@ -358,12 +360,12 @@ useOutsidePointerDismiss(
 .source-inspector-status { display:inline-flex; align-items:center; gap:7px; margin:13px 0 0; color:var(--app-accent); font-size:var(--ui-font-caption); }
 .source-inspector-status.off { color:var(--app-subtle); }
 
-.source-workbench { min-width:0;min-height:400px;height:calc(100dvh - 64px - var(--safe-top));display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;border:0;border-radius:0;background:var(--app-surface); }
+.source-workbench { min-width:0;min-height:400px;height:calc(100dvh - 64px - var(--safe-top));display:grid;grid-template-columns:300px minmax(0,1fr);overflow:hidden;border:0;border-radius:0;background:var(--app-background); }
 .source-manager-page:not(.source-manager-page--editing) .source-workbench{flex:1 1 auto;min-height:0;height:auto}
 .source-manager-page--editing .source-workbench{flex:1 1 auto;height:auto;min-height:0;border-top:1px solid var(--app-line)}
-.source-manager-page--editing .source-master{border-right:1px solid var(--app-line);background:var(--app-surface)}
+.source-manager-page--editing .source-master{border-right:1px solid var(--app-line);background:var(--app-background)}
 .source-manager-page--editing .source-master-footer button{pointer-events:none;opacity:.4}
-.source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px; border-right:1px solid var(--app-line); background:var(--app-surface); }
+.source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px; border-right:1px solid var(--app-line); background:var(--app-background); }
 .source-filter-menu,.source-toolbar-actions-menu{position:absolute;right:0;top:calc(100% + 5px);z-index:70;display:grid;gap:3px;min-width:176px;padding:7px;border:1px solid var(--app-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
 .source-filter-menu>button,.source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);cursor:pointer}
 .source-filter-menu>button.active{color:var(--app-text);font-weight:600}
@@ -373,8 +375,7 @@ useOutsidePointerDismiss(
 .source-filter-divider{height:1px;margin:4px 2px;background:var(--app-line)}
 .source-toolbar-actions-menu>button:disabled{opacity:.5;cursor:default}
 .source-master-list { min-height:0; flex:1; margin-right:-14px; padding-right:14px; overflow:auto; }
-.source-master-list :deep(.managed-list-row) { height: 54px; }
-.source-dot { width:7px; height:7px; border-radius:50%; background:#5e8b6b; }
+.source-dot { width:7px; height:7px; border-radius:50%; background:var(--app-success); }
 .source-dot.off { background:var(--app-track); }
 .source-master-empty { flex:1; display:grid; place-items:center; color:var(--app-subtle); font-size:var(--ui-font-caption); text-align:center; }
 .source-master-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:8px; border-top:1px solid var(--app-line); }
@@ -424,7 +425,7 @@ useOutsidePointerDismiss(
   .source-manager-page--editing :deep(.source-edit-screen){width:100%;min-width:0}
   .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px - var(--safe-top));grid-template-columns:1fr}
   .source-manager-page:not(.source-manager-page--editing) .source-master{border:0}
-  .source-master{padding:12px 14px}
+  .source-master{padding:16px var(--ui-page-gutter)}
 }
 
 @media(max-width:760px) {
@@ -465,4 +466,5 @@ useOutsidePointerDismiss(
 .source-master-batch-group input{min-width:0;width:100%;min-height:36px;padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
 .source-master-batch-actions .source-group-clear{padding:0 4px;border-color:transparent;color:var(--app-muted)}
 .source-master-footer button:focus-visible,.source-batch-select-all input:focus-visible,.source-master-batch-actions button:focus-visible,.source-master-batch-group input:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
+}
 </style>

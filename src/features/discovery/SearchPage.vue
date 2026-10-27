@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
@@ -16,7 +17,7 @@ import {
 } from "./searchState";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { useVirtualList } from "../../ui/useVirtualList";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import router, { routeNames } from "../../router";
@@ -131,14 +132,14 @@ function toggleSearchOptions(): void {
 }
 
 function onSearchOptionsFocusOut(event: FocusEvent): void {
-  if (event.relatedTarget instanceof Node && !searchOptionsElement.value?.contains(event.relatedTarget)) {
+  if (event.relatedTarget instanceof Node && !searchOptionsElement.value?.contains(event.relatedTarget) && !document.getElementById("search-options-panel")?.contains(event.relatedTarget)) {
     closeSearchOptions();
   }
 }
 
 useOutsidePointerDismiss(
   () => searchOptionsOpen.value,
-  target => target instanceof Node && Boolean(searchOptionsElement.value?.contains(target)),
+  target => target instanceof Node && Boolean(searchOptionsElement.value?.contains(target) || document.getElementById("search-options-panel")?.contains(target)),
   closeSearchOptions,
 );
 watch(() => router.currentRoute.value.name, () => closeSearchOptions());
@@ -241,21 +242,18 @@ watch(selectedContentType, clearResultFilters);
 
 <template>
   <section class="search-view search-page-prototype">
-    <header class="search-prototype-topbar">
-      <div class="search-topbar-content">
-        <BackButton class="search-back-button" label="返回" @click="returnFromSearch" />
-        <form class="search-form search-prototype-top-input" @submit.prevent="submitSearch">
+    <SubpageHeader class="search-prototype-topbar" back-label="返回" @back="returnFromSearch"><template #title><form class="search-form search-prototype-top-input" @submit.prevent="submitSearch">
           <PrototypeIcon class="search-input-icon" name="search" aria-hidden="true" />
           <input :value="searchKeyword" aria-label="搜索关键词" enterkeyhint="search" placeholder="搜索标题、作者或关键词"
             :disabled="shelfBatchRecoveryRequired" @input="updateKeyword" />
-          <button v-if="searchKeyword" type="button" class="clear-search" aria-label="清空搜索" title="清空搜索"
+          <KButton rounded inline clear v-if="searchKeyword" type="button" class="clear-search gap-2" aria-label="清空搜索" title="清空搜索"
             :disabled="shelfBatchRecoveryRequired" @click="searchKeyword = ''">
             <PrototypeIcon name="close" />
-          </button>
-          <button class="search-submit" type="submit"
-            :disabled="!searchKeyword.trim() || activeSearchCancellationPending || shelfBatchRecoveryRequired">搜索</button>
-        </form>
-        <div ref="searchOptionsElement" class="search-more-control" @keydown.esc.stop.prevent="closeSearchOptions(true)"
+          </KButton>
+          <KButton rounded inline class="search-submit gap-2" type="submit"
+            :disabled="!searchKeyword.trim() || activeSearchCancellationPending || shelfBatchRecoveryRequired">搜索</KButton>
+        </form></template>
+<template #actions><div ref="searchOptionsElement" class="search-more-control" @keydown.esc.stop.prevent="closeSearchOptions(true)"
           @focusout="onSearchOptionsFocusOut">
           <button ref="searchOptionsButton" class="search-more-button"
             :class="{ 'has-notice': searchErrors.length || sourceFilter }" type="button"
@@ -263,15 +261,16 @@ watch(selectedContentType, clearResultFilters);
             aria-controls="search-options-panel" @click="toggleSearchOptions">
             <PrototypeIcon name="tune" />
           </button>
-          <div v-if="searchOptionsOpen" id="search-options-panel" class="search-options-panel" role="region"
-            aria-label="搜索选项">
-            <div class="search-options-heading">
+
+        </div></template></SubpageHeader>
+<KPopover v-if="searchOptionsOpen" opened :backdrop="false" target=".search-more-button" class="search-options-panel w-[min(360px,calc(100vw-32px))]">
+  <div id="search-options-panel" role="region" aria-label="搜索选项" class="p-4 max-h-[calc(100dvh-100px)] overflow-auto">
+<div class="search-options-heading">
               <strong>搜索设置</strong>
-              <button type="button" class="search-list-utility" aria-label="关闭搜索设置" @click="closeSearchOptions(true)">
+              <KButton rounded inline clear type="button" class="search-list-utility gap-2" aria-label="关闭搜索设置" @click="closeSearchOptions(true)">
                 <PrototypeIcon name="close" />
-              </button>
-            </div>
-            <label class="search-precision">
+              </KButton>
+            </div><label class="search-precision">
               匹配程度
               <select v-model="precisionSearch"
                 :disabled="activeSearchCancellationPending || shelfBatchRecoveryRequired"
@@ -280,15 +279,14 @@ watch(selectedContentType, clearResultFilters);
                 <option value="precise">精准搜索</option>
                 <option value="none">不限</option>
               </select>
-            </label>
-            <section class="search-menu-section">
+            </label><section class="search-menu-section">
               <div class="search-sidebar-source-heading">
                 <div class="search-sidebar-title-group">
                   <h3 class="search-prototype-sidebar-title">搜索来源</h3>
                   <span class="search-sidebar-count">{{ selectedSourceIds.length }}/{{ searchSources.length }}</span>
                 </div>
-                <button type="button" :disabled="shelfBatchRecoveryRequired || !searchSources.length"
-                  @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</button>
+                <KButton rounded inline clear class="gap-2 text-current" type="button" :disabled="shelfBatchRecoveryRequired || !searchSources.length"
+                  @click="setAllSearchSources(!selectedAllSources)">{{ selectedAllSources ? '取消全选' : '全选' }}</KButton>
               </div>
               <input v-if="searchSources.length > 12" v-model="searchSourceQuery" class="search-source-query"
                 type="search" aria-label="筛选搜索来源" placeholder="筛选来源名称" />
@@ -296,8 +294,8 @@ watch(selectedContentType, clearResultFilters);
                 <div :ref="sourceWindow.list">
                   <div aria-hidden="true" :style="{ height: `${searchSourceRange.top}px` }"></div>
                   <label v-for="source in visibleSearchSources" :key="source.id" class="search-menu-source">
-                    <input type="checkbox" :checked="selectedSourceSet.has(source.id)"
-                      :disabled="shelfBatchRecoveryRequired" @change="toggleSearchSource(source.id)" />
+                    <KCheckbox component="span" :checked="selectedSourceSet.has(source.id)"
+                      :disabled="shelfBatchRecoveryRequired" @change="toggleSearchSource(source.id)"  />
                     <span :title="source.name">{{ source.name }}</span>
                   </label>
                   <div aria-hidden="true" :style="{ height: `${searchSourceRange.bottom}px` }"></div>
@@ -305,10 +303,9 @@ watch(selectedContentType, clearResultFilters);
                 </div>
               </div>
               <div v-else class="search-sidebar-no-source">没有已启用的来源。
-                <button type="button" @click="openSources">管理源</button>
+                <KButton rounded inline clear class="gap-2 text-current" type="button" @click="openSources">管理源</KButton>
               </div>
-            </section>
-            <section v-if="searchResults.length && (resultSources.length > 1 || sourceFilter)"
+            </section><section v-if="searchResults.length && (resultSources.length > 1 || sourceFilter)"
               class="search-menu-section">
               <label class="search-menu-filter-label" for="search-result-source">结果来源</label>
               <div class="search-list-actions">
@@ -318,13 +315,12 @@ watch(selectedContentType, clearResultFilters);
                   <option v-for="[sourceId, name] in resultSources" :key="sourceId" :value="sourceId">{{ name }}
                   </option>
                 </select>
-                <button v-if="sourceFilter" class="search-list-utility" type="button" aria-label="清除来源筛选" title="清除来源筛选"
+                <KButton rounded inline clear v-if="sourceFilter" class="search-list-utility gap-2 text-current" type="button" aria-label="清除来源筛选" title="清除来源筛选"
                   :disabled="shelfBatchRecoveryRequired" @click="clearResultFilters">
                   <PrototypeIcon name="close" />
-                </button>
+                </KButton>
               </div>
-            </section>
-            <details v-if="searchErrors.length" class="search-errors" :open="searchErrorsOpen"
+            </section><details v-if="searchErrors.length" class="search-errors" :open="searchErrorsOpen"
               @toggle="onSearchErrorsToggle">
               <summary>
                 <span>{{ failedSourceCount ? `${failedSourceCount} 个源未完成搜索` : `搜索异常（${searchErrors.length} 条）` }}</span>
@@ -336,16 +332,14 @@ watch(selectedContentType, clearResultFilters);
                 </li>
               </ul>
             </details>
-          </div>
-        </div>
-      </div>
-    </header>
+  </div>
+</KPopover>
     <div class="search-prototype-layout">
       <nav class="search-type-tabs" aria-label="搜索类型">
         <div class="search-type-options">
-          <button v-for="type in contentTypes" :key="type.id" type="button"
+          <KButton rounded :tonal="selectedContentType === type.id" :clear="!(selectedContentType === type.id)" inline class="gap-2" v-for="type in contentTypes" :key="type.id" type="button"
             :class="{ active: selectedContentType === type.id }" :aria-pressed="selectedContentType === type.id"
-            :disabled="shelfBatchRecoveryRequired" @click="selectedContentType = type.id">{{ type.label }}</button>
+            :disabled="shelfBatchRecoveryRequired" @click="selectedContentType = type.id">{{ type.label }}</KButton>
         </div>
         <span class="search-source-summary" :title="`已选择 ${selectedSourceIds.length} 个搜索来源`">
           {{ selectedSourceIds.length }} 个源
@@ -357,14 +351,14 @@ watch(selectedContentType, clearResultFilters);
             aria-hidden="true"></span>
           {{ searchComplete ? `找到 ${visibleSearchResults.length} 本` : searchProgress }}
         </span>
-        <button v-if="searchBusy || activeSearchCancellationPending" type="button" class="search-cancel"
+        <KButton rounded inline clear v-if="searchBusy || activeSearchCancellationPending" type="button" class="search-cancel gap-2"
           :disabled="activeSearchCancellationPending" @click="cancelActiveSearch">{{ activeSearchCancellationPending ?
-            '取消中…' : '取消搜索' }}</button>
-        <button v-if="sourceFilter" type="button" class="search-active-filter" :disabled="shelfBatchRecoveryRequired"
+            '取消中…' : '取消搜索' }}</KButton>
+        <KButton rounded inline clear v-if="sourceFilter" type="button" class="search-active-filter gap-2" :disabled="shelfBatchRecoveryRequired"
           :aria-label="`清除来源筛选：${sourceNameForId(sourceFilter)}`" @click="clearResultFilters">
           <span>{{ sourceNameForId(sourceFilter) }}</span>
           <PrototypeIcon name="close" />
-        </button>
+        </KButton>
       </div>
       <main class="search-prototype-results" @wheel.passive="onSearchWheel" @touchstart.passive="onSearchTouchStart"
         @touchmove.passive="onSearchTouchMove" @keydown="onSearchKeyDown">
@@ -413,8 +407,8 @@ watch(selectedContentType, clearResultFilters);
             </template>
             <div v-if="!searchBusy && !visibleSearchResults.length" class="page-empty-state">
               {{ sourceFilter ? '该来源暂无匹配内容' : '暂无匹配内容' }}
-              <button v-if="sourceFilter" type="button" class="text-button" :disabled="shelfBatchRecoveryRequired"
-                @click="clearResultFilters">清除筛选</button>
+              <KButton rounded inline clear v-if="sourceFilter" type="button" class="gap-2" :disabled="shelfBatchRecoveryRequired"
+                @click="clearResultFilters">清除筛选</KButton>
             </div>
             <div ref="loadMoreMarker" class="search-load-more" aria-hidden="true"></div>
           </template>
@@ -425,6 +419,7 @@ watch(selectedContentType, clearResultFilters);
 </template>
 
 <style scoped>
+@layer components {
 .search-page-prototype {
   --search-width: 920px;
   --search-gutter: 20px;
@@ -432,25 +427,6 @@ watch(selectedContentType, clearResultFilters);
   min-width: 0;
   overflow-x: clip;
   padding-bottom: max(24px, var(--safe-bottom));
-}
-
-.search-prototype-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  padding: calc(12px + var(--safe-top)) var(--search-gutter) 12px;
-  border-bottom: 1px solid var(--app-line);
-  background: var(--app-background);
-}
-
-.search-topbar-content {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: min(var(--search-width), 100%);
-  min-width: 0;
-  margin-inline: auto;
 }
 
 .search-back-button,
@@ -692,22 +668,6 @@ watch(selectedContentType, clearResultFilters);
 
 .search-load-more {
   height: 1px;
-}
-
-.search-options-panel {
-  position: absolute;
-  top: calc(100% + 12px);
-  right: 0;
-  z-index: 4;
-  width: min(360px, 100%);
-  max-height: calc(100dvh - var(--safe-top) - 100px);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding: 8px 16px 12px;
-  border: 1px solid var(--app-line);
-  border-radius: 14px;
-  background: var(--app-surface);
-  box-shadow: var(--app-shadow);
 }
 
 .search-options-heading,
@@ -1011,10 +971,6 @@ watch(selectedContentType, clearResultFilters);
     --search-gutter: 16px;
   }
 
-  .search-topbar-content {
-    gap: 6px;
-  }
-
   .search-back-button {
     width: 28px;
     min-width: 28px;
@@ -1054,5 +1010,6 @@ watch(selectedContentType, clearResultFilters);
   .source-label {
     max-width: 84px;
   }
+}
 }
 </style>

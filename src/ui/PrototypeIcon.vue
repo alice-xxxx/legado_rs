@@ -60,10 +60,12 @@ const props=defineProps<{name:keyof typeof glyphs}>();
   <svg class="prototype-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" v-html="glyphs[props.name]"></svg>
 </template>
 <style scoped>
+@layer components {
 .prototype-icon {
   display: block;
   width: 22px;
   height: 22px;
   flex: none;
+}
 }
 </style>

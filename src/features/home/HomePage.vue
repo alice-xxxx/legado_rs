@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton } from "konsta/vue";
 defineOptions({ name: "HomePage" });
 
 /* 根据栏目配置加载发现内容，并复用搜索页的书目操作。 */
@@ -357,12 +358,13 @@ onBeforeUnmount(() => {
     <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
       @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
       <section class="home-discovery" :class="{ 'home-discovery-empty': !visibleResults.length }">
+        <h1 class="ui-page-title mb-5">发现</h1>
         <!-- 标签靠左，分类筛选和操作按钮靠右。 -->
         <div class="discover-filter-bar">
           <nav v-if="orderedTabs.length" class="home-tabs" aria-label="发现页面">
-            <button v-for="tab in orderedTabs" :key="tab.id"
+            <KButton rounded :tonal="activeTab?.id === tab.id" :clear="!(activeTab?.id === tab.id)" inline class="gap-2" v-for="tab in orderedTabs" :key="tab.id"
               :class="{ active: activeTab?.id === tab.id }"
-              @click="selectTab(tab.id)">{{ tab.title }}</button>
+              @click="selectTab(tab.id)">{{ tab.title }}</KButton>
           </nav>
           <div class="discover-controls">
             <label class="discover-type-picker">
@@ -373,13 +375,13 @@ onBeforeUnmount(() => {
               </select>
               <PrototypeIcon name="chevron-right" />
             </label>
-            <button class="discover-icon-button" type="button" aria-label="搜索" title="搜索" @click="openSearch">
+            <KButton rounded inline clear class="discover-icon-button gap-2 size-11 p-0" type="button" aria-label="搜索" title="搜索" @click="openSearch">
               <PrototypeIcon name="search" />
-            </button>
-            <button class="discover-icon-button" type="button" aria-label="管理栏目" title="管理栏目"
+            </KButton>
+            <KButton rounded inline clear class="discover-icon-button gap-2 size-11 p-0" type="button" aria-label="管理栏目" title="管理栏目"
               @click="manageHome">
               <PrototypeIcon name="tune" />
-            </button>
+            </KButton>
           </div>
         </div>
 
@@ -424,9 +426,10 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+@layer components {
 /* 页面滚动容器；触顶时限制浏览器自己的回弹，由页面处理下拉刷新。 */
 .home-page-layout { display:flex; width:100%; height:100dvh; min-height:0; overflow:hidden; padding-top:var(--safe-top); background:var(--app-background); }
-.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 clamp(20px,3.6vw,56px) var(--safe-bottom); }
+.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 var(--ui-page-gutter) var(--safe-bottom); }
 /* 下拉时显示的提示条和图标状态。 */
 .home-pull-refresh { display:flex; align-items:center; justify-content:center; gap:8px; overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); transition:height .12s ease; }
 .home-pull-refresh-icon { display:grid; width:16px; height:16px; place-items:center; }
@@ -434,7 +437,7 @@ onBeforeUnmount(() => {
 .home-pull-refresh-icon.ready svg { transform:rotate(180deg); }
 .home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
 /* 标签靠左，分类筛选和操作按钮靠右排列。 */
-.home-discovery { width:100%; max-width:1180px; min-width:0; margin:0 auto; padding:10px 0 26px; }
+.home-discovery { width:100%; max-width:calc(var(--app-content-width) - var(--ui-page-gutter) * 2); min-width:0; margin:0 auto; padding:24px 0 32px; }
 .home-discovery-empty { display:flex; flex-direction:column; min-height:100%; }
 .home-discovery-empty .discover-filter-bar { flex:none; }
 .discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
@@ -474,11 +477,10 @@ onBeforeUnmount(() => {
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:29px 12px; } }
 @media(max-width:860px) {
-  .home-page-main { padding:0 14px calc(var(--ui-nav-height) + var(--safe-bottom)); }
+  .home-page-main { padding:0 var(--ui-page-gutter) calc(var(--ui-nav-height) + var(--safe-bottom)); }
   .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
 }
 @media(max-width:640px) {
-  .home-discovery { padding-top:4px; }
   .discovery-content-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 11px; }
   .discover-filter-bar { gap:8px; margin-bottom:16px; padding-bottom:10px; }
   .home-tabs { gap:8px; }
@@ -486,5 +488,6 @@ onBeforeUnmount(() => {
   .discover-controls { gap:5px; }
   .discover-type-picker select { max-width:72px; font-size:var(--ui-font-body); }
   .discover-icon-button { width:28px; height:28px; }
+}
 }
 </style>

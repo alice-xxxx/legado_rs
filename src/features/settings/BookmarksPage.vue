@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 完整书签直接保存在全局 history 中。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -9,7 +11,6 @@ import type { AppBootstrap, Bookmark, HistoryResource } from "../../api/types";
 import { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
 import { backupBusy } from "./backupState";
 import { getReaderSession } from "../reader/readerSession";
 import { history as appHistory, removeHistoryBookmark } from "./historyStore";
@@ -270,41 +271,38 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <header class="history-topbar bookmarks-topbar safe-area-top">
-    <BackButton label="返回我的" @click="returnToSettings" />
-    <div class="history-heading"><strong>书签</strong></div>
-    <button v-if="bookmarks.length" type="button" class="record-icon-button"
+  <SubpageHeader class="history-topbar col-span-full row-start-1" title="书签" back-label="返回我的" @back="returnToSettings" >
+<template #actions><KButton rounded inline clear v-if="bookmarks.length" type="button" class="record-icon-button gap-2 size-11 p-0"
       aria-label="搜索书签"
-      :disabled="mutationBlocked || loading || bookmarkDeleteBusy" @click="closeBookmarkSearch"><PrototypeIcon name="search"/></button>
-    <span v-else></span>
-  </header>
+      :disabled="mutationBlocked || loading || bookmarkDeleteBusy" @click="closeBookmarkSearch"><PrototypeIcon name="search"/></KButton></template>
+</SubpageHeader>
   <section class="my-records my-records--bookmarks">
     <p v-if="loading" class="record-state" role="status">正在加载书签…</p>
     <div v-else-if="loadError" class="record-state record-error" role="alert">
-      书签载入失败：{{ loadError }} <button type="button" @click="loadPageData()">重试</button>
+      书签载入失败：{{ loadError }} <KButton rounded inline clear class="gap-2" type="button" @click="loadPageData()">重试</KButton>
     </div>
     <template v-else>
-      <p v-if="shelfError" class="record-state record-error" role="alert">书架更新失败：{{ shelfError }} <button type="button" @click="loadPageData()">重试</button></p>
-      <p v-if="bookmarkResourceError" class="record-state record-error" role="alert">书签更新失败：{{ bookmarkResourceError }} <button type="button" @click="loadPageData()">重试</button></p>
+      <p v-if="shelfError" class="record-state record-error" role="alert">书架更新失败：{{ shelfError }} <KButton rounded inline clear class="gap-2" type="button" @click="loadPageData()">重试</KButton></p>
+      <p v-if="bookmarkResourceError" class="record-state record-error" role="alert">书签更新失败：{{ bookmarkResourceError }} <KButton rounded inline clear class="gap-2" type="button" @click="loadPageData()">重试</KButton></p>
       <p v-if="bookmarkDeleteError" class="record-state record-error" role="alert">删除失败：{{ bookmarkDeleteError }}</p>
       <div v-if="bookmarks.length" class="bookmarks-toolbar">
         <span class="bookmark-total">{{ bookmarks.length }} 个书签</span>
-        <button type="button" class="record-action" :disabled="mutationBlocked || bookmarkDeleteBusy"
+        <KButton rounded inline clear type="button" class="record-action gap-2" :disabled="mutationBlocked || bookmarkDeleteBusy"
           @click="bookmarkManagementOpen = !bookmarkManagementOpen; selectedBookmarkIds = []; pendingBookmarkDeleteIds = null">
           {{ bookmarkManagementOpen ? '完成' : '管理' }}
-        </button>
+        </KButton>
       </div>
       <label v-if="bookmarkSearchOpen" class="record-search"><PrototypeIcon name="search"/>
         <input v-model="bookmarkQuery" type="search" placeholder="搜索书名、章节或备注" :disabled="mutationBlocked || bookmarkDeleteBusy"/>
       </label>
       <div v-if="bookmarks.length && bookmarkManagementOpen" class="bookmark-operations">
-        <label class="bookmark-select-all"><input type="checkbox" :checked="allVisibleBookmarksSelected"
-          :disabled="mutationBlocked || bookmarkDeleteBusy || !visibleBookmarks.length" @change="toggleVisibleBookmarkSelection"/>选择当前结果</label>
+        <label class="bookmark-select-all"><KCheckbox component="span" :checked="allVisibleBookmarksSelected"
+          :disabled="mutationBlocked || bookmarkDeleteBusy || !visibleBookmarks.length" @change="toggleVisibleBookmarkSelection" />选择当前结果</label>
         <span v-if="selectedBookmarks.length">已选 {{ selectedBookmarks.length }} 项</span>
-        <button v-if="selectedBookmarks.length" class="record-action" type="button" :disabled="mutationBlocked || bookmarkDeleteBusy"
-          @click="selectedBookmarkIds = []; bookmarkDeleteFeedback = ''; pendingBookmarkDeleteIds = null">取消选择</button>
-        <button v-if="selectedBookmarks.length" type="button" class="record-action record-delete" :disabled="mutationBlocked || bookmarkDeleteBusy"
-          @click="pendingBookmarkDeleteIds = selectedBookmarks.map(bookmark => bookmark.id); bookmarkDeleteFeedback = ''">删除所选</button>
+        <KButton rounded inline clear v-if="selectedBookmarks.length" class="record-action gap-2" type="button" :disabled="mutationBlocked || bookmarkDeleteBusy"
+          @click="selectedBookmarkIds = []; bookmarkDeleteFeedback = ''; pendingBookmarkDeleteIds = null">取消选择</KButton>
+        <KButton rounded inline clear v-if="selectedBookmarks.length" type="button" class="record-action record-delete k-color-brand-danger gap-2 " :disabled="mutationBlocked || bookmarkDeleteBusy"
+          @click="pendingBookmarkDeleteIds = selectedBookmarks.map(bookmark => bookmark.id); bookmarkDeleteFeedback = ''">删除所选</KButton>
       </div>
       <p v-if="bookmarkDeleteFeedback" class="record-feedback">{{ bookmarkDeleteFeedback }}</p>
       <div v-if="visibleBookmarks.length" class="bookmark-groups">
@@ -317,9 +315,9 @@ onBeforeUnmount(() => {
             <div><strong>{{ title(group.bookId) }}</strong><small>{{ matchingBookmarksPerBook.get(group.bookId) ?? group.items.length }} 个书签</small></div>
           </header>
           <div v-for="bookmark in group.items" :key="bookmark.id" class="bookmark-entry">
-            <input v-if="bookmarkManagementOpen" type="checkbox" class="bookmark-select" :checked="selectedBookmarkIds.includes(bookmark.id)"
+            <KCheckbox component="span" v-if="bookmarkManagementOpen" class="bookmark-select" :checked="selectedBookmarkIds.includes(bookmark.id)"
               :disabled="mutationBlocked || bookmarkDeleteBusy"
-              @change="toggleBookmarkSelection(bookmark.id)"/>
+              @change="toggleBookmarkSelection(bookmark.id)" />
             <button type="button" class="bookmark-target"
               :disabled="bookmark.orphaned || mutationBlocked || bookmarkDeleteBusy" @click="openBookmark(bookmark)">
               <span class="bookmark-anchor">{{ bookmark.chapterTitle || '第 ' + (bookmark.chapterIndex + 1) + ' 章' }}</span>
@@ -327,33 +325,27 @@ onBeforeUnmount(() => {
                 <small>{{ bookmark.orphaned ? '原章节不可用' : bookmarkUpdatedLabel(bookmark.updatedAtMs) }}</small></span>
               <PrototypeIcon name="right"/>
             </button>
-            <button v-if="bookmarkManagementOpen" type="button" class="record-action record-delete" :disabled="mutationBlocked || bookmarkDeleteBusy"
-              @click="pendingBookmarkDeleteIds = [bookmark.id]; bookmarkDeleteFeedback = ''">删除</button>
+            <KButton rounded inline clear v-if="bookmarkManagementOpen" type="button" class="record-action record-delete k-color-brand-danger gap-2 " :disabled="mutationBlocked || bookmarkDeleteBusy"
+              @click="pendingBookmarkDeleteIds = [bookmark.id]; bookmarkDeleteFeedback = ''">删除</KButton>
           </div>
         </section>
       </div>
       <div v-else class="record-state">{{ bookmarks.length ? '没有匹配的书签。' : '阅读时添加书签，就能从这里回到保存的位置。' }}</div>
-      <button v-if="filteredBookmarks.length > visibleBookmarks.length" type="button" class="record-load-more"
-        @click="bookmarkVisibleLimit += 120">显示更多书签 · {{ visibleBookmarks.length }} / {{ filteredBookmarks.length }}</button>
+      <KButton rounded inline clear v-if="filteredBookmarks.length > visibleBookmarks.length" type="button" class="record-load-more gap-2"
+        @click="bookmarkVisibleLimit += 120">显示更多书签 · {{ visibleBookmarks.length }} / {{ filteredBookmarks.length }}</KButton>
       <div v-if="pendingBookmarkDeleteIds?.length" class="bookmark-confirm-backdrop" data-back-layer>
-        <div class="bookmark-confirm">
-          <strong>{{ pendingBookmarkDeleteIds.length === 1 ? '删除这个书签？' : '删除所选书签？' }}</strong>
-          <p>将删除 {{ pendingBookmarkDeleteIds.length }} 个书签，删除后无法撤销。</p>
-          <footer><button type="button" class="record-action" data-back-action :disabled="bookmarkDeleteBusy" @click="pendingBookmarkDeleteIds = null">取消</button>
-            <button type="button" class="record-action record-delete" :disabled="mutationBlocked || bookmarkDeleteBusy"
-              @click="deleteSelectedBookmarks">{{ bookmarkDeleteBusy ? '删除中…' : '确认删除' }}</button></footer>
-        </div>
+        <KDialog opened :backdrop="false" class="bookmark-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2>{{ pendingBookmarkDeleteIds.length === 1 ? '删除这个书签？' : '删除所选书签？' }}</h2></template>
+<p>将删除 {{ pendingBookmarkDeleteIds.length }} 个书签，删除后无法撤销。</p><template #buttons><KDialogButton type="button" data-back-action :disabled="bookmarkDeleteBusy" @click="pendingBookmarkDeleteIds = null">取消</KDialogButton>
+<KDialogButton type="button" :disabled="mutationBlocked || bookmarkDeleteBusy" @click="deleteSelectedBookmarks" class="k-color-brand-danger" strong>{{ bookmarkDeleteBusy ? '删除中…' : '确认删除' }}</KDialogButton></template>
+</KDialog>
       </div>
     </template>
   </section>
 </template>
 <style scoped>
-.my-records--bookmarks{box-sizing:border-box;width:min(820px,calc(100% - 36px));margin:0 auto;padding:24px 0 54px;color:var(--app-text)}
-.history-topbar{position:sticky;top:0;z-index:35;min-height:var(--ui-header-height);display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
-.history-heading{display:flex;flex-direction:column;gap:2px;min-width:0}
-.history-heading strong{font-size:var(--ui-font-heading);font-weight:750;color:var(--app-text);line-height:1.25}
-.bookmarks-topbar{grid-template-columns:44px minmax(0,1fr) 42px}
-.bookmarks-topbar .record-icon-button{margin:0;width:36px;height:36px}
+@layer components {
+.my-records--bookmarks{box-sizing:border-box;width:min(var(--app-content-width),100%);margin:0 auto;padding:24px var(--ui-page-gutter) 32px;color:var(--app-text)}
 .bookmarks-toolbar{display:flex;align-items:center;justify-content:space-between;min-height:30px;margin:0 0 14px}
 .bookmark-total{margin-right:auto;font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .record-action{padding:7px 9px;border:0;border-radius:8px;background:transparent;color:var(--app-accent);font-size:var(--ui-font-body);cursor:pointer}
@@ -370,7 +362,7 @@ onBeforeUnmount(() => {
 .bookmark-group{overflow:hidden;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface)}
 .bookmark-group>header{box-sizing:border-box;display:flex;align-items:center;gap:10px;min-height:66px;padding:10px 12px;border-bottom:1px solid var(--app-line)}
 .bookmark-group>header>div{display:flex;flex-direction:column;gap:2px;min-width:0}
-.bookmark-group>header strong{font-size:var(--ui-font-caption);font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bookmark-group>header strong{font-size:var(--ui-font-body);font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bookmark-group>header small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;background:#546c72;color:#fff;overflow:hidden}
 .record-book-icon img{display:block;width:100%;height:100%;border-radius:inherit;object-fit:cover}
@@ -383,7 +375,7 @@ onBeforeUnmount(() => {
 .bookmark-target:disabled{opacity:.55;cursor:default}
 .bookmark-anchor{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-accent-ink);font-size:var(--ui-font-caption)}
 .bookmark-target>span:nth-child(2){display:flex;flex-direction:column;gap:3px;min-width:0}
-.bookmark-target strong{font-size:var(--ui-font-caption);color:var(--app-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bookmark-target strong{font-size:var(--ui-font-body);color:var(--app-text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bookmark-target small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .bookmark-target>.prototype-icon{grid-column:3;grid-row:1;width:16px;height:16px;color:var(--app-subtle)}
 .bookmark-select{flex:none;width:15px;height:15px}
@@ -391,19 +383,15 @@ onBeforeUnmount(() => {
 .record-feedback{font-size:var(--ui-font-caption);color:var(--app-accent)}
 .record-state{display:flex;align-items:center;justify-content:center;min-height:105px;padding:20px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);text-align:center}
 .record-load-more{display:block;margin:18px auto 9px;padding:10px 16px;border:1px solid var(--app-accent-soft);border-radius:10px;background:var(--app-accent-soft);color:var(--app-accent);font-size:var(--ui-font-caption);cursor:pointer}
-.bookmark-confirm-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:14px;background:#1d1d2b66}
-.bookmark-confirm{box-sizing:border-box;width:min(420px,100%);padding:22px;border-radius:15px;background:var(--app-surface);box-shadow:0 15px 45px #11122224}
-.bookmark-confirm strong{font-size:var(--ui-font-body)}
-.bookmark-confirm p{font-size:var(--ui-font-caption);color:var(--app-muted)}
-.bookmark-confirm footer{display:flex;justify-content:flex-end;gap:12px;margin-top:17px}
+.bookmark-confirm-backdrop{position:fixed;inset:0;z-index:80;display:grid;place-items:center;padding:14px;background:var(--app-scrim)}
 .record-icon-button{display:grid;place-items:center;width:35px;height:35px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer}
 .record-icon-button svg{width:19px;height:19px}
 @media(max-width:660px){
-  .history-topbar{padding-inline:var(--ui-header-gutter)}
-  .my-records--bookmarks{width:calc(100% - 36px);padding:24px 0 54px}
+  .my-records--bookmarks{padding:24px var(--ui-page-gutter) 32px}
   .bookmark-target{grid-template-columns:70px minmax(0,1fr) 16px;gap:7px}
 }
 @media(max-width:400px){
   .bookmark-target{grid-template-columns:58px minmax(0,1fr) 16px;gap:6px}
+}
 }
 </style>

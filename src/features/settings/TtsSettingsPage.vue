@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Glass as KGlass, Button as KButton } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { onBeforeRouteLeave } from "vue-router";
@@ -9,7 +11,6 @@ import { settings } from "./settingsStore";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
@@ -85,6 +86,7 @@ const filterMenuOpen = ref(false);
 const actionsMenuOpen = ref(false);
 const batchMode = ref(false);
 const selectedConfigIds = ref<string[]>([]);
+const addMenuTarget = ref<HTMLElement | null>(null);
 const addMenuOpen = ref(false);
 const openConfigMenuId = ref<string | null>(null);
 const configMenuPosition = ref({ top: 0, left: 0 });
@@ -128,7 +130,7 @@ onBeforeUnmount(() => {
 useOutsidePointerDismiss(
   () => addMenuOpen.value || filterMenuOpen.value || actionsMenuOpen.value || !!openConfigMenuId.value,
   (target) => target instanceof Element
-    && !!target.closest(".http-tts-top-add, .managed-list-toolbar__control, .managed-list-row__menu-wrap, .http-tts-actions-menu, .http-tts-filter-menu, .http-tts-config-menu"),
+    && !!target.closest(".http-tts-add-menu, .http-tts-top-add, .managed-list-toolbar__control, .managed-list-row__menu-wrap, .http-tts-actions-menu, .http-tts-filter-menu, .http-tts-config-menu"),
   () => {
   addMenuOpen.value = false;
   filterMenuOpen.value = false;
@@ -515,20 +517,21 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 
 <template>
   <section class="settings-card http-tts-config-card" :class="{ 'http-tts-config-card--empty': !editorOpen && configs.length === 0 }">
-    <header class="http-tts-topbar safe-area-top">
-      <BackButton :label="embedded ? '返回阅读菜单' : '返回高级设置'" @click="returnToAdvancedSettings" />
-      <div class="http-tts-top-title"><strong>TTS 引擎</strong></div>
-      <div class="http-tts-top-add">
-        <button type="button" class="button primary"
+    <SubpageHeader class="http-tts-topbar col-span-full row-start-1" title="TTS 引擎" :back-label="embedded ? '返回阅读菜单' : '返回高级设置'" @back="returnToAdvancedSettings" >
+<template #actions><div ref="addMenuTarget" class="http-tts-top-add">
+        <KButton rounded inline type="button" class="gap-2"
 :disabled="actionsBlocked"
-          @click="addMenuOpen = !addMenuOpen; filterMenuOpen = false; actionsMenuOpen = false; openConfigMenuId = null"><PrototypeIcon name="plus"/> 添加</button>
-        <div v-if="addMenuOpen" class="http-tts-add-menu">
-          <button type="button" @click="addConfigAction('new')">新建配置</button>
-          <button type="button" @click="addConfigAction('file')">本地 JSON 导入</button>
-          <button type="button" @click="addConfigAction('url')">网络链接导入</button>
-        </div>
-      </div>
-    </header>
+          @click="addMenuOpen = !addMenuOpen; filterMenuOpen = false; actionsMenuOpen = false; openConfigMenuId = null"><PrototypeIcon name="plus"/> 添加</KButton>
+
+      </div></template>
+</SubpageHeader>
+<KPopover v-if="addMenuOpen" opened :backdrop="false" :target="addMenuTarget ?? undefined" class="http-tts-add-menu w-60 max-w-[calc(100vw-32px)]">
+  <div class="p-2">
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="addConfigAction('new')">新建配置</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="addConfigAction('file')">本地 JSON 导入</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="addConfigAction('url')">网络链接导入</KButton>
+  </div>
+</KPopover>
     <div class="http-tts-overview" :class="{ 'editor-active': editorOpen }">
     <nav class="http-tts-master-list">
       <div class="http-tts-master-summary">
@@ -544,18 +547,18 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
       >
         <template #actions-menu>
           <Teleport to="body">
-            <div v-if="actionsMenuOpen" class="http-tts-actions-menu" :style="{ top: actionsMenuPosition.top + 'px', left: actionsMenuPosition.left + 'px' }">
-              <button type="button" @click="toggleBatchManagement">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
-            </div>
+            <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="http-tts-actions-menu rounded-2xl" :style="{ top: actionsMenuPosition.top + 'px', left: actionsMenuPosition.left + 'px' }">
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="toggleBatchManagement">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
+            </KGlass>
           </Teleport>
         </template>
         <template #filter-menu>
           <Teleport to="body">
-            <div v-if="filterMenuOpen" class="http-tts-filter-menu" :style="{ top: filterMenuPosition.top + 'px', left: filterMenuPosition.left + 'px' }">
-              <button type="button" @click="enabledFilter = 'all'; filterMenuOpen = false">全部配置</button>
-              <button type="button" @click="enabledFilter = 'enabled'; filterMenuOpen = false">仅启用</button>
-              <button type="button" @click="enabledFilter = 'disabled'; filterMenuOpen = false">仅停用</button>
-            </div>
+            <KGlass component="div" :highlight="false" v-if="filterMenuOpen" class="http-tts-filter-menu rounded-2xl" :style="{ top: filterMenuPosition.top + 'px', left: filterMenuPosition.left + 'px' }">
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'all'; filterMenuOpen = false">全部配置</KButton>
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'enabled'; filterMenuOpen = false">仅启用</KButton>
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'disabled'; filterMenuOpen = false">仅停用</KButton>
+            </KGlass>
           </Teleport>
         </template>
       </ManagedListToolbar>
@@ -572,30 +575,31 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         @select="toggleConfigSelection(config.id)"
       >
         <template #menu-trigger>
-          <button type="button" class="http-tts-config-menu-button"
+          <KButton rounded inline clear type="button" class="http-tts-config-menu-button gap-2 size-11 p-0"
+            :aria-label="`${config.name}的更多操作`"
             :disabled="actionsBlocked"
-            @click.stop="toggleConfigMenu(config.id, $event)"><PrototypeIcon name="more"/></button>
+            @click.stop="toggleConfigMenu(config.id, $event)"><PrototypeIcon name="more"/></KButton>
         </template>
       </ManagedListRow>
       <p v-if="!filteredConfigs.length" class="http-tts-list-empty">{{ configs.length ? '没有符合条件的 TTS 配置' : '还没有 TTS 配置' }}</p>
       </div>
       <footer v-if="batchMode" class="http-tts-selection-bar">
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !filteredConfigs.length"
-          @click="selectVisibleConfigs()">{{ allVisibleSelected ? '取消全选' : '全选' }}</button>
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !filteredConfigs.length"
-          @click="selectVisibleConfigs(true)">反选</button>
+        <KButton rounded inline clear type="button" class="http-tts-selection-text-button gap-2" :disabled="actionsBlocked || !filteredConfigs.length"
+          @click="selectVisibleConfigs()">{{ allVisibleSelected ? '取消全选' : '全选' }}</KButton>
+        <KButton rounded inline clear type="button" class="http-tts-selection-text-button gap-2" :disabled="actionsBlocked || !filteredConfigs.length"
+          @click="selectVisibleConfigs(true)">反选</KButton>
         <span class="http-tts-selection-count">已选 {{ selectedConfigs.length }}</span>
-        <button type="button" class="http-tts-selection-text-button" :disabled="actionsBlocked || !selectedConfigs.length"
-          @click="requestBulkExport">导出</button>
-        <button type="button" class="http-tts-selection-text-button http-tts-selection-delete" :disabled="actionsBlocked || !selectedConfigs.length"
-          @click="requestBulkDelete">删除</button>
+        <KButton rounded inline clear type="button" class="http-tts-selection-text-button gap-2" :disabled="actionsBlocked || !selectedConfigs.length"
+          @click="requestBulkExport">导出</KButton>
+        <KButton rounded inline clear type="button" class="http-tts-selection-text-button http-tts-selection-delete k-color-brand-danger gap-2 " :disabled="actionsBlocked || !selectedConfigs.length"
+          @click="requestBulkDelete">删除</KButton>
       </footer>
     </nav>
     <Teleport to="body">
-      <div v-if="openConfigMenu" class="http-tts-config-menu" :style="{ top: configMenuPosition.top + 'px', left: configMenuPosition.left + 'px' }">
-        <button type="button" :disabled="actionsBlocked || !openConfigMenu.enabled || selectedConfigId === openConfigMenu.id" @click="selectPlaybackConfig(openConfigMenu.id)">设为当前朗读</button>
-        <button type="button" :disabled="actionsBlocked" @click="requestDeleteConfig(openConfigMenu.id)">删除配置</button>
-      </div>
+      <KGlass component="div" :highlight="false" v-if="openConfigMenu" class="http-tts-config-menu rounded-2xl" :style="{ top: configMenuPosition.top + 'px', left: configMenuPosition.left + 'px' }">
+        <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="actionsBlocked || !openConfigMenu.enabled || selectedConfigId === openConfigMenu.id" @click="selectPlaybackConfig(openConfigMenu.id)">设为当前朗读</KButton>
+        <KButton rounded inline clear class="k-color-brand-danger gap-2 w-full justify-start" type="button" :disabled="actionsBlocked" @click="requestDeleteConfig(openConfigMenu.id)">删除配置</KButton>
+      </KGlass>
     </Teleport>
     <p v-if="!importUrlOpen && (error || (!editorOpen && editorError))" class="source-identity-confirmation">{{ editorError || error }}</p>
 
@@ -604,7 +608,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
       <span class="http-tts-preview-icon"><PrototypeIcon name="tts"/></span>
       <strong>{{ selectedConfig.name }}</strong>
       <p>{{ selectedConfig.enabled ? '当前选择的网络朗读源' : '当前配置已停用' }}。参数由 Rust 保存，选择编辑后可以修改原始配置字段。</p>
-      <button type="button" class="button primary small" :disabled="actionsBlocked" @click="openEditor()">编辑配置</button>
+      <KButton rounded inline small type="button" class="gap-2" :disabled="actionsBlocked" @click="openEditor()">编辑配置</KButton>
     </aside>
     <div v-if="importUrlOpen" class="http-tts-import-scrim" data-back-layer
       @click.self="closeUrlImport">
@@ -615,30 +619,26 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
           <input id="http-tts-config-url" v-model="importUrl" type="url" required
             inputmode="url" autocomplete="url" maxlength="4096"
             placeholder="https://example.com/http-tts.json" :disabled="importUrlBusy || actionsBlocked" />
-          <button type="submit" class="button primary"
+          <KButton rounded inline type="submit" class="gap-2"
             :disabled="importUrlBusy || actionsBlocked || !importUrl.trim()">
             {{ importUrlBusy || importBusy ? '下载并导入中…' : '下载并导入' }}
-          </button>
+          </KButton>
           <small>下载完成后会直接导入配置，上限 1 MiB。</small>
         </form>
         <p v-if="importUrlError" class="http-tts-import-error">{{ importUrlError }}</p>
         <div class="http-tts-import-actions">
-          <button type="button" class="button secondary" :disabled="importUrlBusy || importBusy" data-back-action @click="closeUrlImport">取消</button>
+          <KButton rounded inline tonal type="button" class="gap-2" :disabled="importUrlBusy || importBusy" data-back-action @click="closeUrlImport">取消</KButton>
         </div>
       </section>
     </div>
     <section v-if="editorOpen" class="http-tts-editor-page" data-back-layer>
       <article class="http-tts-editor-dialog">
-        <header class="http-tts-editor-header safe-area-top">
-          <button type="button" class="http-tts-editor-close" data-back-action data-back-local @click="closeEditor"><PrototypeIcon name="left"/></button>
-          <div>
-            <h2 id="http-tts-editor-title">{{ creatingConfig ? '新建 HTTP TTS 配置' : editingConfig?.name ?? '编辑朗读源' }}</h2>
-          </div>
-          <div class="http-tts-editor-header-actions">
-            <button v-if="editingConfig" type="button" class="button danger" :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除</button>
-            <button type="button" class="button primary" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</button>
-          </div>
-        </header>
+        <SubpageHeader class="http-tts-editor-header col-span-full row-start-1" :title="creatingConfig ? '新建 HTTP TTS 配置' : editingConfig?.name ?? '编辑朗读源'" @back="closeEditor" local-back>
+<template #actions><div class="http-tts-editor-header-actions">
+            <KButton rounded inline v-if="editingConfig" type="button" class="k-color-brand-danger gap-2 " :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除</KButton>
+            <KButton rounded inline type="button" class="gap-2" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</KButton>
+          </div></template>
+</SubpageHeader>
 
         <div class="http-tts-editor-body">
             <fieldset class="http-tts-editor-fields" :disabled="blocked">
@@ -688,21 +688,21 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
                   <textarea v-model="fields.jsLib" rows="6" spellcheck="false" placeholder="可选的 JavaScript 辅助函数"></textarea>
                 </label>
                 <label class="http-tts-editor-toggle">
-                  <input v-model="fields.enabledCookieJar" type="checkbox" :true-value="true" :false-value="false"/>
+                  <KToggle component="span" :checked="!!fields.enabledCookieJar" @change="fields.enabledCookieJar = ($event.target as HTMLInputElement).checked"  />
                   <span><strong>启用 Cookie Jar</strong><small>允许该引擎在请求间使用 Cookie 存储</small></span>
                 </label>
                 <label class="http-tts-editor-toggle">
-                  <input v-model="fields.enableDangerousApi" type="checkbox" :true-value="true" :false-value="false"/>
+                  <KToggle component="span" :checked="!!fields.enableDangerousApi" @change="fields.enableDangerousApi = ($event.target as HTMLInputElement).checked"  />
                   <span><strong>允许危险 JS API</strong><small>仅对了解并信任来源脚本的配置开启</small></span>
                 </label>
               </section>
             </fieldset>
             <div class="http-tts-editor-bottom">
-              <button v-if="editingConfig" type="button" class="button danger http-tts-editor-bottom-delete" :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除配置</button>
-              <button type="button" class="button secondary"
+              <KButton rounded inline v-if="editingConfig" type="button" class="http-tts-editor-bottom-delete k-color-brand-danger gap-2 " :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除配置</KButton>
+              <KButton rounded inline tonal type="button" class="gap-2"
                 :disabled="blocked || !editorDirty"
-                @click="restoreEditorFields">还原</button>
-              <button type="button" class="button primary" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</button>
+                @click="restoreEditorFields">还原</KButton>
+              <KButton rounded inline type="button" class="gap-2" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</KButton>
             </div>
             <p v-if="editorError || error" class="source-identity-confirmation">{{ editorError || error }}</p>
             <p v-if="editorSuccess" class="http-tts-editor-success">{{ editorSuccess }}</p>
@@ -711,25 +711,24 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
     </section>
     <div v-if="pendingDeleteIds.length" class="http-tts-discard-mask" data-back-layer
       @click.self="cancelDeleteConfig">
-      <section class="http-tts-discard-dialog">
-        <h3 id="tts-delete-title">删除{{ pendingDeleteIds.length === 1 ? ' HTTP TTS 配置？' : ` ${pendingDeleteIds.length} 个 HTTP TTS 配置？` }}</h3>
-        <p>{{ pendingDeleteIds.length === 1 ? `“${pendingDeleteConfigs[0]?.name ?? '此引擎'}”将从应用中删除。` : `选中的 ${pendingDeleteIds.length} 个配置将从应用中删除。` }}此操作不能撤销，删除当前朗读源后会切回系统朗读。</p>
-        <div><button type="button" class="button secondary" data-back-action @click="cancelDeleteConfig">取消</button>
-          <button type="button" class="button danger" :disabled="actionsBlocked" @click="confirmDeleteConfig">确认删除</button></div>
-      </section>
+      <KDialog opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="tts-delete-title">删除{{ pendingDeleteIds.length === 1 ? ' HTTP TTS 配置？' : ` ${pendingDeleteIds.length} 个 HTTP TTS 配置？` }}</h3></template>
+<p>{{ pendingDeleteIds.length === 1 ? `“${pendingDeleteConfigs[0]?.name ?? '此引擎'}”将从应用中删除。` : `选中的 ${pendingDeleteIds.length} 个配置将从应用中删除。` }}此操作不能撤销，删除当前朗读源后会切回系统朗读。</p><template #buttons><KDialogButton type="button" data-back-action @click="cancelDeleteConfig">取消</KDialogButton>
+<KDialogButton type="button" :disabled="actionsBlocked" @click="confirmDeleteConfig" class="k-color-brand-danger" strong>确认删除</KDialogButton></template>
+</KDialog>
     </div>
     <div v-if="discardPromptOpen" class="http-tts-discard-mask" data-back-layer @click.self="keepEditor">
-      <section class="http-tts-discard-dialog">
-        <h3 id="tts-discard-title">放弃未保存的修改？</h3>
-        <p>当前朗读引擎的字段尚未保存。返回、切换配置或更换当前播放引擎都会丢弃未保存的修改。</p>
-        <div><button type="button" class="button secondary" data-back-action @click="keepEditor">继续编辑</button>
-          <button type="button" class="button danger" @click="discardEditor">放弃修改</button></div>
-      </section>
+      <KDialog opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="tts-discard-title">放弃未保存的修改？</h3></template>
+<p>当前朗读引擎的字段尚未保存。返回、切换配置或更换当前播放引擎都会丢弃未保存的修改。</p><template #buttons><KDialogButton type="button" data-back-action @click="keepEditor">继续编辑</KDialogButton>
+<KDialogButton type="button" @click="discardEditor" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>
+</KDialog>
     </div>
   </section>
 </template>
 
 <style scoped>
+@layer components {
 .http-tts-config-card {
   --tts-line: var(--app-line);
   --tts-muted: var(--app-muted);
@@ -745,19 +744,12 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
   padding: 0;
   border: 0;
   border-radius: 0;
-  background: var(--app-panel-softer);
+  background:var(--app-background);
   color: var(--app-text);
 }
 .http-tts-config-card--empty{grid-template-columns:minmax(0,1fr)}
-.http-tts-topbar{position:sticky;top:0;z-index:35;grid-column:1/-1;grid-row:1;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--tts-line);background:var(--app-header);backdrop-filter:blur(18px)}
-.http-tts-top-title{min-width:0}
-.http-tts-top-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750}
 .http-tts-top-add{position:relative}
-.http-tts-top-add>.button{display:inline-flex;align-items:center;gap:6px;min-height:34px;padding:0 12px;font-size:var(--ui-font-body);background:var(--tts-accent);color:var(--app-on-accent)}
-.http-tts-top-add>.button :deep(svg){width:15px;height:15px}
-.http-tts-add-menu{position:absolute;right:0;top:calc(100% + 7px);z-index:50;display:grid;gap:3px;width:232px;padding:7px;border:1px solid var(--tts-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
-.http-tts-add-menu button{display:flex;align-items:center;min-height:38px;padding:9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);font-weight:650;cursor:pointer}
-.http-tts-overview{box-sizing:border-box;grid-column:1;grid-row:2;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border-right:1px solid var(--tts-line);background:var(--app-surface)}
+.http-tts-overview{box-sizing:border-box;grid-column:1;grid-row:2;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border-right:1px solid var(--tts-line);background:var(--app-background)}
 .http-tts-master-list{display:flex;flex:1 1 auto;flex-direction:column;gap:3px;min-height:0;margin:0;overflow:hidden}
 .http-tts-items-scroll{display:grid;flex:1 1 auto;align-content:start;gap:3px;min-height:0;margin-right:-14px;padding-right:14px;overflow-y:auto;overscroll-behavior:contain}
 .http-tts-master-summary{display:flex;align-items:center;gap:6px;padding:3px}
@@ -768,7 +760,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-actions-menu{position:fixed;z-index:1000;box-sizing:border-box;display:grid;width:min(180px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow-y:auto;padding:5px;border:1px solid var(--tts-line,var(--app-line));border-radius:11px;background:var(--app-surface);box-shadow:0 12px 28px #22223322}
 .http-tts-actions-menu button{width:100%;min-height:34px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--app-text);text-align:left;font:inherit;font-size:var(--ui-font-body);cursor:pointer}
 .http-tts-actions-menu button:disabled{opacity:.4;cursor:default}
-.http-tts-selection-bar{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:5px;margin-top:auto;padding:8px 3px;border-top:1px solid var(--tts-line);background:var(--app-surface)}
+.http-tts-selection-bar{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:5px;margin-top:auto;padding:8px 3px;border-top:1px solid var(--tts-line);background:var(--app-background)}
 .http-tts-selection-text-button{min-height:30px;padding:0 7px;border:0;border-radius:7px;background:transparent;color:var(--app-muted);font:inherit;font-size:var(--ui-font-body);cursor:pointer}
 .http-tts-selection-text-button:disabled{opacity:.45;cursor:default}
 .http-tts-selection-count{margin-left:auto;color:var(--tts-muted);font-size:var(--ui-font-caption)}
@@ -780,7 +772,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-config-menu button{width:100%;min-height:34px;padding:0 10px;border:0;border-radius:7px;background:transparent;color:var(--app-text);text-align:left;font:inherit;font-size:var(--ui-font-body);cursor:pointer}
 .http-tts-config-menu button:disabled{opacity:.4;cursor:default}
 .http-tts-list-empty{margin:0;padding:24px 10px;color:var(--tts-muted);font-size:var(--ui-font-caption);text-align:center}
-.http-tts-import-scrim{position:fixed;z-index:2000;inset:0;display:grid;place-items:center;padding:16px;background:#191b2780}
+.http-tts-import-scrim{position:fixed;z-index:2000;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 .http-tts-import-dialog{box-sizing:border-box;width:min(420px,100%);max-height:min(82dvh,700px);overflow:auto;padding:22px;border:1px solid var(--tts-line);border-radius:14px;background:var(--app-surface);box-shadow:0 20px 40px #11112233}
 .http-tts-import-dialog h3{margin:0;font-size:var(--ui-font-heading)}
 .http-tts-import-url-form{display:grid;gap:9px;margin:10px 0 14px}
@@ -791,19 +783,13 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-import-error{margin:9px 0 18px;color:var(--app-danger);font-size:var(--ui-font-caption);line-height:1.5}
 .http-tts-import-actions{display:flex;justify-content:flex-end;gap:8px}
 .http-tts-overview>.source-identity-confirmation{margin-top:10px}
-.http-tts-preview{grid-column:2;grid-row:2;display:grid;align-content:center;justify-items:center;gap:12px;min-height:300px;padding:20px;background:var(--app-surface);color:var(--tts-muted);text-align:center}
+.http-tts-preview{grid-column:2;grid-row:2;display:grid;align-content:center;justify-items:center;gap:12px;min-height:300px;padding:20px;background:var(--app-background);color:var(--tts-muted);text-align:center}
 .http-tts-preview-icon{display:grid;place-items:center;width:44px;height:44px;border-radius:12px;background:var(--app-accent-soft);color:var(--tts-accent)}
 .http-tts-preview-icon :deep(svg){width:24px;height:24px}
 .http-tts-preview strong{font-size:var(--ui-font-caption);color:var(--app-text)}
 .http-tts-preview p{max-width:290px;margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
-.http-tts-editor-page{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow-y:auto;background:var(--app-surface)}
-.http-tts-editor-dialog{width:100%;background:var(--app-surface)}
-.http-tts-editor-header{display:grid;grid-template-columns:36px minmax(0,1fr) auto;align-items:center;gap:12px;margin-top:28px;padding-inline:var(--ui-header-gutter);padding-bottom:16px}
-.http-tts-editor-header h2{margin:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--app-text);font-size:var(--ui-font-heading)}
-.http-tts-editor-close{display:grid;place-items:center;width:36px;height:36px;border:0;border-radius:9px;background:transparent;color:var(--app-muted);cursor:pointer}
-.http-tts-editor-close :deep(svg){width:19px;height:19px}
-.http-tts-editor-header-actions{display:flex;align-items:center;gap:8px}
-.http-tts-editor-header-actions>.button{display:none}
+.http-tts-editor-page{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow-y:auto;background:var(--app-background)}
+.http-tts-editor-dialog{width:100%;background:var(--app-background)}
 .http-tts-editor-body{padding:0 34px 48px}
 .http-tts-editor-loading{padding:28px 0;color:var(--tts-muted);font-size:var(--ui-font-caption);text-align:center}
 .http-tts-editor-fields{display:block;min-width:0;margin:0;padding:0;border:0}
@@ -824,36 +810,19 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-editor-toggle small{font-size:var(--ui-font-caption);color:var(--tts-muted);line-height:1.5}
 .http-tts-editor-bottom{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding-top:17px;border-top:1px solid var(--tts-line)}
 .http-tts-editor-bottom-delete{margin-right:auto}
-.http-tts-editor-bottom .button{min-height:34px;font-size:var(--ui-font-body)}
-.http-tts-editor-bottom .button.primary{background:var(--tts-accent)}
-.http-tts-editor-header-actions .button.danger,.http-tts-editor-bottom .button.danger{background:var(--app-danger-soft);color:var(--app-danger)}
 .http-tts-editor-success{margin:10px 0;padding:10px 12px;border-radius:9px;background:var(--app-success-soft);color:var(--app-success);font-size:var(--ui-font-caption)}
-.http-tts-discard-mask{position:fixed;z-index:100;inset:0;display:grid;place-items:center;padding:16px;background:#191b2b88}
-.http-tts-discard-dialog{box-sizing:border-box;width:min(410px,100%);padding:22px;border:1px solid var(--tts-line);border-radius:14px;background:var(--app-surface);box-shadow:0 18px 45px #14162828}
-.http-tts-discard-dialog h3{margin:0 0 11px;color:var(--app-text);font-size:var(--ui-font-title)}
-.http-tts-discard-dialog p{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.7}
-.http-tts-discard-dialog>div{display:flex;justify-content:flex-end;gap:8px;margin-top:19px}
+.http-tts-discard-mask{position:fixed;z-index:100;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 @media(max-width:860px){
  .http-tts-config-card{display:flex;flex-direction:column;height:100%;min-height:0}
- .http-tts-topbar{padding-inline:var(--ui-header-gutter)}
- .http-tts-overview{flex:1 1 auto;height:auto;min-height:0;max-height:none;padding:12px 14px;border:0;background:var(--app-surface)}
+ .http-tts-overview{flex:1 1 auto;height:auto;min-height:0;max-height:none;padding:16px var(--ui-page-gutter);border:0;background:var(--app-background)}
  .http-tts-preview{display:none}
  .http-tts-config-card:has(.http-tts-editor-page) .http-tts-topbar,
  .http-tts-config-card:has(.http-tts-editor-page) .http-tts-overview{display:none}
- .http-tts-editor-header{position:sticky;top:0;z-index:30;grid-template-columns:36px minmax(0,1fr) auto;gap:8px;margin-top:0;min-height:64px;padding-inline:var(--ui-header-gutter);padding-bottom:0;border-bottom:1px solid var(--tts-line);background:var(--app-header);backdrop-filter:blur(14px)}
- .http-tts-editor-close{display:grid}
- .http-tts-editor-header h2{font-size:var(--ui-font-caption)}
- .http-tts-editor-header-actions>.button{display:inline-flex;align-items:center;min-height:34px;padding:0 9px;font-size:var(--ui-font-body)}
- .http-tts-editor-header-actions>.button.danger{display:none}
- .http-tts-editor-body{padding:16px 14px 54px}
+ .http-tts-editor-body{padding:24px var(--ui-page-gutter) calc(32px + var(--safe-bottom))}
  .http-tts-editor-page{flex:1 1 auto;min-height:0;overflow-y:auto}
  .http-tts-editor-grid{grid-template-columns:1fr}
  .http-tts-editor-grid .form-field:nth-child(2){grid-column:auto}
  .http-tts-editor-bottom{display:none}
 }
-@media(max-width:400px){
- .http-tts-topbar{padding-inline:var(--ui-header-gutter)}
- .http-tts-editor-header{gap:5px;padding-inline:var(--ui-header-gutter);padding-bottom:0}
- .http-tts-editor-header-actions>.button{padding:0 7px}
 }
 </style>

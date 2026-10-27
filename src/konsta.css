@@ -1,0 +1,20 @@
+@layer properties, theme, base, components, utilities;
+@import "tailwindcss/theme.css" layer(theme);
+@import "tailwindcss/preflight.css" layer(base);
+@import "tailwindcss/utilities.css" layer(utilities);
+@import "konsta/vue/theme.css";
+@import "./style.css" layer(components);
+
+@theme {
+  --color-brand-danger: #ff3b30;
+  --font-ios: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-material: Roboto, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+body { font-size: var(--ui-font-body); }
+.k-button:focus-visible, .k-link:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
+/* Glass surfaces contain scrollable forms and menus. */
+.k-glass:not(.k-toolbar-pane) { touch-action: auto; }
+@media (pointer: coarse) {
+  .k-button, .k-segmented-button { min-height: 44px; }
+}

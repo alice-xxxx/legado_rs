@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Button as KButton, Segmented as KSegmented, SegmentedButton as KSegmentedButton } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { sources } from "../sources/sourcesStore";
@@ -8,7 +10,6 @@ import { mainText } from "../../api/mainText";
 import type { AppBootstrap, BookResource, SearchBookResult, SearchResultSource } from "../../api/types";
 import { bookContentType } from "../../api/bookContentType";
 import router, { routeNames } from "../../router";
-import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import BookDisplayMetadataEditor from "./BookDisplayMetadataEditor.vue";
@@ -221,7 +222,7 @@ const bookDetailMenuOpen = ref(false);
 const bookDetailMenuElement = ref<HTMLElement | null>(null);
 useOutsidePointerDismiss(
   () => bookDetailMenuOpen.value,
-  target => target instanceof Node && Boolean(bookDetailMenuElement.value?.contains(target)),
+  target => target instanceof Node && Boolean(bookDetailMenuElement.value?.contains(target) || target instanceof Element && target.closest(".book-detail-menu")),
   () => { bookDetailMenuOpen.value = false; },
 );
 const bookOperationBusy = computed(() => bookPanelBusy.value || informationRefreshBusy.value || bookInfoRefreshBusy.value
@@ -397,56 +398,53 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 <template>
   <section class="book-detail-page">
     <article class="book-detail-panel">
-      <header class="book-detail-toolbar">
-        <BackButton class="book-detail-icon-button book-detail-back" label="返回" @click="closeBookDetails" />
-        <nav class="book-detail-tabs" aria-label="书籍详情">
-          <button type="button" :class="{ active: bookDetailTab === 'info' }" :aria-pressed="bookDetailTab === 'info'"
-            @click="selectBookDetailTab('info')">概览</button>
-          <button type="button" :class="{ active: bookDetailTab === 'catalog' }"
+      <SubpageHeader back-label="返回" @back="closeBookDetails"><template #title><KSegmented strong rounded class="max-w-sm" aria-label="书籍详情">
+          <KSegmentedButton rounded :active="bookDetailTab === 'info'" class="gap-2" type="button" :class="{ active: bookDetailTab === 'info' }" :aria-pressed="bookDetailTab === 'info'"
+            @click="selectBookDetailTab('info')">概览</KSegmentedButton>
+          <KSegmentedButton rounded :active="bookDetailTab === 'catalog'" class="gap-2" type="button" :class="{ active: bookDetailTab === 'catalog' }"
             :aria-pressed="bookDetailTab === 'catalog'" @click="selectBookDetailTab('catalog')">{{ openedBook?.mediaType
-              === 'video' ? '剧集' : openedBook?.mediaType === 'audio' ? '节目' : '目录' }}</button>
-          <button type="button" :class="{ active: bookDetailTab === 'sources' }"
-            :aria-pressed="bookDetailTab === 'sources'" @click="selectBookDetailTab('sources')">来源</button>
-        </nav>
-        <div v-if="openedBook" class="book-detail-toolbar-actions">
+              === 'video' ? '剧集' : openedBook?.mediaType === 'audio' ? '节目' : '目录' }}</KSegmentedButton>
+          <KSegmentedButton rounded :active="bookDetailTab === 'sources'" class="gap-2" type="button" :class="{ active: bookDetailTab === 'sources' }"
+            :aria-pressed="bookDetailTab === 'sources'" @click="selectBookDetailTab('sources')">来源</KSegmentedButton>
+        </KSegmented></template>
+<template #actions><div v-if="openedBook" class="book-detail-toolbar-actions">
           <div ref="bookDetailMenuElement" class="book-detail-menu-wrap">
-            <button type="button" class="book-detail-icon-button" aria-label="更多书籍操作"
+            <KButton rounded inline clear type="button" class="book-detail-icon-button gap-2 w-full justify-start text-current" aria-label="更多书籍操作"
               :aria-expanded="bookDetailMenuOpen" @click.stop="bookDetailMenuOpen = !bookDetailMenuOpen">
               <PrototypeIcon name="more" />
-            </button>
-            <div v-if="bookDetailMenuOpen" class="book-detail-menu" role="region" aria-label="更多书籍操作" @click.stop>
-              <button class="book-detail-menu-item" :disabled="bookOperationBusy || recoveryRequired"
+            </KButton>
+
+          </div>
+        </div></template></SubpageHeader>
+<KPopover v-if="bookDetailMenuOpen && openedBook" opened :backdrop="false" target=".book-detail-menu-wrap" class="book-detail-menu w-60 max-w-[calc(100vw-32px)]">
+  <div class="p-2">
+<KButton rounded inline clear class="book-detail-menu-item gap-2 w-full justify-start text-current" :disabled="bookOperationBusy || recoveryRequired"
                 @click="bookDetailMenuOpen = false; bookMetadataActions.openBookDisplayEditor()">
                 <PrototypeIcon name="edit" /><span>编辑显示信息</span>
-              </button>
-              <button v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item"
+              </KButton>
+<KButton rounded inline clear v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item gap-2 w-full justify-start text-current"
                 :disabled="bookOperationBusy || recoveryRequired"
                 @click="bookDetailMenuOpen = false; bookDetailActions.refreshOpenedBookInfo()">
                 <PrototypeIcon name="refresh" /><span>{{ bookInfoRefreshBusy ? '刷新中…' : '刷新信息' }}</span>
-              </button>
-              <button v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item"
+              </KButton>
+<KButton rounded inline clear v-if="canRefreshOpenedBookInfo" class="book-detail-menu-item gap-2 w-full justify-start text-current"
                 :disabled="bookOperationBusy || recoveryRequired"
                 @click="bookDetailMenuOpen = false; runCurrentBookAction('refresh')">
                 <PrototypeIcon name="refresh" /><span>{{ catalogRefreshBusy ? '正在更新目录…' : '更新目录' }}</span>
-              </button>
-              <div v-if="hasReadingProgress(openedBook.progress) || canClearChapterCache"
-                class="book-detail-menu-divider"></div>
-              <button v-if="hasReadingProgress(openedBook.progress)" class="book-detail-menu-item"
+              </KButton><div v-if="hasReadingProgress(openedBook.progress) || canClearChapterCache"
+                class="book-detail-menu-divider"></div><KButton rounded inline clear v-if="hasReadingProgress(openedBook.progress)" class="book-detail-menu-item gap-2 w-full justify-start text-current"
                 :disabled="bookOperationBusy || recoveryRequired"
                 @click="pendingBookProgressReset = { id: openedBook.id, title: openedBook.title }; bookProgressResetError = ''; bookDetailMenuOpen = false">
                 <PrototypeIcon name="history" /><span>重置{{ openedBook.mediaType === 'video' ? '观看' :
                   openedBook.mediaType === 'audio' ? '收听' : '阅读' }}进度</span>
-              </button>
-              <button v-if="canClearChapterCache" class="book-detail-menu-item"
+              </KButton>
+<KButton rounded inline clear v-if="canClearChapterCache" class="book-detail-menu-item gap-2 w-full justify-start text-current"
                 :disabled="bookOperationBusy || recoveryRequired"
                 @click="pendingBookChapterCacheClear = { id: openedBook.id, title: openedBook.title }; bookChapterCacheClearError = ''; bookDetailMenuOpen = false">
                 <PrototypeIcon name="trash" /><span>{{ bookChapterCacheClearBusy ? '清除中…' : '清除正文缓存' }}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <div v-else></div>
-      </header>
+              </KButton>
+  </div>
+</KPopover>
 
       <p v-if="informationRefreshBusy || informationRefreshError" class="status-notice detail-refresh-status"
         :class="{ 'is-error': informationRefreshError }" role="status">
@@ -476,14 +474,14 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
               <p class="detail-source-name">{{ currentSearchResultDetails.result.sourceName }}</p>
             </div>
             <div class="detail-hero-actions">
-              <button type="button" class="button secondary" @click="selectBookDetailTab('sources')">更换来源（{{
-                searchResultSources.length }}）</button>
+              <KButton rounded inline tonal type="button" class="gap-2" @click="selectBookDetailTab('sources')">更换来源（{{
+                searchResultSources.length }}）</KButton>
             </div>
           </div>
           <p v-if="bookPanelBusy || pageResourceLoading" class="status-notice" role="status">正在加载详情和目录，可在来源页切换其他源。</p>
           <p v-if="currentSearchResultDetails.error" class="status-notice is-error">{{ currentSearchResultDetails.error
             }}
-            <button type="button" class="text-button" @click="retryBookDetails">重试</button>
+            <KButton rounded inline clear type="button" class="gap-2" @click="retryBookDetails">重试</KButton>
           </p>
           <section class="detail-section detail-intro">
             <header>
@@ -493,15 +491,15 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
           </section>
         </section>
         <div v-else-if="bookPanelBusy || pageResourceLoading" class="page-empty-state" role="status">正在读取内容详情…
-          <button v-if="currentSearchResultDetails.result" type="button" class="text-button"
-            @click="selectBookDetailTab('sources')">更换来源</button>
+          <KButton rounded inline clear v-if="currentSearchResultDetails.result" type="button" class="gap-2"
+            @click="selectBookDetailTab('sources')">更换来源</KButton>
         </div>
         <div v-else-if="currentSearchResultDetails.error" class="page-empty-state detail-error-notice">
           {{ currentSearchResultDetails.error }}
-          <button v-if="currentSearchResultDetails.result" class="button secondary small"
-            @click="retryBookDetails">重试</button>
-          <button v-else-if="currentSearchResultDetails.bookId" class="button secondary small"
-            @click="retryBookDetails">重试</button>
+          <KButton rounded inline tonal small v-if="currentSearchResultDetails.result" class="gap-2"
+            @click="retryBookDetails">重试</KButton>
+          <KButton rounded inline tonal small v-else-if="currentSearchResultDetails.bookId" class="gap-2"
+            @click="retryBookDetails">重试</KButton>
         </div>
         <template v-else-if="openedBook">
           <BookCatalogPanel v-if="bookDetailTab === 'catalog'" :key="openedBook.id" :book="openedBook"
@@ -528,7 +526,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
                 <p class="detail-author">{{ openedBook.author || '作者未知' }}</p>
               </div>
               <div class="detail-hero-actions">
-                <button class="button primary" type="button"
+                <KButton rounded inline class="gap-2" type="button"
                   :disabled="bookPanelBusy || searchResultDetailsReadingBusy || recoveryRequired || !(openedBook.chapterCount || openedBook.chapters?.length)"
                   @click="detailSession.startReading()">
                   <PrototypeIcon
@@ -538,12 +536,12 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
                     : openedBook.mediaType === 'audio'
                       ? hasReadingProgress(openedBook.progress) ? '继续收听' : '开始收听'
                       : hasReadingProgress(openedBook.progress) ? '继续阅读' : '开始阅读' }}
-                </button>
-                <button type="button" class="button secondary"
+                </KButton>
+                <KButton rounded inline tonal type="button" class="gap-2"
                   :disabled="bookPanelBusy || recoveryRequired || searchResultDetailsReadingBusy"
                   @click="toggleBookShelf">
                   {{ searchResultDetailsShelfBook ? '移出' : '加入书架' }}
-                </button>
+                </KButton>
               </div>
             </div>
             <button type="button" class="prototype-overview-progress" aria-label="查看目录和阅读位置"
@@ -611,54 +609,35 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 
   <section v-if="pendingBookProgressReset" class="modal-backdrop"
     @click.self="!bookProgressResetBusy && (pendingBookProgressReset = null)">
-    <article class="app-modal confirm-modal" role="dialog" aria-modal="true"
-      aria-labelledby="book-reset-progress-title">
-      <h2 id="book-reset-progress-title">重置阅读进度？</h2>
-      <p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
-      <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
-      <p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p>
-      <div class="modal-actions">
-        <button class="button secondary" data-back-action :disabled="bookProgressResetBusy"
-          @click="pendingBookProgressReset = null">取消</button>
-        <button class="button danger" :disabled="bookProgressResetBusy || recoveryRequired"
-          @click="bookDetailActions.resetOpenedBookProgress">
-          {{ bookProgressResetBusy ? '正在重置…' : '确认重置进度' }}
-        </button>
-      </div>
-    </article>
+    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2 id="book-reset-progress-title">重置阅读进度？</h2></template>
+<p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
+<p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
+<p v-if="bookProgressResetError" class="source-identity-confirmation">{{ bookProgressResetError }}</p><template #buttons><KDialogButton data-back-action :disabled="bookProgressResetBusy" @click="pendingBookProgressReset = null">取消</KDialogButton>
+<KDialogButton :disabled="bookProgressResetBusy || recoveryRequired" @click="bookDetailActions.resetOpenedBookProgress" class="k-color-brand-danger" strong>{{ bookProgressResetBusy ? '正在重置…' : '确认重置进度' }}</KDialogButton></template>
+</KDialog>
   </section>
 
   <section v-if="pendingBookChapterCacheClear" class="modal-backdrop"
     @click.self="!bookChapterCacheClearBusy && (pendingBookChapterCacheClear = null)">
-    <article class="app-modal confirm-modal" role="dialog" aria-modal="true"
-      aria-labelledby="book-clear-chapter-cache-title">
-      <h2 id="book-clear-chapter-cache-title">清除章节缓存？</h2>
-      <p>将清除《{{ pendingBookChapterCacheClear.title }}》已缓存的章节正文。之后可以重新下载正文。</p>
-      <p>阅读进度、章节目录、封面和书签都会保留。<span
+    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2 id="book-clear-chapter-cache-title">清除章节缓存？</h2></template>
+<p>将清除《{{ pendingBookChapterCacheClear.title }}》已缓存的章节正文。之后可以重新下载正文。</p>
+<p>阅读进度、章节目录、封面和书签都会保留。<span
           v-if="readingBook?.id === pendingBookChapterCacheClear.id">当前阅读器会先保存阅读位置并关闭，避免继续显示已清除的正文。</span></p>
-      <p v-if="bookChapterCacheClearError" class="source-identity-confirmation">{{ bookChapterCacheClearError }}</p>
-      <div class="modal-actions">
-        <button class="button secondary" data-back-action :disabled="bookChapterCacheClearBusy"
-          @click="pendingBookChapterCacheClear = null">取消</button>
-        <button class="button danger" :disabled="bookChapterCacheClearBusy || recoveryRequired"
-          @click="clearOpenedBookChapterCache">
-          {{ bookChapterCacheClearBusy ? '正在清除…' : '确认清除缓存' }}
-        </button>
-      </div>
-    </article>
+<p v-if="bookChapterCacheClearError" class="source-identity-confirmation">{{ bookChapterCacheClearError }}</p><template #buttons><KDialogButton data-back-action :disabled="bookChapterCacheClearBusy" @click="pendingBookChapterCacheClear = null">取消</KDialogButton>
+<KDialogButton :disabled="bookChapterCacheClearBusy || recoveryRequired" @click="clearOpenedBookChapterCache" class="k-color-brand-danger" strong>{{ bookChapterCacheClearBusy ? '正在清除…' : '确认清除缓存' }}</KDialogButton></template>
+</KDialog>
   </section>
 
   <section v-if="pendingRemoval" class="modal-backdrop" @click.self="pendingRemoval = null">
-    <article class="app-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="book-remove-title">
-      <h2 id="book-remove-title">从书架移除这本书？</h2>
-      <p>将《{{ pendingRemoval.title }}》从书架移除，详情缓存、阅读进度和书签都会保留。</p>
-      <div class="modal-actions">
-        <button class="button secondary" data-back-action @click="pendingRemoval = null">保留</button>
-        <button class="button danger" :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf">
+    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2 id="book-remove-title">从书架移除这本书？</h2></template>
+<p>将《{{ pendingRemoval.title }}》从书架移除，详情缓存、阅读进度和书签都会保留。</p><template #buttons><KDialogButton data-back-action @click="pendingRemoval = null">保留</KDialogButton>
+<KDialogButton :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf" class="k-color-brand-danger" strong>
           确认移除
-        </button>
-      </div>
-    </article>
+        </KDialogButton></template>
+</KDialog>
   </section>
 
   <BookSourceSwitchView v-if="!readerVisible" :session="bookSourceSwitch" :locked="recoveryRequired" />
@@ -666,6 +645,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 </template>
 
 <style scoped>
+@layer components {
 .book-detail-page {
   display: flex;
   justify-content: center;
@@ -684,19 +664,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   height: 100%;
   min-height: 0;
   background: var(--app-background);
-}
-
-.book-detail-toolbar {
-  position: relative;
-  z-index: 2;
-  display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) 44px;
-  align-items: center;
-  flex: none;
-  gap: 12px;
-  min-height: var(--ui-header-height);
-  padding: 0 var(--ui-page-gutter);
-  border-bottom: 1px solid var(--app-line);
 }
 
 .book-detail-tabs {
@@ -731,10 +698,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   background: var(--app-accent);
 }
 
-.book-detail-toolbar-actions {
-  justify-self: end;
-}
-
 .book-detail-icon-button {
   display: grid;
   place-items: center;
@@ -747,22 +710,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 
 .book-detail-menu-wrap {
   position: relative;
-}
-
-.book-detail-menu {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 8px);
-  right: 0;
-  display: grid;
-  width: min(260px, calc(100vw - 32px));
-  max-height: calc(100dvh - var(--safe-top) - 88px);
-  overflow-y: auto;
-  padding: 6px;
-  border: 1px solid var(--app-line);
-  border-radius: 12px;
-  background: var(--app-surface);
-  box-shadow: var(--app-shadow);
 }
 
 .book-detail-menu-item {
@@ -875,13 +822,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   grid-column: 2;
   align-self: end;
   gap: 6px;
-}
-
-.detail-hero-actions .button {
-  min-height: var(--ui-compact-control-height);
-  gap: 4px;
-  padding-inline: 8px;
-  font-size: var(--ui-font-caption);
 }
 
 .detail-hero-actions :deep(svg) {
@@ -1021,44 +961,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   overflow-wrap: anywhere;
 }
 
-.confirm-modal {
-  width: min(420px, 100%);
-  padding: 24px;
-  color: var(--app-text);
-}
-
-.confirm-modal h2 {
-  margin: 0 0 12px;
-  font-size: var(--ui-font-heading);
-}
-
-.confirm-modal p {
-  margin: 8px 0;
-  color: var(--app-muted);
-  font-size: var(--ui-font-body);
-  line-height: 1.7;
-  overflow-wrap: anywhere;
-}
-
-.confirm-modal .source-identity-confirmation {
-  color: var(--app-danger);
-}
-
-.confirm-modal .modal-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-top: 24px;
-}
-
-.confirm-modal .button {
-  padding-inline: 8px;
-}
-
 @media (max-width: 600px) {
-  .book-detail-toolbar {
-    gap: 4px;
-  }
 
   .book-detail-tabs {
     gap: 12px;
@@ -1092,5 +995,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   .book-detail-fact {
     min-height: 72px;
   }
+}
 }
 </style>

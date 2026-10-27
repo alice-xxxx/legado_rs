@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 返回按钮只统一箭头和触发方式。
+import { Button as KButton } from "konsta/vue";
 withDefaults(defineProps<{
   label: string;
   disabled?: boolean;
@@ -13,9 +13,9 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
 </script>
 
 <template>
-  <button
+  <KButton inline clear rounded
     type="button"
-    class="back-button"
+    class="back-button h-11 min-w-11 gap-1 px-2"
     data-back-action
     :title="label"
     :aria-label="label"
@@ -26,29 +26,11 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
       <path d="m14.5 5-7 7 7 7" />
     </svg>
     <span v-if="showLabel">{{ label }}</span>
-  </button>
+  </KButton>
 </template>
 
 <style scoped>
-.back-button {
-  display: inline-flex;
-  width: var(--ui-control-height);
-  height: var(--ui-control-height);
-  min-width: var(--ui-control-height);
-  min-height: var(--ui-control-height);
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  gap: 5px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--ui-radius);
-  color: var(--app-muted);
-  background: transparent;
-  font: inherit;
-  cursor: pointer;
-}
-
+@layer components {
 .back-button__icon {
   width: var(--ui-icon-size);
   height: var(--ui-icon-size);
@@ -63,5 +45,6 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
 .back-button:disabled {
   opacity: .45;
   cursor: default;
+}
 }
 </style>

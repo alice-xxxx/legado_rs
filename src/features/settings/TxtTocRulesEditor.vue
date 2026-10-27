@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton, Glass as KGlass } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 列表使用全局规则；表单只编辑当前规则的草稿。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
@@ -8,7 +10,6 @@ import { returnToRoute } from "../../app/routeReturn";
 import ManagedListRow from "../../ui/ManagedListRow.vue";
 import ManagedListToolbar from "../../ui/ManagedListToolbar.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
 import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import { txtTocRules as rules, txtTocRuleStore } from "./configurationStores";
 import {
@@ -130,7 +131,7 @@ onBeforeUnmount(() => {
 useOutsidePointerDismiss(
   () => addMenuOpen.value || actionsMenuOpen.value || filterPanelOpen.value || !!openRuleMenuId.value,
   (target) => target instanceof Element
-    && !!target.closest(".txt-toc-editor__top-actions, .managed-list-toolbar__control, .managed-list-row__menu-wrap, .txt-toc-editor__filter-menu"),
+    && !!target.closest(".txt-toc-editor__add-options, .txt-toc-editor__top-actions, .managed-list-toolbar__control, .managed-list-row__menu-wrap, .txt-toc-editor__filter-menu"),
   () => {
   addMenuOpen.value = false;
   actionsMenuOpen.value = false;
@@ -486,22 +487,23 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 
 <template>
   <section class="txt-toc-editor my-settings-subpage">
-    <header class="txt-toc-editor__topbar safe-area-top">
-      <BackButton label="返回高级设置" @click="returnToAdvancedSettings" />
-      <div class="txt-toc-editor__top-title"><strong>TXT 目录识别</strong></div>
-      <div class="txt-toc-editor__top-actions">
-        <button type="button" class="txt-toc-editor__button txt-toc-editor__button--primary"
+    <SubpageHeader class="txt-toc-editor__topbar col-span-full row-start-1" title="TXT 目录识别" back-label="返回高级设置" @back="returnToAdvancedSettings" >
+<template #actions><div class="txt-toc-editor__top-actions">
+        <KButton rounded inline type="button" class="txt-toc-editor__button txt-toc-editor__button--primary gap-2"
           :disabled="busy || atRuleLimit"
           @click="addMenuOpen = !addMenuOpen; actionsMenuOpen = false; filterPanelOpen = false; openRuleMenuId = null">
           <PrototypeIcon name="plus"/> 添加
-        </button>
-        <div v-if="addMenuOpen" class="txt-toc-editor__add-options">
-          <button type="button" @click="selectAddAction('new')">新建配置</button>
-          <button type="button" @click="selectAddAction('file')">本地 JSON 导入</button>
-          <button type="button" @click="selectAddAction('url')">网络链接导入</button>
-        </div>
-      </div>
-    </header>
+        </KButton>
+
+      </div></template>
+</SubpageHeader>
+<KPopover v-if="addMenuOpen" opened :backdrop="false" target=".txt-toc-editor__top-actions" class="txt-toc-editor__add-options w-60 max-w-[calc(100vw-32px)]">
+  <div class="p-2">
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="selectAddAction('new')">新建配置</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="selectAddAction('file')">本地 JSON 导入</KButton>
+<KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="selectAddAction('url')">网络链接导入</KButton>
+  </div>
+</KPopover>
     <div class="txt-toc-editor__body" :class="{ 'txt-toc-editor__body--empty': rules.length === 0 }">
       <aside class="txt-toc-editor__master">
         <header class="txt-toc-editor__summary">
@@ -518,17 +520,17 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
         >
           <template #actions-menu>
             <div v-if="actionsMenuOpen" class="txt-toc-editor__menu txt-toc-editor__menu--right">
-              <button type="button" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</button>
+              <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
               <span class="txt-toc-editor__menu-hint">正则表达式由 Rust 在保存时校验</span>
             </div>
           </template>
           <template #filter-menu>
             <Teleport to="body">
-              <div v-if="filterPanelOpen" class="txt-toc-editor__filter-menu" :style="{ top: filterMenuPosition.top + 'px', left: filterMenuPosition.left + 'px' }">
-                <button type="button" @click="enabledFilter = 'all'; filterPanelOpen = false">全部规则</button>
-                <button type="button" @click="enabledFilter = 'enabled'; filterPanelOpen = false">仅启用</button>
-                <button type="button" @click="enabledFilter = 'disabled'; filterPanelOpen = false">仅停用</button>
-              </div>
+              <KGlass component="div" :highlight="false" v-if="filterPanelOpen" class="txt-toc-editor__filter-menu rounded-2xl" :style="{ top: filterMenuPosition.top + 'px', left: filterMenuPosition.left + 'px' }">
+                <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'all'; filterPanelOpen = false">全部规则</KButton>
+                <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'enabled'; filterPanelOpen = false">仅启用</KButton>
+                <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'disabled'; filterPanelOpen = false">仅停用</KButton>
+              </KGlass>
             </Teleport>
           </template>
         </ManagedListToolbar>
@@ -555,35 +557,30 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
             @toggle-menu="openRuleMenuId = openRuleMenuId === rule.id ? null : rule.id; addMenuOpen = false; actionsMenuOpen = false; filterPanelOpen = false"
           >
               <template #menu>
-                <button type="button" :disabled="busy" @click="openRuleMenuId = null; toggleRule(rule, !rule.enable)">{{ rule.enable ? '停用' : '启用' }}</button>
-                <button type="button" :disabled="busy || !canMoveRule(rule, -1)" @click="openRuleMenuId = null; moveRule(rule.id, -1)">上移</button>
-                <button type="button" :disabled="busy || !canMoveRule(rule, 1)" @click="openRuleMenuId = null; moveRule(rule.id, 1)">下移</button>
-                <button type="button" class="is-danger" :disabled="busy" @click="requestDelete(rule)">删除规则</button>
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="busy" @click="openRuleMenuId = null; toggleRule(rule, !rule.enable)">{{ rule.enable ? '停用' : '启用' }}</KButton>
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="busy || !canMoveRule(rule, -1)" @click="openRuleMenuId = null; moveRule(rule.id, -1)">上移</KButton>
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="busy || !canMoveRule(rule, 1)" @click="openRuleMenuId = null; moveRule(rule.id, 1)">下移</KButton>
+                <KButton rounded inline clear type="button" class="is-danger k-color-brand-danger gap-2 " :disabled="busy" @click="requestDelete(rule)">删除规则</KButton>
               </template>
           </ManagedListRow>
         </div>
         </div>
         <footer v-if="batchMode" class="txt-toc-editor__selection-bar">
-          <button type="button" class="txt-toc-editor__text-button" :disabled="busy || !visibleRules.length" @click="selectVisible()">{{ allVisibleSelected ? '取消全选' : '全选' }}</button>
-          <button type="button" class="txt-toc-editor__text-button" :disabled="busy || !visibleRules.length" @click="selectVisible(true)">反选</button>
+          <KButton rounded inline clear type="button" class="txt-toc-editor__text-button gap-2" :disabled="busy || !visibleRules.length" @click="selectVisible()">{{ allVisibleSelected ? '取消全选' : '全选' }}</KButton>
+          <KButton rounded inline clear type="button" class="txt-toc-editor__text-button gap-2" :disabled="busy || !visibleRules.length" @click="selectVisible(true)">反选</KButton>
           <span class="txt-toc-editor__selection-count">已选 {{ selectedRules.length }}</span>
-          <button type="button" class="txt-toc-editor__text-button" :disabled="busy || !selectedRules.length" @click="exportSelectedRules">导出</button>
-          <button type="button" class="txt-toc-editor__text-button txt-toc-editor__delete-button" :disabled="busy || !selectedRules.length" @click="requestBulkDelete">删除</button>
+          <KButton rounded inline clear type="button" class="txt-toc-editor__text-button gap-2" :disabled="busy || !selectedRules.length" @click="exportSelectedRules">导出</KButton>
+          <KButton rounded inline clear type="button" class="txt-toc-editor__text-button txt-toc-editor__delete-button k-color-brand-danger gap-2 " :disabled="busy || !selectedRules.length" @click="requestBulkDelete">删除</KButton>
         </footer>
       </aside>
       <main v-if="showEditor" class="txt-toc-editor__detail" data-back-page>
-        <header class="txt-toc-editor__editor-header safe-area-top">
-          <BackButton class="txt-toc-editor__back-button" data-back-local label="返回规则列表" :disabled="busy"
-            @click="requestCancelEditor" />
-          <div class="txt-toc-editor__editor-title">
-            <h2>{{ editingId ? draft.name || '未命名目录规则' : '新目录规则' }}</h2>
-          </div>
-          <label class="txt-toc-editor__switchline">
-            <span>启用</span><input v-model="draft.enable" type="checkbox" :disabled="busy"/>
+        <SubpageHeader class="txt-toc-editor__editor-header col-span-full row-start-1" :title="editingId ? draft.name || '未命名目录规则' : '新目录规则'" back-label="返回规则列表" :back-disabled="busy" @back="requestCancelEditor" local-back>
+<template #actions><label class="txt-toc-editor__switchline">
+            <span>启用</span><KToggle component="span" :checked="!!draft.enable" @change="draft.enable = ($event.target as HTMLInputElement).checked" :disabled="busy" />
           </label>
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--primary txt-toc-editor__mobile-save"
-            :disabled="!canSave" @click="saveRule">保存</button>
-        </header>
+<KButton rounded inline type="button" class="txt-toc-editor__button txt-toc-editor__button--primary txt-toc-editor__mobile-save gap-2"
+            :disabled="!canSave" @click="saveRule">保存</KButton></template>
+</SubpageHeader>
         <form class="txt-toc-editor__form" @submit.prevent="saveRule">
           <div v-if="upstreamRuleChanged" class="txt-toc-editor__stale">
             当前规则已被外部操作更新或删除。草稿仍在，但不能直接保存覆盖。请选择还原或取消编辑。
@@ -611,12 +608,12 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
           <p v-if="atRuleLimit" class="txt-toc-editor__limit">已达到 64 条规则上限。</p>
           <div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div>
           <div class="txt-toc-editor__form-actions">
-            <button v-if="editingId" type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" :disabled="busy" @click="requestDelete(orderedRules.find((item) => item.id === editingId)!)">删除</button>
+            <KButton rounded inline clear v-if="editingId" type="button" class="txt-toc-editor__button txt-toc-editor__button--danger k-color-brand-danger gap-2 " :disabled="busy" @click="requestDelete(orderedRules.find((item) => item.id === editingId)!)">删除</KButton>
             <span class="txt-toc-editor__action-spacer"></span>
-            <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary"
+            <KButton rounded inline tonal type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary gap-2"
               :disabled="busy || (!editorDirty && !upstreamRuleChanged)"
-              @click="restoreEditorDraft">还原</button>
-            <button type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary" :disabled="!canSave">{{ editingId ? '保存修改' : '添加规则' }}</button>
+              @click="restoreEditorDraft">还原</KButton>
+            <KButton rounded inline type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary gap-2" :disabled="!canSave">{{ editingId ? '保存修改' : '添加规则' }}</KButton>
           </div>
         </form>
       </main>
@@ -629,56 +626,46 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
           <label for="txt-toc-import-url">TXT 目录规则 JSON 链接</label>
           <input id="txt-toc-import-url" v-model="importUrl" type="url" required
             :disabled="importBusy" placeholder="https://example.com/txt-toc.json" autocomplete="url" />
-          <button type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary" :disabled="importBusy || !importUrl.trim()">
+          <KButton rounded inline type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary gap-2" :disabled="importBusy || !importUrl.trim()">
             {{ importBusy ? '下载并导入中…' : '下载并导入' }}
-          </button>
+          </KButton>
           <small>下载完成后会直接导入规则，上限 1 MiB。</small>
         </form>
         <p v-if="importError" class="txt-toc-editor__error">{{ importError }}</p>
         <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="importBusy" data-back-action @click="closeUrlImport">取消</button>
+          <KButton rounded inline tonal type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary gap-2" :disabled="importBusy" data-back-action @click="closeUrlImport">取消</KButton>
         </div>
       </section>
     </div>
     <div v-if="deleteTargets.length" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDelete">
-      <section class="txt-toc-editor__confirm">
-        <h3 id="txt-toc-delete-title">{{ deleteTargets.length === 1 ? '删除这条规则？' : '删除选中的 ' + deleteTargets.length + ' 条规则？' }}</h3>
-        <p id="txt-toc-delete-description">{{ deleteTargets.length === 1 ? '“' + deleteTargets[0].name + '”将从本地 TXT 目录识别设置中移除。' : '选中的规则将从本地 TXT 目录识别设置中移除。' }}</p>
-        <div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div>
-        <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" :disabled="busy" data-back-action @click="cancelDelete">取消</button>
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" :disabled="busy" @click="confirmDelete">保存</button>
-        </div>
-      </section>
+      <KDialog opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="txt-toc-delete-title">{{ deleteTargets.length === 1 ? '删除这条规则？' : '删除选中的 ' + deleteTargets.length + ' 条规则？' }}</h3></template>
+<p id="txt-toc-delete-description">{{ deleteTargets.length === 1 ? '“' + deleteTargets[0].name + '”将从本地 TXT 目录识别设置中移除。' : '选中的规则将从本地 TXT 目录识别设置中移除。' }}</p>
+<div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div><template #buttons><KDialogButton type="button" :disabled="busy" data-back-action @click="cancelDelete">取消</KDialogButton>
+<KDialogButton type="button" :disabled="busy" @click="confirmDelete" class="k-color-brand-danger" strong>保存</KDialogButton></template>
+</KDialog>
     </div>
     <div v-if="discardPromptOpen" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDiscard">
-      <section class="txt-toc-editor__confirm">
-        <h3 id="txt-toc-discard-title">放弃未保存的规则？</h3>
-        <p>当前名称、表达式、优先级或启用状态已改变，离开编辑器会丢弃这些修改。</p>
-        <div class="txt-toc-editor__confirm-actions">
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--secondary" data-back-action @click="cancelDiscard">继续编辑</button>
-          <button type="button" class="txt-toc-editor__button txt-toc-editor__button--danger" @click="discardDraft">放弃修改</button>
-        </div>
-      </section>
+      <KDialog opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="txt-toc-discard-title">放弃未保存的规则？</h3></template>
+<p>当前名称、表达式、优先级或启用状态已改变，离开编辑器会丢弃这些修改。</p><template #buttons><KDialogButton type="button" data-back-action @click="cancelDiscard">继续编辑</KDialogButton>
+<KDialogButton type="button" @click="discardDraft" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>
+</KDialog>
     </div>
   </section>
 </template>
 <style scoped>
+@layer components {
 .txt-toc-editor{--txt-accent:var(--app-accent);--txt-text:var(--app-text);--txt-muted:var(--app-subtle);--txt-line:var(--app-line);--txt-soft:var(--app-panel-softer);display:grid;grid-template-rows:auto minmax(0,1fr);width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;color:var(--txt-text)}
-.txt-toc-editor__topbar{position:sticky;top:0;z-index:35;display:grid;grid-template-columns:44px minmax(0,1fr) auto;align-items:center;gap:10px;min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--txt-line);background:var(--app-header);backdrop-filter:blur(18px)}
-.txt-toc-editor__top-title{min-width:0}
-.txt-toc-editor__top-title strong{font-size:var(--ui-font-heading);font-weight:750;color:var(--app-text)}
 .txt-toc-editor__top-actions{position:relative;display:flex;justify-content:flex-end}
 .txt-toc-editor__top-actions>.txt-toc-editor__button{gap:5px;min-height:34px;font-size:var(--ui-font-body)}
 .txt-toc-editor__top-actions>.txt-toc-editor__button :deep(svg){width:15px;height:15px}
-.txt-toc-editor__add-options{position:absolute;right:0;top:calc(100% + 7px);z-index:55;display:grid;gap:3px;width:232px;padding:7px;border:1px solid var(--txt-line);border-radius:11px;background:var(--app-surface);box-shadow:0 16px 40px #20203322}
-.txt-toc-editor__add-options button{display:flex;align-items:center;min-height:38px;padding:9px;border:0;border-radius:8px;background:transparent;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);font-weight:650;cursor:pointer}
 .txt-toc-editor__stale{margin:0 0 15px;padding:12px;border:1px solid var(--app-warning-line);border-radius:10px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption);line-height:1.6}
-.txt-toc-editor__body{display:grid;grid-template-columns:1fr;min-width:0;height:100%;min-height:0;overflow:hidden;background:var(--app-surface)}
+.txt-toc-editor__body{display:grid;grid-template-columns:1fr;min-width:0;height:100%;min-height:0;overflow:hidden;background:var(--app-background)}
 .txt-toc-editor__body--empty{grid-template-columns:minmax(0,1fr)}
-.txt-toc-editor__master{display:flex;flex-direction:column;min-width:0;height:100%;min-height:0;overflow:hidden;padding:14px;background:var(--txt-soft)}
+.txt-toc-editor__master{display:flex;flex-direction:column;min-width:0;height:100%;min-height:0;overflow:hidden;padding:14px;background:var(--app-background)}
 .txt-toc-editor__summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding:3px}
 .txt-toc-editor__summary>div{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}
 .txt-toc-editor__summary strong{font-size:var(--ui-font-caption);font-weight:500;color:var(--txt-muted)}
@@ -699,11 +686,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__empty{padding:24px 10px;text-align:center;color:var(--txt-muted);font-size:var(--ui-font-caption)}
 .txt-toc-editor__empty strong{display:block;color:var(--txt-text);font-size:var(--ui-font-caption)}
 .txt-toc-editor__empty p{line-height:1.55}
-.txt-toc-editor__detail{min-width:0;height:100%;min-height:0;overflow-y:auto;padding:28px 34px 50px;background:var(--app-surface)}
-.txt-toc-editor__editor-header{display:flex;align-items:center;gap:12px;justify-content:space-between}
-.txt-toc-editor__editor-title{flex:1;min-width:0;display:grid;gap:4px}
-.txt-toc-editor__editor-title h2{overflow:hidden;margin:0;color:var(--app-text);font-size:var(--ui-font-heading);text-overflow:ellipsis;white-space:nowrap}
-.txt-toc-editor__back-button{display:none}
+.txt-toc-editor__detail{min-width:0;height:100%;min-height:0;overflow-y:auto;padding:28px 34px 50px;background:var(--app-background)}
 .txt-toc-editor__mobile-save{display:none}
 .txt-toc-editor__switchline{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;color:var(--app-muted);font-size:var(--ui-font-caption)}
 .txt-toc-editor__switchline input{width:18px;height:18px;accent-color:var(--txt-accent)}
@@ -716,7 +699,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__field input,.txt-toc-editor__field textarea{width:100%;min-width:0;box-sizing:border-box;padding:8px 9px;border:1px solid var(--txt-line);border-radius:9px;background:var(--app-surface);color:var(--txt-text);font:inherit;font-size:var(--ui-font-body);font-weight:400;line-height:1.5}
 .txt-toc-editor__field input{height:36px}
 .txt-toc-editor__field textarea{resize:vertical;min-height:88px;font-family:ui-monospace,SFMono-Regular,Consolas,monospace}
-.txt-toc-editor__field input:focus,.txt-toc-editor__field textarea:focus{outline:2px solid #6757d644;outline-offset:1px;border-color:var(--txt-accent)}
+.txt-toc-editor__field input:focus,.txt-toc-editor__field textarea:focus{outline:2px solid var(--app-accent);outline-offset:1px;border-color:var(--txt-accent)}
 .txt-toc-editor__priority input{font-variant-numeric:tabular-nums}
 .txt-toc-editor__test-result{padding:12px;border:1px solid var(--txt-line);border-radius:10px;background:var(--app-panel-soft);font-size:var(--ui-font-caption);line-height:1.7;overflow-wrap:anywhere}
 .txt-toc-editor__test-result strong{color:var(--txt-accent)}
@@ -731,23 +714,16 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__notice,.txt-toc-editor__message{background:var(--app-panel-soft);color:var(--app-muted)}
 .txt-toc-editor__error{background:var(--app-danger-soft);color:var(--app-danger)}
 .txt-toc-editor__limit{color:var(--app-danger)}
-.txt-toc-editor__selection-bar{display:flex;flex:none;align-items:center;gap:5px;margin-top:auto;padding:8px 0;border-top:1px solid var(--txt-line);background:var(--txt-soft)}
+.txt-toc-editor__selection-bar{display:flex;flex:none;align-items:center;gap:5px;margin-top:auto;padding:8px 0;border-top:1px solid var(--txt-line);background:var(--app-background)}
 .txt-toc-editor__text-button{padding:8px;border:0;border-radius:8px;background:transparent;font-size:var(--ui-font-body);cursor:pointer}
 .txt-toc-editor__selection-count{margin-left:auto;color:var(--txt-muted);font-size:var(--ui-font-caption)}
 .txt-toc-editor__delete-button{color:var(--app-danger)}
-.txt-toc-editor__scrim{position:fixed;z-index:2000;inset:0;display:grid;place-items:center;padding:16px;background:#191b2780}
-.txt-toc-editor__confirm{width:min(420px,100%);box-sizing:border-box;padding:22px;border:1px solid var(--txt-line);border-radius:14px;background:var(--app-surface);box-shadow:0 20px 40px #11112233}
-.txt-toc-editor__confirm h3{margin:0;font-size:var(--ui-font-heading)}
-.txt-toc-editor__confirm p{margin:9px 0 18px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
+.txt-toc-editor__scrim{position:fixed;z-index:2000;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 .txt-toc-editor__confirm-actions{display:flex;justify-content:flex-end;gap:8px}
 @media(min-width:861px){.txt-toc-editor__body{grid-template-columns:300px minmax(0,1fr)}.txt-toc-editor__master{border-right:1px solid var(--txt-line)}}
 @media(max-width:860px){
- .txt-toc-editor__topbar{padding-inline:var(--ui-header-gutter)}
- .txt-toc-editor__master{padding:12px 14px}
- .txt-toc-editor__detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 14px 66px}
- .txt-toc-editor__editor-header{position:sticky;top:0;z-index:30;min-height:64px;gap:8px;margin:0 -14px 17px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--txt-line);background:var(--app-header);backdrop-filter:blur(12px)}
- .txt-toc-editor__back-button{display:inline-flex}
- .txt-toc-editor__editor-title h2{font-size:var(--ui-font-caption)}
+ .txt-toc-editor__master{padding:16px var(--ui-page-gutter)}
+ .txt-toc-editor__detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 var(--ui-page-gutter) calc(32px + var(--safe-bottom))}
  .txt-toc-editor__switchline input{width:16px;height:16px}
  .txt-toc-editor__mobile-save{display:inline-flex}
  .txt-toc-editor__field-grid{grid-template-columns:1fr}
@@ -760,4 +736,5 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__import-url-form input{min-height:39px;width:100%;box-sizing:border-box;padding:9px 11px;border:1px solid var(--txt-line);border-radius:9px;background:var(--app-surface);color:var(--txt-text);font:inherit;font-size:var(--ui-font-body)}
 .txt-toc-editor__import-url-form button{justify-self:start}
 .txt-toc-editor__import-url-form small{font-size:var(--ui-font-caption);color:var(--txt-muted);line-height:1.5}
+}
 </style>

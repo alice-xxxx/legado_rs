@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton, List as KList } from "konsta/vue";
 // 页面拥有备份 UI 与动作；阅读器只通过窄 session 暴露备份所需能力。
 import { computed, ref, watch } from "vue";
 import { backupBusy } from "./backupState";
@@ -7,8 +8,8 @@ import { useBackupActions } from "./useBackupActions";
 import { settings as sharedSettings } from "./settingsStore";
 import { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
-import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
+import SettingsActionRow from "../../ui/SettingsActionRow.vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 
 const {
   webDavBackupConfig: webDavConfig,
@@ -88,11 +89,7 @@ function saveWebDavDraft(): void {
 
 <template>
   <section class="backup-settings-page my-settings-subpage">
-    <header class="backup-topbar safe-area-top">
-      <BackButton label="返回我的" @click="returnToSettings" />
-      <div class="backup-page-title"><strong>数据与同步</strong></div>
-      <span></span>
-    </header>
+    <SubpageHeader title="数据与同步" back-label="返回我的" @back="returnToSettings" />
     <div class="ui-page-content backup-content">
     <div class="backup-summary">
       <span>最近备份</span><span>{{ lastBackup }}</span>
@@ -100,14 +97,12 @@ function saveWebDavDraft(): void {
 
     <section class="backup-local-section">
       <h2>本地备份</h2>
-      <button type="button" class="settings-menu-row" :disabled="!!busy || locked" @click="createBackup">
-        <PrototypeIcon name="export"/>
-        <span class="settings-menu-copy"><strong>{{ busy === 'create' ? '正在导出…' : '导出备份文件' }}</strong></span><PrototypeIcon name="right"/>
-      </button>
-      <button type="button" class="settings-menu-row" :disabled="!!busy || locked" @click="restoreBackup">
-        <PrototypeIcon name="import"/>
-        <span class="settings-menu-copy"><strong>{{ busy === 'restore' ? '正在恢复…' : '从备份恢复' }}</strong><small>恢复会替换当前本地数据</small></span><PrototypeIcon name="right"/>
-      </button>
+      <KList dividers class="my-0!">
+        <SettingsActionRow :disabled="!!busy || locked" icon="export"
+          :title="busy === 'create' ? '正在导出…' : '导出备份文件'" @click="createBackup" />
+        <SettingsActionRow :disabled="!!busy || locked" icon="import"
+          :title="busy === 'restore' ? '正在恢复…' : '从备份恢复'" subtitle="恢复会替换当前本地数据" @click="restoreBackup" />
+      </KList>
     </section>
 
     <section class="webdav-settings">
@@ -128,11 +123,11 @@ function saveWebDavDraft(): void {
         </label>
         <div v-if="configRefreshConflict" class="webdav-draft-warning">
           已保存的 WebDAV 配置发生变化。当前输入仍保留，若要放弃草稿请点击重新读取表单。
-          <button type="button" :disabled="!!busy || locked" @click="resetWebDavDraft">重新读取表单</button>
+          <KButton rounded inline clear class="gap-2" type="button" :disabled="!!busy || locked" @click="resetWebDavDraft">重新读取表单</KButton>
         </div>
         <div class="webdav-config-actions">
-          <button type="submit" class="button secondary small" :disabled="!!busy || locked || !webDavUrl.trim()">保存设置</button>
-          <button v-if="webDavConfig?.password" type="button" class="text-button" :disabled="!!busy || locked || !webDavConfigMatches" @click="clearWebDavPassword">清除已保存密码</button>
+          <KButton rounded inline tonal small type="submit" class="gap-2" :disabled="!!busy || locked || !webDavUrl.trim()">保存设置</KButton>
+          <KButton rounded inline clear v-if="webDavConfig?.password" type="button" class="gap-2" :disabled="!!busy || locked || !webDavConfigMatches" @click="clearWebDavPassword">清除已保存密码</KButton>
         </div>
       </form>
 
@@ -153,8 +148,8 @@ function saveWebDavDraft(): void {
       </div>
 
       <div class="webdav-actions">
-        <button type="button" class="button secondary small" :disabled="!!busy || locked || !webDavConfigMatches" @click="uploadWebDavBackupManually">{{ busy === 'webdav-upload' ? '正在上传…' : '上传备份' }}</button>
-        <button type="button" class="button danger-outline small" :disabled="!!busy || locked || !webDavConfigMatches" @click="restoreWebDavBackupManually">{{ busy === 'restore' ? '正在恢复…' : '从 WebDAV 恢复' }}</button>
+        <KButton rounded inline tonal small type="button" class="gap-2" :disabled="!!busy || locked || !webDavConfigMatches" @click="uploadWebDavBackupManually">{{ busy === 'webdav-upload' ? '正在上传…' : '上传备份' }}</KButton>
+        <KButton rounded inline small type="button" class="danger-outline gap-2" :disabled="!!busy || locked || !webDavConfigMatches" @click="restoreWebDavBackupManually">{{ busy === 'restore' ? '正在恢复…' : '从 WebDAV 恢复' }}</KButton>
       </div>
       <p v-if="webDavError" class="webdav-error">{{ webDavError }}</p>
     </section>
@@ -163,18 +158,12 @@ function saveWebDavDraft(): void {
 </template>
 
 <style scoped>
+@layer components {
 .backup-settings-page{width:100%;min-width:0;color:var(--app-text)}
-.backup-topbar{position:sticky;top:0;z-index:35;min-height:var(--ui-header-height);display:grid;grid-template-columns:44px minmax(0,1fr) 42px;align-items:center;gap:10px;padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(18px)}
-.backup-page-title{min-width:0}
-.backup-page-title strong{font-size:var(--ui-font-heading);color:var(--app-text);font-weight:750}
 .backup-summary{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--ui-space-2);padding-bottom:var(--ui-space-5);border-bottom:1px solid var(--app-line)}
 .backup-summary>span:last-child{color:var(--app-muted);font-size:var(--ui-font-caption);overflow-wrap:anywhere}
 .backup-local-section,.webdav-settings{padding-top:var(--ui-space-4)}
 .backup-content h2{margin:0 0 var(--ui-space-2);font-size:var(--ui-font-body);font-weight:750}
-.backup-local-section .settings-menu-row{padding-inline:0}
-.backup-local-section .settings-menu-row:last-child{border-bottom:0}
-.settings-menu-copy{display:grid;gap:var(--ui-space-1)}
-.settings-menu-copy small{color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5}
 .webdav-settings{border-top:1px solid var(--app-line)}
 .webdav-config-form{display:grid}
 .webdav-setting-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:var(--ui-space-4);min-height:64px;padding:var(--ui-space-3) 0;border-bottom:1px solid var(--app-line)}
@@ -184,7 +173,6 @@ function saveWebDavDraft(): void {
 .webdav-setting-row input,.webdav-setting-row select{box-sizing:border-box;min-width:0;width:100%;min-height:var(--ui-control-height);padding:0 9px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);color:var(--app-text);font-size:var(--ui-font-body)}
 .webdav-setting-row input:disabled,.webdav-setting-row select:disabled{opacity:.6}
 .webdav-config-actions,.webdav-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:var(--ui-space-2);padding:var(--ui-space-3) 0}
-.webdav-config-actions .button,.webdav-actions .button{min-height:var(--ui-control-height);font-size:var(--ui-font-body);font-weight:500}
 .webdav-config-state{margin:0;padding:4px 0 8px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5;overflow-wrap:anywhere}
 .webdav-help{color:var(--app-muted);font-size:var(--ui-font-caption);margin:4px 0 16px}
 .webdav-help summary{padding-block:4px;cursor:pointer}
@@ -197,5 +185,6 @@ function saveWebDavDraft(): void {
 .webdav-setting-row input:focus-visible,.webdav-setting-row select:focus-visible,.webdav-help summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 @media(max-width:520px){
   .webdav-config-form .webdav-setting-row{grid-template-columns:minmax(0,1fr);gap:var(--ui-space-2)}
+}
 }
 </style>

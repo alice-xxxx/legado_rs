@@ -367,6 +367,7 @@ export interface HistoryResource {
 }
 
 export type AppTheme = "light" | "dark" | "system";
+export type UiStyle = "material" | "ios";
 export type ReadingTheme = "white" | "paper" | "sepia" | "dark";
 
 export interface ReaderSettings {
@@ -456,6 +457,7 @@ export interface AppSettingsResource {
   webdavBackup?: WebDavBackupConfig;
   schemaVersion: number;
   theme: AppTheme;
+  uiStyle: UiStyle;
   sourceHttpTimeoutSeconds: number;
   reader: ReaderSettings;
   home: HomeConfigDocument;

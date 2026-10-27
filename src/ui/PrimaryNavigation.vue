@@ -1,176 +1,58 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useRoute } from "vue-router";
+import { Button as KButton, Tabbar as KTabbar, TabbarLink as KTabbarLink, ToolbarPane as KToolbarPane, useTheme } from "konsta/vue";
 import router, { routeNames } from "../router";
 import PrototypeIcon from "./PrototypeIcon.vue";
 
 type MainScreen = "home" | "shelf" | "settings";
-
 const route = useRoute();
+const theme = useTheme();
 const activeScreen = computed(() => route.meta.screen);
-
-const items: { screen: MainScreen; label: string }[] = [
-  { screen: "home", label: "发现" },
-  { screen: "shelf", label: "内容库" },
-  { screen: "settings", label: "我的" },
-];
-
+const items = [
+  { screen: "home", label: "发现", icon: "compass" },
+  { screen: "shelf", label: "内容库", icon: "library" },
+  { screen: "settings", label: "我的", icon: "user" },
+] as const;
 function navigate(screen: MainScreen): void {
   void router.replace({ name: routeNames[screen] });
 }
 </script>
 
 <template>
-    <aside class="side-rail">
-      <nav class="rail-links" aria-label="Primary navigation">
-      <button
-        v-for="item in items"
-        :key="item.screen"
-        type="button"
-        :class="['rail-link', { active: activeScreen === item.screen }]"
-        :aria-current="activeScreen === item.screen ? 'page' : undefined"
-        @click="navigate(item.screen)"
-      >
-        <span class="glyph">
-          <PrototypeIcon :name="item.screen === 'home' ? 'compass' : item.screen === 'shelf' ? 'library' : 'user'" />
-        </span>
-        <span>{{ item.label }}</span>
-      </button>
-      </nav>
-    </aside>
-    <nav class="mobile-nav" aria-label="Primary navigation">
-      <div class="mobile-links">
-        <button
-          v-for="item in items"
-          :key="item.screen"
-          type="button"
-          :class="{ active: activeScreen === item.screen }"
-          :aria-current="activeScreen === item.screen ? 'page' : undefined"
-          @click="navigate(item.screen)"
-        >
-          <span class="glyph">
-            <PrototypeIcon :name="item.screen === 'home' ? 'compass' : item.screen === 'shelf' ? 'library' : 'user'" />
-          </span>
-          <span>{{ item.label }}</span>
-        </button>
-      </div>
+  <aside class="side-rail">
+    <nav class="rail-links" aria-label="主导航">
+      <KButton v-for="item in items" :key="item.screen" type="button"
+        class="h-16 w-full flex-col gap-1 px-0" rounded
+        :tonal="activeScreen === item.screen" :clear="activeScreen !== item.screen"
+        :aria-current="activeScreen === item.screen ? 'page' : undefined" @click="navigate(item.screen)">
+        <PrototypeIcon :name="item.icon" />
+        <span class="text-xs">{{ item.label }}</span>
+      </KButton>
     </nav>
+  </aside>
+  <div class="mobile-nav">
+    <KTabbar :key="theme" component="nav" icons labels aria-label="主导航">
+      <KToolbarPane>
+      <KTabbarLink v-for="item in items" :key="item.screen" component="button" type="button" role="button"
+        :label="item.label" :active="activeScreen === item.screen"
+        :aria-current="activeScreen === item.screen ? 'page' : undefined" @click="navigate(item.screen)">
+        <template #icon><PrototypeIcon :name="item.icon" /></template>
+      </KTabbarLink>
+      </KToolbarPane>
+    </KTabbar>
+  </div>
 </template>
 
 <style scoped>
-.side-rail {
-  z-index: 20;
-  display: flex;
-  flex: 0 0 82px;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  width: 82px;
-  padding: 18px 12px;
-  border-right: 1px solid var(--app-line);
-  background: var(--app-header);
-  backdrop-filter: blur(18px);
-}
-
-.rail-links {
-  display: flex;
-  width: 100%;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.rail-link {
-  display: flex;
-  min-height: 58px;
-  width: 100%;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 0;
-  border-radius: 16px;
-  background: transparent;
-  color: var(--app-muted);
-  font-size: var(--ui-font-caption);
-  font-weight: 600;
-  cursor: pointer;
-  transition: color .18s ease, background .18s ease;
-}
-
-.rail-link.active {
-  color: var(--app-accent-ink);
-}
-
-.glyph {
-  display: grid;
-  width: 25px;
-  height: 25px;
-  place-items: center;
-}
-
-.glyph :deep(svg) {
-  width: 24px;
-  height: 24px;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-
-.mobile-nav {
-  display: none;
-}
-
+@layer components {
+.side-rail { z-index: 20; display: flex; flex: 0 0 88px; align-items: center; width: 88px; padding: 12px 8px; border-right: 1px solid var(--app-line); background: var(--app-surface); }
+.rail-links { display: grid; width: 100%; gap: 12px; }
+.mobile-nav { display: none; }
+.prototype-icon { width: 24px; height: 24px; }
 @media (max-width: 860px) {
-  .side-rail {
-    display: none;
-  }
-
-  .mobile-nav {
-    position: fixed;
-    z-index: 45;
-    inset: auto 0 0;
-    display: block;
-    width: 100%;
-    height: calc(var(--ui-nav-height) + var(--safe-bottom));
-    padding: 4px 24px var(--safe-bottom);
-    border-top: 1px solid var(--app-line);
-    background: var(--app-header);
-    backdrop-filter: blur(18px);
-  }
-
-  .mobile-links {
-    display: grid;
-    width: 100%;
-    height: 100%;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-
-  .mobile-links > button {
-    display: flex;
-    min-width: 0;
-    min-height: 0;
-    width: 100%;
-    height: 100%;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: 3px;
-    padding: 0 8px;
-    border: 0;
-    border-radius: 0;
-    background: transparent;
-    color: var(--app-muted);
-    font-size: var(--ui-font-body);
-    font-weight: 650;
-    cursor: pointer;
-  }
-
-  .mobile-links > button.active {
-    color: var(--app-accent-ink);
-  }
-
-  .mobile-links .glyph :deep(svg) {
-    width: 23px;
-    height: 23px;
-  }
+  .side-rail { display: none; }
+  .mobile-nav { position: fixed; z-index: 45; inset: auto 0 0; display: block; }
+}
 }
 </style>

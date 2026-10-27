@@ -100,6 +100,8 @@ onBeforeUnmount(() => {
   </ReaderPage>
 </template>
 <style scoped>
+@layer components {
 .video-reader { width: 100%; height: 100%; display: flex; align-items: center; background: #000; }
 video { display: block; width: 100%; height: 100%; background: #000; object-fit: contain; }
+}
 </style>

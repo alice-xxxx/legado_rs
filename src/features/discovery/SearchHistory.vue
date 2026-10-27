@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
 import { computed, ref } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import type { SearchHistoryEntry } from "../../api/types";
@@ -37,35 +38,32 @@ function clearAll(): void {
         <option value="recent">最近</option>
         <option value="popular">常用</option>
       </select>
-      <button type="button" class="search-history__clear" :disabled="busy || !entries.length"
-        @click="clearConfirmOpen = true">清空</button>
+      <KButton rounded inline clear type="button" class="search-history__clear gap-2" :disabled="busy || !entries.length"
+        @click="clearConfirmOpen = true">清空</KButton>
     </header>
     <div class="search-history__list">
       <span v-for="entry in sortedEntries" :key="entry.normalizedQuery" class="search-history__entry">
-        <button type="button" class="search-history__query" :disabled="busy" :title="entry.query"
-          @click="emit('useQuery', entry.query)">{{ entry.query }}</button>
-        <button type="button" class="search-history__delete" :disabled="busy"
+        <KButton rounded inline clear type="button" class="search-history__query gap-2" :disabled="busy" :title="entry.query"
+          @click="emit('useQuery', entry.query)">{{ entry.query }}</KButton>
+        <KButton rounded inline clear type="button" class="search-history__delete k-color-brand-danger gap-2 " :disabled="busy"
           :aria-label="'删除搜索记录：' + entry.query" @click="emit('deleteQuery', entry.query)">
           <PrototypeIcon name="close" />
-        </button>
+        </KButton>
       </span>
     </div>
     <p v-if="error" class="search-history__error">{{ error }}</p>
     <section v-if="clearConfirmOpen" class="search-history__confirm-backdrop" @click.self="clearConfirmOpen = false">
-      <div class="search-history__confirm" role="dialog" aria-modal="true"
-        aria-labelledby="search-history-confirm-title" aria-describedby="search-history-confirm-description">
-        <h3 id="search-history-confirm-title">清空搜索历史？</h3>
-        <p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。</p>
-        <div class="search-history__confirm-actions">
-          <button type="button" class="button secondary small" data-back-action :disabled="busy" @click="clearConfirmOpen = false">保留记录</button>
-          <button type="button" class="button secondary small" :disabled="busy" @click="clearAll">{{ busy ? '正在清空…' : '确认清空' }}</button>
-        </div>
-      </div>
+      <KDialog opened :backdrop="false" class="search-history__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="search-history-confirm-title">清空搜索历史？</h3></template>
+<p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。</p><template #buttons><KDialogButton type="button" data-back-action :disabled="busy" @click="clearConfirmOpen = false">保留记录</KDialogButton>
+<KDialogButton type="button" :disabled="busy" @click="clearAll" strong>{{ busy ? '正在清空…' : '确认清空' }}</KDialogButton></template>
+</KDialog>
     </section>
   </section>
 </template>
 
 <style scoped>
+@layer components {
 .search-history {
   min-width: 0;
   padding-top: 20px;
@@ -166,28 +164,12 @@ function clearAll(): void {
   display: grid;
   place-items: center;
   padding: 16px;
-  background: rgb(24 25 29 / 36%);
-}
-.search-history__confirm {
-  width: min(390px, 100%);
-  padding: 20px;
-  border: 1px solid var(--app-line);
-  border-radius: 16px;
-  background: var(--app-surface);
-  box-shadow: var(--app-shadow);
-}
-.search-history__confirm h3 {
-  margin: 0;
-  font-size: var(--ui-font-title);
-}
-.search-history__confirm p {
-  margin: 9px 0 18px;
-  color: var(--app-muted);
-  line-height: 1.55;
+  background: var(--app-scrim);
 }
 .search-history__confirm-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
 }
 </style>

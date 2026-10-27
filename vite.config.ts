@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import type { Plugin } from "vite";
 import vue from "@vitejs/plugin-vue";
+import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
 // @ts-expect-error type error without @types/node package
@@ -49,7 +50,7 @@ function vueTypecheckWatch(): Plugin {
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [vue(), vueTypecheckWatch()],
+  plugins: [vue(), tailwindcss(), vueTypecheckWatch()],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

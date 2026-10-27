@@ -18,6 +18,7 @@ const progress = computed(() => readingProgressPercent(props.book.progress, prop
 </template>
 
 <style scoped>
+@layer components {
 .library-book-info {
   display: grid;
   gap: 4px;
@@ -57,5 +58,6 @@ const progress = computed(() => readingProgressPercent(props.book.progress, prop
   font-size: var(--ui-font-caption);
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
 }
 </style>

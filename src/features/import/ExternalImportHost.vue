@@ -100,7 +100,9 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+@layer components {
 .file-import-progress { position: fixed; z-index: 60; bottom: max(16px, var(--safe-bottom)); left: 50%; transform: translateX(-50%); width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--app-line); border-radius: 12px; background: var(--app-surface); box-shadow: 0 6px 24px #0002; }
 .file-import-progress span { display: block; overflow-wrap: anywhere; }
 .file-import-progress progress { width: 100%; }
+}
 </style>

@@ -1,10 +1,11 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 书籍展示信息编辑器：收集用户修改并调用应用层的封面选择能力。
 import { computed, onBeforeUnmount, reactive, ref } from "vue";
 import { onBeforeRouteLeave } from "vue-router";
 import { discardBookCoverAsset, pickBookCover } from "../../api/books";
 import type { BookDisplayMetadataPatch, BookResource } from "../../api/types";
-import BackButton from "../../ui/BackButton.vue";
 
 type MetadataField = "title" | "author" | "intro" | "coverSrc";
 
@@ -200,11 +201,9 @@ function submit(): void {
   <Teleport to="body">
     <section class="book-display-editor-backdrop" data-back-layer @click.self="requestClose">
       <article class="book-display-editor" role="dialog" aria-modal="true" aria-labelledby="book-display-editor-title">
-        <header class="book-display-editor-toolbar safe-area-top">
-          <BackButton class="book-display-editor-back" :label="returnLabel" :disabled="coverPicking" @click="requestClose" />
-          <h2 id="book-display-editor-title">编辑显示信息</h2>
-          <button type="submit" form="book-display-editor-form" class="book-display-editor-save" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</button>
-        </header>
+        <SubpageHeader class="book-display-editor-toolbar col-span-full row-start-1" title="编辑显示信息" :back-label="returnLabel" :back-disabled="coverPicking" @back="requestClose" >
+<template #actions><KButton rounded inline type="submit" form="book-display-editor-form" class="book-display-editor-save gap-2" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</KButton></template>
+</SubpageHeader>
         <form id="book-display-editor-form" class="book-display-editor-form" @submit.prevent="submit">
           <div class="book-display-editor-identity">
             <div class="book-display-cover-preview">
@@ -238,43 +237,39 @@ function submit(): void {
             <span>封面地址</span>
             <div class="book-display-input-row">
               <input v-model="draft.coverSrc" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" @input="resetFields.coverSrc = false; clearCoverPreview()" />
-              <button type="button" class="text-button" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</button>
-              <button type="button" class="text-button" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</button>
+              <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</KButton>
+              <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</KButton>
             </div>
             <small>支持 JPG、PNG、WebP 图片或 HTTPS 地址。留空不显示封面。</small>
             <p v-if="coverSelectionError" class="book-display-editor-error">{{ coverSelectionError }}</p>
           </label>
 
-          <button type="button" class="text-button book-display-reset-all" :disabled="locked" @click="resetAll">全部恢复原值</button>
+          <KButton rounded inline clear type="button" class="book-display-reset-all gap-2" :disabled="locked" @click="resetAll">全部恢复原值</KButton>
           <p v-if="locked" class="book-display-editor-error">恢复完成前不能继续保存。请重启应用后检查书架。</p>
         </form>
       </article>
       <div v-if="discardPromptOpen" class="book-display-discard-scrim" data-back-layer>
-        <div class="book-display-discard-dialog">
-          <h3 id="book-display-discard-title">放弃未保存的书籍信息？</h3>
-          <p>书名、作者、简介或封面尚有修改，离开后这些修改将不会保存。</p>
-          <footer>
-            <button type="button" class="button secondary" data-back-action @click="keepEditing">继续编辑</button>
-            <button type="button" class="button danger" @click="discardAndClose">放弃修改</button>
-          </footer>
-        </div>
+        <KDialog opened :backdrop="false" class="book-display-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h3 id="book-display-discard-title">放弃未保存的书籍信息？</h3></template>
+<p>书名、作者、简介或封面尚有修改，离开后这些修改将不会保存。</p><template #buttons><KDialogButton type="button" data-back-action @click="keepEditing">继续编辑</KDialogButton>
+<KDialogButton type="button" @click="discardAndClose" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>
+</KDialog>
       </div>
     </section>
   </Teleport>
 </template>
 
 <style scoped>
-.book-display-editor-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; background: rgb(25 27 35 / 36%); }
-.book-display-editor { display: flex; flex-direction: column; width: min(700px, 100%); height: min(860px, 92dvh); overflow: hidden; border: 1px solid var(--app-line); border-radius: 14px; color: var(--app-text); background: var(--app-surface); box-shadow: var(--app-shadow); }
-.book-display-editor-toolbar { display: grid; grid-template-columns: 44px minmax(0, 1fr) 56px; align-items: center; flex: none; gap: 8px; min-height: 64px; padding-inline: 16px; border-bottom: 1px solid var(--app-line); }
-.book-display-editor-toolbar h2 { overflow: hidden; margin: 0; font-size: var(--ui-font-body); font-weight: 600; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+@layer components {
+.book-display-editor-backdrop { position: fixed; z-index: 80; inset: 0; display: grid; place-items: center; padding: 20px; background: var(--app-scrim); }
+.book-display-editor { display: flex; flex-direction: column; width: min(700px, 100%); height: min(860px, 92dvh); overflow: hidden; border: 1px solid var(--app-line); border-radius: 14px; color: var(--app-text); background:var(--app-background); box-shadow: var(--app-shadow); }
 .book-display-editor-save { min-height: 36px; padding-inline: 12px; border-radius: 8px; color: var(--app-on-accent); background: var(--app-accent); font-size: var(--ui-font-body); cursor: pointer; }
 .book-display-editor-form { display: grid; align-content: start; gap: 24px; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 24px; }
 .book-display-editor-identity { display: grid; grid-template-columns: 100px minmax(0, 1fr); align-items: start; gap: 20px; }
 .book-display-identity-fields { display: grid; gap: 16px; min-width: 0; }
 .book-display-field { display: grid; gap: 8px; min-width: 0; color: var(--app-muted); font-size: var(--ui-font-caption); }
 .book-display-field input,
-.book-display-field textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--app-line); border-radius: 8px; color: var(--app-text); background: var(--app-panel-softer); font-size: var(--ui-font-body); line-height: 1.6; }
+.book-display-field textarea { width: 100%; min-width: 0; padding: 10px 12px; border: 1px solid var(--app-line); border-radius: 8px; color: var(--app-text); background: var(--app-surface); font-size: var(--ui-font-body); line-height: 1.6; }
 .book-display-field input { min-height: 44px; }
 .book-display-field textarea { min-height: 160px; resize: vertical; }
 .book-display-field input:focus,
@@ -282,24 +277,18 @@ function submit(): void {
 .book-display-field small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
 .book-display-input-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .book-display-input-row input { flex: 1 1 100%; }
-.book-display-input-row .text-button { min-height: 40px; padding: 0 12px; border-radius: 8px; color: var(--app-accent-ink); background: var(--app-accent-soft); font-size: var(--ui-font-caption); font-weight: 400; }
 .book-display-cover-preview { display: grid; place-items: center; width: 100px; height: 138px; overflow: hidden; border-radius: 8px; color: var(--app-muted); background: var(--app-panel-soft); font-size: var(--ui-font-caption); text-align: center; }
 .book-display-cover-preview img { width: 100%; height: 100%; object-fit: cover; }
 .book-display-cover-preview span { padding: 8px; overflow-wrap: anywhere; }
 .book-display-reset-all { justify-self: start; min-height: 44px; font-size: var(--ui-font-caption); font-weight: 400; }
 .book-display-editor-error { margin: 0; padding: 12px; border-radius: 8px; color: var(--app-danger); background: var(--app-danger-soft); font-size: var(--ui-font-caption); line-height: 1.7; overflow-wrap: anywhere; }
-.book-display-discard-scrim { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 16px; background: rgb(25 27 35 / 36%); }
-.book-display-discard-dialog { width: min(420px, 100%); padding: 24px; border: 1px solid var(--app-line); border-radius: 14px; background: var(--app-surface); box-shadow: var(--app-shadow); }
-.book-display-discard-dialog h3 { margin: 0 0 12px; color: var(--app-text); font-size: var(--ui-font-heading); }
-.book-display-discard-dialog p { color: var(--app-muted); font-size: var(--ui-font-body); line-height: 1.7; }
-.book-display-discard-dialog footer { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-top: 24px; }
-.book-display-discard-dialog .button { padding-inline: 8px; }
+.book-display-discard-scrim { position: fixed; z-index: 90; inset: 0; display: grid; place-items: center; padding: 16px; background: var(--app-scrim); }
 @media (max-width: 600px) {
   .book-display-editor-backdrop { padding: 0; }
   .book-display-editor { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
-  .book-display-editor-toolbar { min-height: calc(56px + var(--safe-top)); padding-inline: 12px; }
-  .book-display-editor-form { gap: 20px; padding: 20px 16px max(24px, var(--safe-bottom)); }
+  .book-display-editor-form { gap: 20px; padding: 24px var(--ui-page-gutter) max(32px, var(--safe-bottom)); }
   .book-display-editor-identity { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; }
   .book-display-cover-preview { width: 80px; height: 112px; }
+}
 }
 </style>

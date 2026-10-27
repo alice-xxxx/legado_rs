@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import SubpageHeader from "../../ui/SubpageHeader.vue";
+import { Button as KButton } from "konsta/vue";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import { shelfBooks as shelf } from "./shelfBooks";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
@@ -10,7 +12,6 @@ import { getLocalBookImportSession } from "../import/localBookImportSession";
 import type { LocalImportFormat } from "../../api/books";
 import type { AppBootstrap, ShelfResource } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
 import { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
 import { getReaderSession } from "../reader/readerSession";
@@ -118,21 +119,17 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 
 <template>
   <section class="library-import-page">
-    <header class="import-subpage-header safe-area-top">
-      <BackButton label="返回内容库" @click="returnToRoute(routeNames.shelf)" />
-      <div class="import-subpage-title"><strong>导入</strong></div>
-      <span></span>
-    </header>
+    <SubpageHeader class="import-subpage-header col-span-full row-start-1" title="导入" back-label="返回内容库" @back="returnToRoute(routeNames.shelf)" ></SubpageHeader>
 
     <div class="library-import-body">
       <div class="library-import-grid">
-        <button v-for="format in formats" :key="format.format" type="button"
+        <KButton rounded inline tonal class="h-auto min-h-32 flex-col items-start gap-2 rounded-2xl p-4 text-start" v-for="format in formats" :key="format.format" type="button"
           :disabled="actionsBlocked"
           @click="importFile(format.format)">
           <span class="library-import-file-icon"><PrototypeIcon :name="format.icon"/></span>
           <strong>{{ format.title }}</strong>
           <small>{{ format.desc }}</small>
-        </button>
+        </KButton>
       </div>
       <p v-if="localImportBusy" class="library-import-status">正在通过系统文件选择器和本地解析引擎处理导入…</p>
       <p v-if="recoveryRequired" class="library-import-warning">书架事务需要恢复，请重启应用完成恢复后再继续导入。</p>
@@ -145,7 +142,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
             placeholder="粘贴链接或 JSON"
             :disabled="actionsBlocked"
             @input="linkError = ''"/>
-          <button type="submit" class="library-import-primary" :disabled="actionsBlocked || !linkInput.trim()">识别</button>
+          <KButton rounded inline type="submit" class="library-import-primary gap-2" :disabled="actionsBlocked || !linkInput.trim()">识别</KButton>
         </form>
         <p v-if="linkError" class="library-import-warning">{{ linkError }}</p>
       </section>
@@ -155,7 +152,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
         <p v-if="pageDataLoading" class="library-import-status">正在读取内容库…</p>
         <p v-else-if="pageDataError" class="library-import-warning">
           内容库读取失败：{{ pageDataError }}
-          <button type="button" class="library-import-retry" @click="loadShelf">重试</button>
+          <KButton rounded inline type="button" class="library-import-retry gap-2" @click="loadShelf">重试</KButton>
         </p>
         <div v-else-if="localBooks.length" class="library-import-recent-list">
           <article v-for="book in localBooks" :key="book.id">
@@ -163,7 +160,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
               <strong>{{ book.title }}</strong>
               <small>{{ bookFormat(book) }} · {{ book.author || '作者未知' }}</small>
             </div>
-            <button type="button" @click="openLocalBook(book.id)">打开</button>
+            <KButton rounded inline clear class="gap-2" type="button" @click="openLocalBook(book.id)">打开</KButton>
           </article>
         </div>
         <div v-else class="library-import-empty">
@@ -175,10 +172,8 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 </template>
 
 <style scoped>
+@layer components {
 .library-import-page{width:100%;min-height:100%;color:var(--app-text)}
-.import-subpage-header{position:sticky;top:0;z-index:5;display:grid;grid-template-columns:44px 1fr 38px;align-items:center;gap:12px;min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter);border-bottom:1px solid var(--app-line);background:var(--app-header);backdrop-filter:blur(14px)}
-.import-subpage-title{display:flex;flex-direction:column;align-items:flex-start;gap:3px}
-.import-subpage-title strong{font-size:var(--ui-font-heading);font-weight:750}
 .library-import-body{width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
 .library-import-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;border:1px solid var(--app-line);border-radius:14px;background:var(--app-surface);cursor:pointer;text-align:left}
@@ -202,10 +197,10 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 .library-import-recent-list article>button{padding:9px 12px;border:0;border-radius:9px;background:var(--app-panel-soft);color:var(--app-muted);font-size:var(--ui-font-body);cursor:pointer}
 .library-import-empty{padding:19px 0;color:var(--app-subtle);font-size:var(--ui-font-caption)}
 @media(max-width:640px){
-.import-subpage-header{min-height:var(--ui-header-height);padding-inline:var(--ui-header-gutter)}
 .library-import-body{width:100%;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8)}
 .library-import-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
 .library-import-grid button{min-height:112px;padding:12px}
 .library-import-section{margin-top:22px;padding-top:18px}
+}
 }
 </style>

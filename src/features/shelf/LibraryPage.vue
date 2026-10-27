@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { onBeforeRouteLeave, useRoute } from "vue-router";
@@ -180,43 +181,44 @@ function groupBookCount(group: string): number {
             <BackButton data-back-local label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
             <span><strong>整理内容库</strong><small>分组与批量管理</small></span>
           </div>
-          <button type="button" class="library-done-button" :disabled="shelfBatch.batchBusy"
-            @click.stop="exitManageMode()">完成</button>
+          <KButton rounded inline clear type="button" class="library-done-button gap-2" :disabled="shelfBatch.batchBusy"
+            @click.stop="exitManageMode()">完成</KButton>
         </header>
         <div v-else class="library-topbar">
+          <h1 class="ui-page-title">内容库</h1>
           <nav class="library-type-filter">
-            <button v-for="filter in typeFilters" :key="filter.key" type="button"
+            <KButton rounded :tonal="activeType === filter.key" :clear="!(activeType === filter.key)" inline class="gap-2" v-for="filter in typeFilters" :key="filter.key" type="button"
               :class="{ active: activeType === filter.key }" @click.stop="activeType = filter.key">{{ filter.title
-              }}</button>
+              }}</KButton>
           </nav>
           <div class="library-top-actions">
-            <button class="library-round-action" type="button" title="导入 TXT / EPUB / CBZ / PDF"
+            <KButton rounded inline clear class="library-round-action gap-2 size-11 p-0" type="button" title="导入 TXT / EPUB / CBZ / PDF"
               :disabled="mutationLocked" @click.stop="openImport()">
               <PrototypeIcon name="import" />
-            </button>
-            <button class="library-round-action" type="button" title="整理内容库"
+            </KButton>
+            <KButton rounded inline clear class="library-round-action gap-2 size-11 p-0" type="button" title="整理内容库"
               :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="enterManageMode()">
               <PrototypeIcon name="tune" />
-            </button>
+            </KButton>
           </div>
         </div>
         <div v-if="shelfBatch.selectionMode" class="library-manage-workspace">
           <aside class="library-manage-rail">
             <nav class="library-manage-group-list">
-              <button type="button" :class="{ active: !shelfGroup.shelfActiveGroup }" :disabled="shelfBatch.batchBusy"
+              <KButton rounded :tonal="!shelfGroup.shelfActiveGroup" :clear="!(!shelfGroup.shelfActiveGroup)" inline class="gap-2" type="button" :class="{ active: !shelfGroup.shelfActiveGroup }" :disabled="shelfBatch.batchBusy"
                 @click.stop="shelfGroup.shelfActiveGroup = ''">
                 <span>全部内容</span><small>{{ groupBookCount('') }}</small>
-              </button>
-              <button v-for="group in shelfGroup.shelfGroups" :key="group" type="button"
+              </KButton>
+              <KButton rounded :tonal="shelfGroup.shelfActiveGroup === group" :clear="!(shelfGroup.shelfActiveGroup === group)" inline class="gap-2" v-for="group in shelfGroup.shelfGroups" :key="group" type="button"
                 :class="{ active: shelfGroup.shelfActiveGroup === group }" :disabled="shelfBatch.batchBusy"
                 @click.stop="shelfGroup.shelfActiveGroup = group">
                 <span>{{ group }}</span><small>{{ groupBookCount(group) }}</small>
-              </button>
+              </KButton>
             </nav>
-            <button type="button" class="library-manage-groups-button"
+            <KButton rounded inline clear type="button" class="library-manage-groups-button gap-2"
               :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="manageGroupsOpen = !manageGroupsOpen">
               {{ manageGroupsOpen ? '收起分组编辑' : '编辑分组' }}
-            </button>
+            </KButton>
             <ShelfOrganizer v-if="manageGroupsOpen" :groups="shelfGroup.shelfGroups"
               :active-group="shelfGroup.shelfActiveGroup" :manage-groups-open="true"
               @filter-group="shelfGroup.shelfActiveGroup = $event" @create-group="shelfGroup.createGroup"
@@ -225,19 +227,19 @@ function groupBookCount(group: string): number {
           <main class="library-manage-content">
             <div class="shelf-batch-toolbar library-manage-selectbar">
               <label class="library-select-all">
-                <input type="checkbox" :checked="shelfBatch.allVisibleBooksSelected"
+                <KCheckbox component="span" :checked="shelfBatch.allVisibleBooksSelected"
                   :disabled="shelfBatch.batchBusy || !shelfView.visibleBooks.length"
-                  @change="shelfBatch.allVisibleBooksSelected ? shelfBatch.clearVisibleBookSelection() : shelfBatch.selectVisibleBooks()" />
+                  @change="shelfBatch.allVisibleBooksSelected ? shelfBatch.clearVisibleBookSelection() : shelfBatch.selectVisibleBooks()"  />
                 <span>全选</span>
               </label>
               <strong class="library-selection-count">已选 {{ shelfBatch.selectedVisibleBookIds.length }} 项</strong>
               <div class="library-manage-primary-actions">
-                <button type="button" class="library-move-button"
+                <KButton rounded inline tonal type="button" class="library-move-button gap-2"
                   :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                  @click="shelfBatch.openGroups">移动到</button>
-                <button type="button" class="library-remove-button"
+                  @click="shelfBatch.openGroups">移动到</KButton>
+                <KButton rounded inline tonal type="button" class="library-remove-button k-color-brand-danger gap-2 "
                   :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                  @click="shelfBatch.openRemovalConfirm">移除</button>
+                  @click="shelfBatch.openRemovalConfirm">移除</KButton>
               </div>
             </div>
             <div v-if="shelfBatch.selectedVisibleBookIds.length > 256" class="shelf-batch-error">
@@ -248,14 +250,14 @@ function groupBookCount(group: string): number {
             <details class="library-manage-more">
               <summary>更多批量操作</summary>
               <div class="library-manage-extra-actions">
-                <button type="button" :disabled="shelfBatch.batchBusy || !shelfBatch.selectedVisibleBookIds.length"
-                  @click="shelfBatch.clearVisibleBookSelection">取消本组选择</button>
-                <button type="button"
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="shelfBatch.batchBusy || !shelfBatch.selectedVisibleBookIds.length"
+                  @click="shelfBatch.clearVisibleBookSelection">取消本组选择</KButton>
+                <KButton rounded inline clear class="gap-2" type="button"
                   :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                  @click="shelfBatch.refreshSelectedInformation()">更新目录</button>
-                <button type="button"
+                  @click="shelfBatch.refreshSelectedInformation()">更新目录</KButton>
+                <KButton rounded inline clear class="gap-2" type="button"
                   :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.selectedVisibleBookIds.length || shelfBatch.selectedVisibleBookIds.length > 256"
-                  @click="shelfBatch.cacheSelectedBooks()">下载章节</button>
+                  @click="shelfBatch.cacheSelectedBooks()">下载章节</KButton>
                 <label class="library-manage-sort-label">排序
                   <select :value="shelfView.shelfSortKey" :disabled="shelfBatch.batchBusy || mutationLocked"
                     @change="shelfView.changeShelfSort(($event.target as HTMLSelectElement).value as ShelfSortKey)">
@@ -267,17 +269,17 @@ function groupBookCount(group: string): number {
                     <option value="custom">自定义顺序</option>
                   </select>
                 </label>
-                <button type="button" :disabled="shelfBatch.batchBusy || mutationLocked"
+                <KButton rounded inline clear class="gap-2" type="button" :disabled="shelfBatch.batchBusy || mutationLocked"
                   @click="shelfView.changeShelfSort(shelfView.shelfSortKey, shelfView.shelfSortOrder === 'ascending' ? 'descending' : 'ascending')">
                   {{ shelfView.shelfSortOrder === 'ascending' ? '升序' : '降序' }}
-                </button>
+                </KButton>
                 <span v-if="shelfBatch.selectedLocalBooks.length">所选包含 {{ shelfBatch.selectedLocalBooks.length }}
                   本本地书，不支持在线任务。</span>
               </div>
             </details>
             <section v-if="shelfBatch.cacheResult" class="shelf-batch-result-inline">
               <span class="muted">缓存完成 {{ shelfBatch.cacheResult.completed.length }} 本；失败 {{ shelfBatch.cacheResult.failed.length }} 本；本地书跳过 {{ shelfBatch.cacheResult.skipped }} 本。</span>
-              <button class="text-button" @click="shelfBatch.cacheResult = null">关闭结果</button>
+              <KButton rounded inline clear class="gap-2" @click="shelfBatch.cacheResult = null">关闭结果</KButton>
               <p v-for="book in shelfBatch.cacheResult.failed" :key="book.id" class="error">{{ book.title }}：{{ book.message }}</p>
             </section>
             <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
@@ -288,17 +290,17 @@ function groupBookCount(group: string): number {
                   <span v-else class="library-abstract-cover" :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
                 </span>
                 <span class="library-manage-info">
-                  <input type="checkbox" :checked="shelfBatch.selectedBookIds.includes(book.id)"
-                    :disabled="shelfBatch.batchBusy" @change="shelfBatch.toggleBookSelection(book.id)" />
+                  <KCheckbox component="span" :checked="shelfBatch.selectedBookIds.includes(book.id)"
+                    :disabled="shelfBatch.batchBusy" @change="shelfBatch.toggleBookSelection(book.id)"  />
                   <LibraryBookInfo :book="book" />
                 </span>
               </label>
             </div>
             <div v-else class="page-empty-state library-manage-empty">
               <strong>{{ shelfView.shelf.books.length ? '分组暂无内容' : '暂无内容' }}</strong>
-              <button v-if="shelfView.shelf.books.length" type="button" class="button secondary small"
-                @click="shelfGroup.shelfActiveGroup = ''">查看全部</button>
-              <button v-else type="button" class="button secondary small" @click="exitManageMode()">返回内容库</button>
+              <KButton rounded inline tonal small v-if="shelfView.shelf.books.length" type="button" class="gap-2"
+                @click="shelfGroup.shelfActiveGroup = ''">查看全部</KButton>
+              <KButton rounded inline tonal small v-else type="button" class="gap-2" @click="exitManageMode()">返回内容库</KButton>
             </div>
           </main>
         </div>
@@ -321,8 +323,8 @@ function groupBookCount(group: string): number {
         </div>
         <div v-else-if="!shelfBatch.selectionMode && shelfView.shelf.books.length" class="page-empty-state library-filter-empty">
           <strong>暂无匹配内容</strong>
-          <button class="button secondary small"
-            @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</button>
+          <KButton rounded inline tonal small class="gap-2"
+            @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</KButton>
         </div>
         <div v-else-if="!shelfBatch.selectionMode" class="page-empty-state library-filter-empty">
           暂无内容
@@ -332,8 +334,8 @@ function groupBookCount(group: string): number {
   </div>
 
   <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
-    <article class="app-modal shelf-batch-remove-modal">
-      <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</button>
+    <KGlass component="article" :highlight="false" class="app-modal shelf-batch-remove-modal">
+      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</KButton>
       <p class="eyebrow">批量移除</p>
       <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
       <p class="modal-description">将从书架中移除所选书籍、阅读进度、书签和本地缓存。请核对书名；取消不会修改书架。</p>
@@ -343,27 +345,27 @@ function groupBookCount(group: string): number {
         </li>
       </ul>
       <div class="modal-actions">
-        <button class="button secondary" :disabled="shelfBatch.batchBusy"
-          @click="shelfBatch.cancelRemoval">取消</button>
-        <button class="button danger" :disabled="shelfBatch.batchBusy || mutationLocked"
+        <KButton rounded inline tonal class="gap-2" :disabled="shelfBatch.batchBusy"
+          @click="shelfBatch.cancelRemoval">取消</KButton>
+        <KButton rounded inline class="k-color-brand-danger gap-2 " :disabled="shelfBatch.batchBusy || mutationLocked"
           @click="shelfBatch.submitRemoval">{{ shelfBatch.batchBusy ? '正在移除…' : `确认移除
-          ${shelfBatch.removalTargets.length} 本书` }}</button>
+          ${shelfBatch.removalTargets.length} 本书` }}</KButton>
       </div>
-    </article>
+    </KGlass>
   </section>
 
   <section v-if="shelfBatch.groupsOpen" class="modal-backdrop" @click.self="shelfBatch.closeGroups">
-    <article class="app-modal shelf-batch-group-modal">
-      <button class="detail-close" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</button>
+    <KGlass component="article" :highlight="false" class="app-modal shelf-batch-group-modal">
+      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</KButton>
       <p class="eyebrow">批量整理</p>
       <h2 id="shelf-batch-group-title">移动 {{ shelfBatch.groupBookIds.length }} 本内容至分组</h2>
       <p class="modal-description">所选分组将完整替换这些内容当前的分组，可同时指定多个分组。其他内容和空分组不受影响。</p>
       <div class="shelf-batch-group-list">
         <label v-for="group in shelfGroup.shelfGroups" :key="group" class="shelf-batch-group-option"
           :class="{ selected: shelfBatch.groupDraft.includes(group) }">
-          <input type="checkbox" :checked="shelfBatch.groupDraft.includes(group)"
+          <KCheckbox component="span" :checked="shelfBatch.groupDraft.includes(group)"
             :disabled="shelfBatch.batchBusy || mutationLocked || shelfBatch.clearGroups"
-            @change="shelfBatch.toggleGroup(group)" />
+            @change="shelfBatch.toggleGroup(group)"  />
           <span>{{ group }}</span>
         </label>
         <p v-if="!shelfGroup.shelfGroups.length" class="shelf-batch-groups-empty">还没有分组。可以在下方直接添加，或选择清空分组。</p>
@@ -373,29 +375,30 @@ function groupBookCount(group: string): number {
         <div>
           <input id="shelf-batch-new-group-input" v-model="shelfBatch.newGroup" maxlength="128" autocomplete="off"
             placeholder="输入分组名称" :disabled="shelfBatch.batchBusy || mutationLocked" />
-          <button class="button secondary small" type="submit"
-            :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.newGroup.trim()">添加</button>
+          <KButton rounded inline tonal small class="gap-2" type="submit"
+            :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.newGroup.trim()">添加</KButton>
         </div>
       </form>
       <label class="shelf-batch-clear-option">
-        <input type="checkbox" :checked="shelfBatch.clearGroups" :disabled="shelfBatch.batchBusy || mutationLocked"
-          @change="shelfBatch.setClearGroups(($event.target as HTMLInputElement).checked)" />
+        <KCheckbox component="span" :checked="shelfBatch.clearGroups" :disabled="shelfBatch.batchBusy || mutationLocked"
+          @change="shelfBatch.setClearGroups(($event.target as HTMLInputElement).checked)"  />
         <span><strong>清空所选书的全部分组</strong><small>会把所选书籍的分组完整替换为空列表。</small></span>
       </label>
       <p v-if="shelfBatch.batchError" class="shelf-batch-error shelf-batch-modal-error">{{ shelfBatch.batchError }}
       </p>
       <div class="modal-actions">
-        <button class="button secondary" :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">取消</button>
-        <button class="button primary"
+        <KButton rounded inline tonal class="gap-2" :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">取消</KButton>
+        <KButton rounded inline class="gap-2"
           :disabled="shelfBatch.batchBusy || mutationLocked || (!shelfBatch.groupDraft.length && !shelfBatch.clearGroups)"
           @click="shelfBatch.submitGroups">{{ shelfBatch.batchBusy ? '正在保存…' : `确认移动 ${shelfBatch.groupBookIds.length}
-          项` }}</button>
+          项` }}</KButton>
       </div>
-    </article>
+    </KGlass>
   </section>
 </template>
 
 <style scoped>
+@layer components {
 .shelf-page-layout {
   display: flex;
   width: 100%;
@@ -412,7 +415,7 @@ function groupBookCount(group: string): number {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 clamp(20px, 3.6vw, 56px) var(--safe-bottom);
+  padding: 0 var(--ui-page-gutter) var(--safe-bottom);
 }
 
 .library-manage-page .shelf-page-main {
@@ -422,7 +425,7 @@ function groupBookCount(group: string): number {
 .shelf-view {
   --library-card-min-width: clamp(136px, 18vw, 168px);
   width: 100%;
-  max-width: 1120px;
+  max-width: calc(var(--app-content-width) - var(--ui-page-gutter) * 2);
   margin: 0 auto;
   padding: 16px 0 24px;
 }
@@ -477,7 +480,8 @@ function groupBookCount(group: string): number {
 }
 
 .library-topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -485,6 +489,8 @@ function groupBookCount(group: string): number {
 }
 
 .library-type-filter {
+  grid-row: 2;
+  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   gap: 5px;
@@ -515,6 +521,8 @@ function groupBookCount(group: string): number {
 }
 
 .library-top-actions {
+  grid-column: 2;
+  grid-row: 1;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -990,7 +998,7 @@ function groupBookCount(group: string): number {
 
 @media (max-width:860px) {
   .shelf-page-main {
-    padding: 0 14px calc(var(--ui-nav-height) + var(--safe-bottom));
+    padding: 0 var(--ui-page-gutter) calc(var(--ui-nav-height) + var(--safe-bottom));
   }
 
   .library-manage-page .shelf-page-main {
@@ -1070,5 +1078,6 @@ function groupBookCount(group: string): number {
     min-height: 32px;
     padding: 0 9px;
   }
+}
 }
 </style>

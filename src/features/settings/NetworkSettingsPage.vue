@@ -41,6 +41,7 @@ function changeTimeout(seconds: number): void {
 </template>
 
 <style scoped>
+@layer components {
 .settings-detail-page {
   width: 100%;
   min-width: 0;
@@ -49,7 +50,7 @@ function changeTimeout(seconds: number): void {
 }
 
 .settings-detail-content {
-  width: min(640px, 100%);
+  width: min(var(--app-content-width), 100%);
   margin: 0 auto;
   padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
 }
@@ -79,5 +80,6 @@ function changeTimeout(seconds: number): void {
 .setting-control select:focus-visible {
   outline: 2px solid var(--app-accent);
   outline-offset: 2px;
+}
 }
 </style>

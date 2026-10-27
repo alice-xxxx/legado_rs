@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
 import SourceDebugPanel from "./SourceDebugPanel.vue";
 import SourceManagerPage from "./SourceManagerPage.vue";
 import SourceMetadataEditorPage from "./SourceMetadataEditorPage.vue";
@@ -460,23 +461,20 @@ onBeforeUnmount(() => {
 
     <section v-if="confirmRouteLeave" class="modal-backdrop source-leave-guard"
 >
-      <article class="app-modal">
-        <h2>{{ pendingSourceSwitch === 'new' ? '新建来源？' : pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2>
-        <p class="modal-description">当前源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p>
-        <div class="modal-actions">
-          <button type="button" class="button secondary" data-back-action @click="chooseRouteLeave(false)">继续编辑</button>
-          <button type="button" class="button danger" @click="chooseRouteLeave(true)">{{ pendingSourceSwitch === 'new' ? '放弃并新建' : pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</button>
-        </div>
-      </article>
+      <KDialog opened :backdrop="false" class=" w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2>{{ pendingSourceSwitch === 'new' ? '新建来源？' : pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2></template>
+<p class="modal-description">当前源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p><template #buttons><KDialogButton type="button" data-back-action @click="chooseRouteLeave(false)">继续编辑</KDialogButton>
+<KDialogButton type="button" @click="chooseRouteLeave(true)" class="k-color-brand-danger" strong>{{ pendingSourceSwitch === 'new' ? '放弃并新建' : pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</KDialogButton></template>
+</KDialog>
     </section>
 
     <section v-if="management.sourceImportOpen" class="modal-backdrop" @click.self="closeSourceImport">
-      <article class="app-modal source-import-modal"
+      <KGlass component="article" :highlight="false" class="app-modal source-import-modal"
 @keydown.esc="closeSourceImport">
         <header class="source-import-heading">
           <h2 id="source-import-title">从网络链接导入</h2>
-          <button type="button" class="source-import-close" data-back-action
-            :disabled="importLocked" @click="closeSourceImport"><PrototypeIcon name="close"/></button>
+          <KButton rounded inline type="button" class="source-import-close gap-2 size-11 p-0" data-back-action
+            :disabled="importLocked" @click="closeSourceImport"><PrototypeIcon name="close"/></KButton>
         </header>
         <form class="source-import-url" @submit.prevent="submitSourceImport">
           <label for="source-import-url">内容来源 JSON 链接</label>
@@ -484,25 +482,25 @@ onBeforeUnmount(() => {
             type="url" inputmode="url" autocomplete="url" maxlength="4096"
             placeholder="https://example.com/source.json"
             :class="{ 'is-invalid': !!urlImportError }" :disabled="importLocked"/>
-          <button type="submit" class="button primary"
+          <KButton rounded inline type="submit" class="gap-2"
             :disabled="importLocked || !management.sourceImportUrl.trim() || !!urlImportError">
             {{ management.sourceImportBusy ? '下载并导入中…' : '下载并导入' }}
-          </button>
+          </KButton>
           <small>下载完成后会直接导入来源，仅支持 HTTP(S)，上限 32 MiB。</small>
           <p v-if="urlImportError" class="source-import-error">{{ urlImportError }}</p>
           <div class="source-import-actions">
-            <button type="button" class="button secondary" :disabled="importLocked" @click="closeSourceImport">取消</button>
+            <KButton rounded inline tonal type="button" class="gap-2" :disabled="importLocked" @click="closeSourceImport">取消</KButton>
           </div>
         </form>
         <p v-if="management.sourceImportBusy" class="source-import-loading">正在下载并导入来源…</p>
-      </article>
+      </KGlass>
     </section>
     <section v-if="login.sourceLoginTarget" class="modal-backdrop" @click.self="login.closeSourceLogin()"
       @keydown.esc.stop.prevent="login.closeSourceLogin()">
-      <article class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
+      <KGlass component="article" :highlight="false" class="app-modal source-login-modal" role="dialog" aria-modal="true" aria-labelledby="source-login-title">
         <header class="source-login-heading">
           <div><h2 id="source-login-title">来源登录</h2><p :title="login.sourceLoginTarget.name">{{ login.sourceLoginTarget.name }}</p></div>
-          <button type="button" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></button>
+          <KButton rounded inline clear class="gap-2" type="button" data-back-action aria-label="关闭登录" @click="login.closeSourceLogin"><PrototypeIcon name="close"/></KButton>
         </header>
         <div class="source-login-body">
         <SourceLoginFormView v-if="login.sourceLoginForm?.mode === 'form'"
@@ -513,10 +511,10 @@ onBeforeUnmount(() => {
           <p v-if="login.sourceLoginWebOpen" class="source-login-web-hint">在网页中登录后，回到这里点「完成」保存。</p>
           <p v-else-if="!login.sourceLoginFeedback" class="source-login-web-hint">打开网页完成登录。</p>
           <div class="source-login-web-actions">
-            <button v-if="!login.sourceLoginWebOpen" type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })">{{ login.sourceLoginBusy ? '正在打开…' : login.sourceLoginFeedback ? '重新登录' : '打开登录页' }}</button>
+            <KButton rounded inline v-if="!login.sourceLoginWebOpen" type="button" class="gap-2" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })">{{ login.sourceLoginBusy ? '正在打开…' : login.sourceLoginFeedback ? '重新登录' : '打开登录页' }}</KButton>
             <template v-else>
-              <button type="button" class="button primary" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'submit' })">{{ login.sourceLoginBusy ? '正在保存…' : '完成' }}</button>
-              <button type="button" class="button secondary" @click="login.closeSourceLogin">取消</button>
+              <KButton rounded inline type="button" class="gap-2" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'submit' })">{{ login.sourceLoginBusy ? '正在保存…' : '完成' }}</KButton>
+              <KButton rounded inline tonal type="button" class="gap-2" @click="login.closeSourceLogin">取消</KButton>
             </template>
           </div>
         </div>
@@ -524,21 +522,21 @@ onBeforeUnmount(() => {
         <p v-if="login.sourceLoginForm && login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
         <div v-if="!login.sourceLoginForm && !login.sourceLoginBusy" class="source-login-load-state">
           <p v-if="login.sourceLoginFormError" class="source-login-error" role="alert">{{ login.sourceLoginFormError }}</p>
-          <button type="button" class="source-login-retry" :disabled="recoveryRequired" @click="login.runLogin({ type: 'open' })">
+          <KButton rounded inline clear type="button" class="source-login-retry gap-2" :disabled="recoveryRequired" @click="login.runLogin({ type: 'open' })">
             <PrototypeIcon name="refresh" />{{ login.sourceLoginFormError ? '重试' : '读取登录方式' }}
-          </button>
+          </KButton>
         </div>
         <div class="source-login-state">
           <span :class="{ saved: login.sourceHasLoginState === true }"></span>
           <p role="status">{{ login.sourceLoginBusy ? '处理中…' : login.sourceHasLoginState === true ? '已保存登录数据' : login.sourceHasLoginState === false ? '暂无登录数据' : '状态未确认' }}</p>
-          <button type="button" aria-label="刷新登录状态" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })"><PrototypeIcon name="refresh" />刷新</button>
+          <KButton rounded inline clear class="gap-2" type="button" aria-label="刷新登录状态" :disabled="login.sourceLoginBusy || recoveryRequired" @click="login.runLogin({ type: 'open' })"><PrototypeIcon name="refresh" />刷新</KButton>
         </div>
         <details v-if="login.sourceHasLoginState === true" class="source-login-storage">
           <summary>管理登录数据</summary>
-          <button type="button" class="button danger-outline" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebOpen || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</button>
+          <KButton rounded inline type="button" class="danger-outline gap-2" :disabled="login.sourceLoginBusy || !!login.sourceLoginWebOpen || login.sourceHasLoginState === null || recoveryRequired" @click="login.clearSelectedSourceLogin">清除登录数据</KButton>
         </details>
         </div>
-      </article>
+      </KGlass>
     </section>
 
     <SourceDebugPanel
@@ -569,9 +567,14 @@ onBeforeUnmount(() => {
 
 
 
-    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><article class="app-modal confirm-modal"><h2>移除这些源？</h2><p>已添加到书架的书籍不会受到影响。</p><div class="modal-actions"><button class="button secondary" data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</button><button class="button danger" :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources">{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</button></div></article></section>
+    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+  <template #title><h2>移除这些源？</h2></template>
+<p>已添加到书架的书籍不会受到影响。</p><template #buttons><KDialogButton data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</KDialogButton>
+<KDialogButton :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources" class="k-color-brand-danger" strong>{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</KDialogButton></template>
+</KDialog></section>
 </template>
 <style scoped>
+@layer components {
 .source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}
 .source-workspace-frame :deep(.source-edit-screen){min-height:0;overflow:hidden}
 @media(min-width:861px){
@@ -593,7 +596,6 @@ onBeforeUnmount(() => {
 .source-login-retry svg,.source-login-state button svg{width:16px;height:16px}
 .source-login-web-hint{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.6}
 .source-login-web-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px;margin-top:12px}
-.source-login-web-actions>.button{min-height:var(--ui-control-height);font-weight:500}
 .source-login-feedback,.source-login-error{margin:0;font-size:var(--ui-font-caption);line-height:1.6;overflow-wrap:anywhere;white-space:pre-wrap}
 .source-login-feedback{color:var(--app-accent-ink)}
 .source-login-error{color:var(--app-danger)}
@@ -604,7 +606,6 @@ onBeforeUnmount(() => {
 .source-login-state>button{display:inline-flex;align-items:center;gap:6px;flex:none;min-height:var(--ui-compact-control-height);padding:0 6px;border-radius:var(--ui-radius);color:var(--app-muted);font-size:var(--ui-font-caption);cursor:pointer}
 .source-login-storage{color:var(--app-muted);font-size:var(--ui-font-caption)}
 .source-login-storage>summary{width:max-content;padding:4px 0;cursor:pointer}
-.source-login-storage>.button{min-height:var(--ui-compact-control-height);margin-top:8px;border-color:var(--app-danger-line);background:var(--app-surface);color:var(--app-danger);font-weight:500}
 .source-login-heading>button:focus-visible,.source-login-retry:focus-visible,.source-login-state>button:focus-visible,.source-login-storage>summary:focus-visible{outline:2px solid var(--app-accent);outline-offset:2px}
 .detail-close svg{width:18px;height:18px}
 .source-import-modal{width:min(420px,100%);box-sizing:border-box;padding:22px}
@@ -626,4 +627,5 @@ onBeforeUnmount(() => {
 .source-import-actions{display:flex;justify-content:flex-end;align-items:center;flex-wrap:wrap;gap:10px;padding-top:12px}
 .source-import-url .source-import-actions{padding-top:5px}
 .source-import-loading{margin:12px 0 0;font-size:var(--ui-font-caption);color:var(--app-accent-ink)}
+}
 </style>

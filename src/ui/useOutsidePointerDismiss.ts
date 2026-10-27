@@ -23,10 +23,10 @@ export function useOutsidePointerDismiss(
   };
   onMounted(() => {
     document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeydown);
+    document.addEventListener("keydown", onKeydown, true);
   });
   onBeforeUnmount(() => {
     document.removeEventListener("pointerdown", onPointerDown);
-    document.removeEventListener("keydown", onKeydown);
+    document.removeEventListener("keydown", onKeydown, true);
   });
 }

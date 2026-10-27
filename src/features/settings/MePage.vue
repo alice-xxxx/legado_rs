@@ -1,6 +1,7 @@
 <script setup lang="ts">
+import { List as KList } from "konsta/vue";
 import router, { routeNames, settingsRouteNames, type SettingsSection } from "../../router";
-import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import SettingsActionRow from "../../ui/SettingsActionRow.vue";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
 
 type Item = {
@@ -16,7 +17,7 @@ const contentItems: Item[] = [
 ];
 
 const appItems: Item[] = [
-  { destination: "appearance", icon: "appearance", title: "阅读与播放" },
+  { destination: "appearance", icon: "appearance", title: "外观、阅读与播放" },
   { destination: "backup", icon: "backup", title: "数据与同步" },
   { destination: "other", icon: "settings", title: "高级设置" },
 ];
@@ -30,24 +31,22 @@ function navigate(destination: Item["destination"]): void {
   <div class="me-page-layout">
     <PrimaryNavigation />
     <main class="me-page-main">
-      <div class="ui-page-content settings-menu">
-    <section v-for="group in ([{ title: '内容', items: contentItems }, { title: '应用', items: appItems }])"
-      :key="group.title" class="settings-menu-section">
-      <small class="settings-menu-label">{{ group.title }}</small>
-      <button v-for="entry in group.items" :key="entry.destination" type="button" class="settings-menu-row"
-        @click="navigate(entry.destination)">
-        <span class="settings-menu-icon"><PrototypeIcon :name="entry.icon" /></span>
-        <span class="settings-menu-copy">
-          <strong>{{ entry.title }}</strong>
-        </span>
-        <PrototypeIcon name="right"/>
-      </button>
-    </section>
+      <div class="ui-page-content">
+        <h1 class="ui-page-title mb-6">我的</h1>
+        <section v-for="group in ([{ title: '内容', items: contentItems }, { title: '应用', items: appItems }])"
+          :key="group.title" class="ui-settings-group">
+          <h2>{{ group.title }}</h2>
+          <KList dividers class="my-0!">
+            <SettingsActionRow v-for="entry in group.items" :key="entry.destination"
+              :title="entry.title" :icon="entry.icon" @click="navigate(entry.destination)" />
+          </KList>
+        </section>
       </div>
     </main>
   </div>
 </template>
 <style scoped>
+@layer components {
 .me-page-layout {
   display: flex;
   width: 100%;
@@ -69,5 +68,6 @@ function navigate(destination: Item["destination"]): void {
   .me-page-main {
     padding: 0 0 calc(var(--ui-nav-height) + var(--safe-bottom));
   }
+}
 }
 </style>

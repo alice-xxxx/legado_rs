@@ -57,6 +57,7 @@ const showTitle = computed(() => {
   </article>
 </template>
 <style scoped>
+@layer components {
 /* Keep horizontal insets inside each column: WebKit excludes the column
    container's trailing padding from its scrollable width on the final page. */
 .chapter-content { padding-inline: var(--gutter); }
@@ -65,4 +66,5 @@ const showTitle = computed(() => {
 .chapter-markup :deep(p) { margin: 0 0 1em; }
 .chapter-markup.indent-paragraphs :deep(p[data-reader-indent-normalized="true"]) { text-indent: 2em; }
 .chapter-title { margin: 0 0 1.2em; font-size: 1.35em; line-height: 1.4; text-align: left; break-inside: avoid; break-after: avoid; }
+}
 </style>

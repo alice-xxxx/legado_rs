@@ -57,6 +57,7 @@ onBeforeUnmount(() => { resizeObserver?.disconnect(); emit("ready", null); });
   </div>
 </template>
 <style scoped>
+@layer components {
 .novel-reader {
   --gutter: min(8vw, 96px);
   position: relative;
@@ -95,4 +96,5 @@ onBeforeUnmount(() => { resizeObserver?.disconnect(); emit("ready", null); });
 .reader-chapter-preview { position: absolute; inset: 0; visibility: hidden; pointer-events: none; }
 .novel-reader.vertical-turn { touch-action: pan-x; }
 .novel-reader:not(.vertical):not(.vertical-turn) { touch-action: none; }
+}
 </style>

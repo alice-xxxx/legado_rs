@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
 import PrototypeIcon from "./PrototypeIcon.vue";
 
 withDefaults(defineProps<{
@@ -28,46 +29,45 @@ const emit = defineEmits<{
 
 <template>
   <article class="managed-list-row" :class="{ 'is-batch': batchMode, 'has-menu': showMenu }">
-    <input
-      v-if="batchMode"
+    <KCheckbox v-if="batchMode"
       class="managed-list-row__checkbox"
-      type="checkbox"
       :aria-label="`选择${name}`"
       :checked="selected"
       :disabled="busy"
       @click.stop
       @change="emit('select', ($event.target as HTMLInputElement).checked)"
-    />
+     ><span class="sr-only">选择{{ name }}</span></KCheckbox>
     <button type="button" class="managed-list-row__main" :disabled="busy" @click="emit('open')">
       <span class="managed-list-row__status" :class="{ 'is-disabled': enabled !== true }"></span>
       <span class="managed-list-row__copy"><strong>{{ name }}</strong><small>{{ subtitle }}</small></span>
     </button>
     <div v-if="showMenu" class="managed-list-row__menu-wrap">
       <slot name="menu-trigger">
-        <button
+        <KButton rounded inline clear
           type="button"
-          class="managed-list-row__menu-button"
+          class="managed-list-row__menu-button size-11 p-0 text-current"
           :aria-label="`${name}的更多操作`"
           :aria-expanded="menuOpen"
           :disabled="busy"
           @click.stop="emit('toggle-menu')"
-        ><PrototypeIcon name="more" /></button>
+        ><PrototypeIcon name="more" /></KButton>
       </slot>
-      <div v-if="menuOpen" class="managed-list-row__menu" @click.stop>
+      <KGlass component="div" :highlight="false" v-if="menuOpen" class="managed-list-row__menu rounded-2xl" @click.stop>
         <slot name="menu" />
-      </div>
+      </KGlass>
     </div>
   </article>
 </template>
 
 <style scoped>
+@layer components {
 .managed-list-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 44px;
   align-items: center;
   gap: 3px;
   min-width: 0;
-  min-height: 54px;
+  min-height: var(--ui-row-height);
   padding: 0 3px;
   border-radius: 10px;
 }
@@ -77,7 +77,7 @@ const emit = defineEmits<{
 }
 
 .managed-list-row.is-batch {
-  grid-template-columns: 24px minmax(0, 1fr) 30px;
+  grid-template-columns: 32px minmax(0, 1fr) 44px;
 }
 
 .managed-list-row.is-batch:not(.has-menu) {
@@ -99,7 +99,7 @@ const emit = defineEmits<{
   gap: 8px;
   width: 100%;
   min-width: 0;
-  min-height: 54px;
+  min-height: var(--ui-row-height);
   padding: 7px 8px 7px 9px;
   border: 0;
   background: transparent;
@@ -217,5 +217,6 @@ const emit = defineEmits<{
 @media (pointer: coarse) {
   .managed-list-row.has-menu { grid-template-columns: minmax(0, 1fr) 44px; }
   .managed-list-row.is-batch.has-menu { grid-template-columns: 24px minmax(0, 1fr) 44px; }
+}
 }
 </style>

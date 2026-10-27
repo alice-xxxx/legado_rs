@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Button as KButton, Glass as KGlass } from "konsta/vue";
 // PDF 阅读视图持有渲染任务并在卸载时释放，避免跨章节残留画布。
 import "core-js/actual/promise/with-resolvers.js";
 import { getDocument, GlobalWorkerOptions, PasswordResponses, type PDFDocumentLoadingTask, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
@@ -351,30 +352,30 @@ onBeforeUnmount(() => {
 
 <template>
   <div ref="stage" class="pdf-reader-stage">
-    <section v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel">
-      <header><strong>搜索 PDF 文本</strong><button type="button" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></button></header>
+    <KGlass component="section" :highlight="false" v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel rounded-3xl">
+      <header><strong>搜索 PDF 文本</strong><KButton rounded inline clear class="gap-2" type="button" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></KButton></header>
       <label for="pdf-find-input">关键词</label>
       <input id="pdf-find-input" v-model="findQuery" type="search" placeholder="搜索文档中的文字" autocomplete="off"/>
       <p>{{ findSearching ? '正在扫描 PDF 页面…' : !findQuery.trim() ? '输入关键词查找包含它的页面' : `找到 ${findPageMatches.length} 页` }}</p>
       <p v-if="findError">{{ findError }}</p>
       <div v-if="findPageMatches.length" class="pdf-find-results">
-        <button v-for="index in findPageMatches.slice(0,100)" :key="index" type="button"
+        <KButton rounded inline clear class="gap-2" v-for="index in findPageMatches.slice(0,100)" :key="index" type="button"
           @click="emit('pageSelected', index)">
           第 {{ index + 1 }} 页
-        </button>
+        </KButton>
       </div>
       <small v-if="findPageMatches.length > 100">仅展示前 100 个匹配页面，可缩小关键词范围。</small>
-    </section>
+    </KGlass>
     <nav v-if="pageCount > 1 && !passwordPromptOpen" class="pdf-thumbnail-rail">
-      <button type="button" class="pdf-thumb-window-control" :disabled="thumbnailStart <= 0" @click="setThumbnailWindow(thumbnailStart - thumbnailPageWindow)">上一组</button>
+      <KButton rounded inline clear type="button" class="pdf-thumb-window-control gap-2" :disabled="thumbnailStart <= 0" @click="setThumbnailWindow(thumbnailStart - thumbnailPageWindow)">上一组</KButton>
       <div class="pdf-thumb-list">
-        <button v-for="thumbnail in thumbnails" :key="thumbnail.index" type="button"
+        <KButton rounded inline clear class="w-full h-auto flex-col gap-1 p-1" v-for="thumbnail in thumbnails" :key="thumbnail.index" type="button"
           @click="emit('pageSelected',thumbnail.index)">
           <img :src="thumbnail.src" loading="lazy"/>
           <small>{{ thumbnail.index + 1 }}</small>
-        </button>
+        </KButton>
       </div>
-      <button type="button" class="pdf-thumb-window-control" :disabled="thumbnailStart + thumbnailPageWindow >= pageCount" @click="setThumbnailWindow(thumbnailStart + thumbnailPageWindow)">下一组</button>
+      <KButton rounded inline clear type="button" class="pdf-thumb-window-control gap-2" :disabled="thumbnailStart + thumbnailPageWindow >= pageCount" @click="setThumbnailWindow(thumbnailStart + thumbnailPageWindow)">下一组</KButton>
     </nav>
     <div ref="canvasScroller" class="pdf-canvas-scroll" :class="{ 'pdf-with-thumbnail-rail': pageCount > 1 && !passwordPromptOpen }">
       <canvas ref="canvas"></canvas>
@@ -382,28 +383,29 @@ onBeforeUnmount(() => {
     <div v-if="loading && !passwordPromptOpen" class="pdf-reader-status">正在显示 PDF…</div>
     <div v-if="error || renderError" class="pdf-reader-status pdf-reader-error">
       <p>{{ error || renderError }}</p>
-      <button class="button secondary" @click="retry">重试</button>
-      <button class="button secondary" @click="emit('closeReader')">返回书架</button>
+      <KButton rounded inline tonal class="gap-2" @click="retry">重试</KButton>
+      <KButton rounded inline tonal class="gap-2" @click="emit('closeReader')">返回书架</KButton>
     </div>
 
     <div v-if="passwordPromptOpen" class="pdf-password-backdrop" data-back-layer>
-      <form class="pdf-password-dialog" @submit.prevent="submitPassword">
+      <KGlass component="form" :highlight="false" class="pdf-password-dialog rounded-3xl" @submit.prevent="submitPassword">
         <h2>输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
         <label for="pdf-reader-password">PDF 密码</label>
         <input id="pdf-reader-password" v-model="passwordInput" type="password" autocomplete="off" />
         <p v-if="passwordError" class="pdf-password-error">{{ passwordError }}</p>
         <div class="pdf-password-actions">
-          <button type="button" class="button secondary" data-back-action @click="cancelPassword">取消阅读</button>
-          <button type="submit" class="button primary" :disabled="!passwordInput">打开 PDF</button>
+          <KButton rounded inline tonal type="button" class="gap-2" data-back-action @click="cancelPassword">取消阅读</KButton>
+          <KButton rounded inline type="submit" class="gap-2" :disabled="!passwordInput">打开 PDF</KButton>
         </div>
-      </form>
+      </KGlass>
     </div>
     <span class="pdf-page-label">{{ pageLabel }}</span>
   </div>
 </template>
 
 <style scoped>
+@layer components {
 
 .pdf-reader-stage { position: absolute; inset: 0; overflow: hidden; background: var(--app-surface); }
 .pdf-canvas-scroll {
@@ -443,7 +445,7 @@ onBeforeUnmount(() => {
 
 .pdf-find-panel {
   position: absolute; z-index: 8;
-  top: calc(10px + var(--safe-top)); right: 11px;
+  top: calc(80px + var(--safe-top)); right: 11px;
   display: grid; width: min(310px, calc(100% - 72px));
   max-height: calc(100% - 70px - var(--safe-top) - var(--safe-bottom)); gap: 8px;
   overflow: auto; padding: 13px;
@@ -461,4 +463,5 @@ onBeforeUnmount(() => {
   .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 54px; }
 }
 
+}
 </style>

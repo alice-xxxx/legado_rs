@@ -1,74 +1,30 @@
 <script setup lang="ts">
-// 二级页面共用同一套返回按钮，具体返回目标由页面路由决定。
+import { Navbar as KNavbar, useTheme } from "konsta/vue";
 import BackButton from "./BackButton.vue";
 
 withDefaults(defineProps<{
   title?: string;
   backLabel?: string;
   showBackLabel?: boolean;
+  backDisabled?: boolean;
+  localBack?: boolean;
+  subtitle?: string;
 }>(), {
   title: "",
   backLabel: "返回",
   showBackLabel: false,
 });
-
 const emit = defineEmits<{ back: [] }>();
+const theme = useTheme();
 </script>
 
 <template>
-  <header class="subpage-header safe-area-top" :class="{ 'subpage-header--compact': !title }">
-    <BackButton
-      class="subpage-header__back"
-      :label="backLabel"
-      :show-label="showBackLabel"
-      @click="emit('back')"
-    />
-    <div v-if="title" class="subpage-header__copy">
-      <h2>{{ title }}</h2>
-    </div>
-    <div class="subpage-header__actions"><slot name="actions" /></div>
-  </header>
+  <KNavbar :key="theme" component="header" class="subpage-header" :title="title" :center-title="false"
+    inner-class="mx-auto max-w-[980px] overflow-visible" title-class="min-w-0 flex-1 truncate" :subtitle="subtitle">
+    <template v-if="$slots.title" #title><slot name="title" /></template>
+    <template #left>
+      <BackButton :label="backLabel" :show-label="showBackLabel" :disabled="backDisabled" :data-back-local="localBack || undefined" @click="emit('back')" />
+    </template>
+    <template v-if="$slots.actions" #right><slot name="actions" /></template>
+  </KNavbar>
 </template>
-
-<style scoped>
-.subpage-header {
-  position: sticky;
-  top: 0;
-  z-index: 30;
-  display: flex;
-  min-height: var(--ui-header-height);
-  align-items: center;
-  gap: 12px;
-  padding-inline: var(--ui-header-gutter);
-  border-bottom: 1px solid var(--app-line);
-  background: var(--app-background);
-}
-
-.subpage-header--compact {
-  min-height: var(--ui-header-height);
-}
-
-.subpage-header__copy {
-  min-width: 0;
-  flex: 1;
-}
-
-.subpage-header__copy h2 {
-  margin: 0;
-  color: var(--app-text);
-  font-size: var(--ui-font-heading);
-  font-weight: 700;
-  line-height: 1.3;
-}
-
-.subpage-header__actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.subpage-header__back {
-  color: var(--app-muted);
-}
-
-</style>
