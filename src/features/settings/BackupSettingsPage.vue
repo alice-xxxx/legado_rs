@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ListInput as KListInput, Button as KButton, List as KList } from "konsta/vue";
+import { Block as KBlock, ListInput as KListInput, Button as KButton, List as KList } from "konsta/vue";
 // 页面拥有备份 UI 与动作；阅读器只通过窄 session 暴露备份所需能力。
 import { computed, ref, watch } from "vue";
 import { backupBusy } from "./backupState";
@@ -97,7 +97,7 @@ function saveWebDavDraft(): void {
 
     <section class="backup-local-section">
       <h2>本地备份</h2>
-      <KList dividers class="my-0!">
+      <KList strong inset dividers class="mx-0! my-0!">
         <SettingsActionRow :disabled="!!busy || locked" icon="export"
           :title="busy === 'create' ? '正在导出…' : '导出备份文件'" @click="createBackup" />
         <SettingsActionRow :disabled="!!busy || locked" icon="import"
@@ -105,7 +105,7 @@ function saveWebDavDraft(): void {
       </KList>
     </section>
 
-    <section class="webdav-settings">
+    <KBlock strong inset class="webdav-settings mx-0! my-6!">
       <h2 id="webdav-backup-heading">WebDAV 备份</h2>
 
       <form class="webdav-config-form" @submit.prevent="saveWebDavDraft">
@@ -152,7 +152,7 @@ function saveWebDavDraft(): void {
         <KButton rounded inline small type="button" class="danger-outline gap-2" :disabled="!!busy || locked || !webDavConfigMatches" @click="restoreWebDavBackupManually">{{ busy === 'restore' ? '正在恢复…' : '从 WebDAV 恢复' }}</KButton>
       </div>
       <p v-if="webDavError" class="webdav-error">{{ webDavError }}</p>
-    </section>
+    </KBlock>
     </div>
   </section>
 </template>
@@ -162,9 +162,8 @@ function saveWebDavDraft(): void {
 .backup-settings-page{width:100%;min-width:0;color:var(--app-text)}
 .backup-summary{display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:var(--ui-space-2);padding-bottom:var(--ui-space-5);border-bottom:1px solid var(--app-line)}
 .backup-summary>span:last-child{color:var(--app-muted);font-size:var(--ui-font-caption);overflow-wrap:anywhere}
-.backup-local-section, .webdav-settings{padding-top:var(--ui-space-4)}
+.backup-local-section{padding-top:var(--ui-space-6)}
 .backup-content h2{margin:0 0 var(--ui-space-2);font-size:var(--ui-font-body);font-weight:750}
-.webdav-settings{border-top:1px solid var(--app-line)}
 .webdav-config-form{display:grid}
 .webdav-setting-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:var(--ui-space-4);min-height:64px;padding:var(--ui-space-3) 0;border-bottom:1px solid var(--app-line)}
 .backup-row-copy{display:flex;flex-direction:column;gap:4px;min-width:0}

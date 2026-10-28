@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Preloader as KPreloader, Button as KButton } from "konsta/vue";
+import BookCover from "../../ui/BookCover.vue";
+import { Preloader as KPreloader, Button as KButton, Glass as KGlass } from "konsta/vue";
 defineOptions({ name: "HomePage" });
 
 /* 根据栏目配置加载发现内容，并复用搜索页的书目操作。 */
@@ -21,8 +22,6 @@ import type {
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 import router, { routeNames, settingsRouteNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
-import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 
 function openSearch(): void {
@@ -357,26 +356,23 @@ onBeforeUnmount(() => {
 <template>
   <!-- 下拉刷新手势监听在滚动区上。 -->
   <div class="home-page-layout">
-    <PrimaryNavigation />
-    <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
+    <main class="home-page-main" aria-label="发现" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
       @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
-      <SubpageHeader title="发现" :back="false" large>
-        <template #actions>
-          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="搜索" @click="openSearch"><PrototypeIcon name="search" /></KButton>
-          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="管理栏目" @click="manageHome"><PrototypeIcon name="tune" /></KButton>
-        </template>
-      </SubpageHeader>
       <section class="home-discovery ui-page-content" :class="{ 'home-discovery-empty': !visibleResults.length }">
         <!-- 标签靠左，分类筛选和操作按钮靠右。 -->
         <div class="discover-filter-bar">
           <nav v-if="orderedTabs.length" class="home-tabs" aria-label="发现页面">
             <KButton rounded :tonal="activeTab?.id === tab.id" :clear="!(activeTab?.id === tab.id)" inline class="gap-2" v-for="tab in orderedTabs" :key="tab.id"
-              :class="{ active: activeTab?.id === tab.id }"
+              :class="{ active: activeTab?.id === tab.id }" :aria-pressed="activeTab?.id === tab.id"
               @click="selectTab(tab.id)">{{ tab.title }}</KButton>
           </nav>
           <div class="discover-controls">
             <SelectMenu id="discover-type-button" v-model="activeType" label="内容类型"
               :options="typeFilters.map(filter => ({ value: filter.id, label: filter.title }))" />
+            <KGlass class="flex shrink-0 items-center rounded-full">
+              <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="搜索" @click="openSearch"><PrototypeIcon name="search" /></KButton>
+              <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="管理栏目" @click="manageHome"><PrototypeIcon name="tune" /></KButton>
+            </KGlass>
           </div>
         </div>
 
@@ -391,14 +387,11 @@ onBeforeUnmount(() => {
         </div>
 
         <!-- 封面流展示当前栏目内容，也显示加载、空内容和错误状态。 -->
-        <div v-if="visibleResults.length" class="discovery-content-grid">
-          <article v-for="(result, index) in visibleResults" :key="`${result.sourceId}:${result.resultId}`"
+        <div v-if="visibleResults.length" class="discovery-content-grid ui-book-grid">
+          <article v-for="result in visibleResults" :key="`${result.sourceId}:${result.resultId}`"
             class="discovery-cover-card">
             <button type="button" class="discovery-cover-action" @click="openSearchResult(result)">
-              <span class="discovery-cover-art" :class="`cover-tone-${index % 5}`">
-                <img v-if="result.coverSrc" :src="result.coverSrc" loading="lazy" decoding="async" />
-                <span v-else class="discovery-cover-placeholder"></span>
-              </span>
+              <BookCover class="discovery-cover-art" :src="result.coverSrc" />
               <span class="discovery-cover-copy">
                 <strong>{{ result.title }}</strong>
                 <small>{{ result.author || '作者未知' }}</small>
@@ -412,10 +405,8 @@ onBeforeUnmount(() => {
           <span>正在从源加载发现内容…</span>
         </div>
         <div v-else class="page-empty-state discover-grid-state">
-          <span class="empty-state-glyph"><PrototypeIcon :name="gridError ? 'refresh' : 'compass'" /></span>
-          <strong>{{ gridError ? '发现内容暂时无法加载' : activeType !== 'all' && gridResults.length ? '暂无匹配内容' : '发现你的下一本好书' }}</strong>
-          <p>{{ gridError || (orderedSections.length ? '试试其他类型，或刷新当前栏目。' : '添加内容来源并配置栏目，开始探索。') }}</p>
-          <KButton rounded inline @click="orderedSections.length ? refreshGrid() : manageHome()">{{ orderedSections.length ? '重新加载' : '配置发现栏目' }}</KButton>
+          <p>{{ gridError || (orderedSections.length ? '暂无匹配内容。' : '请先配置发现栏目。') }}</p>
+          <KButton v-if="gridError" rounded inline @click="refreshGrid">重新加载</KButton>
         </div>
         <p v-if="gridError && visibleResults.length" class="status-notice is-error" role="alert">{{ gridError }}</p>
       </section>
@@ -435,32 +426,23 @@ onBeforeUnmount(() => {
 .home-pull-refresh-icon.ready svg { transform:rotate(180deg); }
 .home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
 /* 标签靠左，分类筛选和操作按钮靠右排列。 */
-.home-discovery { min-width:0; }
-.home-discovery-empty { display:flex; flex-direction:column; min-height:calc(100% - 132px); }
+.home-discovery { min-width:0; padding-top:calc(var(--ui-space-4) + var(--safe-top)); }
+.home-discovery-empty { display:flex; flex-direction:column; min-height:100%; }
 .home-discovery-empty .discover-filter-bar { flex:none; }
 .discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
 .home-tabs { display:flex; min-width:0; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .home-tabs::-webkit-scrollbar { display:none; }
 .home-tabs button { flex:none; }
 .home-tabs button.active { color:var(--app-text); font-weight:600; }
-.discover-controls { display:flex; flex:none; align-items:center; gap:12px; }
-.discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; }
-.discover-icon-button svg { width:18px; height:18px; }
-.discovery-content-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--ui-cover-min-width),1fr)); gap:var(--ui-grid-gap); }
-.discovery-cover-card { min-width:0; }
+.discover-controls { display:flex; flex:none; align-items:center; gap:12px; margin-inline-start:auto; }
 .discovery-cover-action { display:block; width:100%; padding:0; border:0; background:transparent; text-align:left; cursor:pointer; }
-.discovery-cover-art { position:relative; display:block; width:100%; overflow:hidden; aspect-ratio:3/4; border-radius:13px; background:linear-gradient(140deg,#466f6d,#1b3235);  }
-.discovery-cover-art img { width:100%; height:100%; object-fit:cover; display:block; }
-.discovery-cover-placeholder { position:absolute; inset:0; overflow:hidden; }
-.discovery-cover-placeholder::before { content:""; position:absolute; width:76%; height:72%; right:-28%; top:15%; border-radius:50%; background:#fff2; }
-.discovery-cover-placeholder::after { content:""; position:absolute; left:-25%; right:-20%; bottom:-37%; height:65%; border-radius:50%; background:#0003; }
+.discovery-cover-art { width:100%; height:auto; aspect-ratio:5/7; border-radius:var(--ui-radius); }
 /* 封面卡片文字、加载/空状态和错误提示。 */
 .discovery-cover-copy { display:flex; flex-direction:column; min-width:0; padding:8px 1px 0; gap:3px; }
 .discovery-cover-copy strong { overflow:hidden; color:var(--app-text); font-size:var(--ui-font-body); white-space:nowrap; text-overflow:ellipsis; }
 .discovery-cover-copy small { overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
 .discovery-cover-copy>span { overflow:hidden; color:var(--app-subtle); font-size:var(--ui-font-caption); white-space:nowrap; text-overflow:ellipsis; }
-.discover-grid-state { min-height:230px; display:flex; align-items:center; justify-content:center; gap:12px; padding:24px; color:var(--app-muted); }
-.home-discovery-empty .discover-grid-state { flex:1; min-height:160px; text-align:center; }
+.home-discovery-empty .discover-grid-state { flex:1; min-height:160px; }
 @keyframes home-spin { to {transform:rotate(360deg)} }
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
 @media(max-width:860px) {

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BookCover from "../../ui/BookCover.vue";
 import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 完整书签直接保存在全局 history 中。
@@ -309,8 +310,7 @@ onBeforeUnmount(() => {
         <section v-for="group in groupedBookmarks" :key="group.bookId" class="bookmark-group">
           <header>
             <span class="record-book-icon bookmark-group-cover">
-              <img v-if="coverForBook(group.bookId)" :src="coverForBook(group.bookId)" loading="lazy" decoding="async"/>
-              <span v-else class="record-cover-placeholder"></span>
+              <BookCover :src="coverForBook(group.bookId)" />
             </span>
             <div><strong>{{ title(group.bookId) }}</strong><small>{{ matchingBookmarksPerBook.get(group.bookId) ?? group.items.length }} 个书签</small></div>
           </header>
@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
       <KButton rounded inline clear v-if="filteredBookmarks.length > visibleBookmarks.length" type="button" class="record-load-more gap-2"
         @click="bookmarkVisibleLimit += 120">显示更多书签 · {{ visibleBookmarks.length }} / {{ filteredBookmarks.length }}</KButton>
       <div v-if="pendingBookmarkDeleteIds?.length" class="bookmark-confirm-backdrop" data-back-layer>
-        <KDialog opened :backdrop="false" class="bookmark-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+        <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="bookmark-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2>{{ pendingBookmarkDeleteIds.length === 1 ? '删除这个书签？' : '删除所选书签？' }}</h2></template>
 <p>将删除 {{ pendingBookmarkDeleteIds.length }} 个书签，删除后无法撤销。</p><template #buttons><KDialogButton type="button" data-back-action :disabled="bookmarkDeleteBusy" @click="pendingBookmarkDeleteIds = null">取消</KDialogButton>
 <KDialogButton type="button" :disabled="mutationBlocked || bookmarkDeleteBusy" @click="deleteSelectedBookmarks" class="k-color-brand-danger" strong>{{ bookmarkDeleteBusy ? '删除中…' : '确认删除' }}</KDialogButton></template>
@@ -358,10 +358,7 @@ onBeforeUnmount(() => {
 .bookmark-group>header>div{display:flex;flex-direction:column;gap:2px;min-width:0}
 .bookmark-group>header strong{font-size:var(--ui-font-body);font-weight:750;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .bookmark-group>header small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
-.record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;background:#546c72;color:#fff;overflow:hidden}
-.record-book-icon img{display:block;width:100%;height:100%;border-radius:inherit;object-fit:cover}
-.record-cover-placeholder{position:relative;display:block;width:100%;height:100%;background:linear-gradient(140deg,#506f73,#253c42)}
-.record-cover-placeholder::after{content:"";position:absolute;top:15%;right:-25%;height:70%;width:75%;border-radius:50%;background:#ffffff25}
+.record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;overflow:hidden}
 .bookmark-group-cover{width:34px;height:44px;border-radius:6px}
 .bookmark-entry{box-sizing:border-box;display:flex;align-items:center;gap:8px;min-height:50px;padding:0 12px;border-bottom:1px solid var(--app-line)}
 .bookmark-entry:last-child{border-bottom:0}

@@ -93,8 +93,8 @@ watch(() => props.disabled, disabled => { if (disabled) close(); });
         <KList nested menu-list :id="`${generatedId}-menu`" role="menu" :aria-label="label"
           class="max-h-[min(65dvh,var(--select-menu-height))] overflow-y-auto overscroll-contain" @keydown="navigate">
           <template v-for="(option, index) in options" :key="option.value">
-            <KListItem v-if="option.group && option.group !== options[index - 1]?.group" group-title :title="option.group" />
-            <KListItem menu-list-item link-component="button"
+            <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" v-if="option.group && option.group !== options[index - 1]?.group" group-title :title="option.group" />
+            <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" menu-list-item link-component="button"
               :menu-list-item-active="option.value === modelValue" :title="option.label" content-class="w-[calc(100%-1rem)] material:w-[calc(100%-2rem)] text-start"
               :link-props="{ type: 'button', role: 'menuitemradio', 'aria-checked': option.value === modelValue, disabled: option.disabled, class: option.disabled ? 'opacity-40' : '' }"
               @click="choose(option)" />

@@ -458,7 +458,7 @@ onBeforeUnmount(() => {
 
     <section v-if="confirmRouteLeave" class="modal-backdrop source-leave-guard"
 >
-      <KDialog opened :backdrop="false" class=" w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class=" w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2>{{ pendingSourceSwitch === 'new' ? '新建来源？' : pendingSourceSwitch ? '切换编辑来源？' : '放弃源修改？' }}</h2></template>
 <p class="modal-description">当前源有尚未保存的修改。{{ pendingSourceSwitch ? '切换来源' : '离开页面' }}会丢弃全部草稿，包括正在编辑的字段。</p><template #buttons><KDialogButton type="button" data-back-action @click="chooseRouteLeave(false)">继续编辑</KDialogButton>
 <KDialogButton type="button" @click="chooseRouteLeave(true)" class="k-color-brand-danger" strong>{{ pendingSourceSwitch === 'new' ? '放弃并新建' : pendingSourceSwitch ? '放弃并切换' : '放弃并离开' }}</KDialogButton></template>
@@ -561,7 +561,7 @@ onBeforeUnmount(() => {
 
 
 
-    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+    <section v-if="management.pendingSourceRemoval.length" class="modal-backdrop" @click.self="!management.sourceRemovalBusy && (management.pendingSourceRemoval = [])"><KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2>移除这些源？</h2></template>
 <p>已添加到书架的书籍不会受到影响。</p><template #buttons><KDialogButton data-back-action :disabled="management.sourceRemovalBusy" @click="management.pendingSourceRemoval = []">取消</KDialogButton>
 <KDialogButton :disabled="management.sourceRemovalBusy || recoveryRequired" @click="management.deleteSelectedSources" class="k-color-brand-danger" strong>{{ management.sourceRemovalBusy ? '移除中…' : '确认移除' }}</KDialogButton></template>

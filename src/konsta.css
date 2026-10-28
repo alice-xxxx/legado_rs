@@ -5,13 +5,30 @@
 @import "konsta/vue/theme.css";
 @import "./style.css" layer(components);
 
+/* Keep vendor pseudo-elements in separate rules so browsers retain Konsta's range styles. */
+@custom-variant range-thumb {
+  &::-webkit-slider-thumb { @slot; }
+  &::-moz-range-thumb { @slot; }
+}
+@custom-variant range-track {
+  &::-webkit-slider-runnable-track { @slot; }
+  &::-moz-range-track { @slot; }
+}
+
 @theme {
+  --text-xs: var(--ui-font-caption);
+  --text-sm: var(--ui-font-body);
+  --text-base: var(--ui-font-body);
+  --text-lg: var(--ui-font-heading);
+  --text-xl: var(--ui-font-title);
+  --text-2xl: var(--ui-font-title);
   --color-brand-danger: #ff3b30;
   --font-ios: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --font-material: Roboto, "Segoe UI", "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
 }
 
 body { font-size: var(--ui-font-body); color: var(--app-text); background: var(--app-background); }
+.k-button, .k-link, .k-searchbar input, .k-list-input :is(input, textarea, select) { font-size: var(--ui-font-body); }
 /* Standalone fields already live inside the page or form gutter. */
 .k-list-input { min-width: 0; padding-block: 0; }
 .k-list-input > :first-child { margin-inline: 0; isolation: isolate; }

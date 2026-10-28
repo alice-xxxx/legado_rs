@@ -30,19 +30,16 @@ const operationMenuOpen = ref(false);
 const discardPrompt = ref(false);
 const fieldPending = ref(false);
 const form = ref<InstanceType<typeof SourceFormEditor> | null>(null);
-const operationMenu = ref<HTMLDetailsElement | null>(null);
+const operationMenu = ref<InstanceType<typeof KButton>>();
 
 function closeOperationMenu(restoreFocus = false): void {
-  const menu = operationMenu.value;
-  if (!menu) return;
-  menu.open = false;
   operationMenuOpen.value = false;
-  if (restoreFocus) menu.querySelector("summary")?.focus({ preventScroll: true });
+  if (restoreFocus) operationMenu.value?.$el.focus({ preventScroll: true });
 }
 
 useOutsidePointerDismiss(
   () => operationMenuOpen.value,
-  target => target instanceof Node && Boolean(operationMenu.value?.contains(target) || target instanceof Element && target.closest(".source-edit-menu-popover")),
+  target => target instanceof Node && Boolean(operationMenu.value?.$el.contains(target) || target instanceof Element && target.closest(".source-edit-menu-popover")),
   () => closeOperationMenu(),
 );
 function updatePendingDraft(pending: boolean): void {
@@ -99,12 +96,10 @@ const saveError = ref("");
  <section class="source-edit-screen" data-back-page>
   <SubpageHeader :title="source ? '编辑源' : '新建来源'" back-label="返回来源" :back-disabled="busy" local-back @back="cancel"><template #actions><div class="source-edit-tools">
     <KButton rounded inline clear type="button" :disabled="busy||locked||(!changed&&!fieldPending)||!parsed.value" @click="save">{{busy?'保存中…':'保存'}}</KButton>
-    <details @toggle="operationMenuOpen = ($event.target as HTMLDetailsElement).open" ref="operationMenu" class="source-edit-menu" @keydown.esc.stop.prevent="closeOperationMenu(true)">
-     <summary aria-label="源操作"><PrototypeIcon name="more"/></summary>
-
-    </details>
+    <KButton ref="operationMenu" rounded inline clear type="button" class="size-11 p-0" aria-label="源操作" aria-haspopup="menu" :aria-expanded="operationMenuOpen"
+      @click="operationMenuOpen = !operationMenuOpen" @keydown.esc.stop.prevent="closeOperationMenu(true)"><PrototypeIcon name="more"/></KButton>
    </div></template></SubpageHeader>
-<KPopover v-if="operationMenuOpen" opened :backdrop="false" :target="operationMenu ?? undefined" class="source-edit-menu-popover">
+<KPopover v-if="operationMenuOpen" opened :backdrop="false" :target="operationMenu?.$el" class="source-edit-menu-popover">
   <div class="p-2">
 <template v-if="source">
         <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="busy||locked||!source.enabled||source.isRss" @click="closeOperationMenu(); emit('test')"><PrototypeIcon name="debug"/> 测试配置</KButton>
@@ -130,7 +125,7 @@ const saveError = ref("");
    />
   </div>
   <div v-if="discardPrompt" class="source-discard-prompt" data-back-layer>
-    <KDialog opened :backdrop="false">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false">
       <template #title>放弃未保存的源修改？</template>
       <p>未保存的字段修改将丢失。</p>
       <template #buttons>
@@ -145,13 +140,7 @@ const saveError = ref("");
 @layer components {
 .source-edit-screen{--source-editor-inset:var(--ui-page-gutter);display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;padding:0;box-sizing:border-box;margin:0;background:var(--app-background);overflow:hidden}
 .source-edit-tools{display:flex;align-items:center;gap:4px}
-.source-edit-menu{position:relative;z-index:8}
-.source-edit-menu>summary{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--ui-radius);cursor:pointer;list-style:none;color:var(--app-muted)}
-.source-edit-menu[open]>summary{background:var(--app-panel-soft);color:var(--app-text)}
-.source-edit-menu>summary::-webkit-details-marker{display:none}
-.source-edit-menu>summary :deep(svg){width:var(--ui-icon-size);height:var(--ui-icon-size)}
 .source-edit-menu-divider{height:1px;margin:4px 6px;background:var(--app-line)}
-.source-edit-menu>summary:focus-visible, .source-edit-menu button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
 .source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0 auto;max-width:var(--app-content-width);padding:0 0 var(--ui-playback-inset);overscroll-behavior:contain}
 .source-edit-body :deep(.source-field-editor){padding-inline:var(--source-editor-inset)}
 .source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:var(--ui-font-body);line-height:1.5}

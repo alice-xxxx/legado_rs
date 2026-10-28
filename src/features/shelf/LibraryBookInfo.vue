@@ -9,11 +9,11 @@ const progress = computed(() => readingProgressPercent(props.book.progress, prop
 
 <template>
   <span class="library-book-info">
-    <span class="library-book-heading">
-      <strong class="library-book-title" :title="book.title">{{ book.title }}</strong>
+    <strong class="library-book-title" :title="book.title">{{ book.title }}</strong>
+    <span class="library-book-meta">
       <span class="library-book-progress" title="阅读进度">{{ progress }}%</span>
+      <span v-if="book.latestChapter?.trim()" class="library-book-latest" :title="book.latestChapter">{{ book.latestChapter }}</span>
     </span>
-    <span v-if="book.latestChapter?.trim()" class="library-book-latest" :title="book.latestChapter">{{ book.latestChapter }}</span>
   </span>
 </template>
 
@@ -26,10 +26,10 @@ const progress = computed(() => readingProgressPercent(props.book.progress, prop
   padding-top: 10px;
   text-align: left;
 }
-.library-book-heading {
+.library-book-meta {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: 4px;
   min-width: 0;
 }
 .library-book-title {
@@ -45,6 +45,8 @@ const progress = computed(() => readingProgressPercent(props.book.progress, prop
   line-height: 1.45;
 }
 .library-book-latest {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

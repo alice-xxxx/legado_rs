@@ -73,14 +73,14 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 <style scoped>
 @layer components {
 .book-catalog-view { display: flex; flex-direction: column; width: 100%; height: 100%; min-height: 0; color: var(--app-text); background: var(--app-background); }
-.catalog-tools { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--app-line); }
+.catalog-tools { display: grid; flex: none; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 8px var(--ui-page-gutter); border-bottom: 1px solid var(--app-line); }
 .catalog-tools-actions { display: flex; gap: 4px; }
 .catalog-tools-actions button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 32px; padding-inline: 8px; white-space: nowrap; }
 .catalog-tools-actions .prototype-icon { width: 16px; height: 16px; }
 .catalog-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-width: thin; }
 .catalog-row-wrap { display: grid; position: relative; grid-template-columns: minmax(0, 1fr); height: 56px; border-bottom: 1px solid var(--app-line); }
 .catalog-row-wrap.can-replace { grid-template-columns: minmax(0, 1fr) 40px; }
-.catalog-row { display: flex; align-items: center; gap: 8px; width: 100%; height: 55px; min-width: 0; padding-inline: 10px; color: var(--app-text); text-align: left; }
+.catalog-row { display: flex; align-items: center; gap: 8px; width: 100%; height: 55px; min-width: 0; padding-inline: var(--ui-page-gutter); color: var(--app-text); text-align: left; }
 .catalog-row strong { flex: 1; min-width: 0; overflow: hidden; font-size: var(--ui-font-body); font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .catalog-row-wrap.volume strong { color: var(--app-muted); font-weight: 600; }
 .catalog-current-label { flex: none; color: var(--app-muted); font-size: var(--ui-font-caption); }
@@ -91,7 +91,7 @@ onMounted(() => { if (props.autoLocate) void locateCurrent(); });
 button:disabled { cursor: default; }
 .catalog-row:focus-visible { outline-offset: -2px; }
 @media (max-width: 680px) {
-  .catalog-tools-actions button { width: 32px; padding: 0; }
+  .catalog-tools-actions button { width: 44px; min-height: 44px; padding: 0; }
   .catalog-tools-actions span { display: none; }
 }
 }

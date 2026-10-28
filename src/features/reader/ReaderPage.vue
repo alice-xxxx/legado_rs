@@ -1,5 +1,6 @@
 <script lang="ts">
-import { Segmented as KSegmented, SegmentedButton as KSegmentedButton, Preloader as KPreloader, ListInput as KListInput, Range as KRange, Checkbox as KCheckbox, Button as KButton, Glass as KGlass, Toolbar as KToolbar, ToolbarPane as KToolbarPane, List as KList, ListItem as KListItem, Radio as KRadio } from "konsta/vue";
+import { SegmentedButton as KSegmentedButton, Preloader as KPreloader, ListInput as KListInput, Range as KRange, Checkbox as KCheckbox, Button as KButton, Glass as KGlass, Toolbar as KToolbar, ToolbarPane as KToolbarPane, List as KList, ListItem as KListItem, Radio as KRadio } from "konsta/vue";
+import KSegmented from "../../ui/SegmentedControl.vue";
 import { computed, defineAsyncComponent, defineComponent, nextTick, onUnmounted, proxyRefs, ref, watch, type PropType } from "vue";
 import type { ReaderContextFeatures } from "./readerContext";
 import type { ChapterResource } from "../../api/types";
@@ -290,7 +291,7 @@ export default defineComponent({
         </div>
         <nav v-if="readingBook?.chapters.length" aria-label="视频选集">
           <KButton rounded :tonal="chapter.index === ctx.readingChapterIndex" :clear="!(chapter.index === ctx.readingChapterIndex)" inline class="gap-2" v-for="chapter in readingBook?.chapters" :key="chapter.id" type="button"
-            :class="{ active: chapter.index === ctx.readingChapterIndex }"
+            :class="{ active: chapter.index === ctx.readingChapterIndex }" :aria-current="chapter.index === ctx.readingChapterIndex ? 'true' : undefined"
             :disabled="readerBusy || shelfBatchRecoveryRequired" :title="chapter.title"
             @click="ctx.selectReaderChapter(chapter.index)">
             {{ chapter.index + 1 }}
@@ -426,12 +427,12 @@ export default defineComponent({
     </section>
     <div v-if="ctx.readerControlsOpen" class="reader-settings-backdrop" data-back-layer @click.self.stop="ctx.readerControlsOpen = false"
       @keydown.esc.stop.prevent="ctx.readerControlsOpen = false">
-    <KGlass component="aside" :highlight="false" class="reader-settings-popover rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" @click.stop
+    <KGlass component="aside" :highlight="false" class="reader-settings-popover rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" role="dialog" aria-modal="true" aria-labelledby="reader-controls-title" @click.stop
       :class="{ 'reader-search-popover': readerControlsMode === 'search' }">
-      <div class="popover-title"><span>{{ readerControlsMode === 'settings' ? '更多阅读选项' : readerControlsMode === 'tts' ?
+      <div class="popover-title"><span id="reader-controls-title">{{ readerControlsMode === 'settings' ? '更多阅读选项' : readerControlsMode === 'tts' ?
         (ctx.readingMediaChapter ? audioToolPanel === 'speed' ? '播放速度' : audioToolPanel === 'sleep' ? '睡眠定时' : '播放设置'
           : '朗读') : readerControlsMode === 'appearance' ? ctx.readingImagePage ? comicPanel === 'mode' ? '阅读模式' :
-            comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><KButton rounded inline clear class="gap-2"
+            comicPanel === 'fit' ? '图片适配' : '亮度' : ctx.readingPdfPage ? 'PDF 显示' : '显示' : '搜索' }}</span><KButton rounded inline clear class="size-11 p-0"
           type="button" data-back-action :aria-label="readerControlsMode === 'tts' && ttsActive ? '收起朗读面板' : '关闭菜单'" @click="ctx.readerControlsOpen = false">
           <PrototypeIcon name="close" />
         </KButton></div>
@@ -485,7 +486,7 @@ export default defineComponent({
           :options="([0, 15, 30, 60] as const).map(value => ({ value, label: value ? value + ' 分钟' : '关闭' }))"
           @update:model-value="ctx.setReaderMediaSleepTimer" />
         <KList v-else class="col-span-full my-0!">
-          <KListItem v-for="minutes in ([0, 15, 30, 60] as const)" :key="minutes" label
+          <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" v-for="minutes in ([0, 15, 30, 60] as const)" :key="minutes" label
             :title="minutes === 0 ? '关闭' : minutes + ' 分钟'">
             <template #after><KRadio component="span" name="reader-sleep" :checked="readerMediaSleepTimerMinutes === minutes"
               :disabled="ctx.isReaderMediaControlBlocked()" @change="ctx.setReaderMediaSleepTimer(minutes)" /></template>
@@ -567,10 +568,10 @@ export default defineComponent({
         </div>
       </div>
       <KList v-if="readerControlsMode === 'appearance' && ctx.readingImagePage && comicPanel === 'mode'" class="my-0!">
-        <KListItem label title="上下连续" text="条漫和连续滚动阅读">
+        <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" label title="上下连续" text="条漫和连续滚动阅读">
           <template #after><KRadio component="span" name="comic-mode" :checked="comicReadMode === 'vertical'" @change="comicReadMode = 'vertical'" /></template>
         </KListItem>
-        <KListItem label title="左右翻页" text="单页定位，点击两侧或左右滑动切换">
+        <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" label title="左右翻页" text="单页定位，点击两侧或左右滑动切换">
           <template #after><KRadio component="span" name="comic-mode" :checked="comicReadMode === 'paged'" @change="comicReadMode = 'paged'" /></template>
         </KListItem>
       </KList>

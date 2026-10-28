@@ -588,7 +588,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
     </aside>
     <div v-if="importUrlOpen" class="http-tts-import-scrim" data-back-layer
       @click.self="closeUrlImport">
-      <KDialog opened :backdrop="false" class="http-tts-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="http-tts-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
         <h3 id="http-tts-import-title">从网络链接导入</h3>
         <form class="http-tts-import-url-form" @submit.prevent="importFromLink">
           <label for="http-tts-config-url">HTTP TTS 配置 JSON 链接</label>
@@ -686,14 +686,14 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
     </section>
     <div v-if="pendingDeleteIds.length" class="http-tts-discard-mask" data-back-layer
       @click.self="cancelDeleteConfig">
-      <KDialog opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="tts-delete-title">删除{{ pendingDeleteIds.length === 1 ? ' HTTP TTS 配置？' : ` ${pendingDeleteIds.length} 个 HTTP TTS 配置？` }}</h3></template>
 <p>{{ pendingDeleteIds.length === 1 ? `“${pendingDeleteConfigs[0]?.name ?? '此引擎'}”将从应用中删除。` : `选中的 ${pendingDeleteIds.length} 个配置将从应用中删除。` }}此操作不能撤销，删除当前朗读源后会切回系统朗读。</p><template #buttons><KDialogButton type="button" data-back-action @click="cancelDeleteConfig">取消</KDialogButton>
 <KDialogButton type="button" :disabled="actionsBlocked" @click="confirmDeleteConfig" class="k-color-brand-danger" strong>确认删除</KDialogButton></template>
 </KDialog>
     </div>
     <div v-if="discardPromptOpen" class="http-tts-discard-mask" data-back-layer @click.self="keepEditor">
-      <KDialog opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="http-tts-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="tts-discard-title">放弃未保存的修改？</h3></template>
 <p>当前朗读引擎的字段尚未保存。返回、切换配置或更换当前播放引擎都会丢弃未保存的修改。</p><template #buttons><KDialogButton type="button" data-back-action @click="keepEditor">继续编辑</KDialogButton>
 <KDialogButton type="button" @click="discardEditor" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>

@@ -19,7 +19,7 @@ defineProps<{ session: BookSourceSwitchSession; locked: boolean }>();
   <section v-if="session.bookSourceSwitchConfirmOpen && session.selectedBookSourceCandidate" class="modal-backdrop source-confirm-backdrop"
     @click.self="!session.bookSourceSwitchBusy && (session.bookSourceSwitchConfirmOpen = false)"
     @keydown.esc.stop.prevent="!session.bookSourceSwitchBusy && (session.bookSourceSwitchConfirmOpen = false)">
-    <KDialog opened :backdrop="false" class="source-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="source-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2 id="source-confirm-title">更换来源？</h2></template>
 <p>将《{{ session.bookSourceSwitchBook?.title }}》切换到“{{ session.selectedBookSourceCandidate.sourceName }}”。</p>
 <p>阅读位置会匹配新目录，原有书签会保留。</p>

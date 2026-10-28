@@ -609,7 +609,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 
   <section v-if="pendingBookProgressReset" class="modal-backdrop"
     @click.self="!bookProgressResetBusy && (pendingBookProgressReset = null)">
-    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2 id="book-reset-progress-title">重置阅读进度？</h2></template>
 <p>将清除《{{ pendingBookProgressReset.title }}》的阅读位置，从第一章重新开始。若当前阅读器打开了这本书，会先保存当前位置再关闭阅读器。</p>
 <p>章节目录、已缓存正文、源、书签和阅读历史都会保留。</p>
@@ -620,7 +620,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
 
   <section v-if="pendingBookChapterCacheClear" class="modal-backdrop"
     @click.self="!bookChapterCacheClearBusy && (pendingBookChapterCacheClear = null)">
-    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2 id="book-clear-chapter-cache-title">清除章节缓存？</h2></template>
 <p>将清除《{{ pendingBookChapterCacheClear.title }}》已缓存的章节正文。之后可以重新下载正文。</p>
 <p>阅读进度、章节目录、封面和书签都会保留。<span
@@ -631,7 +631,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   </section>
 
   <section v-if="pendingRemoval" class="modal-backdrop" @click.self="pendingRemoval = null">
-    <KDialog opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="confirm-modal w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2 id="book-remove-title">从书架移除这本书？</h2></template>
 <p>将《{{ pendingRemoval.title }}》从书架移除，详情缓存、阅读进度和书签都会保留。</p><template #buttons><KDialogButton data-back-action @click="pendingRemoval = null">保留</KDialogButton>
 <KDialogButton :disabled="recoveryRequired" @click="bookMetadataActions.removeBookFromShelf" class="k-color-brand-danger" strong>
@@ -748,7 +748,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   place-items: center;
   color: var(--app-accent-ink);
   background: var(--app-accent-soft);
-  font-size: 32px;
+  font-size: var(--ui-font-title);
   font-weight: 600;
 }
 

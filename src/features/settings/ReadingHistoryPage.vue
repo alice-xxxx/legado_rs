@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BookCover from "../../ui/BookCover.vue";
 import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Popover as KPopover } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 页面直接显示全局 history 中的阅读记录；改动由 historyStore 自动保存。
@@ -338,9 +339,7 @@ onBeforeUnmount(() => {
               :aria-label="`继续阅读《${title(book.bookId)}》`"
               :disabled="!canOpenHistoryBook(book.bookId) || blocked"
               @click="openHistoryBook(book.bookId)">
-              <img v-if="coverForBook(book.bookId)" :src="coverForBook(book.bookId)"
-                loading="lazy" decoding="async"/>
-              <span v-else class="record-cover-placeholder"></span>
+              <BookCover :src="coverForBook(book.bookId)" />
             </button>
             <div class="record-book-copy">
               <button type="button" class="record-book-title"
@@ -365,14 +364,14 @@ onBeforeUnmount(() => {
         </details>
       </template>
       <div v-if="historyDeletePendingBookId" class="record-confirm-backdrop" data-back-layer>
-        <KDialog opened :backdrop="false" class="record-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+        <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="record-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2>删除《{{ title(historyDeletePendingBookId) }}》的阅读记录？</h2></template>
 <p>这本书的阅读会话与时长统计将被删除，操作不可撤销。</p><template #buttons><KDialogButton type="button" data-back-action @click="historyDeletePendingBookId = null">取消</KDialogButton>
 <KDialogButton type="button" :disabled="blocked" @click="confirmHistoryBookDeletion" class="k-color-brand-danger" strong>确认删除</KDialogButton></template>
 </KDialog>
       </div>
       <div v-if="historyClearPending" class="record-confirm-backdrop" data-back-layer>
-        <KDialog opened :backdrop="false" class="record-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+        <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="record-confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h2>清空全部阅读历史？</h2></template>
 <p>将删除已记录的阅读历史和统计，无法撤销。</p><template #buttons><KDialogButton type="button" data-back-action @click="historyClearPending = false">取消</KDialogButton>
 <KDialogButton type="button" :disabled="blocked" @click="confirmHistoryClear" class="k-color-brand-danger" strong>确认清空</KDialogButton></template>
@@ -396,16 +395,13 @@ onBeforeUnmount(() => {
 .record-timeline{margin-top:12px;border-top:1px solid var(--app-line)}
 .record-timeline-row{display:grid;grid-template-columns:88px 45px minmax(0,1fr) 44px;gap:10px;align-items:center;min-height:68px;padding:7px 0;border-bottom:1px solid var(--app-line)}
 .record-timeline-row time{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
-.record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;background:#546c72;color:#fff;overflow:hidden}
+.record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;overflow:hidden}
 .record-book-icon>.prototype-icon{width:21px;height:21px}
-.record-book-icon img{display:block;width:100%;height:100%;border-radius:inherit;object-fit:cover}
 .record-book-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
 .record-book-title{width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0;border:0;background:none;color:var(--app-text);text-align:left;font-size:var(--ui-font-body);font-weight:650;cursor:pointer}
 .record-book-title:disabled{opacity:1;color:var(--app-muted);cursor:default}
 .record-book-open{padding:0;border:0;cursor:pointer}
 .record-book-open:disabled{opacity:.65;cursor:default}
-.record-cover-placeholder{position:relative;display:block;width:100%;height:100%;background:linear-gradient(140deg,#506f73,#253c42)}
-.record-cover-placeholder::after{content:"";position:absolute;top:15%;right:-25%;height:70%;width:75%;border-radius:50%;background:#ffffff25}
 .record-book-copy small{font-size:var(--ui-font-caption);color:var(--app-subtle);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .record-state{display:flex;align-items:center;justify-content:center;min-height:105px;padding:20px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);text-align:center}
 .record-error{color:var(--app-danger)}

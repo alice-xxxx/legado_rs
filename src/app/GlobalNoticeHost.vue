@@ -10,7 +10,7 @@ const readerVisible = getReaderSession().readerVisible;
 
 <template>
   <section v-if="confirmation" class="modal-backdrop z-[170]" @click.self="answerConfirmation(false)">
-    <KDialog opened :backdrop="false" class="w-[min(420px,calc(100vw-32px))]">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="w-[min(420px,calc(100vw-32px))]">
       <template #title><h2>{{ confirmation.title }}</h2></template>
       <p>{{ confirmation.message }}</p>
       <template #buttons>
@@ -24,8 +24,8 @@ const readerVisible = getReaderSession().readerVisible;
     <span>{{ shelfBatchRecoveryMessage || "为避免重复修改，本会话已停止书架批量操作。重启后再查看书架状态。" }}</span>
   </div>
 
-  <KToast :opened="!!toast" position="center" class="app-toast z-[180]" :role="toastKind === 'error' ? 'alert' : 'status'" :aria-live="toastKind === 'error' ? 'assertive' : 'polite'">
-    <span class="min-w-0 whitespace-pre-wrap break-words">{{ toastKind === "success" ? "✓" : "!" }} {{ toast }}</span>
+  <KToast :opened="!!toast" :inert="!toast" :aria-hidden="!toast" position="center" class="app-toast z-[180]" :role="toastKind === 'error' ? 'alert' : 'status'" :aria-live="toastKind === 'error' ? 'assertive' : 'polite'">
+    <span class="min-w-0 whitespace-pre-wrap break-words">{{ toast }}</span>
     <template #button><KButton rounded inline clear type="button" aria-label="关闭提示" @click="dismissToast">关闭</KButton></template>
   </KToast>
 </template>

@@ -2,11 +2,7 @@ import Swiper from "swiper";
 import { EffectCreative, EffectFade, EffectFlip } from "swiper/modules";
 import { PageFlip, FlipCorner, FlippingState, type Point } from "@gullabs/flipbook-core";
 import type { AnimatedReadingMode } from "../settings/readerModes";
-import "swiper/css";
-import "swiper/css/effect-creative";
-import "swiper/css/effect-fade";
-import "swiper/css/effect-flip";
-import "@gullabs/flipbook-core/style.css";
+import "./readerPageTurn.css";
 
 export type PageTurnDirection = -1 | 1;
 export interface ReaderPageTurn {

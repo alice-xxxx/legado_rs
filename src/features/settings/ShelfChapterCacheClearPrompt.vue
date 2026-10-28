@@ -11,7 +11,7 @@ defineProps<{
 
 <template>
   <section v-if="open || busy" class="modal-backdrop" @click.self="!busy && cancel()">
-    <KDialog component="article" opened :backdrop="false" class="w-[min(560px,calc(100%-32px))] max-h-[88dvh] overflow-auto">
+    <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" component="article" opened :backdrop="false" class="w-[min(560px,calc(100%-32px))] max-h-[88dvh] overflow-auto">
       <template #title><h2>{{ busy ? '正在清理在线章节缓存…' : '清理在线章节缓存？' }}</h2></template>
       <p v-if="busy">正在按书架顺序检查在线书籍并清理正文缓存，请保持应用打开。</p>
       <p v-else>将逐本清理当前书架中可更换源的在线书籍章节缓存。清理结果会显示成功、失败和未开始数量。</p>

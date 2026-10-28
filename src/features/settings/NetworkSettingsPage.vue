@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { List as KList, ListItem as KListItem } from "konsta/vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 import { computed } from "vue";
 import { settings } from "./settingsStore";
@@ -20,14 +21,14 @@ function changeTimeout(seconds: number): void {
   <section class="settings-detail-page">
     <SettingsDetailHeader title="网络请求" />
     <div class="settings-detail-content ui-page-content">
-        <div class="setting-control">
-          <div>
-            <label for="source-http-timeout">请求超时</label>
-            <small>连接或读取超时后结束请求</small>
-          </div>
-          <SelectMenu id="source-http-timeout" label="请求超时" :model-value="settings.sourceHttpTimeoutSeconds" :disabled="controlsDisabled"
-            :options="[15, 30, 60, 120].map(value => ({ value, label: value + ' 秒' }))" @update:model-value="changeTimeout" />
-        </div>
+      <KList strong inset class="mx-0! my-0!">
+        <KListItem title-font-size-ios="text-[length:var(--ui-font-body)]" title-font-size-material="text-[length:var(--ui-font-body)]" title="请求超时" subtitle="连接或读取超时后结束请求">
+          <template #after>
+            <SelectMenu id="source-http-timeout" label="请求超时" :model-value="settings.sourceHttpTimeoutSeconds" :disabled="controlsDisabled"
+              :options="[15, 30, 60, 120].map(value => ({ value, label: value + ' 秒' }))" @update:model-value="changeTimeout" />
+          </template>
+        </KListItem>
+      </KList>
     </div>
   </section>
 </template>
@@ -41,18 +42,5 @@ function changeTimeout(seconds: number): void {
   color: var(--app-text);
 }
 
-
-.setting-control {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--ui-space-4);
-  min-height: 64px;
-  padding: 0 0 var(--ui-space-3);
-  border-bottom: 1px solid var(--app-line);
-}
-.setting-control > div { display: grid; gap: var(--ui-space-1); min-width: 0; }
-.setting-control label { color: var(--app-text); font-size: var(--ui-font-body); font-weight: 500; }
-.setting-control small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.5; }
 }
 </style>

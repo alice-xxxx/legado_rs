@@ -566,7 +566,7 @@ function toggleFilterPanel(event: MouseEvent): void {
     <div v-else class="hidden min-[861px]:grid place-content-center text-[var(--app-muted)]">选择左侧规则进行编辑，或添加新规则</div>
     <div v-if="replacementImportOpen" class="replacement-import-scrim" data-back-layer
       @click.self="!replacementImportBusy && replacementRulesFeature.cancelReplacementRulesUrlImport()">
-      <KDialog opened :backdrop="false" class="replacement-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="replacement-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
         <h3 id="replacement-import-title">从网络链接导入</h3>
         <form class="replacement-import-url-form" @submit.prevent="void replacementRulesFeature.importReplacementRulesByUrl()">
           <label for="replacement-import-url">替换与净化规则 JSON 链接</label>
@@ -584,7 +584,7 @@ function toggleFilterPanel(event: MouseEvent): void {
     </div>
     <div v-if="discardPromptOpen" class="replacement-discard-mask" data-back-layer
       @click.self="keepRuleEditor">
-      <KDialog opened :backdrop="false" class="replacement-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="replacement-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="replacement-discard-title">放弃未保存的净化规则？</h3></template>
 <p>当前规则的内容已经修改，{{ pendingNewRule ? '创建新规则前必须先放弃当前草稿。' : '返回或切换配置会丢弃这些草稿。' }}</p><template #buttons><KDialogButton type="button" data-back-action @click="keepRuleEditor">继续编辑</KDialogButton>
 <KDialogButton type="button" @click="abandonRuleEditor" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>

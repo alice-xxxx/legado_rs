@@ -72,6 +72,7 @@ function onFocusOut(event: FocusEvent): void {
 <style scoped>
 @layer components {
 .playback-bar {
+  --reader-accent: var(--app-accent);
   position: absolute;
   z-index: 6;
   inset-inline: max(12px, env(safe-area-inset-left, 0px)) max(12px, env(safe-area-inset-right, 0px));
@@ -87,7 +88,6 @@ function onFocusOut(event: FocusEvent): void {
   transition: bottom .25s ease, opacity .2s ease;
 }
 .playback-bar.above-menu { bottom: calc(var(--ui-nav-height) + var(--safe-bottom) + 12px); }
-.playback-bar.global { --reader-chrome-text: var(--app-muted); --reader-accent: var(--app-accent); }
 .playback-bar { pointer-events: auto; }
 .playback-bar.is-hidden { opacity: 0; pointer-events: none; }
 .playback-bar button:focus-visible { outline: 2px solid var(--reader-accent); outline-offset: 2px; }

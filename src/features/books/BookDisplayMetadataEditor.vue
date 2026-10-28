@@ -249,7 +249,7 @@ function submit(): void {
         </form>
       </KPopup>
       <div v-if="discardPromptOpen" class="book-display-discard-scrim" data-back-layer>
-        <KDialog opened :backdrop="false" class="book-display-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+        <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="book-display-discard-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="book-display-discard-title">放弃未保存的书籍信息？</h3></template>
 <p>书名、作者、简介或封面尚有修改，离开后这些修改将不会保存。</p><template #buttons><KDialogButton type="button" data-back-action @click="keepEditing">继续编辑</KDialogButton>
 <KDialogButton type="button" @click="discardAndClose" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>

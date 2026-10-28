@@ -52,7 +52,7 @@ function clearAll(): void {
     </div>
     <p v-if="error" class="search-history__error">{{ error }}</p>
     <section v-if="clearConfirmOpen" class="search-history__confirm-backdrop" @click.self="clearConfirmOpen = false">
-      <KDialog opened :backdrop="false" class="search-history__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="search-history__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="search-history-confirm-title">清空搜索历史？</h3></template>
 <p id="search-history-confirm-description">将删除全部 {{ entries.length }} 条搜索记录。</p><template #buttons><KDialogButton type="button" data-back-action :disabled="busy" @click="clearConfirmOpen = false">保留记录</KDialogButton>
 <KDialogButton type="button" :disabled="busy" @click="clearAll" strong>{{ busy ? '正在清空…' : '确认清空' }}</KDialogButton></template>

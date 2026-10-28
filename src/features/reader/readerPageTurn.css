@@ -1,0 +1,5 @@
+@import "swiper/css" layer(components);
+@import "swiper/css/effect-creative" layer(components);
+@import "swiper/css/effect-fade" layer(components);
+@import "swiper/css/effect-flip" layer(components);
+@import "@gullabs/flipbook-core/style.css" layer(components);

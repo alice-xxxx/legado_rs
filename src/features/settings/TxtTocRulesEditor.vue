@@ -614,7 +614,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
     </div>
     <div v-if="importDialogOpen" class="txt-toc-editor__scrim" data-back-layer
       @click.self="closeUrlImport">
-      <KDialog opened :backdrop="false" class="txt-toc-editor__confirm txt-toc-editor__import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="txt-toc-editor__confirm txt-toc-editor__import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
         <h3 id="txt-toc-import-title">从网络链接导入</h3>
         <form class="txt-toc-editor__import-url-form" @submit.prevent="importUrlRules">
           <label for="txt-toc-import-url">TXT 目录规则 JSON 链接</label>
@@ -632,7 +632,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
     </div>
     <div v-if="deleteTargets.length" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDelete">
-      <KDialog opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="txt-toc-delete-title">{{ deleteTargets.length === 1 ? '删除这条规则？' : '删除选中的 ' + deleteTargets.length + ' 条规则？' }}</h3></template>
 <p id="txt-toc-delete-description">{{ deleteTargets.length === 1 ? '“' + deleteTargets[0].name + '”将从本地 TXT 目录识别设置中移除。' : '选中的规则将从本地 TXT 目录识别设置中移除。' }}</p>
 <div v-if="errorMessage" class="txt-toc-editor__error">{{ errorMessage }}</div><template #buttons><KDialogButton type="button" :disabled="busy" data-back-action @click="cancelDelete">取消</KDialogButton>
@@ -641,7 +641,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
     </div>
     <div v-if="discardPromptOpen" class="txt-toc-editor__scrim" data-back-layer
       @click.self="cancelDiscard">
-      <KDialog opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
+      <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="txt-toc-editor__confirm w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
   <template #title><h3 id="txt-toc-discard-title">放弃未保存的规则？</h3></template>
 <p>当前名称、表达式、优先级或启用状态已改变，离开编辑器会丢弃这些修改。</p><template #buttons><KDialogButton type="button" data-back-action @click="cancelDiscard">继续编辑</KDialogButton>
 <KDialogButton type="button" @click="discardDraft" class="k-color-brand-danger" strong>放弃修改</KDialogButton></template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Searchbar as KSearchbar, ListInput as KListInput, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { Searchbar as KSearchbar, ListInput as KListInput, Button as KButton, Glass as KGlass, Preloader as KPreloader } from "konsta/vue";
 // PDF 阅读视图持有渲染任务并在卸载时释放，避免跨章节残留画布。
 import "core-js/actual/promise/with-resolvers.js";
 import { getDocument, GlobalWorkerOptions, PasswordResponses, type PDFDocumentLoadingTask, type PDFDocumentProxy, type RenderTask } from "pdfjs-dist/legacy/build/pdf.mjs";
@@ -353,7 +353,7 @@ onBeforeUnmount(() => {
 <template>
   <div ref="stage" class="pdf-reader-stage">
     <KGlass component="section" :highlight="false" v-if="findOpen && !passwordPromptOpen" class="pdf-find-panel rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
-      <header><strong>搜索 PDF 文本</strong><KButton rounded inline clear class="gap-2" type="button" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></KButton></header>
+      <header><strong>搜索 PDF 文本</strong><KButton rounded inline clear class="size-11 p-0" type="button" aria-label="关闭 PDF 搜索" @click="emit('update:findOpen', false)"><PrototypeIcon name="close"/></KButton></header>
       <label for="pdf-find-input">关键词</label>
       <KSearchbar input-id="pdf-find-input" class="m-0! w-full! p-0!" placeholder="搜索文档中的文字" :disable-button="false"
         :value="findQuery" @input="findQuery = ($event.target as HTMLInputElement).value" @clear="findQuery = ''" />
@@ -370,7 +370,8 @@ onBeforeUnmount(() => {
     <nav v-if="pageCount > 1 && !passwordPromptOpen" class="pdf-thumbnail-rail">
       <KButton rounded inline clear type="button" class="pdf-thumb-window-control gap-2" :disabled="thumbnailStart <= 0" @click="setThumbnailWindow(thumbnailStart - thumbnailPageWindow)">上一组</KButton>
       <div class="pdf-thumb-list">
-        <KButton rounded inline clear class="w-full h-auto flex-col gap-1 p-1" v-for="thumbnail in thumbnails" :key="thumbnail.index" type="button"
+        <KButton rounded inline :tonal="thumbnail.index === pageIndex" :clear="thumbnail.index !== pageIndex" class="w-full h-auto flex-col gap-1 p-1" v-for="thumbnail in thumbnails" :key="thumbnail.index" type="button"
+          :aria-label="`第 ${thumbnail.index + 1} 页`" :aria-current="thumbnail.index === pageIndex ? 'page' : undefined"
           @click="emit('pageSelected',thumbnail.index)">
           <img :src="thumbnail.src" loading="lazy"/>
           <small>{{ thumbnail.index + 1 }}</small>
@@ -381,7 +382,7 @@ onBeforeUnmount(() => {
     <div ref="canvasScroller" class="pdf-canvas-scroll" :class="{ 'pdf-with-thumbnail-rail': pageCount > 1 && !passwordPromptOpen }">
       <canvas ref="canvas"></canvas>
     </div>
-    <div v-if="loading && !passwordPromptOpen" class="pdf-reader-status">正在显示 PDF…</div>
+    <div v-if="loading && !passwordPromptOpen" class="pdf-reader-status" role="status"><KPreloader class="mx-auto" />正在显示 PDF…</div>
     <div v-if="error || renderError" class="pdf-reader-status pdf-reader-error">
       <p>{{ error || renderError }}</p>
       <KButton rounded inline tonal class="gap-2" @click="retry">重试</KButton>
@@ -389,8 +390,8 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="passwordPromptOpen" class="pdf-password-backdrop" data-back-layer>
-      <KGlass component="form" :highlight="false" class="pdf-password-dialog rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" @submit.prevent="submitPassword">
-        <h2>输入 PDF 密码</h2>
+      <KGlass component="form" :highlight="false" class="pdf-password-dialog rounded-3xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" role="dialog" aria-modal="true" aria-labelledby="pdf-password-title" @submit.prevent="submitPassword">
+        <h2 id="pdf-password-title">输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
         <label for="pdf-reader-password">PDF 密码</label>
         <KListInput class="my-0!" outline component="div" input-id="pdf-reader-password" type="password" autocomplete="off" :value="passwordInput" @input="passwordInput = ($event.target as HTMLInputElement).value" />
@@ -417,11 +418,6 @@ onBeforeUnmount(() => {
 }
 .pdf-canvas-scroll canvas { display: block; flex: none; background: #fff; }
 .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 82px; }
-@media (max-width: 640px) {
-  .pdf-thumbnail-rail { display: none; }
-  .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 0; }
-}
-
 .pdf-thumbnail-rail {
   position: absolute; z-index: 3;
   inset: 0 auto 0 0; display: flex;
@@ -441,7 +437,7 @@ onBeforeUnmount(() => {
   position: absolute; z-index: 4;
   inset: 0; display: grid;
   place-items: center; padding: 16px;
-  background: rgb(0 0 0 / 24%);
+  background: var(--app-scrim);
 }
 .pdf-password-dialog { display: grid; width: min(380px, 100%); gap: 10px; padding: 22px; }
 .pdf-password-dialog h2, .pdf-password-dialog p { margin: 0; }
@@ -461,9 +457,8 @@ onBeforeUnmount(() => {
 .pdf-find-results button { min-height: 36px; }
 
 @media (max-width: 640px) {
-  .pdf-thumbnail-rail { width: 54px; }
-  .pdf-thumb-list img { max-height: 64px; }
-  .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 54px; }
+  .pdf-thumbnail-rail { display: none; }
+  .pdf-canvas-scroll.pdf-with-thumbnail-rail { left: 0; }
 }
 
 }

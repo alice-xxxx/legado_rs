@@ -2,8 +2,6 @@
 import { List as KList } from "konsta/vue";
 import router, { routeNames, settingsRouteNames, type SettingsSection } from "../../router";
 import SettingsActionRow from "../../ui/SettingsActionRow.vue";
-import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
-import SubpageHeader from "../../ui/SubpageHeader.vue";
 
 type Item = {
   destination: SettingsSection | "sources";
@@ -30,9 +28,7 @@ function navigate(destination: Item["destination"]): void {
 
 <template>
   <div class="me-page-layout">
-    <PrimaryNavigation />
-    <main class="me-page-main">
-      <SubpageHeader title="我的" :back="false" large />
+    <main class="me-page-main" aria-label="我的">
       <div class="ui-page-content">
         <section v-for="group in ([{ title: '内容', items: contentItems }, { title: '应用', items: appItems }])"
           :key="group.title" class="ui-settings-group">
@@ -62,11 +58,11 @@ function navigate(destination: Item["destination"]): void {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 0 var(--safe-bottom);
+  padding: var(--safe-top) 0 var(--safe-bottom);
 }
 @media (max-width: 860px) {
   .me-page-main {
-    padding: 0 0 calc(var(--ui-nav-height) + var(--safe-bottom));
+    padding-bottom: calc(var(--ui-nav-height) + var(--safe-bottom));
   }
 }
 }

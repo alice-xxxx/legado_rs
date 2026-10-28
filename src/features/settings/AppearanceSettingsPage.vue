@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Range as KRange, Button as KButton, Segmented as KSegmented, SegmentedButton as KSegmentedButton } from "konsta/vue";
+import { Block as KBlock, Range as KRange, Button as KButton, SegmentedButton as KSegmentedButton } from "konsta/vue";
+import KSegmented from "../../ui/SegmentedControl.vue";
 // 本页直接修改全局响应式设置，由 settingsStore 自动保存。
 import { computed, ref } from "vue";
 import { pickReaderBackgroundImage } from "../../api/settings";
@@ -66,7 +67,7 @@ function clearBackground(): void {
     <div class="appearance-workspace ui-page-content">
 
       <main class="appearance-settings-stack">
-      <section class="appearance-workspace-group">
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-0!">
         <header><h2>界面风格</h2></header>
         <KSegmented strong rounded class="mb-5" aria-label="界面风格">
           <KSegmentedButton v-for="style in uiStyles" :key="style[0]" type="button"
@@ -91,8 +92,8 @@ function clearBackground(): void {
       </div>
     </template>
     <p v-else class="appearance-theme-note">随系统自动切换应用配色和对应的阅读主题。</p>
-      </section>
-      <section class="appearance-workspace-group">
+      </KBlock>
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-0!">
         <header><h2>文字阅读</h2></header>
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
@@ -146,8 +147,8 @@ function clearBackground(): void {
       <SelectMenu id="reader-turn-style" label="阅读方式" :model-value="settings.reader.readingMode ?? 'cover'"
         :disabled="blocked" :options="readingModes" @update:model-value="changeReaderMode" />
     </div>
-      </section>
-      <section class="appearance-workspace-group">
+      </KBlock>
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-0!">
         <header><h2>音频</h2></header>
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
@@ -165,8 +166,8 @@ function clearBackground(): void {
       <SelectMenu id="reader-audio-skip" label="跳过时长" v-model="settings.reader.audioSkipSeconds"
         :disabled="blocked" :options="[10, 15, 30].map(value => ({ value, label: value + ' 秒' }))" />
     </div>
-      </section>
-      <section class="appearance-workspace-group">
+      </KBlock>
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-0!">
         <header><h2>视频</h2></header>
         <div class="appearance-setting-row">
           <div class="appearance-setting-copy">
@@ -177,10 +178,10 @@ function clearBackground(): void {
             :disabled="blocked" :options="playbackRates.map(value => ({ value, label: value + '×' }))" />
         </div>
         <p class="appearance-video-note">清晰度和字幕取决于内容来源及播放器实际提供的轨道；可用的清晰度在视频播放页面选择。</p>
-      </section>
+      </KBlock>
       <details class="appearance-advanced">
         <summary>更多阅读选项 <span>预读与自定义背景</span><PrototypeIcon name="chevron-right"/></summary>
-      <section class="appearance-workspace-group">
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-4!">
         <header><h2>预读</h2></header>
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
@@ -203,8 +204,8 @@ function clearBackground(): void {
 
 
 
-      </section>
-      <section class="appearance-workspace-group">
+      </KBlock>
+      <KBlock strong inset class="appearance-workspace-group mx-0! my-4!">
         <header><h2>阅读背景</h2></header>
     <div class="appearance-setting-row">
       <div class="appearance-setting-copy">
@@ -251,7 +252,7 @@ function clearBackground(): void {
     <p v-if="backgroundError" class="appearance-error">{{ backgroundError }}</p>
 
 
-      </section>
+      </KBlock>
 
       </details>
 
@@ -264,15 +265,13 @@ function clearBackground(): void {
 @layer components {
 .appearance-settings-page{width:100%;min-width:0;color:var(--app-text)}
 
-.appearance-settings-stack{display:grid;gap:0;min-width:0}
-.appearance-workspace-group{padding:15px 0;border:0;border-top:1px solid var(--app-line);background:transparent}
-.appearance-workspace-group:first-child{border-top:0;padding-top:0}
+.appearance-settings-stack{display:grid;gap:var(--ui-space-6);min-width:0}
 .appearance-workspace-group>header{margin:0 0 8px}
-.appearance-workspace-group h2{margin:0;color:var(--app-text);font-size:var(--ui-font-body);font-weight:750}
+.appearance-workspace-group h2{margin:0;color:var(--app-text);font-size:var(--ui-font-body);font-weight:600}
 .appearance-setting-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:10px;min-height:58px;padding:9px 0;border-bottom:1px solid var(--app-line)}
 .appearance-workspace-group .appearance-setting-row:last-child{border-bottom:0}
 .appearance-setting-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
-.appearance-setting-copy label{font-size:var(--ui-font-body);font-weight:650;color:var(--app-text)}
+.appearance-setting-copy label{font-size:var(--ui-font-body);font-weight:500;color:var(--app-text)}
 .appearance-setting-copy small{font-size:var(--ui-font-caption);line-height:1.45;color:var(--app-subtle)}
 .appearance-range-control{display:flex;align-items:center;gap:8px;min-width:0}
 .appearance-range-control input, .appearance-single-range{width:100%;min-width:0;accent-color:var(--app-accent)}
@@ -288,13 +287,11 @@ function clearBackground(): void {
 .appearance-theme-option.theme-white>span{background:#fff;border:1px solid #e5e6ed}
 .appearance-theme-option.theme-dark>span{background:#25272c}
 .appearance-video-note{margin:8px 0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
-.appearance-advanced{border-top:1px solid var(--app-line)}
-.appearance-advanced>summary{display:flex;align-items:center;gap:9px;min-height:43px;color:var(--app-text);font-size:var(--ui-font-caption);font-weight:650;cursor:pointer;list-style:none}
+.appearance-advanced>summary{display:flex;align-items:center;gap:9px;min-height:43px;color:var(--app-text);font-size:var(--ui-font-caption);font-weight:500;cursor:pointer;list-style:none}
 .appearance-advanced>summary::-webkit-details-marker{display:none}
 .appearance-advanced>summary span{margin-left:auto;color:var(--app-subtle);font-size:var(--ui-font-caption);font-weight:400}
 .appearance-advanced>summary :deep(svg){width:16px;height:16px;transform:rotate(90deg)}
 .appearance-advanced[open]>summary :deep(svg){transform:rotate(-90deg)}
-.appearance-advanced .appearance-workspace-group:first-of-type{border-top:1px solid var(--app-line);padding-top:15px}
 .appearance-error{margin:0;padding:10px 0;color:var(--app-danger);font-size:var(--ui-font-caption)}
 @media(max-width:660px){
 

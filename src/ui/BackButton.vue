@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { Button as KButton } from "konsta/vue";
+import PrototypeIcon from "./PrototypeIcon.vue";
 withDefaults(defineProps<{
   label: string;
   disabled?: boolean;
@@ -22,24 +23,7 @@ const emit = defineEmits<{ click: [event: MouseEvent] }>();
     :disabled="disabled"
     @click="emit('click', $event)"
   >
-    <svg class="back-button__icon" viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m14.5 5-7 7 7 7" />
-    </svg>
+    <PrototypeIcon name="left" />
     <span v-if="showLabel">{{ label }}</span>
   </KButton>
 </template>
-
-<style scoped>
-@layer components {
-.back-button__icon {
-  width: var(--ui-icon-size);
-  height: var(--ui-icon-size);
-  flex: none;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-}
-}
-</style>

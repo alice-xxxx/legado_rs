@@ -14,15 +14,6 @@
   --reader-text-bottom-inset: var(--safe-bottom);
 }
 
-#reader-host .reader-shell[data-reader-mode="audio"] .reader-settings-popover, #reader-host .reader-shell[data-reader-mode="video"] .reader-settings-popover {
-  border-radius: var(--ui-dialog-radius); color: var(--app-text); font-size: var(--ui-font-body);
-  top: calc(76px + var(--safe-top));
-}
-
-#reader-host .reader-comic-page-counter {
-  bottom: calc(70px + var(--safe-bottom));
-}
-
 /* Text reading profiles only apply to the text reader. */
 .reader-shell[data-reader-mode="audio"], .reader-shell[data-reader-mode="video"], .reader-shell[data-reader-mode="comic"], .reader-shell[data-reader-mode="pdf"] {
   --reader-background: var(--app-background);
@@ -144,6 +135,7 @@
 }
 .reader-settings-popover {
   color: var(--app-text);
+  font-size: var(--ui-font-body);
   position: absolute; z-index: 32;
   top: calc(76px + var(--safe-top)); right: 12px;
   width: min(320px, calc(100% - 24px)); max-height: min(68dvh, calc(100% - 84px));
@@ -152,12 +144,11 @@
   overscroll-behavior: contain;
 }
 .reader-search-popover { top: auto; bottom: 70px; }
-.popover-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.popover-title { min-height: 34px; margin-bottom: 8px; color: var(--app-text); font-weight: 700; }
+.popover-title { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 44px; margin-bottom: 8px; color: var(--app-text); font-weight: 600; }
 .popover-title > button {
   display: grid;
-  width: 34px;
-  height: 34px;
+  width: 44px;
+  height: 44px;
   flex: none;
   place-items: center;
 }
@@ -186,13 +177,13 @@
   margin: auto;
 }
 .reader-shell.audio-console-active .reader-content-frame { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
-.reader-audio-art { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 12px; box-shadow: var(--app-shadow); }
+.reader-audio-art { width: 100%; aspect-ratio: 1; object-fit: contain; border-radius: var(--ui-radius); }
 .reader-audio-fallback { display: grid; place-items: center; color: var(--app-accent); background: var(--app-panel-soft); }
 .reader-audio-fallback svg { width: 48px; height: 48px; }
 .reader-audio-body { display: grid; min-width: 0; gap: 20px; }
 .reader-tts-panel { display: grid; min-width: 0; gap: 8px; }
 .reader-audio-heading { display: grid; min-width: 0; gap: 6px; }
-.reader-audio-heading h2 { margin: 0; color: var(--app-text); font-size: clamp(20px, 2.4vw, 26px); line-height: 1.35; overflow-wrap: anywhere; }
+.reader-audio-heading h2 { margin: 0; color: var(--app-text); font-size: var(--ui-font-title); line-height: 1.35; overflow-wrap: anywhere; }
 .reader-audio-heading p { margin: 0; color: var(--app-muted); font-size: var(--ui-font-body); line-height: 1.5; overflow-wrap: anywhere; }
 .reader-audio-heading small { color: var(--app-muted); font-size: var(--ui-font-caption); line-height: 1.5; overflow-wrap: anywhere; }
 .reader-audio-progress { margin: 0; gap: 4px; }
@@ -280,7 +271,7 @@
 .reader-shell[data-reader-mode="audio"] .reader-settings-popover, .reader-shell[data-reader-mode="video"] .reader-settings-popover { top: calc(76px + var(--safe-top)); bottom: auto; }
 
 .reader-book-page { display: flex; position: absolute; z-index: 34; inset: 0; min-height: 0; flex-direction: column; color: var(--app-text); background: var(--app-background); }
-.reader-book-page > .book-catalog-view { height: auto; min-height: 0; flex: 1; padding: 0 13px var(--safe-bottom); }
+.reader-book-page > .book-catalog-view { height: auto; min-height: 0; flex: 1; padding-bottom: var(--safe-bottom); }
 .reader-tts-settings { overflow: auto; }
 
 }

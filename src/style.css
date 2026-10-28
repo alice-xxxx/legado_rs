@@ -24,9 +24,7 @@
   --app-icon-ink: var(--app-accent-ink);
   --app-success: #246b43;
   --app-danger: #ba1a1a;
-  --app-shadow: 0 18px 46px rgb(30 33 45 / 8%);
   --app-scrim: rgb(0 0 0 / 36%);
-  --app-header: var(--app-surface);
   --app-danger-soft: #fff0f2;
   --app-danger-line: #e8c5c8;
   --app-success-soft: #edf5ef;
@@ -42,13 +40,14 @@
   --reader-chrome-text: #6d6a60;
   --reader-color-scheme: light;
   --app-content-width: 980px;
-  --ui-cover-min-width: clamp(136px, 18vw, 168px);
+  --ui-cover-min-width: 96px;
+  --ui-cover-max-width: 128px;
   --ui-grid-gap: 24px 16px;
   --ui-font-caption: 12px;
-  --ui-font-body: 16px;
-  --ui-font-heading: 18px;
-  --ui-font-title: 24px;
-  --ui-font-code: 14px;
+  --ui-font-body: 14px;
+  --ui-font-heading: 16px;
+  --ui-font-title: 18px;
+  --ui-font-code: 13px;
   --ui-space-1: 4px;
   --ui-space-2: 8px;
   --ui-space-3: 12px;
@@ -92,7 +91,6 @@
   --app-on-accent: var(--color-md-dark-on-primary);
   --app-success: #94c5a4;
   --app-danger: #ed9da7;
-  --app-shadow: 0 18px 46px rgb(0 0 0 / 32%);
   --app-scrim: rgb(0 0 0 / 60%);
   --app-danger-soft: #402b32;
   --app-danger-line: #75505a;
@@ -106,6 +104,7 @@
 
 :root[data-ui-style="ios"] {
   font-family: var(--font-ios);
+  --ui-header-height: 60px;
   --ui-control-height: 44px;
   --app-background: var(--color-ios-light-surface);
   --app-surface: var(--color-ios-light-surface-1);
@@ -122,9 +121,6 @@
   --app-danger: #c62d26;
   --ui-radius: 12px;
   --ui-dialog-radius: 28px;
-  --ui-font-body: 17px;
-  --ui-font-caption: 13px;
-  --ui-font-title: 28px;
 }
 :root[data-ui-style="ios"][data-theme="dark"] {
   --app-background: var(--color-ios-dark-surface);
@@ -180,12 +176,6 @@ body,
   margin: 0;
 }
 
-html:has(.search-page-prototype),
-body:has(.search-page-prototype),
-#app:has(.search-page-prototype) {
-  min-width: 0;
-}
-
 /* Shared top inset; each bar's content and normal min-height determine its final height. */
 :root .safe-area-top {
   padding-top: var(--safe-top);
@@ -232,6 +222,13 @@ body.has-global-playback { --ui-playback-inset: 88px; }
   line-height: 1.4;
   color: var(--app-text);
 }
+
+.ui-book-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--ui-cover-min-width), 1fr));
+  gap: var(--ui-grid-gap);
+}
+.ui-book-grid > * { min-width: 0; max-width: var(--ui-cover-max-width); }
 
 .ui-settings-group { padding-bottom: var(--ui-space-6); }
 .ui-settings-group h2 {
@@ -285,7 +282,12 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   .book-detail-icon-button, .managed-list-row__menu-button { min-height: 44px; }
   .book-detail-icon-button, .managed-list-row__menu-button { min-width: 44px; }
   .reader-tool-button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
-  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+}
+/* Prevent input focus zoom in touch WebKit while other platforms use the UI scale. */
+@supports (-webkit-touch-callout: none) {
+  @media (pointer: coarse) {
+    input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
@@ -338,9 +340,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
   max-height: min(900px, calc(100dvh - var(--safe-top) - var(--safe-bottom) - var(--ui-space-4) * 2));
   overflow: auto;
   padding: var(--ui-page-gutter);
-  border: 1px solid var(--app-line);
   border-radius: var(--ui-dialog-radius);
-  background: var(--app-surface);
 }
 
 .modal-actions {

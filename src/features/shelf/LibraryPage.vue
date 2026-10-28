@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import BookCover from "../../ui/BookCover.vue";
 import { ListInput as KListInput, Checkbox as KCheckbox, Button as KButton, Glass as KGlass } from "konsta/vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
@@ -12,7 +13,6 @@ import { shelfBooks as shelf } from "./shelfBooks";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import router, { routeNames } from "../../router";
-import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 import LibraryBookInfo from "./LibraryBookInfo.vue";
@@ -174,14 +174,7 @@ function groupBookCount(group: string): number {
 
 <template>
   <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }" data-back-page>
-    <PrimaryNavigation v-if="!shelfBatch.selectionMode" />
-    <main class="shelf-page-main">
-      <SubpageHeader v-if="!shelfBatch.selectionMode" title="内容库" :back="false" large>
-        <template #actions>
-          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="导入内容" title="导入 TXT / EPUB / CBZ / PDF" :disabled="mutationLocked" @click="openImport"><PrototypeIcon name="import" /></KButton>
-          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="整理内容库" title="整理内容库" :disabled="shelfBatch.batchBusy || mutationLocked" @click="enterManageMode"><PrototypeIcon name="tune" /></KButton>
-        </template>
-      </SubpageHeader>
+    <main class="shelf-page-main" aria-label="内容库">
       <section class="shelf-view ui-page-content" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
         <SubpageHeader v-if="shelfBatch.selectionMode" title="整理内容库" subtitle="分组与批量管理" back-label="退出管理" local-back :back-disabled="shelfBatch.batchBusy" @back="exitManageMode">
           <template #actions>
@@ -195,6 +188,10 @@ function groupBookCount(group: string): number {
               :aria-pressed="activeType === filter.key" @click.stop="activeType = filter.key">{{ filter.title
               }}</KButton>
           </nav>
+          <KGlass class="flex shrink-0 items-center rounded-full">
+            <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="导入内容" title="导入 TXT / EPUB / CBZ / PDF" :disabled="mutationLocked" @click="openImport"><PrototypeIcon name="import" /></KButton>
+            <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="整理内容库" title="整理内容库" :disabled="shelfBatch.batchBusy || mutationLocked" @click="enterManageMode"><PrototypeIcon name="tune" /></KButton>
+          </KGlass>
         </div>
         <div v-if="shelfBatch.selectionMode" class="library-manage-workspace">
           <aside class="library-manage-rail">
@@ -270,12 +267,11 @@ function groupBookCount(group: string): number {
               <KButton rounded inline clear class="gap-2" @click="shelfBatch.cacheResult = null">关闭结果</KButton>
               <p v-for="book in shelfBatch.cacheResult.failed" :key="book.id" class="error">{{ book.title }}：{{ book.message }}</p>
             </section>
-            <div v-if="shelfView.visibleBooks.length" class="library-manage-grid">
+            <div v-if="shelfView.visibleBooks.length" class="library-manage-grid ui-book-grid">
               <label v-for="book in shelfView.visibleBooks" :key="book.id" class="library-manage-book"
                 :class="{ selected: shelfBatch.selectedBookIds.includes(book.id) }">
                 <span class="library-manage-cover">
-                  <img v-if="book.coverSrc" :src="book.coverSrc" loading="lazy" decoding="async" />
-                  <span v-else class="library-abstract-cover" :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
+                  <BookCover :src="book.coverSrc" />
                 </span>
                 <span class="library-manage-info">
                   <KCheckbox component="span" :checked="shelfBatch.selectedBookIds.includes(book.id)"
@@ -292,7 +288,7 @@ function groupBookCount(group: string): number {
             </div>
           </main>
         </div>
-        <div v-if="!shelfBatch.selectionMode && displayedBooks.length" class="book-grid">
+        <div v-if="!shelfBatch.selectionMode && displayedBooks.length" class="book-grid ui-book-grid">
           <article v-for="book in displayedBooks" :key="book.id" class="shelf-card">
             <button class="cover-button" type="button" title="点击阅读，长按查看书籍信息"
               @pointerdown="shelfGroup.startShelfCoverLongPress(book.id, $event)"
@@ -300,9 +296,7 @@ function groupBookCount(group: string): number {
               @pointercancel="shelfGroup.cancelShelfCoverLongPress"
               @pointerleave="shelfGroup.handleShelfCoverPointerLeave" @contextmenu.prevent
               @click="shelfGroup.handleShelfCoverClick(book.id)">
-              <img v-if="book.coverSrc" :src="book.coverSrc" class="book-cover" loading="lazy" />
-              <span v-else class="library-abstract-cover"
-                :class="`cover-tone-${Math.abs(book.title.length) % 5}`"></span>
+              <BookCover :src="book.coverSrc" />
             </button>
             <button class="book-info-button" :aria-label="`查看《${book.title}》详情`" @click="openBookInfo(book.id)">
               <LibraryBookInfo :book="book" />
@@ -411,21 +405,15 @@ function groupBookCount(group: string): number {
   padding: 0;
 }
 
+.shelf-view { padding-top: calc(var(--ui-space-4) + var(--safe-top)); }
+
 .shelf-view-empty {
   display: flex;
   flex-direction: column;
-  min-height: calc(100% - 132px);
+  min-height: 100%;
 }
 
 .shelf-view-empty .library-topbar { flex: none; }
-
-.book-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--ui-cover-min-width), 1fr));
-  gap: var(--ui-grid-gap);
-}
-
-.shelf-card { min-width: 0; }
 
 .cover-button {
   position: relative;
@@ -439,19 +427,6 @@ function groupBookCount(group: string): number {
   cursor: pointer;
 }
 
-.book-cover, .library-manage-cover img {
-  position: absolute;
-  inset: 0;
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  -webkit-touch-callout: none;
-  -webkit-user-drag: none;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
 .book-info-button {
   display: block;
   width: 100%;
@@ -459,10 +434,11 @@ function groupBookCount(group: string): number {
   cursor: pointer;
 }
 
-.library-topbar { min-width: 0; margin-bottom: 24px; }
+.library-topbar { display: flex; align-items: center; gap: 12px; min-width: 0; margin-bottom: 20px; }
 
 .library-type-filter {
   display: flex;
+  flex: 1;
   align-items: center;
   gap: 5px;
   min-width: 0;
@@ -476,53 +452,6 @@ function groupBookCount(group: string): number {
 
 .library-type-filter button { flex: none; }
 
-.library-abstract-cover {
-  position: absolute;
-  inset: 0;
-  display: block;
-  overflow: hidden;
-  border-radius: 3px;
-  background: linear-gradient(135deg, #456c6a, #172e31);
-}
-
-.library-abstract-cover::before {
-  content: "";
-  position: absolute;
-  inset: 14% -15% auto auto;
-  width: 70%;
-  height: 70%;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, .13);
-}
-
-.library-abstract-cover::after {
-  content: "";
-  position: absolute;
-  left: -20%;
-  right: -20%;
-  bottom: -18%;
-  height: 55%;
-  border-radius: 50% 50% 0 0;
-  background: rgba(0, 0, 0, .14);
-  transform: rotate(-8deg);
-}
-
-.library-abstract-cover.cover-tone-1 {
-  background: linear-gradient(135deg, #8a6d7f, #393246);
-}
-
-.library-abstract-cover.cover-tone-2 {
-  background: linear-gradient(135deg, #73939a, #2d4a45);
-}
-
-.library-abstract-cover.cover-tone-3 {
-  background: linear-gradient(135deg, #384a67, #121a28);
-}
-
-.library-abstract-cover.cover-tone-4 {
-  background: linear-gradient(135deg, #91677d, #362432);
-}
-
 .library-filter-empty {
   flex: 1;
   min-height: 160px;
@@ -532,7 +461,7 @@ function groupBookCount(group: string): number {
 
   .library-topbar {
     gap: 8px;
-    margin: 5px 0 18px;
+    margin-bottom: 16px;
   }
 
   .library-type-filter {
@@ -541,15 +470,6 @@ function groupBookCount(group: string): number {
 
   .library-type-filter button {
     padding: 0 9px;
-  }
-
-  .library-top-actions {
-    gap: 4px;
-  }
-
-  .library-round-action {
-    width: 36px;
-    height: 36px;
   }
 
 }
@@ -676,7 +596,6 @@ function groupBookCount(group: string): number {
   border-radius: 0;
   padding: 0 3px 8px;
   background: transparent;
-  box-shadow: none;
 }
 
 .library-selection-count {
@@ -699,9 +618,6 @@ function groupBookCount(group: string): number {
 }
 
 .library-manage-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--ui-cover-min-width), 1fr));
-  gap: var(--ui-grid-gap);
   padding-top: 16px;
 }
 

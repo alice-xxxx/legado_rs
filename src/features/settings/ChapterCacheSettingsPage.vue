@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton } from "konsta/vue";
+import { Block as KBlock, Button as KButton } from "konsta/vue";
 import { computed, onMounted, ref } from "vue";
 import { useRoute } from "vue-router";
 import { errorText, notify } from "../../app/notifications";
@@ -74,7 +74,8 @@ onMounted(async () => {
 <template>
   <section class="settings-detail-page">
     <SettingsDetailHeader title="正文缓存" />
-    <div class="settings-detail-content">
+    <div class="settings-detail-content ui-page-content">
+      <KBlock strong inset class="mx-0! my-0!">
       <div class="cache-summary">
         <div class="cache-summary-copy">
           <span class="cache-caption">总占用</span>
@@ -98,6 +99,7 @@ onMounted(async () => {
           <dd>{{ formatChapterCacheBytes(chapterCacheUsage.localChapterResourceBytes) }}</dd>
         </div>
       </dl>
+      </KBlock>
       <p v-if="chapterCacheUsageError" class="cache-error" role="alert">{{ chapterCacheUsageError }}</p>
       <div class="cache-actions">
         <KButton rounded inline outline type="button" class="cache-clear k-color-brand-danger gap-2 " :disabled="cacheClearBlocked" @click="pendingShelfChapterCacheClear = true">
@@ -132,11 +134,6 @@ onMounted(async () => {
   min-width: 0;
   min-height: 100dvh;
   color: var(--app-text);
-}
-.settings-detail-content {
-  width: min(640px, 100%);
-  margin: 0 auto;
-  padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
 }
 
 .cache-summary {
