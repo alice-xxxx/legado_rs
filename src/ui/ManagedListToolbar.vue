@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { Searchbar as KSearchbar, Button as KButton } from "konsta/vue";
 import PrototypeIcon from "./PrototypeIcon.vue";
+import { useId } from "vue";
+
+const queryId = useId();
 
 defineProps<{
   query: string;
@@ -19,8 +22,8 @@ const emit = defineEmits<{
 <template>
   <header class="managed-list-toolbar">
     <div class="min-w-0">
-      <label class="sr-only" for="managed-list-query">{{ searchPlaceholder }}</label>
-      <KSearchbar input-id="managed-list-query" class="m-0! w-full! p-0!" :value="query" :placeholder="searchPlaceholder"
+      <label class="sr-only" :for="queryId">{{ searchPlaceholder }}</label>
+      <KSearchbar :input-id="queryId" class="m-0! w-full! p-0!" :value="query" :placeholder="searchPlaceholder"
         :disable-button="false" @input="emit('update:query', ($event.target as HTMLInputElement).value)" @clear="emit('update:query', '')" />
     </div>
     <div class="managed-list-toolbar__control">
@@ -67,8 +70,8 @@ const emit = defineEmits<{
 .managed-list-toolbar__button {
   display: grid;
   place-items: center;
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   padding: 0;
 }
 
@@ -82,10 +85,6 @@ const emit = defineEmits<{
     grid-template-columns: minmax(0, 1fr) 44px 44px;
     gap: 4px;
   }
-}
-@media (pointer: coarse) {
-  .managed-list-toolbar { grid-template-columns: minmax(0, 1fr) 44px 44px; }
-  .managed-list-toolbar__button { width: 44px; height: 44px; }
 }
 }
 </style>

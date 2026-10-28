@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Popup as KPopup, ListInput as KListInput, Toggle as KToggle, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import { bookSourceTypeOptions } from "./sourceTypeOptions";
@@ -82,7 +83,7 @@ defineExpose({ serialize, reset });
           <span>{{ field.label }}</span><small>{{ field.key.split('.').slice(-1)[0] }}</small>
         </label>
         <KButton rounded inline clear v-if="field.kind === 'long'" :id="`source-field-${field.key}`" type="button"
-          class="source-field-preview h-auto rounded-xl bg-[var(--app-surface)] text-current text-start justify-between gap-2" :class="{ empty: !draft[field.key] }" :disabled="disabled" @click="openField(field)">
+          class="source-field-preview h-auto min-h-12 rounded-xl bg-[var(--app-surface)] text-current text-start justify-between gap-2" :class="{ empty: !draft[field.key] }" :disabled="disabled" @click="openField(field)">
           <span>{{ preview(field) }}</span><PrototypeIcon name="right" />
         </KButton>
         <label v-else-if="field.kind === 'toggle'" class="source-field-switch">
@@ -90,10 +91,9 @@ defineExpose({ serialize, reset });
           <KToggle component="span" :checked="draft[field.key] === 'true'" :disabled="disabled"
             @change="draft[field.key] = ($event.target as HTMLInputElement).checked ? 'true' : 'false'"  />
         </label>
-        <KListInput component="div" v-else-if="field.kind === 'type'" :input-id="`source-field-${field.key}`" :disabled="disabled" type="select" :value="draft[field.key]" @change="draft[field.key] = ($event.target as HTMLSelectElement).value">
-          <option v-for="option in bookSourceTypeOptions(draft[field.key] ?? '0')" :key="option.value" :value="option.value">{{ option.label }}</option>
-        </KListInput>
-        <KListInput component="div" v-else :input-id="`source-field-${field.key}`" :disabled="disabled" :inputmode="field.kind === 'number' ? 'numeric' : 'text'" type="text" spellcheck="false" autocomplete="off" :value="draft[field.key]" @input="draft[field.key] = ($event.target as HTMLInputElement).value" />
+        <SelectMenu v-else-if="field.kind === 'type'" :id="`source-field-${field.key}`" :label="field.label" :disabled="disabled"
+          v-model="draft[field.key]" :options="bookSourceTypeOptions(draft[field.key] ?? '0')" />
+        <KListInput class="my-0!" outline component="div" v-else :input-id="`source-field-${field.key}`" :disabled="disabled" :inputmode="field.kind === 'number' ? 'numeric' : 'text'" type="text" spellcheck="false" autocomplete="off" :value="draft[field.key]" @input="draft[field.key] = ($event.target as HTMLInputElement).value" />
       </div>
     </div>
     <p v-if="error" class="source-field-error" role="alert">{{ error }}</p>
@@ -116,10 +116,10 @@ defineExpose({ serialize, reset });
 
 <style scoped>
 @layer components {
-.source-field-editor{min-width:0;color:var(--app-text,var(--app-text))}
+.source-field-editor{min-width:0;color:var(--app-text)}
 .source-field-tabs{position:sticky;top:0;z-index:5;display:flex;overflow-x:auto;background:var(--app-background);border-bottom:1px solid var(--app-line);scrollbar-width:none}
 .source-field-tabs>button{flex:1 0 auto;min-height:48px;padding:0 18px}
-.source-field-tabs>button.active{border-bottom-color:var(--app-accent);color:var(--app-accent);font-weight:650}
+
 .source-field-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:20px 22px;padding:24px 0}
 .source-field{display:grid;align-content:start;gap:8px;min-width:0;grid-column:1/-1}
 .source-field--compact{grid-column:auto}
@@ -133,7 +133,6 @@ defineExpose({ serialize, reset });
 .source-field-preview :deep(svg){flex:none;width:18px;height:18px;color:var(--app-subtle)}
 .source-field-switch{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:52px;cursor:pointer}
 .source-field-preview:focus-visible, .source-field-tabs>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
-.source-field :disabled{opacity:.55;cursor:default}
 .source-field-error{padding:12px;background:var(--app-danger-soft);color:var(--app-danger);border-radius:8px;font-size:var(--ui-font-body)}
 @media(max-width:700px){.source-field-tabs>button{padding:0 15px}.source-field-list{gap:19px 14px;padding:22px 0}.source-field-label{font-size:var(--ui-font-body);gap:5px}}
 }

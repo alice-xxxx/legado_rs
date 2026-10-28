@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Button as KButton } from "konsta/vue";
+import { Button as KButton, Glass as KGlass } from "konsta/vue";
 import { deepLinkLabels, type PendingImportLink } from "./deepLinks";
 
 defineProps<{
@@ -14,7 +14,7 @@ defineProps<{
 </script>
 
 <template>
-  <div v-if="pendingImportLinks.length && !sourceImportOpen" class="external-import-banner">
+  <KGlass v-if="pendingImportLinks.length && !sourceImportOpen" class="external-import-banner material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" role="status">
     <span class="external-import-banner__label">
       收到{{ pendingImportLinks[0] ? deepLinkLabels[pendingImportLinks[0].kind] : '' }}链接<span v-if="pendingImportLinks.length > 1">（待处理 {{ pendingImportLinks.length }} 个）</span>
     </span>
@@ -22,7 +22,7 @@ defineProps<{
       {{ importLinkOpening ? '正在打开…' : '打开确认页' }}
     </KButton>
     <KButton rounded inline tonal small class="gap-2" :disabled="importLinkOpening" @click="ignorePendingImportLink">忽略</KButton>
-  </div>
+  </KGlass>
 </template>
 
 <style scoped>
@@ -39,10 +39,7 @@ defineProps<{
   flex-wrap: wrap;
   padding: 14px;
   transform: translateX(-50%);
-  border: 1px solid var(--app-line);
   border-radius: 12px;
-  background: var(--app-surface);
-  box-shadow: 0 6px 24px #0002;
 }
 
 .external-import-banner__label { min-width: 160px; flex: 1; overflow-wrap: anywhere; }

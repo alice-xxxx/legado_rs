@@ -50,14 +50,14 @@ function rename(oldName: string): void {
       <div class="group-manager-title"><strong>整理书架分组</strong></div>
       <div v-if="groups.length" class="managed-groups">
         <div v-for="group in groups" :key="group" class="managed-group-row">
-          <template v-if="renamingGroup === group"><KListInput component="div" @keydown.enter.prevent="rename(group)" @keydown.esc="renamingGroup = null" :value="editingName" @input="editingName = ($event.target as HTMLInputElement).value" /><KButton rounded inline clear class="gap-2" @click="rename(group)">保存</KButton>
+          <template v-if="renamingGroup === group"><KListInput class="my-0!" outline component="div" @keydown.enter.prevent="rename(group)" @keydown.esc="renamingGroup = null" :value="editingName" @input="editingName = ($event.target as HTMLInputElement).value" /><KButton rounded inline clear class="gap-2" @click="rename(group)">保存</KButton>
 <KButton rounded inline clear class="gap-2" @click="renamingGroup = null">取消</KButton></template>
           <template v-else><span>{{ group }}</span><KButton rounded inline clear class="gap-2" @click="renamingGroup = group; editingName = group">重命名</KButton>
 <KButton rounded inline clear class="remove-group k-color-brand-danger gap-2 " @click="emit('deleteGroup', group)">删除</KButton></template>
         </div>
       </div>
       <div v-else class="no-groups">还没有分组，可以先创建一个。</div>
-      <form class="new-group-form" @submit.prevent="createGroup"><KListInput component="div" maxlength="80" placeholder="新分组名称" :value="newGroupName" @input="newGroupName = ($event.target as HTMLInputElement).value" /><KButton rounded inline clear class="gap-2" type="submit" :disabled="!newGroupName.trim()">创建分组</KButton></form>
+      <form class="new-group-form" @submit.prevent="createGroup"><KListInput class="my-0!" outline component="div" maxlength="80" placeholder="新分组名称" :value="newGroupName" @input="newGroupName = ($event.target as HTMLInputElement).value" /><KButton rounded inline clear class="gap-2" type="submit" :disabled="!newGroupName.trim()">创建分组</KButton></form>
     </div>
   </section>
 </template>
@@ -72,7 +72,7 @@ function rename(oldName: string): void {
 .group-manager { display:grid; grid-template-columns:minmax(170px,.65fr) minmax(0,1.35fr) minmax(190px,.8fr); align-items:start; gap:14px; margin:0 0 12px; padding:12px 14px; border:1px solid var(--app-line); border-radius:10px; background:var(--app-surface); }
 .group-manager-title { display:flex; flex-direction:column; gap:5px; }.group-manager-title strong { color:var(--app-text); font-size:var(--ui-font-heading); }.group-manager-title span, .no-groups { color:var(--app-muted); font-size:var(--ui-font-body); line-height:1.5; }
 .managed-groups { display:flex; flex-wrap:wrap; gap:7px; }.managed-group-row { display:flex; align-items:center; gap:5px; padding:3px 5px 3px 10px; border-radius:7px; background:var(--app-panel-soft); color:var(--app-text); font-size:var(--ui-font-body); }.managed-group-row button, .new-group-form button { min-height:40px; padding:0 9px; }.managed-group-row .k-list-input, .new-group-form .k-list-input { min-width:0; width:110px; }
-.new-group-form { display:flex; align-items:center; gap:6px; }.new-group-form .k-list-input { flex:1; width:unset; }.new-group-form button { flex:none; min-height:44px; }.new-group-form button:disabled { opacity:.55; cursor:not-allowed; }
+.new-group-form { display:flex; align-items:center; gap:6px; }.new-group-form .k-list-input { flex:1; width:unset; }.new-group-form button { flex:none; min-height:44px; }
 @media(max-width:760px) { .organizer-main { min-height:unset; align-items:flex-start; padding:0; }.group-strip { width:100%; }.group-manager { grid-template-columns:1fr; gap:9px; }.new-group-form .k-list-input { width:100%; } }
 }
 </style>

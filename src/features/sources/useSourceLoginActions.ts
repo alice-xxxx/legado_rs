@@ -4,6 +4,7 @@ import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { login, type LoginAction, type LoginUpdate } from "../../api/sources";
 import { sources } from "./sourcesStore";
 import type { SourceLoginField, SourceLoginForm, SourceMetadata } from "../../api/types";
+import { confirmAction } from "../../app/confirmation";
 
 interface SourceLoginActionDependencies {
   selectedSourceRows: Ref<string[]>;
@@ -104,7 +105,8 @@ export function useSourceLoginActions({
   async function clearSelectedSourceLogin(): Promise<void> {
     const source = sourceLoginTarget.value;
     if (!source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
-    if (!window.confirm(`清除「${source.name}」的登录数据？同域名的其他源也可能需要重新登录。`)) return;
+    if (!await confirmAction("清除登录数据？", `将清除「${source.name}」的登录数据，同域名的其他源也可能需要重新登录。`, "清除登录数据")) return;
+    if (sourceLoginTarget.value !== source || sourceLoginBusy.value || shelfBatchRecoveryRequired.value) return;
     sourceLoginCredentials.value = {};
     await run({ type: "clear" });
   }

@@ -493,9 +493,9 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 
 <template>
   <section class="settings-card http-tts-config-card" :class="{ 'http-tts-config-card--empty': !editorOpen && configs.length === 0 }">
-    <SubpageHeader class="http-tts-topbar col-span-full row-start-1" title="TTS 引擎" :back-label="embedded ? '返回阅读菜单' : '返回高级设置'" @back="returnToAdvancedSettings" >
+    <SubpageHeader wide class="http-tts-topbar col-span-full row-start-1" title="TTS 引擎" :back-label="embedded ? '返回阅读菜单' : '返回高级设置'" @back="returnToAdvancedSettings" >
 <template #actions><div ref="addMenuTarget" class="http-tts-top-add">
-        <KButton rounded inline type="button" class="gap-2"
+        <KButton rounded inline clear type="button" class="gap-2"
 :disabled="actionsBlocked"
           @click="addMenuOpen = !addMenuOpen; filterMenuOpen = false; actionsMenuOpen = false; openConfigMenuId = null"><PrototypeIcon name="plus"/> 添加</KButton>
 
@@ -592,7 +592,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         <h3 id="http-tts-import-title">从网络链接导入</h3>
         <form class="http-tts-import-url-form" @submit.prevent="importFromLink">
           <label for="http-tts-config-url">HTTP TTS 配置 JSON 链接</label>
-          <KListInput component="div" input-id="http-tts-config-url" type="url" required inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/http-tts.json" :disabled="importUrlBusy || actionsBlocked" :value="importUrl" @input="importUrl = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" input-id="http-tts-config-url" type="url" required inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/http-tts.json" :disabled="importUrlBusy || actionsBlocked" :value="importUrl" @input="importUrl = ($event.target as HTMLInputElement).value" />
           <KButton rounded inline type="submit" class="gap-2"
             :disabled="importUrlBusy || actionsBlocked || !importUrl.trim()">
             {{ importUrlBusy || importBusy ? '下载并导入中…' : '下载并导入' }}
@@ -608,10 +608,11 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
     <section v-if="editorOpen" class="http-tts-editor-page" data-back-layer>
       <article class="http-tts-editor-dialog">
         <SubpageHeader class="http-tts-editor-header col-span-full row-start-1" :title="creatingConfig ? '新建 HTTP TTS 配置' : editingConfig?.name ?? '编辑朗读源'" @back="closeEditor" local-back>
-<template #actions><div class="http-tts-editor-header-actions">
-            <KButton rounded inline v-if="editingConfig" type="button" class="k-color-brand-danger gap-2 " :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除</KButton>
-            <KButton rounded inline type="button" class="gap-2" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</KButton>
-          </div></template>
+<template #actions>
+            <KButton v-if="editingConfig" rounded inline clear type="button" class="k-color-brand-danger"
+              :disabled="actionsBlocked" @click="requestDeleteConfig(editingConfig.id)">删除</KButton>
+            <KButton rounded inline clear type="button" :disabled="blocked || !fields.name.trim() || !fields.url.trim()" @click="saveEditor">保存</KButton>
+          </template>
 </SubpageHeader>
 
         <div class="http-tts-editor-body">
@@ -620,46 +621,46 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
               <div class="http-tts-editor-grid">
             <label class="form-field">
               <span>名称</span>
-              <KListInput component="div" maxlength="256" autocomplete="off" placeholder="朗读源名称" :value="fields.name" @input="fields.name = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" maxlength="256" autocomplete="off" placeholder="朗读源名称" :value="fields.name" @input="fields.name = ($event.target as HTMLInputElement).value" />
             </label>
             <label class="form-field">
               <span>URL</span>
-              <KListInput component="div" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/tts" :value="fields.url" @input="fields.url = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/tts" :value="fields.url" @input="fields.url = ($event.target as HTMLInputElement).value" />
             </label>
             <label class="form-field">
               <span>Content-Type</span>
-              <KListInput component="div" autocomplete="off" placeholder="application/json" :value="fields.contentType" @input="fields.contentType = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" autocomplete="off" placeholder="application/json" :value="fields.contentType" @input="fields.contentType = ($event.target as HTMLInputElement).value" />
             </label>
             <label class="form-field">
               <span>并发率（concurrentRate）</span>
-              <KListInput component="div" inputmode="numeric" autocomplete="off" placeholder="0" :value="fields.concurrentRate" @input="fields.concurrentRate = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" inputmode="numeric" autocomplete="off" placeholder="0" :value="fields.concurrentRate" @input="fields.concurrentRate = ($event.target as HTMLInputElement).value" />
             </label>
               </div>
               <label class="form-field">
                 <span>请求头（header）</span>
-                <KListInput component="div" spellcheck="false" placeholder="可选的请求头配置" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="fields.header" @input="fields.header = ($event.target as HTMLTextAreaElement).value" />
+                <KListInput class="my-0!" outline component="div" spellcheck="false" placeholder="可选的请求头配置" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="fields.header" @input="fields.header = ($event.target as HTMLTextAreaElement).value" />
                 <small>对象／数组格式请填写有效 JSON，保存后保持原始数据类型；原本是字符串的来源仍按字符串保存。</small>
               </label>
               </section>
               <section class="http-tts-editor-section"><header><strong>登录与扩展</strong></header>
             <label class="form-field">
               <span>登录 URL（loginUrl）</span>
-              <KListInput component="div" type="url" inputmode="url" autocomplete="url" placeholder="可选" :value="fields.loginUrl" @input="fields.loginUrl = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" type="url" inputmode="url" autocomplete="url" placeholder="可选" :value="fields.loginUrl" @input="fields.loginUrl = ($event.target as HTMLInputElement).value" />
             </label>
             <label class="form-field">
               <span>登录 UI（loginUi）</span>
-              <KListInput component="div" spellcheck="false" placeholder="可选的登录界面配置" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="fields.loginUi" @input="fields.loginUi = ($event.target as HTMLTextAreaElement).value" />
+              <KListInput class="my-0!" outline component="div" spellcheck="false" placeholder="可选的登录界面配置" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="fields.loginUi" @input="fields.loginUi = ($event.target as HTMLTextAreaElement).value" />
               <small>现有 JSON 数组／对象不会被转为字符串；如果原值是字符串，编辑后仍保存字符串。</small>
             </label>
             <label class="form-field">
               <span>登录检查 JS（loginCheckJs）</span>
-              <KListInput component="div" spellcheck="false" placeholder="可选" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="fields.loginCheckJs" @input="fields.loginCheckJs = ($event.target as HTMLTextAreaElement).value" />
+              <KListInput class="my-0!" outline component="div" spellcheck="false" placeholder="可选" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="fields.loginCheckJs" @input="fields.loginCheckJs = ($event.target as HTMLTextAreaElement).value" />
             </label>
               </section>
               <section class="http-tts-editor-section"><header><strong>脚本与权限</strong></header>
                 <label class="form-field">
                   <span>共享 JS 库（jsLib）</span>
-                  <KListInput component="div" spellcheck="false" placeholder="可选的 JavaScript 辅助函数" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '144px' }" :value="fields.jsLib" @input="fields.jsLib = ($event.target as HTMLTextAreaElement).value" />
+                  <KListInput class="my-0!" outline component="div" spellcheck="false" placeholder="可选的 JavaScript 辅助函数" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '144px' }" :value="fields.jsLib" @input="fields.jsLib = ($event.target as HTMLTextAreaElement).value" />
                 </label>
                 <label class="http-tts-editor-toggle">
                   <KToggle component="span" :checked="!!fields.enabledCookieJar" @change="fields.enabledCookieJar = ($event.target as HTMLInputElement).checked"  />
@@ -723,7 +724,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 }
 .http-tts-config-card--empty{grid-template-columns:minmax(0,1fr)}
 .http-tts-top-add{position:relative}
-.http-tts-overview{box-sizing:border-box;grid-column:1;grid-row:2;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px;border-right:1px solid var(--tts-line);background:var(--app-background)}
+.http-tts-overview{box-sizing:border-box;grid-column:1;grid-row:2;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));border-right:1px solid var(--tts-line);background:var(--app-background)}
 .http-tts-master-list{display:flex;flex:1 1 auto;flex-direction:column;gap:3px;min-height:0;margin:0;overflow:hidden}
 .http-tts-items-scroll{display:grid;flex:1 1 auto;align-content:start;gap:3px;min-height:0;margin-right:-14px;padding-right:14px;overflow-y:auto;overscroll-behavior:contain}
 .http-tts-master-summary{display:flex;align-items:center;gap:6px;padding:3px}
@@ -731,14 +732,12 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-count strong, .http-tts-count small{font-size:var(--ui-font-caption);font-weight:500;color:var(--tts-muted)}
 .http-tts-filter-menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
 .http-tts-actions-menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
-.http-tts-actions-menu button:disabled{opacity:.4;cursor:default}
 .http-tts-selection-bar{display:flex;flex:none;flex-wrap:wrap;align-items:center;gap:5px;margin-top:auto;padding:8px 3px;border-top:1px solid var(--tts-line);background:var(--app-background)}
 .http-tts-selection-text-button{min-height:30px;padding:0 7px}
 .http-tts-selection-count{margin-left:auto;color:var(--tts-muted);font-size:var(--ui-font-caption)}
 .http-tts-config-menu-button{display:grid;place-items:center;width:30px;height:34px;padding:0}
 .http-tts-config-menu-button :deep(svg){width:17px;height:17px}
 .http-tts-config-menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
-.http-tts-config-menu button:disabled{opacity:.4;cursor:default}
 .http-tts-list-empty{margin:0;padding:24px 10px;color:var(--tts-muted);font-size:var(--ui-font-caption);text-align:center}
 .http-tts-import-scrim{position:fixed;z-index:2000;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 .http-tts-import-dialog{box-sizing:border-box;overflow:auto}
@@ -757,8 +756,8 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-preview strong{font-size:var(--ui-font-caption);color:var(--app-text)}
 .http-tts-preview p{max-width:290px;margin:0;color:var(--app-subtle);font-size:var(--ui-font-caption);line-height:1.65}
 .http-tts-editor-page{grid-column:2;grid-row:2;min-width:0;min-height:0;overflow-y:auto;background:var(--app-background)}
-.http-tts-editor-dialog{width:100%;background:var(--app-background)}
-.http-tts-editor-body{padding:0 34px 48px}
+.http-tts-editor-dialog{width:100%;max-width:var(--app-content-width);margin-inline:auto;background:var(--app-background)}
+.http-tts-editor-body{padding:0 var(--ui-page-gutter) calc(48px + var(--ui-playback-inset))}
 .http-tts-editor-fields{display:block;min-width:0;margin:0;padding:0;border:0}
 .http-tts-editor-section{padding:18px 0;border-top:1px solid var(--tts-line)}
 .http-tts-editor-section>header{display:grid;gap:3px;margin-bottom:12px}
@@ -779,10 +778,10 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 .http-tts-discard-mask{position:fixed;z-index:100;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
 @media(max-width:860px){
  .http-tts-config-card{display:flex;flex-direction:column;height:100%;min-height:0}
- .http-tts-overview{flex:1 1 auto;height:auto;min-height:0;max-height:none;padding:16px var(--ui-page-gutter);border:0;background:var(--app-background)}
+ .http-tts-overview{flex:1 1 auto;height:auto;min-height:0;max-height:none;padding:16px var(--ui-page-gutter) calc(16px + var(--ui-playback-inset));border:0;background:var(--app-background)}
  .http-tts-preview{display:none}
  .http-tts-config-card:has(.http-tts-editor-page) .http-tts-topbar, .http-tts-config-card:has(.http-tts-editor-page) .http-tts-overview{display:none}
- .http-tts-editor-body{padding:24px var(--ui-page-gutter) calc(32px + var(--safe-bottom))}
+ .http-tts-editor-body{padding:24px var(--ui-page-gutter) calc(32px + var(--safe-bottom) + var(--ui-playback-inset))}
  .http-tts-editor-page{flex:1 1 auto;min-height:0;overflow-y:auto}
  .http-tts-editor-grid{grid-template-columns:1fr}
  .http-tts-editor-grid .form-field:nth-child(2){grid-column:auto}

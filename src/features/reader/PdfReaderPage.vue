@@ -393,7 +393,7 @@ onBeforeUnmount(() => {
         <h2>输入 PDF 密码</h2>
         <p>密码只用于本次阅读，不会保存。</p>
         <label for="pdf-reader-password">PDF 密码</label>
-        <KListInput component="div" input-id="pdf-reader-password" type="password" autocomplete="off" :value="passwordInput" @input="passwordInput = ($event.target as HTMLInputElement).value" />
+        <KListInput class="my-0!" outline component="div" input-id="pdf-reader-password" type="password" autocomplete="off" :value="passwordInput" @input="passwordInput = ($event.target as HTMLInputElement).value" />
         <p v-if="passwordError" class="pdf-password-error">{{ passwordError }}</p>
         <div class="pdf-password-actions">
           <KButton rounded inline tonal type="button" class="gap-2" data-back-action @click="cancelPassword">取消阅读</KButton>

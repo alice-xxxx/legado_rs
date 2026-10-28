@@ -98,7 +98,7 @@ const saveError = ref("");
 <template>
  <section class="source-edit-screen" data-back-page>
   <SubpageHeader :title="source ? '编辑源' : '新建来源'" back-label="返回来源" :back-disabled="busy" local-back @back="cancel"><template #actions><div class="source-edit-tools">
-    <KButton rounded inline type="button" class="gap-2" :disabled="busy||locked||(!changed&&!fieldPending)||!parsed.value" @click="save">{{busy?'保存中…':'保存'}}</KButton>
+    <KButton rounded inline clear type="button" :disabled="busy||locked||(!changed&&!fieldPending)||!parsed.value" @click="save">{{busy?'保存中…':'保存'}}</KButton>
     <details @toggle="operationMenuOpen = ($event.target as HTMLDetailsElement).open" ref="operationMenu" class="source-edit-menu" @keydown.esc.stop.prevent="closeOperationMenu(true)">
      <summary aria-label="源操作"><PrototypeIcon name="more"/></summary>
 
@@ -143,20 +143,20 @@ const saveError = ref("");
 </template>
 <style scoped>
 @layer components {
-.source-edit-screen{--source-editor-inset:22px;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;padding:0;box-sizing:border-box;margin:0;background:var(--app-background);overflow:hidden}
+.source-edit-screen{--source-editor-inset:var(--ui-page-gutter);display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;padding:0;box-sizing:border-box;margin:0;background:var(--app-background);overflow:hidden}
 .source-edit-tools{display:flex;align-items:center;gap:4px}
 .source-edit-menu{position:relative;z-index:8}
-.source-edit-menu>summary{display:grid;place-items:center;width:36px;height:40px;border-radius:var(--ui-radius);cursor:pointer;list-style:none;color:var(--app-muted)}
+.source-edit-menu>summary{display:grid;place-items:center;width:44px;height:44px;border-radius:var(--ui-radius);cursor:pointer;list-style:none;color:var(--app-muted)}
 .source-edit-menu[open]>summary{background:var(--app-panel-soft);color:var(--app-text)}
 .source-edit-menu>summary::-webkit-details-marker{display:none}
 .source-edit-menu>summary :deep(svg){width:var(--ui-icon-size);height:var(--ui-icon-size)}
 .source-edit-menu-divider{height:1px;margin:4px 6px;background:var(--app-line)}
 .source-edit-menu>summary:focus-visible, .source-edit-menu button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
-.source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0;padding:0;overscroll-behavior:contain}
+.source-edit-body{flex:1;min-height:0;overflow-y:auto;width:100%;margin:0 auto;max-width:var(--app-content-width);padding:0 0 var(--ui-playback-inset);overscroll-behavior:contain}
 .source-edit-body :deep(.source-field-editor){padding-inline:var(--source-editor-inset)}
 .source-edit-error{margin-inline:var(--source-editor-inset);padding:10px 12px;border-radius:9px;font-size:var(--ui-font-body);line-height:1.5}
 .source-edit-error{color:var(--app-danger);background:var(--app-danger-soft)}
 .source-discard-prompt{position:fixed;z-index:90;inset:0;display:grid;place-items:center;padding:16px;background:var(--app-scrim)}
-@media(max-width:860px){.source-edit-screen{--source-editor-inset:var(--ui-page-gutter)}.source-edit-body{padding-bottom:calc(18px + var(--safe-bottom))}}
+@media(max-width:860px){.source-edit-screen{--source-editor-inset:var(--ui-page-gutter)}.source-edit-body{padding-bottom:calc(18px + var(--safe-bottom) + var(--ui-playback-inset))}}
 }
 </style>

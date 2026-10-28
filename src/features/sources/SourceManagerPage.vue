@@ -115,10 +115,10 @@ useOutsidePointerDismiss(
 
 <template>
   <section class="sources-view source-manager-page" :class="{ 'source-manager-page--editing': editorOpen }">
-    <SubpageHeader title="内容引擎" back-label="返回我的" @back="emit('back')">
+    <SubpageHeader wide title="内容引擎" back-label="返回我的" @back="emit('back')">
       <template #actions>
         <div class="source-header-add">
-          <KButton rounded inline type="button" class="source-header-import gap-2"
+          <KButton rounded inline clear type="button" class="source-header-import gap-2"
             :disabled="writeLocked"
             @click="addMenuOpen = !addMenuOpen; openSourceMenuId = null; filterMenuOpen = false; actionsMenuOpen = false"><PrototypeIcon name="plus"/><span>添加</span></KButton>
 
@@ -220,7 +220,7 @@ useOutsidePointerDismiss(
             <KButton rounded inline type="button" class="k-color-brand-danger gap-2 " :disabled="writeLocked" @click="removeSelected">移除</KButton>
           </div>
           <div class="source-master-batch-group">
-            <KListInput component="div" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称" :disabled="writeLocked" :value="batchGroup" @input="batchGroup = ($event.target as HTMLInputElement).value" />
+            <KListInput class="my-0!" outline component="div" maxlength="100" placeholder="分组名称" aria-label="所选来源的分组名称" :disabled="writeLocked" :value="batchGroup" @input="batchGroup = ($event.target as HTMLInputElement).value" />
             <KButton rounded inline clear class="gap-2" type="button" title="设置分组" aria-label="设置分组" :disabled="writeLocked||!batchGroup.trim()"
               @click="emit('set-group', batchGroup)">应用</KButton>
             <KButton rounded inline clear type="button" class="source-group-clear gap-2" :disabled="writeLocked" @click="emit('set-group', null)">清空分组</KButton>
@@ -238,8 +238,6 @@ useOutsidePointerDismiss(
 @layer components {
 .source-manager-page{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;max-width:none;margin:0;padding:0}
 .source-manager-page:not(.source-manager-page--editing){overflow:hidden}
-.source-manager-page > :deep(.subpage-header){position:sticky;top:0;z-index:10;min-height:var(--ui-header-height);margin:0;padding-inline:var(--ui-header-gutter);padding-bottom:4px;border-bottom:1px solid var(--app-line);background:var(--app-background)}
-.source-manager-page :deep(.subpage-header__copy h2){color:var(--app-text);font-size:var(--ui-font-heading);line-height:1.25}
 
 .source-header-import{display:flex;align-items:center;gap:5px;min-height:40px;padding:0 12px}
 .source-header-import svg{width:17px;height:17px}
@@ -258,13 +256,12 @@ useOutsidePointerDismiss(
 .source-manager-page--editing .source-workbench{flex:1 1 auto;height:auto;min-height:0;border-top:1px solid var(--app-line)}
 .source-manager-page--editing .source-master{border-right:1px solid var(--app-line);background:var(--app-background)}
 .source-manager-page--editing .source-master-footer button{pointer-events:none}
-.source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px; border-right:1px solid var(--app-line); background:var(--app-background); }
+.source-master { min-width:0; display:flex; flex-direction:column; overflow:hidden; padding:14px 14px calc(14px + var(--ui-playback-inset)); border-right:1px solid var(--app-line); background:var(--app-background); }
 .source-filter-menu>button, .source-toolbar-actions-menu>button{min-height:36px;padding:0 9px;text-align:left}
 .source-filter-menu>button.active{color:var(--app-text);font-weight:600}
 .source-filter-menu>button{overflow-wrap:anywhere}
 .source-filter-menu>button:focus-visible{outline:2px solid var(--app-accent);outline-offset:-2px}
 .source-filter-divider{height:1px;margin:4px 2px;background:var(--app-line)}
-.source-toolbar-actions-menu>button:disabled{opacity:.5;cursor:default}
 .source-master-list { min-height:0; flex:1; margin-right:-14px; padding-right:14px; overflow:auto; }
 .source-master-empty { flex:1; display:grid; place-items:center; color:var(--app-subtle); font-size:var(--ui-font-caption); text-align:center; }
 .source-master-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; padding-top:8px; border-top:1px solid var(--app-line); }
@@ -272,19 +269,17 @@ useOutsidePointerDismiss(
 .source-master-footer span { color:var(--app-muted); font-size:var(--ui-font-caption); }
 
 @media(max-width:860px){
-  .source-manager-page > :deep(.subpage-header){padding-right:14px;padding-left:14px}
   .source-manager-page--editing > :deep(.subpage-header), .source-manager-page--editing .source-recovery-notice, .source-manager-page--editing .source-master{display:none}
   .source-manager-page--editing .source-workbench{display:flex;flex:1 1 auto;height:auto;min-height:0;overflow:hidden;border:0}
   .source-manager-page--editing :deep(.source-edit-screen){width:100%;min-width:0}
   .source-manager-page:not(.source-manager-page--editing) .source-workbench{height:calc(100dvh - 64px - var(--safe-top));grid-template-columns:1fr}
   .source-manager-page:not(.source-manager-page--editing) .source-master{border:0}
-  .source-master{padding:16px var(--ui-page-gutter)}
+  .source-master{padding:16px var(--ui-page-gutter) calc(16px + var(--ui-playback-inset))}
 }
 .source-master-batch-actions{display:grid;gap:8px;padding-top:8px}
 .source-batch-buttons{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px}
 .source-master-batch-actions button{min-height:36px;padding:0 8px;white-space:nowrap}
 .source-master-batch-actions button.danger{color:var(--app-danger);border-color:var(--app-danger-line)}
-.source-master-batch-actions button:disabled{opacity:.5;cursor:default}
 .source-master-batch-group{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:6px}
 .source-master-batch-group .k-list-input{min-width:0;width:100%}
 .source-master-batch-actions .source-group-clear{padding:0 4px}

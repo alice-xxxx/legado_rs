@@ -121,7 +121,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
   <section class="library-import-page">
     <SubpageHeader class="import-subpage-header col-span-full row-start-1" title="导入" back-label="返回内容库" @back="returnToRoute(routeNames.shelf)" ></SubpageHeader>
 
-    <div class="library-import-body">
+    <div class="library-import-body ui-page-content">
       <div class="library-import-grid">
         <KButton rounded inline tonal class="h-auto min-h-32 flex-col items-start gap-2 rounded-2xl p-4 text-start" v-for="format in formats" :key="format.format" type="button"
           :disabled="actionsBlocked"
@@ -138,7 +138,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
         <h2 id="library-import-link-title">通过链接导入</h2>
         <p>支持源、RSS、替换规则、TXT 目录规则和 HTTP TTS 配置。</p>
         <form class="library-import-form" @submit.prevent="parseLink">
-          <KListInput component="div" type="text" inputmode="url" autocomplete="url" placeholder="粘贴链接或 JSON" :disabled="actionsBlocked" :value="linkInput" @input="linkInput = ($event.target as HTMLInputElement).value; linkError = ''" />
+          <KListInput class="my-0!" outline component="div" type="text" inputmode="url" autocomplete="url" placeholder="粘贴链接或 JSON" :disabled="actionsBlocked" :value="linkInput" @input="linkInput = ($event.target as HTMLInputElement).value; linkError = ''" />
           <KButton rounded inline type="submit" class="library-import-primary gap-2" :disabled="actionsBlocked || !linkInput.trim()">识别</KButton>
         </form>
         <p v-if="linkError" class="library-import-warning">{{ linkError }}</p>
@@ -171,7 +171,7 @@ function bookFormat(book: ShelfResource["books"][number]): string {
 <style scoped>
 @layer components {
 .library-import-page{width:100%;min-height:100%;color:var(--app-text)}
-.library-import-body{width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
+
 .library-import-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
 .library-import-grid button{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0;min-height:126px;padding:14px;text-align:left}
 .library-import-grid button strong{font-size:var(--ui-font-body)}

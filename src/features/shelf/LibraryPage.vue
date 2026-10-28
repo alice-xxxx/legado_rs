@@ -11,9 +11,9 @@ import { contentLibrary, librarySort, librarySortOrder } from "../books/contentL
 import { shelfBooks as shelf } from "./shelfBooks";
 import { openedBookFromShelf, switchOpenedBook } from "../books/bookDetailState";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
-import BackButton from "../../ui/BackButton.vue";
 import router, { routeNames } from "../../router";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 import LibraryBookInfo from "./LibraryBookInfo.vue";
 import { getReaderSession } from "../reader/readerSession";
@@ -149,7 +149,7 @@ const displayedBooks = computed(() => shelfBatch.selectionMode || activeType.val
   : shelfView.visibleBooks.filter(book => (bookContentType(book) ?? "text") === activeType.value));
 
 function enterManageMode(): void {
-  // The prototype management workspace always starts with the complete shelf.
+  // Start management with the complete shelf.
   shelfGroup.shelfActiveGroup = "";
   manageGroupsOpen.value = false;
   shelfBatch.enterSelectionMode();
@@ -176,31 +176,25 @@ function groupBookCount(group: string): number {
   <div class="shelf-page-layout" :class="{ 'library-manage-page': shelfBatch.selectionMode }" data-back-page>
     <PrimaryNavigation v-if="!shelfBatch.selectionMode" />
     <main class="shelf-page-main">
-      <section class="shelf-view" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
-        <header v-if="shelfBatch.selectionMode" class="library-manage-heading">
-          <div class="library-manage-title">
-            <BackButton data-back-local label="退出管理" :disabled="shelfBatch.batchBusy" @click="exitManageMode()" />
-            <span><strong>整理内容库</strong><small>分组与批量管理</small></span>
-          </div>
+      <SubpageHeader v-if="!shelfBatch.selectionMode" title="内容库" :back="false" large>
+        <template #actions>
+          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="导入内容" title="导入 TXT / EPUB / CBZ / PDF" :disabled="mutationLocked" @click="openImport"><PrototypeIcon name="import" /></KButton>
+          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="整理内容库" title="整理内容库" :disabled="shelfBatch.batchBusy || mutationLocked" @click="enterManageMode"><PrototypeIcon name="tune" /></KButton>
+        </template>
+      </SubpageHeader>
+      <section class="shelf-view ui-page-content" :class="{ 'library-manage-mode': shelfBatch.selectionMode, 'shelf-view-empty': !shelfBatch.selectionMode && !displayedBooks.length }">
+        <SubpageHeader v-if="shelfBatch.selectionMode" title="整理内容库" subtitle="分组与批量管理" back-label="退出管理" local-back :back-disabled="shelfBatch.batchBusy" @back="exitManageMode">
+          <template #actions>
           <KButton rounded inline clear type="button" class="library-done-button gap-2" :disabled="shelfBatch.batchBusy"
             @click.stop="exitManageMode()">完成</KButton>
-        </header>
+          </template>
+        </SubpageHeader>
         <div v-else class="library-topbar">
-          <nav class="library-type-filter">
+          <nav class="library-type-filter" aria-label="内容类型">
             <KButton rounded :tonal="activeType === filter.key" :clear="!(activeType === filter.key)" inline class="gap-2" v-for="filter in typeFilters" :key="filter.key" type="button"
-              :class="{ active: activeType === filter.key }" @click.stop="activeType = filter.key">{{ filter.title
+              :aria-pressed="activeType === filter.key" @click.stop="activeType = filter.key">{{ filter.title
               }}</KButton>
           </nav>
-          <div class="library-top-actions">
-            <KButton rounded inline clear class="library-round-action gap-2 size-11 p-0" type="button" title="导入 TXT / EPUB / CBZ / PDF"
-              :disabled="mutationLocked" @click.stop="openImport()">
-              <PrototypeIcon name="import" />
-            </KButton>
-            <KButton rounded inline clear class="library-round-action gap-2 size-11 p-0" type="button" title="整理内容库"
-              :disabled="shelfBatch.batchBusy || mutationLocked" @click.stop="enterManageMode()">
-              <PrototypeIcon name="tune" />
-            </KButton>
-          </div>
         </div>
         <div v-if="shelfBatch.selectionMode" class="library-manage-workspace">
           <aside class="library-manage-rail">
@@ -321,7 +315,10 @@ function groupBookCount(group: string): number {
             @click.stop="activeType = 'all'; shelfGroup.shelfActiveGroup = ''">查看全部</KButton>
         </div>
         <div v-else-if="!shelfBatch.selectionMode" class="page-empty-state library-filter-empty">
-          暂无内容
+          <span class="empty-state-glyph"><PrototypeIcon name="library" /></span>
+          <strong>把喜欢的内容放在这里</strong>
+          <p>导入本地文件，或从发现和搜索中添加内容。</p>
+          <KButton rounded inline @click="openImport">导入内容</KButton>
         </div>
       </section>
     </main>
@@ -329,7 +326,7 @@ function groupBookCount(group: string): number {
 
   <section v-if="shelfBatch.removeConfirmOpen" class="modal-backdrop" @click.self="shelfBatch.cancelRemoval">
     <KGlass component="article" :highlight="false" class="app-modal shelf-batch-remove-modal material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
-      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval">×</KButton>
+      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" aria-label="取消移除" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.cancelRemoval"><PrototypeIcon name="close" /></KButton>
       <p class="eyebrow">批量移除</p>
       <h2 id="shelf-batch-remove-title">确认移除 {{ shelfBatch.removalTargets.length }} 本书？</h2>
       <p class="modal-description">将从书架中移除所选书籍、阅读进度、书签和本地缓存。请核对书名；取消不会修改书架。</p>
@@ -350,7 +347,7 @@ function groupBookCount(group: string): number {
 
   <section v-if="shelfBatch.groupsOpen" class="modal-backdrop" @click.self="shelfBatch.closeGroups">
     <KGlass component="article" :highlight="false" class="app-modal shelf-batch-group-modal material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
-      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups">×</KButton>
+      <KButton rounded inline clear class="detail-close gap-2 size-11 p-0" aria-label="关闭分组设置" data-back-action :disabled="shelfBatch.batchBusy" @click="shelfBatch.closeGroups"><PrototypeIcon name="close" /></KButton>
       <p class="eyebrow">批量整理</p>
       <h2 id="shelf-batch-group-title">移动 {{ shelfBatch.groupBookIds.length }} 本内容至分组</h2>
       <p class="modal-description">所选分组将完整替换这些内容当前的分组，可同时指定多个分组。其他内容和空分组不受影响。</p>
@@ -367,7 +364,7 @@ function groupBookCount(group: string): number {
       <form class="shelf-batch-new-group" @submit.prevent="shelfBatch.addGroup">
         <label for="shelf-batch-new-group-input">添加并应用一个新分组</label>
         <div>
-          <KListInput component="div" input-id="shelf-batch-new-group-input" maxlength="128" autocomplete="off" placeholder="输入分组名称" :disabled="shelfBatch.batchBusy || mutationLocked" :value="shelfBatch.newGroup" @input="shelfBatch.newGroup = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" input-id="shelf-batch-new-group-input" maxlength="128" autocomplete="off" placeholder="输入分组名称" :disabled="shelfBatch.batchBusy || mutationLocked" :value="shelfBatch.newGroup" @input="shelfBatch.newGroup = ($event.target as HTMLInputElement).value" />
           <KButton rounded inline tonal small class="gap-2" type="submit"
             :disabled="shelfBatch.batchBusy || mutationLocked || !shelfBatch.newGroup.trim()">添加</KButton>
         </div>
@@ -398,7 +395,6 @@ function groupBookCount(group: string): number {
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
-  padding-top: var(--safe-top);
   background: var(--app-background);
 }
 
@@ -408,35 +404,25 @@ function groupBookCount(group: string): number {
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0 var(--ui-page-gutter) var(--safe-bottom);
+  padding: 0 0 var(--safe-bottom);
 }
 
 .library-manage-page .shelf-page-main {
   padding: 0;
 }
 
-.shelf-view {
-  --library-card-min-width: clamp(136px, 18vw, 168px);
-  width: 100%;
-  max-width: calc(var(--app-content-width) - var(--ui-page-gutter) * 2);
-  margin: 0 auto;
-  padding: 16px 0 24px;
-}
-
 .shelf-view-empty {
   display: flex;
   flex-direction: column;
-  min-height: 100%;
+  min-height: calc(100% - 132px);
 }
 
-.shelf-view-empty .library-topbar {
-  flex: none;
-}
+.shelf-view-empty .library-topbar { flex: none; }
 
 .book-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--library-card-min-width), 1fr));
-  gap: 28px 20px;
+  grid-template-columns: repeat(auto-fill, minmax(var(--ui-cover-min-width), 1fr));
+  gap: var(--ui-grid-gap);
 }
 
 .shelf-card { min-width: 0; }
@@ -448,6 +434,8 @@ function groupBookCount(group: string): number {
   aspect-ratio: 5 / 7;
   padding: 0;
   border: 0;
+  border-radius: var(--ui-radius);
+  overflow: hidden;
   cursor: pointer;
 }
 
@@ -471,14 +459,7 @@ function groupBookCount(group: string): number {
   cursor: pointer;
 }
 
-.library-topbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 8px 0 24px;
-}
+.library-topbar { min-width: 0; margin-bottom: 24px; }
 
 .library-type-filter {
   display: flex;
@@ -493,36 +474,7 @@ function groupBookCount(group: string): number {
   display: none;
 }
 
-.library-type-filter button {
-  flex: none;
-  min-height: 31px;
-  padding: 0 13px;
-}
-
-.library-type-filter button.active {
-  color: var(--app-text);
-}
-
-.library-top-actions {
-  grid-column: 2;
-  grid-row: 1;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-}
-
-.library-round-action {
-  display: grid;
-  place-items: center;
-  width: 42px;
-  height: 42px;
-}
-
-.library-round-action svg {
-  width: 20px;
-  height: 20px;
-}
+.library-type-filter button { flex: none; }
 
 .library-abstract-cover {
   position: absolute;
@@ -577,9 +529,6 @@ function groupBookCount(group: string): number {
 }
 
 @media (max-width:640px) {
-  .book-grid {
-    gap: 18px 10px;
-  }
 
   .library-topbar {
     gap: 8px;
@@ -605,55 +554,12 @@ function groupBookCount(group: string): number {
 
 }
 
-/*Dedicated management workspace, following prototype manage()/manage-layout.*/
+/* The selection workspace owns its own full-width layout. */
 .shelf-view.library-manage-mode {
   max-width: none;
-  padding: 0 0 calc(48px + var(--safe-bottom));
+  padding: 0 0 calc(48px + var(--safe-bottom) + var(--ui-playback-inset));
   margin: 0;
   width: 100%;
-}
-
-.library-manage-heading {
-  position: sticky;
-  z-index: 4;
-  top: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 64px;
-  padding: 0 max(18px, calc((100% - 1180px)/2));
-  margin: 0;
-  border-bottom: 1px solid var(--app-line);
-  background: var(--app-header);
-}
-
-.library-manage-title {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.library-manage-title>span {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.library-manage-title strong {
-  color: var(--app-text);
-  font-size: var(--ui-font-heading);
-  font-weight: 750;
-}
-
-.library-manage-title small {
-  color: var(--app-subtle);
-  font-size: var(--ui-font-caption);
-}
-
-.library-done-button {
-  min-height: 36px;
-  padding: 0 14px;
 }
 
 .library-manage-workspace {
@@ -661,7 +567,8 @@ function groupBookCount(group: string): number {
   grid-template-columns: 190px minmax(0, 1fr);
   gap: 28px;
   align-items: start;
-  width: min(1120px, calc(100% - 36px));
+  width: min(var(--app-content-width), 100%);
+  padding-inline: var(--ui-page-gutter);
   margin: 24px auto 0;
 }
 
@@ -793,8 +700,8 @@ function groupBookCount(group: string): number {
 
 .library-manage-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(var(--library-card-min-width), 1fr));
-  gap: 17px clamp(10px, 1.4vw, 14px);
+  grid-template-columns: repeat(auto-fill, minmax(var(--ui-cover-min-width), 1fr));
+  gap: var(--ui-grid-gap);
   padding-top: 16px;
 }
 
@@ -808,7 +715,7 @@ function groupBookCount(group: string): number {
 
 .library-manage-info {
   display: grid;
-  grid-template-columns: 17px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   align-items: start;
   gap: 8px;
 }
@@ -876,16 +783,11 @@ function groupBookCount(group: string): number {
 
 @media (max-width:860px) {
   .shelf-page-main {
-    padding: 0 var(--ui-page-gutter) calc(var(--ui-nav-height) + var(--safe-bottom));
+    padding: 0 0 calc(var(--ui-nav-height) + var(--safe-bottom));
   }
 
   .library-manage-page .shelf-page-main {
     padding: 0;
-  }
-
-  .library-manage-heading {
-    min-height: 54px;
-    padding: 0 12px;
   }
 
   .library-manage-workspace {
@@ -894,12 +796,13 @@ function groupBookCount(group: string): number {
     gap: 0;
     margin: 0;
     width: 100%;
+    padding-inline: 0;
   }
 
   .library-manage-rail {
     display: block;
     width: 100%;
-    padding: 12px;
+    padding: 12px var(--ui-page-gutter);
     box-sizing: border-box;
   }
 
@@ -928,7 +831,7 @@ function groupBookCount(group: string): number {
   .library-manage-content {
     width: 100%;
     box-sizing: border-box;
-    padding: 0 12px 35px;
+    padding: 0 var(--ui-page-gutter) 35px;
   }
 
   .library-manage-selectbar {
@@ -938,9 +841,6 @@ function groupBookCount(group: string): number {
 }
 
 @media (max-width:480px) {
-  .library-manage-grid {
-    gap: 16px 11px;
-  }
 
   .library-manage-selectbar {
     gap: 7px;

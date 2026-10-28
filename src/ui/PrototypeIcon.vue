@@ -1,5 +1,5 @@
 <script setup lang="ts">
-/** Exact static SVG path map from alice-xxxx.github.io/app.js. No source/user markup enters this component. */
+/** Shared 24px outline icons. Only static paths enter this component. */
 const glyphs = {
   "compass": "<circle cx=\"12\" cy=\"12\" r=\"8.6\"/><path d=\"m15.6 8.4-2.2 5-5 2.2 2.2-5 5-2.2Z\"/><circle cx=\"12\" cy=\"12\" r=\"1\"/>",
   "library": "<path d=\"M4 6.7h5l1.5 1.8H20v9a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6.7Z\"/><path d=\"M4 10h16\"/>",
@@ -58,7 +58,7 @@ const glyphs = {
 const props=defineProps<{name:keyof typeof glyphs}>();
 </script>
 <template>
-  <svg class="prototype-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" v-html="glyphs[props.name]"></svg>
+  <svg class="prototype-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" v-html="glyphs[props.name]"></svg>
 </template>
 <style scoped>
 @layer components {

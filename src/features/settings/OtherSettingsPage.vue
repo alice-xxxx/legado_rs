@@ -27,7 +27,7 @@ const groups = [
     <div class="ui-page-content">
       <section v-for="group in groups" :key="group.title" class="ui-settings-group">
         <h2>{{ group.title }}</h2>
-        <KList dividers class="my-0!">
+        <KList strong inset dividers class="mx-0! my-0!">
           <SettingsActionRow v-for="item in group.items" :key="item.route"
             :title="item.title" :icon="item.icon" @click="router.push({ name: item.route })" />
         </KList>

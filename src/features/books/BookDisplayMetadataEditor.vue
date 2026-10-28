@@ -202,7 +202,7 @@ function submit(): void {
     <section class="book-display-editor-backdrop" data-back-layer @click.self="requestClose">
       <KPopup opened :backdrop="false" class="book-display-editor z-[80] flex flex-col w-[min(980px,100vw)]! h-[min(92dvh,900px)]!" role="dialog" aria-modal="true" aria-labelledby="book-display-editor-title">
         <SubpageHeader class="book-display-editor-toolbar col-span-full row-start-1" title="编辑显示信息" :back-label="returnLabel" :back-disabled="coverPicking" @back="requestClose" >
-<template #actions><KButton rounded inline type="submit" form="book-display-editor-form" class="book-display-editor-save gap-2" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</KButton></template>
+<template #actions><KButton rounded inline clear type="submit" form="book-display-editor-form" class="book-display-editor-save" title="保存书籍信息" :disabled="locked || coverPicking || !hasChanges">保存</KButton></template>
 </SubpageHeader>
         <form id="book-display-editor-form" class="book-display-editor-form" @submit.prevent="submit">
           <div class="book-display-editor-identity">
@@ -215,14 +215,14 @@ function submit(): void {
               <label class="book-display-field">
                 <span>书名</span>
                 <div class="book-display-input-row">
-                  <KListInput component="div" autocomplete="off" :disabled="locked" :value="draft.title" @input="draft.title = ($event.target as HTMLInputElement).value; resetFields.title = false" />
+                  <KListInput class="my-0!" outline component="div" autocomplete="off" :disabled="locked" :value="draft.title" @input="draft.title = ($event.target as HTMLInputElement).value; resetFields.title = false" />
                 </div>
               </label>
 
               <label class="book-display-field">
                 <span>作者</span>
                 <div class="book-display-input-row">
-                  <KListInput component="div" autocomplete="off" :disabled="locked" :value="draft.author" @input="draft.author = ($event.target as HTMLInputElement).value; resetFields.author = false" />
+                  <KListInput class="my-0!" outline component="div" autocomplete="off" :disabled="locked" :value="draft.author" @input="draft.author = ($event.target as HTMLInputElement).value; resetFields.author = false" />
                 </div>
               </label>
             </div>
@@ -230,13 +230,13 @@ function submit(): void {
 
           <label class="book-display-field">
             <span>简介</span>
-            <KListInput component="div" :disabled="locked" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="draft.intro" @input="draft.intro = ($event.target as HTMLTextAreaElement).value; resetFields.intro = false" />
+            <KListInput class="my-0!" outline component="div" :disabled="locked" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '120px' }" :value="draft.intro" @input="draft.intro = ($event.target as HTMLTextAreaElement).value; resetFields.intro = false" />
           </label>
 
           <label class="book-display-field">
             <span>封面地址</span>
             <div class="book-display-input-row">
-              <KListInput component="div" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" :value="draft.coverSrc" @input="draft.coverSrc = ($event.target as HTMLInputElement).value; resetFields.coverSrc = false; clearCoverPreview()" />
+              <KListInput class="my-0!" outline component="div" autocomplete="off" inputmode="url" :disabled="locked || coverPicking" :value="draft.coverSrc" @input="draft.coverSrc = ($event.target as HTMLInputElement).value; resetFields.coverSrc = false; clearCoverPreview()" />
               <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking" @click="chooseLocalCover">{{ coverPicking ? "正在选择…" : "选择本地图片" }}</KButton>
               <KButton rounded inline clear type="button" class="gap-2" :disabled="locked || coverPicking || !draft.coverSrc.trim()" @click="previewCover">预览</KButton>
             </div>

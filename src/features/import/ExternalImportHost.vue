@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, proxyRefs, ref } from "vue";
+import { Glass as KGlass, Progressbar as KProgressbar } from "konsta/vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { AppBootstrap } from "../../api/types";
 import { notify } from "../../app/notifications";
@@ -76,12 +77,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <aside v-if="Object.keys(localBookImportFeature.importingFiles.value).length" class="file-import-progress" aria-live="polite">
+  <KGlass component="aside" v-if="Object.keys(localBookImportFeature.importingFiles.value).length" class="file-import-progress material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2"
+    :class="{ 'with-navigation': ['home', 'shelf', 'settings'].includes(String(router.currentRoute.value.name)) }" aria-live="polite">
     <div v-for="item in localBookImportFeature.importingFiles.value" :key="item.file" role="status">
       <span>{{ item.file }} · {{ stages[item.stage] }}<template v-if="item.total"> {{ Math.floor((item.completed ?? 0) * 100 / item.total) }}%</template></span>
-      <progress v-if="item.total" :value="item.completed" :max="item.total" />
+      <KProgressbar v-if="item.total" :progress="(item.completed ?? 0) / item.total" class="mt-2" role="progressbar" aria-label="文件导入进度" :aria-valuenow="item.completed ?? 0" :aria-valuemax="item.total" :aria-valuemin="0" />
     </div>
-  </aside>
+  </KGlass>
   <ImportRequestBanners
     :pending-import-links="externalImports.pendingImportLinks"
     :import-link-opening="externalImports.importLinkOpening"
@@ -101,8 +103,10 @@ onBeforeUnmount(() => {
 
 <style scoped>
 @layer components {
-.file-import-progress { position: fixed; z-index: 60; bottom: max(16px, var(--safe-bottom)); left: 50%; transform: translateX(-50%); width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border: 1px solid var(--app-line); border-radius: 12px; background: var(--app-surface); box-shadow: 0 6px 24px #0002; }
+.file-import-progress { position: fixed; z-index: 60; bottom: calc(16px + var(--safe-bottom) + var(--ui-playback-inset)); left: 50%; transform: translateX(-50%); width: min(420px, calc(100vw - 32px)); padding: 12px 16px; border-radius: 12px; }
 .file-import-progress span { display: block; overflow-wrap: anywhere; }
-.file-import-progress progress { width: 100%; }
+@media (max-width: 860px) {
+  .file-import-progress.with-navigation { bottom: calc(var(--ui-nav-height) + var(--safe-bottom) + var(--ui-playback-inset) + 16px); }
+}
 }
 </style>

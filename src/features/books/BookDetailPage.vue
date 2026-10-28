@@ -653,7 +653,6 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   height: 100dvh;
   min-height: 0;
   overflow: hidden;
-  padding-top: var(--safe-top);
   background: var(--app-background);
 }
 
@@ -703,7 +702,7 @@ const isMediaReaderBook = (book: BookResource | null | undefined): boolean =>
   min-width: 0;
   min-height: 0;
   overflow: auto;
-  padding: var(--ui-space-6) var(--ui-page-gutter) max(var(--ui-space-6), var(--safe-bottom));
+  padding: var(--ui-space-6) var(--ui-page-gutter) calc(max(var(--ui-space-6), var(--safe-bottom)) + var(--ui-playback-inset));
   color: var(--app-text);
   overscroll-behavior: contain;
 }

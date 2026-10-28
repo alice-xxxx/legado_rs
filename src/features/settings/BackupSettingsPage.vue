@@ -111,15 +111,15 @@ function saveWebDavDraft(): void {
       <form class="webdav-config-form" @submit.prevent="saveWebDavDraft">
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>目录地址</strong></span>
-          <KListInput component="div" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/dav/" :disabled="!!busy || locked" required :value="webDavUrl" @input="webDavUrl = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/dav/" :disabled="!!busy || locked" required :value="webDavUrl" @input="webDavUrl = ($event.target as HTMLInputElement).value" />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>用户名</strong></span>
-          <KListInput component="div" autocomplete="username" maxlength="512" placeholder="输入用户名" :disabled="!!busy || locked" :value="webDavUsername" @input="webDavUsername = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" autocomplete="username" maxlength="512" placeholder="输入用户名" :disabled="!!busy || locked" :value="webDavUsername" @input="webDavUsername = ($event.target as HTMLInputElement).value" />
         </label>
         <label class="webdav-setting-row">
           <span class="backup-row-copy"><strong>密码</strong></span>
-          <KListInput component="div" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.password ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked" :value="webDavPassword" @input="webDavPassword = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" type="password" autocomplete="new-password" maxlength="4096" :placeholder="webDavConfig?.password ? sameWebDavIdentity ? '已保存；留空保持不变' : '更换目录或用户名时需重新输入密码' : '输入 WebDAV 密码'" :disabled="!!busy || locked" :value="webDavPassword" @input="webDavPassword = ($event.target as HTMLInputElement).value" />
         </label>
         <div v-if="configRefreshConflict" class="webdav-draft-warning">
           已保存的 WebDAV 配置发生变化。当前输入仍保留，若要放弃草稿请点击重新读取表单。

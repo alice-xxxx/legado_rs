@@ -63,7 +63,7 @@ function clearBackground(): void {
 <template>
   <section class="appearance-settings-page my-settings-subpage">
     <SubpageHeader title="外观、阅读与播放" back-label="返回我的" @back="returnToSettings" />
-    <div class="appearance-workspace">
+    <div class="appearance-workspace ui-page-content">
 
       <main class="appearance-settings-stack">
       <section class="appearance-workspace-group">
@@ -263,7 +263,7 @@ function clearBackground(): void {
 <style scoped>
 @layer components {
 .appearance-settings-page{width:100%;min-width:0;color:var(--app-text)}
-.appearance-workspace{box-sizing:border-box;width:100%;margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width)}
+
 .appearance-settings-stack{display:grid;gap:0;min-width:0}
 .appearance-workspace-group{padding:15px 0;border:0;border-top:1px solid var(--app-line);background:transparent}
 .appearance-workspace-group:first-child{border-top:0;padding-top:0}
@@ -297,7 +297,7 @@ function clearBackground(): void {
 .appearance-advanced .appearance-workspace-group:first-of-type{border-top:1px solid var(--app-line);padding-top:15px}
 .appearance-error{margin:0;padding:10px 0;color:var(--app-danger);font-size:var(--ui-font-caption)}
 @media(max-width:660px){
-  .appearance-workspace{width:100%}
+
   .appearance-setting-row{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr);gap:8px}
   .appearance-theme-options{gap:5px}
   .appearance-theme-option>span{height:40px}

@@ -1,5 +1,5 @@
 :root {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-material);
   color: var(--app-text);
   background: var(--app-background);
   color-scheme: light;
@@ -42,6 +42,8 @@
   --reader-chrome-text: #6d6a60;
   --reader-color-scheme: light;
   --app-content-width: 980px;
+  --ui-cover-min-width: clamp(136px, 18vw, 168px);
+  --ui-grid-gap: 24px 16px;
   --ui-font-caption: 12px;
   --ui-font-body: 16px;
   --ui-font-heading: 18px;
@@ -54,10 +56,9 @@
   --ui-space-5: 20px;
   --ui-space-6: 24px;
   --ui-space-8: 32px;
-  --ui-page-gutter: 20px;
-  --ui-header-gutter: max(var(--ui-page-gutter), calc((100% - var(--app-content-width)) / 2 + var(--ui-page-gutter)));
+  --ui-page-gutter: max(16px, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px));
   --ui-header-height: 64px;
-  --ui-control-height: 44px;
+  --ui-control-height: 48px;
   --ui-compact-control-height: 32px;
   --ui-row-height: 64px;
   --ui-icon-size: 20px;
@@ -68,6 +69,7 @@
   --ui-confirm-width: 420px;
   --ui-editor-width: 820px;
   --ui-nav-height: 80px;
+  --ui-playback-inset: 0px;
   font-size: 16px;
   line-height: 1.5;
   --safe-top: env(safe-area-inset-top, 0px);
@@ -103,6 +105,8 @@
 }
 
 :root[data-ui-style="ios"] {
+  font-family: var(--font-ios);
+  --ui-control-height: 44px;
   --app-background: var(--color-ios-light-surface);
   --app-surface: var(--color-ios-light-surface-1);
   --app-panel-soft: var(--color-ios-light-surface-variant);
@@ -110,9 +114,9 @@
   --app-text: #1c1c1e;
   --app-muted: #636366;
   --app-line: #d1d1d6;
-  --app-accent: var(--color-primary);
+  --app-accent: var(--color-ios-primary);
   --app-accent-soft: rgb(0 122 255 / 12%);
-  --app-accent-ink: var(--color-primary);
+  --app-accent-ink: var(--color-ios-primary);
   --app-on-accent: #fff;
   --app-success: #248a3d;
   --app-danger: #c62d26;
@@ -133,6 +137,8 @@
   --app-accent-soft: rgb(10 132 255 / 20%);
   --app-danger: #ff6961;
   --app-success: #65d080;
+  --app-accent: #0a84ff;
+  --app-accent-ink: #0a84ff;
 }
 
 :root[data-reader-theme="white"] {
@@ -207,16 +213,17 @@ body:has(.search-page-prototype),
 body {
   min-height: 100dvh;
 }
+body.has-global-playback { --ui-playback-inset: 88px; }
 
 @media (min-width: 861px) {
-  :root { --ui-page-gutter: 24px; }
+  :root { --ui-page-gutter: max(24px, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px)); }
 }
 
 .ui-page-content {
   width: 100%;
   max-width: var(--app-content-width);
   margin: 0 auto;
-  padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
+  padding: var(--ui-space-6) var(--ui-page-gutter) calc(var(--ui-space-8) + var(--ui-playback-inset));
 }
 
 .ui-page-title {
@@ -226,16 +233,16 @@ body {
   color: var(--app-text);
 }
 
-.ui-settings-group {
-  padding: 16px 0;
-  border-top: 1px solid var(--app-line);
-}
-.ui-settings-group:first-of-type { padding-top: 0; border-top: 0; }
+.ui-settings-group { padding-bottom: var(--ui-space-6); }
 .ui-settings-group h2 {
-  margin: 0 0 8px;
+  margin: 0 0 12px;
   color: var(--app-text);
   font-size: var(--ui-font-body);
-  font-weight: 750;
+  font-weight: 600;
+}
+
+@media (max-width: 640px) {
+  :root { --ui-grid-gap: 20px 12px; }
 }
 
 @media (pointer: coarse) {
@@ -252,20 +259,8 @@ select {
   font: inherit;
 }
 
-button:not([class*="k-"]) {
-  appearance: none;
-  margin: 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  color: inherit;
-  background: transparent;
-  font: inherit;
-}
-
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.48;
 }
 
 button, a { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
@@ -278,7 +273,7 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
 .empty-state-glyph { display: grid; place-items: center; width: 64px; height: 64px; margin-bottom: 4px; border-radius: 20px; color: var(--app-accent-ink); background: var(--app-accent-soft); }
 .empty-state-glyph .prototype-icon { width: 28px; height: 28px; }
 .page-empty-state > p { max-width: 30em; margin: 0; line-height: 1.7; }
-.back-button, .rail-link, .mobile-links button, .managed-list-row__main, .search-result-open, .book-detail-icon-button {
+.back-button, .managed-list-row__main, .search-result-open, .book-detail-icon-button {
   transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease, opacity 140ms ease, transform 100ms ease;
 }
 .back-button:enabled:active, .book-detail-icon-button:enabled:active, .search-result-open:enabled:active { transform: scale(.97); }
@@ -287,9 +282,9 @@ button:focus-visible, a:focus-visible, summary:focus-visible, input:focus-visibl
 @keyframes app-scrim-in { from { opacity: 0; } to { opacity: 1; } }
 @keyframes app-panel-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 @media (pointer: coarse) {
-  .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-height: 44px; }
-  .book-detail-icon-button, .library-round-action, .managed-list-row__menu-button { min-width: 44px; }
-  .reader-tool-button, .reader-book-page-header > .back-button, .source-page-header > .back-button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
+  .book-detail-icon-button, .managed-list-row__menu-button { min-height: 44px; }
+  .book-detail-icon-button, .managed-list-row__menu-button { min-width: 44px; }
+  .reader-tool-button, .reader-settings-popover [data-back-action], .source-mobile-back { min-width: 44px; min-height: 44px; }
   input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea { font-size: 16px !important; }
 }
 @media (prefers-reduced-motion: reduce) {

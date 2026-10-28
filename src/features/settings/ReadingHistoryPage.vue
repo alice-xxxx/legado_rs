@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Popover as KPopover } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 页面直接显示全局 history 中的阅读记录；改动由 historyStore 自动保存。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -14,6 +14,7 @@ import { history as appHistory } from "./historyStore";
 import router, { routeNames } from "../../router";
 import { returnToRoute } from "../../app/routeReturn";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bookDetailOpenRequest";
 
 type ReadingStatisticsPeriod = "today" | "7days" | "30days" | "all";
@@ -46,6 +47,15 @@ const historyVisibleLimit = ref(50);
 const historySearchOpen = ref(false);
 const historyClearPending = ref(false);
 const historyDeletePendingBookId = ref<string | null>(null);
+const menuBookId = ref<string | null>(null);
+const menuTarget = ref<HTMLElement>();
+function openMenu(bookId: string, event: MouseEvent): void {
+  menuBookId.value = menuBookId.value === bookId ? null : bookId;
+  menuTarget.value = event.currentTarget as HTMLElement;
+}
+useOutsidePointerDismiss(() => menuBookId.value !== null,
+  target => target instanceof Element && !!target.closest(".history-actions-menu,.history-menu-button"),
+  () => { menuBookId.value = null; });
 
 const statisticsData = computed<ReadingStatisticsResource>(() => statisticsPeriod.value === "all" ? history.value : periodStatistics.value);
 const days = computed(() => statisticsData.value.days);
@@ -281,7 +291,14 @@ onBeforeUnmount(() => {
 
 <template>
   <SubpageHeader class="history-topbar col-span-full row-start-1" title="历史" back-label="返回我的" @back="returnToSettings" ></SubpageHeader>
-  <section class="my-records my-records--history">
+  <KPopover v-if="menuBookId" opened :backdrop="false" :target="menuTarget" class="history-actions-menu w-60 max-w-[calc(100vw-32px)]">
+    <div class="grid gap-1 p-2">
+      <KButton v-if="menuBookId !== 'all' && canOpenHistoryBook(menuBookId)" rounded clear class="justify-start" :disabled="blocked" @click="openHistoryBook(menuBookId); menuBookId = null">打开内容</KButton>
+      <KButton rounded clear class="k-color-brand-danger justify-start" :disabled="blocked"
+        @click="menuBookId === 'all' ? historyClearPending = true : historyDeletePendingBookId = menuBookId; menuBookId = null">{{ menuBookId === 'all' ? '清空全部历史记录' : '删除这本书的历史' }}</KButton>
+    </div>
+  </KPopover>
+  <section class="my-records my-records--history ui-page-content">
     <p v-if="loading" class="record-state" role="status">正在加载阅读记录…</p>
     <div v-else-if="loadError" class="record-state record-error" role="alert">
       阅读记录载入失败：{{ loadError }} <KButton rounded inline clear class="gap-2" type="button" @click="loadPageData()">重试</KButton>
@@ -296,10 +313,7 @@ onBeforeUnmount(() => {
         </nav>
         <div class="record-toolbar-actions">
           <KButton rounded inline clear v-if="allTimeTotalSessions" type="button" class="record-icon-button gap-2 size-11 p-0" aria-label="搜索阅读历史" @click="toggleHistorySearch"><PrototypeIcon name="search"/></KButton>
-          <details v-if="allTimeTotalSessions" class="record-row-menu record-clear-menu rounded-2xl">
-            <summary><PrototypeIcon name="more"/></summary>
-            <KGlass class="rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" :highlight="false"><KButton rounded inline clear type="button" class="record-delete k-color-brand-danger gap-2 w-full justify-start " :disabled="blocked" @click="historyClearPending = true">清空全部历史记录</KButton></KGlass>
-          </details>
+          <KButton v-if="allTimeTotalSessions" rounded inline clear class="history-menu-button size-11 p-0" aria-label="历史记录操作" :aria-expanded="menuBookId === 'all'" @click="openMenu('all', $event)"><PrototypeIcon name="more" /></KButton>
         </div>
       </div>
       <div v-if="statisticsBusy" class="record-state">正在读取阅读记录…</div>
@@ -335,17 +349,7 @@ onBeforeUnmount(() => {
               <small>{{ historyBookSubtitle(book) }}</small>
               <small v-if="!canOpenHistoryBook(book.bookId)">书籍已不在内容库，可删除这条历史记录</small>
             </div>
-            <details class="record-row-menu rounded-2xl">
-              <summary><PrototypeIcon name="more"/></summary>
-              <KGlass class="rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2" :highlight="false">
-                <KButton rounded inline clear class="gap-2 w-full justify-start text-current" v-if="canOpenHistoryBook(book.bookId)" type="button"
-                  :disabled="blocked"
-                  @click="openHistoryBook(book.bookId)">打开内容</KButton>
-                <KButton rounded inline clear type="button" class="record-delete k-color-brand-danger gap-2 w-full justify-start "
-                  :disabled="blocked"
-                  @click="historyDeletePendingBookId = book.bookId">删除这本书的历史</KButton>
-              </KGlass>
-            </details>
+            <KButton rounded inline clear class="history-menu-button size-11 p-0" :aria-label="`${title(book.bookId)}的历史操作`" :aria-expanded="menuBookId === book.bookId" @click="openMenu(book.bookId, $event)"><PrototypeIcon name="more" /></KButton>
           </article>
         </div>
         <div v-else class="record-state">{{ historyQuery.trim() ? '没有匹配的阅读记录。' : '当前时间范围内没有阅读记录。' }}</div>
@@ -379,19 +383,18 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 @layer components {
-.my-records{width:min(940px,100%);margin:0 auto;padding:8px 0 50px;color:var(--app-text)}
-.my-records--history{width:min(var(--app-content-width),100%);padding:24px var(--ui-page-gutter) 32px}
+.my-records--history { color:var(--app-text); }
 .records-toolbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px}
 .record-periods{display:flex;align-items:center;gap:4px}
-.record-periods button{height:30px;min-height:30px;padding:0 10px}
-.record-periods button.active{color:var(--app-text);font-weight:750}
+.record-periods button{min-height:44px;padding:0 10px}
+
 .record-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:18px 0 20px}
 .record-stats>div{display:grid;gap:5px;padding:13px;border:1px solid var(--app-line);border-radius:12px;background:var(--app-surface)}
 .record-stats strong{font-size:var(--ui-font-heading);color:var(--app-text);overflow-wrap:anywhere}
 .record-stats small{font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .record-search{width:min(420px,100%);margin:0}
 .record-timeline{margin-top:12px;border-top:1px solid var(--app-line)}
-.record-timeline-row{display:grid;grid-template-columns:88px 45px minmax(0,1fr) 36px;gap:10px;align-items:center;min-height:68px;padding:7px 0;border-bottom:1px solid var(--app-line)}
+.record-timeline-row{display:grid;grid-template-columns:88px 45px minmax(0,1fr) 44px;gap:10px;align-items:center;min-height:68px;padding:7px 0;border-bottom:1px solid var(--app-line)}
 .record-timeline-row time{font-size:var(--ui-font-caption);color:var(--app-subtle);line-height:1.5}
 .record-book-icon{display:grid;place-items:center;flex:none;width:45px;height:54px;border-radius:7px;background:#546c72;color:#fff;overflow:hidden}
 .record-book-icon>.prototype-icon{width:21px;height:21px}
@@ -418,13 +421,7 @@ onBeforeUnmount(() => {
 .record-toolbar-actions{display:flex;align-items:center;gap:6px;margin-left:auto}
 .record-icon-button{display:grid;place-items:center;width:35px;height:35px}
 .record-icon-button svg{width:19px;height:19px}
-.record-row-menu{position:relative}
-.record-row-menu summary{display:grid;place-items:center;width:36px;height:36px;border-radius:9px;color:var(--app-muted);cursor:pointer;list-style:none}
-.record-row-menu summary::-webkit-details-marker{display:none}
-.record-row-menu summary svg{width:19px;height:19px}
-.record-row-menu>div{position:absolute;right:0;top:39px;z-index:9;min-width:158px;padding:6px}
-.record-row-menu>div button{display:block;width:100%;min-height:34px;padding:6px 9px;text-align:left}
-@media(max-width:660px){.my-records--history{padding-top:24px}.record-timeline-row{grid-template-columns:76px 45px minmax(0,1fr) 36px;gap:8px}.record-timeline-row time{font-size:var(--ui-font-caption)}.record-book-icon{width:45px;height:54px}.record-book-title{font-size:var(--ui-font-body)}}
-@media(max-width:400px){.record-timeline-row{grid-template-columns:64px 40px minmax(0,1fr) 32px;gap:6px}.record-book-icon{width:40px;height:49px}.record-stats>div{padding:11px 9px}}
+@media(max-width:660px){.record-timeline-row{grid-template-columns:76px 45px minmax(0,1fr) 44px;gap:8px}.record-timeline-row time{font-size:var(--ui-font-caption)}.record-book-icon{width:45px;height:54px}.record-book-title{font-size:var(--ui-font-body)}}
+@media(max-width:400px){.record-timeline-row{grid-template-columns:64px 40px minmax(0,1fr) 44px;gap:6px}.record-book-icon{width:40px;height:49px}.record-stats>div{padding:11px 9px}}
 }
 </style>

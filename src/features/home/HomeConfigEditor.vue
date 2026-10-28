@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ListInput as KListInput, Toggle as KToggle, Button as KButton } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 // 首页栏目直接编辑全局设置中的 home 配置。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -178,8 +179,8 @@ function moveTab(tabId: string, direction: -1 | 1): void {
   draft.value.tabs = tabs.map((tab, sortOrder) => ({ ...tab, sortOrder }));
 }
 
-function selectableCategories(sourceId: string): DiscoveryCategory[] {
-  return (homeEditorCategories.value[sourceId] ?? []).filter((category) => Boolean(category.categoryId));
+function selectableCategories(sourceId: string): (DiscoveryCategory & { categoryId: string })[] {
+  return (homeEditorCategories.value[sourceId] ?? []).filter((category): category is DiscoveryCategory & { categoryId: string } => Boolean(category.categoryId));
 }
 
 function categoryPlaceholder(sourceId: string): string {
@@ -206,7 +207,7 @@ function categoryName(section: HomeSection): string {
   return selectedCategory(section.sourceId, section.categoryId)?.title ?? section.categoryId;
 }
 
-function categoryChoices(section: HomeSection): DiscoveryCategory[] {
+function categoryChoices(section: HomeSection): (DiscoveryCategory & { categoryId: string })[] {
   const choices = selectableCategories(section.sourceId);
   if (section.categoryId && !choices.some((category) => category.categoryId === section.categoryId)) {
     return [{ categoryId: section.categoryId, title: `${section.categoryId}（已保存）` }, ...choices];
@@ -222,11 +223,6 @@ function changeSectionSource(section: HomeSection, sourceId: string): void {
 
 function changeSectionCategory(section: HomeSection, categoryId: string): void {
   section.categoryId = categoryId;
-}
-
-function updateSectionStyle(section: HomeSection, event: Event): void {
-  const value = Number((event.target as HTMLSelectElement).value);
-  if (value >= 0 && value <= 3) section.style = value as HomeSection["style"];
 }
 
 function addSection(): void {
@@ -305,7 +301,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 <template>
   <section class="home-config-editor my-settings-subpage">
     <SubpageHeader class="home-config-editor__topbar col-span-full row-start-1" title="发现页配置" subtitle="修改会自动保存" back-label="返回" @back="returnFromHomeConfig" ></SubpageHeader>
-    <div class="home-config-editor__body">
+    <div class="home-config-editor__body ui-page-content">
       <div class="home-config-editor__tabs-row">
         <div class="home-config-editor__tabs">
           <KButton rounded :tonal="activeTab?.id === tab.id" :clear="!(activeTab?.id === tab.id)" inline class="gap-2"
@@ -325,7 +321,7 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
         <section class="home-config-editor__tab-settings">
         <label class="home-config-editor__field home-config-editor__tab-name">
           <span>标签页名称</span>
-          <KListInput component="div" maxlength="128" :value="activeTab.title" @input="activeTab.title = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" maxlength="128" :value="activeTab.title" @input="activeTab.title = ($event.target as HTMLInputElement).value" />
         </label>
         <div class="home-config-editor__tab-actions">
           <KButton rounded inline tonal type="button" class="home-config-editor__button home-config-editor__button--secondary gap-2" :disabled="orderedTabs.findIndex((tab) => tab.id === activeTab?.id) === 0" @click="moveTab(activeTab.id, -1)">上移</KButton>
@@ -350,13 +346,12 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
               title="拖动排序；移动端可使用右侧上下按钮"
               @dragstart="beginSectionDrag($event, section.id)" @dragend="finishSectionDrag"><i></i><i></i><i></i></span>
             <label class="home-config-editor__field home-config-editor__section-title">
-              <KListInput component="div" maxlength="128" :value="section.title" @input="section.title = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" maxlength="128" :value="section.title" @input="section.title = ($event.target as HTMLInputElement).value" />
               <small :title="sourceName(section.sourceId) + ' · ' + categoryName(section)">{{ sourceName(section.sourceId) }} · {{ categoryName(section) }}</small>
             </label>
             <label class="home-config-editor__compact-style">
-              <KListInput component="div" :value="section.style" type="select" @change="updateSectionStyle(section, $event)">
-                <option :value="0">横向封面</option><option :value="1">排行列表</option><option :value="2">无限网格</option><option :value="3">四列卡片</option>
-              </KListInput>
+              <SelectMenu label="栏目样式" v-model="section.style"
+                :options="[{ value: 0, label: '横向封面' }, { value: 1, label: '排行列表' }, { value: 2, label: '无限网格' }, { value: 3, label: '四列卡片' }]" />
             </label>
             <KButton rounded inline clear type="button" class="home-config-editor__expand gap-2"
               @click="expandedSectionId = expandedSectionId === section.id ? null : section.id">
@@ -367,18 +362,16 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           <div v-if="expandedSectionId === section.id" class="home-config-editor__section-fields">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <KListInput component="div" :value="section.sourceId" type="select" @change="changeSectionSource(section, ($event.target as HTMLSelectElement).value)">
-                <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
-              </KListInput>
+              <SelectMenu label="书籍来源" :model-value="section.sourceId" :options="enabledNovelSources.map(source => ({ value: source.id, label: source.name }))"
+                @update:model-value="changeSectionSource(section, $event)" />
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <KListInput component="div" :value="section.categoryId" :disabled="!section.sourceId" @focus="loadHomeEditorCategories(section.sourceId)" type="select" @change="changeSectionCategory(section, ($event.target as HTMLSelectElement).value)">
-                <option value="" disabled>{{ categoryPlaceholder(section.sourceId) }}</option>
-                <option v-for="category in categoryChoices(section)" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
-              </KListInput>
+              <SelectMenu label="分类" :model-value="section.categoryId" :disabled="!section.sourceId"
+                :options="[{ value: '', label: categoryPlaceholder(section.sourceId), disabled: true }, ...categoryChoices(section).map(category => ({ value: category.categoryId, label: category.title }))]"
+                @open="loadHomeEditorCategories(section.sourceId)" @update:model-value="changeSectionCategory(section, $event)" />
               <small v-if="categoryErrors[section.sourceId]" class="home-config-editor__category-error">{{ categoryErrors[section.sourceId] }} <KButton rounded inline clear class="gap-2" type="button" @click="loadHomeEditorCategories(section.sourceId)">重新读取</KButton></small>
-              <small v-else-if="!categoriesLoaded(section.sourceId)">聚焦分类框可读取此来源的其他分类。</small>
+              <small v-else-if="!categoriesLoaded(section.sourceId)">打开分类菜单可读取此来源的其他分类。</small>
             </label>
             <label class="home-config-editor__checkbox-field">
               <KToggle component="span" :checked="!!section.coverVideo" @change="section.coverVideo = ($event.target as HTMLInputElement).checked"  />
@@ -408,21 +401,17 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
           <div v-if="addingSection" class="home-config-editor__add-grid">
             <label class="home-config-editor__field">
               <span>书籍来源</span>
-              <KListInput component="div" :disabled="!enabledNovelSources.length" type="select" :value="newSectionSourceId" @change="newSectionSourceId = ($event.target as HTMLSelectElement).value">
-                <option value="" disabled>选择书籍来源</option>
-                <option v-for="source in enabledNovelSources" :key="source.id" :value="source.id">{{ source.name }}</option>
-              </KListInput>
+              <SelectMenu label="书籍来源" :disabled="!enabledNovelSources.length" v-model="newSectionSourceId"
+                :options="[{ value: '', label: '选择书籍来源', disabled: true }, ...enabledNovelSources.map(source => ({ value: source.id, label: source.name }))]" />
             </label>
             <label class="home-config-editor__field">
               <span>分类</span>
-              <KListInput component="div" :disabled="!newSectionSourceId" type="select" :value="newSectionCategoryId" @change="newSectionCategoryId = ($event.target as HTMLSelectElement).value">
-                <option value="" disabled>{{ categoryPlaceholder(newSectionSourceId) }}</option>
-                <option v-for="category in categoriesForNewSection" :key="category.categoryId" :value="category.categoryId">{{ category.title }}</option>
-              </KListInput>
+              <SelectMenu label="分类" :disabled="!newSectionSourceId" v-model="newSectionCategoryId"
+                :options="[{ value: '', label: categoryPlaceholder(newSectionSourceId), disabled: true }, ...categoriesForNewSection.map(category => ({ value: category.categoryId, label: category.title }))]" />
             </label>
             <label class="home-config-editor__field">
               <span>栏目名称（可选）</span>
-              <KListInput component="div" maxlength="128" placeholder="默认使用分类名称" :value="newSectionTitle" @input="newSectionTitle = ($event.target as HTMLInputElement).value" />
+              <KListInput class="my-0!" outline component="div" maxlength="128" placeholder="默认使用分类名称" :value="newSectionTitle" @input="newSectionTitle = ($event.target as HTMLInputElement).value" />
             </label>
             <KButton rounded inline type="button" class="home-config-editor__button home-config-editor__button--primary gap-2" :disabled="!activeTab || activeTab.sections.length >= 64 || !selectedCategory(newSectionSourceId, newSectionCategoryId)" @click="addSection">添加栏目</KButton>
           </div>
@@ -456,10 +445,6 @@ function applySectionDrop(event: DragEvent, targetId: string): void {
 .home-config-editor__button{
   display:inline-flex;align-items:center;justify-content:center;gap:6px;
   min-height:34px;padding:0 12px;
-}
-.home-config-editor__body{
-  box-sizing:border-box;width:100%;
-  margin:0 auto;padding:var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);max-width:var(--app-content-width);
 }
 .home-config-editor__tabs-row{display:block;margin:0 0 12px}
 .home-config-editor__tabs{

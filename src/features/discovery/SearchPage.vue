@@ -20,7 +20,7 @@ import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 import { useVirtualList } from "../../ui/useVirtualList";
-import { useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
+import { popoverOwner, useOutsidePointerDismiss } from "../../ui/useOutsidePointerDismiss";
 import router, { routeNames } from "../../router";
 
 defineOptions({ name: "SearchPage" });
@@ -133,7 +133,8 @@ function toggleSearchOptions(): void {
 }
 
 function onSearchOptionsFocusOut(event: FocusEvent): void {
-  if (event.relatedTarget instanceof Node && !searchOptionsElement.value?.contains(event.relatedTarget) && !document.getElementById("search-options-panel")?.contains(event.relatedTarget)) {
+  const target = popoverOwner(event.relatedTarget) ?? event.relatedTarget;
+  if (target instanceof Node && !searchOptionsElement.value?.contains(target) && !document.getElementById("search-options-panel")?.contains(target)) {
     closeSearchOptions();
   }
 }
@@ -417,7 +418,7 @@ watch(selectedContentType, clearResultFilters);
   width: 100%;
   min-width: 0;
   overflow-x: clip;
-  padding-bottom: max(24px, var(--safe-bottom));
+  padding-bottom: calc(max(24px, var(--safe-bottom)) + var(--ui-playback-inset));
 }
 
 .search-more-button {

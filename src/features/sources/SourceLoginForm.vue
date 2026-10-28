@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ListInput as KListInput, Toggle as KToggle, Button as KButton } from "konsta/vue";
 import { computed, ref, useId, watch } from "vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 import type { SourceLoginAction, SourceLoginField, SourceLoginForm, SourceLoginLayoutRow } from "../../api/types";
 
 const props = defineProps<{
@@ -71,11 +72,11 @@ function execute(actionId?: number): void {
           </label>
           <template v-else>
             <label class="source-login-label" :for="fieldId(row.field.name, index)">{{ row.field.label }}</label>
-            <KListInput component="div" v-if="row.field.type === 'select'" :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" :disabled="disabled" type="select" @change="change(row.field.name, ($event.target as HTMLSelectElement).value, row.kind === 'field' ? row.id : undefined)">
-              <option v-for="choice in row.field.choices ?? []" :key="choice" :value="choice">{{ choice }}</option>
-            </KListInput>
+            <SelectMenu v-if="row.field.type === 'select'" :id="fieldId(row.field.name, index)" :label="row.field.label"
+              :model-value="modelValue[row.field.name] ?? ''" :disabled="disabled" :options="(row.field.choices ?? []).map(value => ({ value, label: value }))"
+              @update:model-value="change(row.field.name, $event, row.kind === 'field' ? row.id : undefined)" />
             <div v-else-if="row.field.password || row.field.type === 'password'" class="source-login-password">
-              <KListInput component="div" :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" :type="visiblePasswords.includes(row.field.name) ? 'text' : 'password'" :disabled="disabled" autocomplete="new-password" maxlength="4096" @change="execute(row.kind === 'field' ? row.id : undefined)" @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
+              <KListInput class="my-0!" outline component="div" :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" :type="visiblePasswords.includes(row.field.name) ? 'text' : 'password'" :disabled="disabled" autocomplete="new-password" maxlength="4096" @change="execute(row.kind === 'field' ? row.id : undefined)" @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
               <KButton rounded inline clear class="gap-2" type="button" :aria-label="visiblePasswords.includes(row.field.name) ? '隐藏密码' : '显示密码'"
                 :aria-pressed="visiblePasswords.includes(row.field.name)" :disabled="disabled" @click="togglePassword(row.field.name)">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
@@ -84,8 +85,8 @@ function execute(actionId?: number): void {
                 </svg>
               </KButton>
             </div>
-            <KListInput component="div" v-else-if="row.rows > 1" :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off" @change="execute(row.kind === 'field' ? row.id : undefined)" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" @input="change(row.field.name, ($event.target as HTMLTextAreaElement).value)" />
-            <KListInput component="div" v-else :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" type="text" :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off" autocapitalize="off" @change="execute(row.kind === 'field' ? row.id : undefined)" @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
+            <KListInput class="my-0!" outline component="div" v-else-if="row.rows > 1" :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off" @change="execute(row.kind === 'field' ? row.id : undefined)" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" @input="change(row.field.name, ($event.target as HTMLTextAreaElement).value)" />
+            <KListInput class="my-0!" outline component="div" v-else :input-id="fieldId(row.field.name, index)" :value="modelValue[row.field.name] ?? ''" type="text" :disabled="disabled" maxlength="4096" spellcheck="false" autocomplete="off" autocapitalize="off" @change="execute(row.kind === 'field' ? row.id : undefined)" @input="change(row.field.name, ($event.target as HTMLInputElement).value)" />
           </template>
         </template>
       </div>
@@ -113,11 +114,10 @@ function execute(actionId?: number): void {
 .source-login-password>button{display:grid;place-items:center;flex:none;align-self:stretch;width:42px}
 .source-login-password svg{width:19px;height:19px}
 .source-login-toggle{position:relative;display:flex;align-items:center;justify-content:space-between;gap:10px;min-height:46px;padding:10px 12px;border:1px solid var(--app-line);border-radius:8px;background:var(--app-panel-soft);font-size:var(--ui-font-body);cursor:pointer}
-.source-login-toggle.is-disabled{opacity:.55;cursor:default}
+.source-login-toggle.is-disabled{cursor:default}
 .source-login-rule-button, .source-login-submit{min-height:var(--ui-control-height);padding:10px 12px;line-height:1.4;overflow-wrap:anywhere}
 .source-login-row--tall .source-login-rule-button, .source-login-row--tall .source-login-toggle{flex:1}
 .source-login-submit{justify-self:end;padding-inline:16px}
 .source-login-password-note{margin:0;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5}
-.source-login-fields :disabled{opacity:.55;cursor:default}
 }
 </style>

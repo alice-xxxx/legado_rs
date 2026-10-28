@@ -276,7 +276,7 @@ onBeforeUnmount(() => {
       aria-label="搜索书签"
       :disabled="mutationBlocked || loading || bookmarkDeleteBusy" @click="closeBookmarkSearch"><PrototypeIcon name="search"/></KButton></template>
 </SubpageHeader>
-  <section class="my-records my-records--bookmarks">
+  <section class="my-records my-records--bookmarks ui-page-content">
     <p v-if="loading" class="record-state" role="status">正在加载书签…</p>
     <div v-else-if="loadError" class="record-state record-error" role="alert">
       书签载入失败：{{ loadError }} <KButton rounded inline clear class="gap-2" type="button" @click="loadPageData()">重试</KButton>
@@ -345,7 +345,7 @@ onBeforeUnmount(() => {
 </template>
 <style scoped>
 @layer components {
-.my-records--bookmarks{box-sizing:border-box;width:min(var(--app-content-width),100%);margin:0 auto;padding:24px var(--ui-page-gutter) 32px;color:var(--app-text)}
+.my-records--bookmarks { color:var(--app-text); }
 .bookmarks-toolbar{display:flex;align-items:center;justify-content:space-between;min-height:30px;margin:0 0 14px}
 .bookmark-total{margin-right:auto;font-size:var(--ui-font-caption);color:var(--app-subtle)}
 .record-action{padding:7px 9px}

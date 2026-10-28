@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ListInput as KListInput } from "konsta/vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 import { computed } from "vue";
 import { settings } from "./settingsStore";
 import { backupBusy } from "./backupState";
@@ -19,18 +19,14 @@ function changeTimeout(seconds: number): void {
 <template>
   <section class="settings-detail-page">
     <SettingsDetailHeader title="网络请求" />
-    <div class="settings-detail-content">
+    <div class="settings-detail-content ui-page-content">
         <div class="setting-control">
           <div>
             <label for="source-http-timeout">请求超时</label>
             <small>连接或读取超时后结束请求</small>
           </div>
-          <KListInput component="div" input-id="source-http-timeout" :value="settings.sourceHttpTimeoutSeconds" :disabled="controlsDisabled" type="select" @change="changeTimeout(Number(($event.target as HTMLSelectElement).value))">
-            <option :value="15">15 秒</option>
-            <option :value="30">30 秒</option>
-            <option :value="60">60 秒</option>
-            <option :value="120">120 秒</option>
-          </KListInput>
+          <SelectMenu id="source-http-timeout" label="请求超时" :model-value="settings.sourceHttpTimeoutSeconds" :disabled="controlsDisabled"
+            :options="[15, 30, 60, 120].map(value => ({ value, label: value + ' 秒' }))" @update:model-value="changeTimeout" />
         </div>
     </div>
   </section>
@@ -45,11 +41,7 @@ function changeTimeout(seconds: number): void {
   color: var(--app-text);
 }
 
-.settings-detail-content {
-  width: min(var(--app-content-width), 100%);
-  margin: 0 auto;
-  padding: var(--ui-space-6) var(--ui-page-gutter) var(--ui-space-8);
-}
+
 .setting-control {
   display: flex;
   align-items: center;

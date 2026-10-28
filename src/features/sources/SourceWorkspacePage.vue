@@ -475,7 +475,7 @@ onBeforeUnmount(() => {
         </header>
         <form class="source-import-url" @submit.prevent="submitSourceImport">
           <label for="source-import-url">内容来源 JSON 链接</label>
-          <KListInput component="div" input-id="source-import-url" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/source.json" :class="{ 'is-invalid': !!urlImportError }" :disabled="importLocked" :value="management.sourceImportUrl" @input="management.sourceImportUrl = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" input-id="source-import-url" type="url" inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/source.json" :class="{ 'is-invalid': !!urlImportError }" :disabled="importLocked" :value="management.sourceImportUrl" @input="management.sourceImportUrl = ($event.target as HTMLInputElement).value" />
           <KButton rounded inline type="submit" class="gap-2"
             :disabled="importLocked || !management.sourceImportUrl.trim() || !!urlImportError">
             {{ management.sourceImportBusy ? '下载并导入中…' : '下载并导入' }}
@@ -571,9 +571,7 @@ onBeforeUnmount(() => {
 @layer components {
 .source-workspace-frame{display:flex;flex:1 1 auto;flex-direction:column;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}
 .source-workspace-frame :deep(.source-edit-screen){min-height:0;overflow:hidden}
-@media(min-width:861px){
- .source-workspace-frame :deep(.source-edit-screen){--source-editor-inset:24px}
-}
+
 .source-leave-guard{z-index:150}
 .source-login-modal{display:flex;flex-direction:column;width:min(520px,100%);min-width:0;max-height:min(88dvh,800px);padding:0;overflow:hidden}
 .source-login-heading{display:flex;flex:none;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--app-line)}

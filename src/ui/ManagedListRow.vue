@@ -30,7 +30,7 @@ const menuButton = ref<InstanceType<typeof KButton>>();
 </script>
 
 <template>
-  <article class="managed-list-row" :class="{ 'is-batch': batchMode, 'has-menu': showMenu }">
+  <article class="managed-list-row" :class="{ 'is-batch': batchMode, 'has-menu': showMenu, 'is-selected': selected }">
     <KCheckbox v-if="batchMode"
       class="managed-list-row__checkbox"
       :aria-label="`选择${name}`"
@@ -74,6 +74,8 @@ const menuButton = ref<InstanceType<typeof KButton>>();
   border-radius: 10px;
 }
 
+.managed-list-row.is-selected { background: var(--app-accent-soft); }
+
 .managed-list-row:not(.has-menu) {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -88,8 +90,8 @@ const menuButton = ref<InstanceType<typeof KButton>>();
 
 .managed-list-row__checkbox {
   justify-self: center;
-  width: 14px;
-  height: 14px;
+  width: 24px;
+  height: 24px;
   margin: 0;
 }
 
@@ -157,8 +159,8 @@ const menuButton = ref<InstanceType<typeof KButton>>();
 .managed-list-row__menu-button {
   display: grid;
   place-items: center;
-  width: 29px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   padding: 0;
 }
 

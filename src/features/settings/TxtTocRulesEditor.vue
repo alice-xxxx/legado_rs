@@ -479,9 +479,9 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 
 <template>
   <section class="txt-toc-editor my-settings-subpage">
-    <SubpageHeader class="txt-toc-editor__topbar col-span-full row-start-1" title="TXT 目录识别" back-label="返回高级设置" @back="returnToAdvancedSettings" >
+    <SubpageHeader wide class="txt-toc-editor__topbar col-span-full row-start-1" title="TXT 目录识别" back-label="返回高级设置" @back="returnToAdvancedSettings" >
 <template #actions><div class="txt-toc-editor__top-actions">
-        <KButton rounded inline type="button" class="txt-toc-editor__button txt-toc-editor__button--primary gap-2"
+        <KButton rounded inline clear type="button" class="gap-2"
           :disabled="busy || atRuleLimit"
           @click="addMenuOpen = !addMenuOpen; actionsMenuOpen = false; filterPanelOpen = false; openRuleMenuId = null">
           <PrototypeIcon name="plus"/> 添加
@@ -511,9 +511,9 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
           @toggle-actions="actionsMenuOpen = !actionsMenuOpen; filterPanelOpen = false; addMenuOpen = false; openRuleMenuId = null"
         >
           <template #actions-menu>
-            <div v-if="actionsMenuOpen" class="txt-toc-editor__menu txt-toc-editor__menu--right">
+            <div v-if="actionsMenuOpen" class="grid gap-1 p-2">
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
-              <span class="txt-toc-editor__menu-hint">正则表达式由 Rust 在保存时校验</span>
+              <span class="txt-toc-editor__menu-hint">保存时会检查正则表达式</span>
             </div>
           </template>
           <template #filter-menu>
@@ -567,10 +567,8 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
       </aside>
       <main v-if="showEditor" class="txt-toc-editor__detail" data-back-page>
         <SubpageHeader class="txt-toc-editor__editor-header col-span-full row-start-1" :title="editingId ? draft.name || '未命名目录规则' : '新目录规则'" back-label="返回规则列表" :back-disabled="busy" @back="requestCancelEditor" local-back>
-<template #actions><label class="txt-toc-editor__switchline">
-            <span>启用</span><KToggle component="span" :checked="!!draft.enable" @change="draft.enable = ($event.target as HTMLInputElement).checked" :disabled="busy" />
-          </label>
-<KButton rounded inline type="button" class="txt-toc-editor__button txt-toc-editor__button--primary txt-toc-editor__mobile-save gap-2"
+<template #actions>
+<KButton rounded inline clear type="button"
             :disabled="!canSave" @click="saveRule">保存</KButton></template>
 </SubpageHeader>
         <form class="txt-toc-editor__form" @submit.prevent="saveRule">
@@ -578,19 +576,23 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
             当前规则已被外部操作更新或删除。草稿仍在，但不能直接保存覆盖。请选择还原或取消编辑。
           </div>
           <section class="txt-toc-editor__editor-section">
+            <label class="flex min-h-14 items-center justify-between gap-4 pb-4">
+              <span>启用规则</span><KToggle component="span" :checked="!!draft.enable" :disabled="busy"
+                @change="draft.enable = ($event.target as HTMLInputElement).checked" />
+            </label>
             <header><strong>识别规则</strong></header>
             <div class="txt-toc-editor__field-grid">
-              <label class="txt-toc-editor__field"><span>名称</span><KListInput component="div" type="text" maxlength="256" autocomplete="off" :disabled="busy" placeholder="规则名称" :value="draft.name" @input="draft.name = ($event.target as HTMLInputElement).value" /></label>
+              <label class="txt-toc-editor__field"><span>名称</span><KListInput class="my-0!" outline component="div" type="text" maxlength="256" autocomplete="off" :disabled="busy" placeholder="规则名称" :value="draft.name" @input="draft.name = ($event.target as HTMLInputElement).value" /></label>
               <label class="txt-toc-editor__field txt-toc-editor__priority"><span>优先级</span>
-                  <KListInput component="div" type="number" step="1" min="-2147483648" max="2147483647" :disabled="busy" :value="editingSerialNumber" @input="editingSerialNumber = ($event.target as HTMLInputElement).valueAsNumber" />
+                  <KListInput class="my-0!" outline component="div" type="number" step="1" min="-2147483648" max="2147483647" :disabled="busy" :value="editingSerialNumber" @input="editingSerialNumber = ($event.target as HTMLInputElement).valueAsNumber" />
                 </label>
             </div>
-            <label class="txt-toc-editor__field"><span>正则表达式</span><KListInput component="div" spellcheck="false" autocomplete="off" :disabled="busy" placeholder="^第.+章.*$" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.rule" @input="draft.rule = ($event.target as HTMLTextAreaElement).value" /></label>
-            <label class="txt-toc-editor__field"><span>示例章节标题（可选）</span><KListInput component="div" type="text" maxlength="2048" autocomplete="off" :disabled="busy" placeholder="例如：第1章 山水之间" :value="draft.example" @input="draft.example = ($event.target as HTMLInputElement).value" /></label>
+            <label class="txt-toc-editor__field"><span>正则表达式</span><KListInput class="my-0!" outline component="div" spellcheck="false" autocomplete="off" :disabled="busy" placeholder="^第.+章.*$" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.rule" @input="draft.rule = ($event.target as HTMLTextAreaElement).value" /></label>
+            <label class="txt-toc-editor__field"><span>示例章节标题（可选）</span><KListInput class="my-0!" outline component="div" type="text" maxlength="2048" autocomplete="off" :disabled="busy" placeholder="例如：第1章 山水之间" :value="draft.example" @input="draft.example = ($event.target as HTMLInputElement).value" /></label>
           </section>
           <section class="txt-toc-editor__editor-section">
             <header><strong>测试文本</strong></header>
-            <label class="txt-toc-editor__field"><span>待识别标题</span><KListInput component="div" spellcheck="false" :disabled="busy" placeholder="第1章 山水之间&#10;第2章 长夜" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="testText" @input="testText = ($event.target as HTMLTextAreaElement).value" /></label>
+            <label class="txt-toc-editor__field"><span>待识别标题</span><KListInput class="my-0!" outline component="div" spellcheck="false" :disabled="busy" placeholder="第1章 山水之间&#10;第2章 长夜" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="testText" @input="testText = ($event.target as HTMLTextAreaElement).value" /></label>
             <div class="txt-toc-editor__test-result">
               <template v-if="testMatches.error">预览无法解析此表达式：{{ testMatches.error }}</template>
               <template v-else>预览识别到 <strong>{{ testMatches.count }}</strong> 行<span v-if="testMatches.lines.length">：{{ testMatches.lines.join('、') }}</span></template>
@@ -616,7 +618,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
         <h3 id="txt-toc-import-title">从网络链接导入</h3>
         <form class="txt-toc-editor__import-url-form" @submit.prevent="importUrlRules">
           <label for="txt-toc-import-url">TXT 目录规则 JSON 链接</label>
-          <KListInput component="div" input-id="txt-toc-import-url" type="url" required :disabled="importBusy" placeholder="https://example.com/txt-toc.json" autocomplete="url" :value="importUrl" @input="importUrl = ($event.target as HTMLInputElement).value" />
+          <KListInput class="my-0!" outline component="div" input-id="txt-toc-import-url" type="url" required :disabled="importBusy" placeholder="https://example.com/txt-toc.json" autocomplete="url" :value="importUrl" @input="importUrl = ($event.target as HTMLInputElement).value" />
           <KButton rounded inline type="submit" class="txt-toc-editor__button txt-toc-editor__button--primary gap-2" :disabled="importBusy || !importUrl.trim()">
             {{ importBusy ? '下载并导入中…' : '下载并导入' }}
           </KButton>
@@ -651,23 +653,16 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 @layer components {
 .txt-toc-editor{--txt-accent:var(--app-accent);--txt-text:var(--app-text);--txt-muted:var(--app-subtle);--txt-line:var(--app-line);--txt-soft:var(--app-panel-softer);display:grid;grid-template-rows:auto minmax(0,1fr);width:100%;height:100%;min-width:0;min-height:0;overflow:hidden;color:var(--txt-text)}
 .txt-toc-editor__top-actions{position:relative;display:flex;justify-content:flex-end}
-.txt-toc-editor__top-actions>.txt-toc-editor__button{gap:5px;min-height:34px}
-.txt-toc-editor__top-actions>.txt-toc-editor__button :deep(svg){width:15px;height:15px}
 .txt-toc-editor__stale{margin:0 0 15px;padding:12px;border:1px solid var(--app-warning-line);border-radius:10px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption);line-height:1.6}
 .txt-toc-editor__body{display:grid;grid-template-columns:1fr;min-width:0;height:100%;min-height:0;overflow:hidden;background:var(--app-background)}
 .txt-toc-editor__body--empty{grid-template-columns:minmax(0,1fr)}
-.txt-toc-editor__master{display:flex;flex-direction:column;min-width:0;height:100%;min-height:0;overflow:hidden;padding:14px;background:var(--app-background)}
+.txt-toc-editor__master{display:flex;flex-direction:column;min-width:0;height:100%;min-height:0;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));background:var(--app-background)}
 .txt-toc-editor__summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding:3px}
 .txt-toc-editor__summary>div{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}
 .txt-toc-editor__summary strong{font-size:var(--ui-font-caption);font-weight:500;color:var(--txt-muted)}
 .txt-toc-editor__summary small{color:var(--txt-muted);font-size:var(--ui-font-caption)}
 .txt-toc-editor__add{display:inline-flex;align-items:center;gap:4px}
 .txt-toc-editor__add .prototype-icon{width:16px;height:16px}
-.txt-toc-editor__menu{position:absolute;z-index:20;top:calc(100% + 5px);left:0;min-width:170px;padding:5px;border:1px solid var(--txt-line);border-radius:11px;background:var(--app-surface);box-shadow:0 12px 28px #22223322}
-.txt-toc-editor__menu--right{left:auto;right:0}
-.txt-toc-editor__menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
-.txt-toc-editor__menu button:disabled{opacity:.4;cursor:default}
-.txt-toc-editor__menu button.is-danger{color:var(--app-danger)}
 .txt-toc-editor__filter-menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
 .txt-toc-editor__menu-hint{display:block;padding:8px 10px;color:var(--txt-muted);font-size:var(--ui-font-caption);line-height:1.5;border-top:1px solid var(--txt-line)}
 .txt-toc-editor__list{display:grid;gap:3px}
@@ -676,10 +671,8 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__empty{padding:24px 10px;text-align:center;color:var(--txt-muted);font-size:var(--ui-font-caption)}
 .txt-toc-editor__empty strong{display:block;color:var(--txt-text);font-size:var(--ui-font-caption)}
 .txt-toc-editor__empty p{line-height:1.55}
-.txt-toc-editor__detail{min-width:0;height:100%;min-height:0;overflow-y:auto;padding:28px 34px 50px;background:var(--app-background)}
-.txt-toc-editor__mobile-save{display:none}
-.txt-toc-editor__switchline{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;color:var(--app-muted);font-size:var(--ui-font-caption)}
-.txt-toc-editor__form{margin-top:18px}
+.txt-toc-editor__detail{min-width:0;height:100%;min-height:0;overflow-y:auto;padding-bottom:calc(48px + var(--ui-playback-inset));background:var(--app-background)}
+.txt-toc-editor__form{max-width:var(--app-content-width);margin-inline:auto;padding:0 var(--ui-page-gutter)}
 .txt-toc-editor__editor-section{padding:18px 0;border-top:1px solid var(--txt-line)}
 .txt-toc-editor__editor-section>header{display:grid;gap:4px;margin-bottom:14px}
 .txt-toc-editor__editor-section>header strong{font-size:var(--ui-font-caption)}
@@ -702,9 +695,8 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__confirm-actions{display:flex;justify-content:flex-end;gap:8px}
 @media(min-width:861px){.txt-toc-editor__body{grid-template-columns:300px minmax(0,1fr)}.txt-toc-editor__master{border-right:1px solid var(--txt-line)}}
 @media(max-width:860px){
- .txt-toc-editor__master{padding:16px var(--ui-page-gutter)}
- .txt-toc-editor__detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 var(--ui-page-gutter) calc(32px + var(--safe-bottom))}
- .txt-toc-editor__mobile-save{display:inline-flex}
+ .txt-toc-editor__master{padding:16px var(--ui-page-gutter) calc(16px + var(--ui-playback-inset))}
+ .txt-toc-editor__detail{position:fixed;inset:0;z-index:40;height:auto;padding-bottom:calc(32px + var(--safe-bottom) + var(--ui-playback-inset))}
  .txt-toc-editor__field-grid{grid-template-columns:1fr}
  .txt-toc-editor__form-actions{flex-wrap:wrap}
 }

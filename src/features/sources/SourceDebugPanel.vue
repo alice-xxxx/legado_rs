@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Popup as KPopup, ListInput as KListInput, Button as KButton } from "konsta/vue";
 import type { ResourceDescriptor, SearchBookResult, BookResource, SourceMetadata } from "../../api/types";
-import PrototypeIcon from "../../ui/PrototypeIcon.vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 
 defineProps<{
   target: SourceMetadata;
@@ -39,11 +39,8 @@ function updateKeyword(event: Event): void {
 
 <template>
   <section class="source-debug-backdrop" data-back-layer @click.self="emit('close')" @keydown.esc.stop.prevent="emit('close')">
-    <KPopup opened :backdrop="false" class="source-debug-dialog z-[80] flex flex-col w-[min(980px,100vw)]! h-[min(92dvh,900px)]!" role="dialog" aria-modal="true" aria-labelledby="source-debug-title">
-      <header class="source-debug-header">
-        <h2 id="source-debug-title">测试来源</h2>
-        <KButton rounded inline clear type="button" class="source-debug-close gap-2 size-11 p-0" data-back-action aria-label="关闭测试" @click="emit('close')"><PrototypeIcon name="close" /></KButton>
-      </header>
+    <KPopup opened :backdrop="false" class="source-debug-dialog z-[80] flex flex-col w-[min(980px,100vw)]! h-[min(92dvh,900px)]!" role="dialog" aria-modal="true" aria-label="测试来源">
+      <SubpageHeader title="测试来源" :subtitle="target.name" back-label="关闭测试" local-back @back="emit('close')" />
       <div class="source-debug-body">
 
       <form class="source-debug-search" @submit.prevent="emit('search')">
@@ -53,7 +50,7 @@ function updateKeyword(event: Event): void {
         </div>
         <label class="source-debug-field">
           <span>关键词</span>
-          <KListInput component="div" :value="keyword" maxlength="200" autocomplete="off" placeholder="输入测试关键词" :disabled="busy || keywordLoading" @input="updateKeyword" />
+          <KListInput class="my-0!" outline component="div" :value="keyword" maxlength="200" autocomplete="off" placeholder="输入测试关键词" :disabled="busy || keywordLoading" @input="updateKeyword" />
         </label>
         <div class="source-debug-actions">
           <KButton rounded inline type="submit" class="gap-2" :disabled="busy || keywordLoading || searchResultBatchBusy || recoveryRequired || !keyword.trim()">{{ busy ? '处理中…' : keywordLoading ? '读取中…' : '开始测试' }}</KButton>
@@ -122,38 +119,10 @@ function updateKeyword(event: Event): void {
   overflow: hidden;
 }
 
-.source-debug-header {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 20px;
-  border-bottom: 1px solid var(--app-line);
-}
-
-.source-debug-header h2 {
-  margin: 0;
-  font-size: var(--ui-font-heading);
-}
-
-.source-debug-close {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 36px;
-  height: 36px;
-}
-
-.source-debug-close :deep(svg) {
-  width: var(--ui-icon-size);
-  height: var(--ui-icon-size);
-}
-
 .source-debug-body {
   min-width: 0;
   min-height: 0;
-  padding: 16px 20px 20px;
+  padding: 16px var(--ui-page-gutter) 20px;
   overflow-y: auto;
   overflow-x: hidden;
   overflow-wrap: anywhere;

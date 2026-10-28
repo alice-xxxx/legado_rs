@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton, Glass as KGlass } from "konsta/vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
+import SelectMenu from "../../ui/SelectMenu.vue";
 // All pages share the rule document; this form owns only its edit draft.
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -436,9 +437,9 @@ function toggleFilterPanel(event: MouseEvent): void {
 
 <template>
   <section class="replacement-rules-page" :class="{ 'replacement-rules-page--empty': rules.length === 0 && !draft }">
-    <SubpageHeader class="replacement-global-header col-span-full row-start-1" title="替换与净化" back-label="返回高级设置" @back="returnToAdvancedSettings" >
+    <SubpageHeader wide class="replacement-global-header col-span-full row-start-1" title="替换与净化" back-label="返回高级设置" @back="returnToAdvancedSettings" >
 <template #actions><div class="replacement-add-wrap">
-        <KButton rounded inline type="button" class="replacement-primary-button replacement-global-add gap-2"
+        <KButton rounded inline clear type="button" class="replacement-global-add gap-2"
           :disabled="busy"
 @click="addMenuOpen = !addMenuOpen; actionsMenuOpen = false; filterPanelOpen = false">
           <PrototypeIcon name="plus"/> 添加
@@ -517,28 +518,31 @@ function toggleFilterPanel(event: MouseEvent): void {
     </div>
     <main v-if="draft" class="replacement-detail" data-back-page>
       <SubpageHeader class="replacement-editor-header col-span-full row-start-1" :title="draft.name || (editingRule ? '未命名规则' : '新净化规则')" back-label="返回规则列表" @back="requestCloseEditor" local-back>
-<template #actions><label class="replacement-enabled-toggle"><span>启用</span><KToggle component="span" :checked="!!draft.enabled" @change="draft.enabled = ($event.target as HTMLInputElement).checked" :disabled="busy || !draft.pattern.trim()" /></label>
-<div class="replacement-editor-actions">
-          <KButton rounded inline type="button" class="replacement-primary-button replacement-mobile-save gap-2"
+<template #actions>
+          <KButton rounded inline clear type="button"
             :disabled="busy || upstreamRuleChanged || !draft.name.trim() || (draft.enabled && !draft.pattern.trim())"
             @click="saveEditor">保存</KButton>
-        </div></template>
+        </template>
 </SubpageHeader>
       <form class="replacement-editor-form" @submit.prevent="saveEditor">
         <section class="replacement-editor-section">
+          <label class="flex min-h-14 items-center justify-between gap-4 pb-4">
+            <span>启用规则</span><KToggle component="span" :checked="!!draft.enabled"
+              :disabled="busy || !draft.pattern.trim()" @change="draft.enabled = ($event.target as HTMLInputElement).checked" />
+          </label>
           <header><strong>规则</strong></header>
           <div class="replacement-editor-grid">
-            <label class="replacement-field"><span>名称</span><KListInput component="div" maxlength="160" autocomplete="off" :disabled="busy" placeholder="规则名称" :value="draft.name" @input="draft.name = ($event.target as HTMLInputElement).value" /></label>
-            <label class="replacement-field"><span>作用范围</span><KListInput component="div" :disabled="busy" type="select" :value="draft.scope" @change="draft.scope = ($event.target as HTMLSelectElement).value"><option v-for="scope in availableScopes" :key="scope.value" :value="scope.value">{{ scope.label }}</option></KListInput></label>
+            <label class="replacement-field"><span>名称</span><KListInput class="my-0!" outline component="div" maxlength="160" autocomplete="off" :disabled="busy" placeholder="规则名称" :value="draft.name" @input="draft.name = ($event.target as HTMLInputElement).value" /></label>
+            <label class="replacement-field"><span>作用范围</span><SelectMenu label="作用范围" :disabled="busy" v-model="draft.scope" :options="availableScopes" /></label>
           </div>
-          <label class="replacement-field"><span>查找 / 正则</span><KListInput component="div" spellcheck="false" :disabled="busy" placeholder="输入要查找的文字或正则表达式" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.pattern" @input="draft.pattern = ($event.target as HTMLTextAreaElement).value" /></label>
-          <label class="replacement-field"><span>替换为</span><KListInput component="div" spellcheck="false" :disabled="busy" placeholder="留空表示删除匹配内容" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.replacement" @input="draft.replacement = ($event.target as HTMLTextAreaElement).value" /></label>
+          <label class="replacement-field"><span>查找 / 正则</span><KListInput class="my-0!" outline component="div" spellcheck="false" :disabled="busy" placeholder="输入要查找的文字或正则表达式" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.pattern" @input="draft.pattern = ($event.target as HTMLTextAreaElement).value" /></label>
+          <label class="replacement-field"><span>替换为</span><KListInput class="my-0!" outline component="div" spellcheck="false" :disabled="busy" placeholder="留空表示删除匹配内容" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '96px' }" :value="draft.replacement" @input="draft.replacement = ($event.target as HTMLTextAreaElement).value" /></label>
           <div class="replacement-editor-options"><label><KToggle component="span" :checked="!!draft.isRegex" @change="draft.isRegex = ($event.target as HTMLInputElement).checked" :disabled="busy" /> 使用正则表达式</label></div>
           <p v-if="draft.enabled && !draft.pattern.trim()" class="replacement-validation">填写匹配内容后才能启用规则。</p>
         </section>
         <section class="replacement-editor-section">
           <header><strong>测试</strong></header>
-          <label class="replacement-field"><span>输入文本</span><KListInput component="div" spellcheck="false" placeholder="输入一段正文用于测试" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '72px' }" :value="sampleText" @input="sampleText = ($event.target as HTMLTextAreaElement).value" /></label>
+          <label class="replacement-field"><span>输入文本</span><KListInput class="my-0!" outline component="div" spellcheck="false" placeholder="输入一段正文用于测试" type="textarea" input-class="h-auto! min-h-28 resize-y" :input-style="{ minHeight: '72px' }" :value="sampleText" @input="sampleText = ($event.target as HTMLTextAreaElement).value" /></label>
           <div class="replacement-test-result">
             <template v-if="samplePreview.error">预览失败：{{ samplePreview.error }}</template>
             <template v-else-if="sampleText && draft.pattern">{{ samplePreview.output || '（空文本：匹配内容已全部删除）' }}</template>
@@ -566,7 +570,7 @@ function toggleFilterPanel(event: MouseEvent): void {
         <h3 id="replacement-import-title">从网络链接导入</h3>
         <form class="replacement-import-url-form" @submit.prevent="void replacementRulesFeature.importReplacementRulesByUrl()">
           <label for="replacement-import-url">替换与净化规则 JSON 链接</label>
-          <KListInput component="div" input-id="replacement-import-url" type="url" required inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/replacement-rules.json" :disabled="replacementImportBusy" :value="replacementImportUrl" @input="replacementImportUrl = ($event.target as HTMLInputElement).value; replacementImportError = ''" />
+          <KListInput class="my-0!" outline component="div" input-id="replacement-import-url" type="url" required inputmode="url" autocomplete="url" maxlength="4096" placeholder="https://example.com/replacement-rules.json" :disabled="replacementImportBusy" :value="replacementImportUrl" @input="replacementImportUrl = ($event.target as HTMLInputElement).value; replacementImportError = ''" />
           <KButton rounded inline type="submit" class="replacement-primary-button gap-2" :disabled="busy || replacementImportBusy || !replacementImportUrl.trim()">
             {{ replacementImportBusy ? '下载并导入中…' : '下载并导入' }}
           </KButton>
@@ -614,12 +618,10 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-menu { position:absolute; z-index:5; top:calc(100% + 5px); right:0; min-width:170px; display:grid; gap:2px; padding:5px; }
 .replacement-filter-panel button { display:block; width:100%; min-height:34px; padding:0 10px; text-align:left; }
 .replacement-menu button { min-height:34px; padding:0 9px; text-align:left; }
-.replacement-menu button:disabled { opacity:.45; cursor:default; }
 .replacement-rule-list { min-width:0;min-height:0;flex:1 1 auto;display:grid;align-content:start;gap:3px;margin-right:-14px;padding:0 14px 0 0;overflow-y:auto;overscroll-behavior:contain; }
 .replacement-page-message { padding:7px 14px; color:var(--rr-muted); font-size:var(--ui-font-caption); }
 .replacement-page-message.error { color:var(--red); }
 .replacement-text-button, .replacement-secondary-button, .replacement-primary-button { min-height:34px; padding:0 11px; }
-.replacement-editor-actions { display:flex; align-items:center; gap:5px; margin-left:auto; }
 .replacement-field { min-width:0; display:grid; gap:6px; color:var(--rr-muted); font-size:var(--ui-font-caption); font-weight:600; }
 .replacement-field .k-list-input { width:100%; }
 .replacement-editor-options { display:flex; flex-wrap:wrap; gap:18px; color:var(--rr-ink); font-size:var(--ui-font-caption); }
@@ -653,11 +655,8 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-selection-bar{position:static;z-index:4;display:flex;flex:none;align-items:center;gap:4px;flex-wrap:wrap;margin-top:auto;padding:8px 4px;border-top:1px solid var(--rr-line);background:var(--app-background)}
 .replacement-selection-count{margin-left:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);white-space:nowrap}
 .replacement-rule-empty{align-self:center;justify-self:center;margin:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);text-align:center}
-.replacement-detail{min-width:0;min-height:0;overflow-y:auto;padding:28px 34px 48px;background:var(--app-background)}
-.replacement-enabled-toggle{display:flex;align-items:center;gap:8px;color:var(--app-muted);font-size:var(--ui-font-caption);white-space:nowrap}
-.replacement-editor-actions{margin-left:0}
-.replacement-mobile-save{display:none}
-.replacement-editor-form{display:block;padding:0;border:0;border-radius:0;background:transparent}
+.replacement-detail{min-width:0;min-height:0;overflow-y:auto;padding-bottom:calc(48px + var(--ui-playback-inset));background:var(--app-background)}
+.replacement-editor-form{display:block;max-width:var(--app-content-width);margin-inline:auto;padding:0 var(--ui-page-gutter);border:0;border-radius:0;background:transparent}
 .replacement-editor-section{padding:18px 0;border-top:1px solid var(--rr-line)}
 .replacement-editor-section>header{display:grid;gap:3px;margin-bottom:12px}
 .replacement-editor-section>header strong{font-size:var(--ui-font-caption)}
@@ -673,16 +672,14 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-master{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;max-height:none;overflow:hidden}
 @media(min-width:861px){
   .replacement-rules-page{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-items:start}
-  .replacement-master{grid-row:2;grid-column:1;min-width:0;box-sizing:border-box;height:100%;max-height:none;overflow:hidden;padding:14px;border-right:1px solid var(--rr-line);background:var(--app-background)}
+  .replacement-master{grid-row:2;grid-column:1;min-width:0;box-sizing:border-box;height:100%;max-height:none;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));border-right:1px solid var(--rr-line);background:var(--app-background)}
   .replacement-detail{grid-row:2;grid-column:2}
   .replacement-rules-page--empty .replacement-master{grid-column:1/-1;border-right:0}
 }
 @media(max-width:860px){
   .replacement-rules-page{display:flex;flex-direction:column}
-  .replacement-master{height:auto;flex:1 1 auto;padding:16px var(--ui-page-gutter);min-width:0}
-  .replacement-detail{position:fixed;inset:0;z-index:40;height:auto;padding:0 var(--ui-page-gutter) calc(32px + var(--safe-bottom))}
-  .replacement-enabled-toggle{margin-left:auto}
-  .replacement-mobile-save{display:inline-flex;align-items:center;min-height:33px;margin-left:3px}
+  .replacement-master{height:auto;flex:1 1 auto;padding:16px var(--ui-page-gutter) calc(16px + var(--ui-playback-inset));min-width:0}
+  .replacement-detail{position:fixed;inset:0;z-index:40;height:auto;padding-bottom:calc(32px + var(--safe-bottom) + var(--ui-playback-inset))}
   .replacement-editor-grid{grid-template-columns:1fr}
   .replacement-editor-bottom{grid-template-columns:1fr auto auto;gap:6px}
 }

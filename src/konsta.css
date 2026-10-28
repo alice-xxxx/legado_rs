@@ -12,10 +12,12 @@
 }
 
 body { font-size: var(--ui-font-body); color: var(--app-text); background: var(--app-background); }
-/* Standalone fields use one 48px row without the list's extra outer gutter. */
+/* Standalone fields already live inside the page or form gutter. */
 .k-list-input { min-width: 0; padding-block: 0; }
-.k-list-input > :first-child { min-height: 48px; margin-inline: 0; }
+.k-list-input > :first-child { margin-inline: 0; isolation: isolate; }
 .k-button:focus-visible, .k-link:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 3px; }
+.k-toggle:has(:disabled), .k-checkbox:has(:disabled), .k-radio:has(:disabled) { opacity: .45; cursor: default; }
+.k-list-input:has(input:disabled, textarea:disabled, select:disabled) { opacity: .45; }
 /* Glass surfaces contain scrollable forms and menus. */
 .k-glass:not(.k-toolbar-pane) { touch-action: auto; }
 @media (pointer: coarse) {

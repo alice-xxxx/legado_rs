@@ -6,6 +6,7 @@ import { backupBusy, beginBackupRestore, finishBackupRestore } from "./backupSta
 import { lockShelfBatchRecovery, shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { settings } from "./settingsStore";
+import { confirmAction } from "../../app/confirmation";
 
 export type { BackupBusy } from "./backupState";
 type RestoreOutcome = "notCommitted" | "committed" | "recovery";
@@ -88,7 +89,8 @@ export function useBackupActions() {
 
   async function restoreBackup(): Promise<void> {
     if (backupBusy.value || shelfBatchRecoveryRequired.value) return;
-    if (!window.confirm("恢复备份会替换当前书架、阅读数据、源和登录状态。要继续选择备份文件吗？")) return;
+    if (!await confirmAction("从备份恢复？", "恢复备份会替换当前书架、阅读数据、源和登录状态。", "选择备份文件")) return;
+    if (backupBusy.value || shelfBatchRecoveryRequired.value) return;
     beginBackupRestore();
     try {
       const result: RestoreBackupResponse = await restoreBackupFromPicker();
@@ -129,10 +131,11 @@ export function useBackupActions() {
     }
   }
 
-  function clearWebDavPassword(): void {
+  async function clearWebDavPassword(): Promise<void> {
     const config = settings.value.webdavBackup;
     if (backupBusy.value || shelfBatchRecoveryRequired.value || !config?.password) return;
-    if (!window.confirm("清除已保存的 WebDAV 密码？")) return;
+    if (!await confirmAction("清除 WebDAV 密码？", "下次连接时需要重新输入密码。", "清除密码")) return;
+    if (backupBusy.value || shelfBatchRecoveryRequired.value || settings.value.webdavBackup !== config) return;
     config.password = null;
     notify("WebDAV 密码已清除。");
   }
@@ -165,7 +168,8 @@ export function useBackupActions() {
     const config = webDavBackupConfig.value;
     if (backupBusy.value || shelfBatchRecoveryRequired.value
       || !config?.url) return;
-    if (!window.confirm("将使用 WebDAV 目录中的备份替换当前本地书架、阅读数据、源和设置。恢复成功后会重新载入应用数据。要继续吗？")) return;
+    if (!await confirmAction("恢复 WebDAV 备份？", "将替换当前本地书架、阅读数据、源和设置，恢复成功后重新载入应用数据。", "恢复备份")) return;
+    if (backupBusy.value || shelfBatchRecoveryRequired.value || webDavBackupConfig.value !== config) return;
     beginBackupRestore();
     webDavBackupError.value = "";
     try {

@@ -22,6 +22,7 @@ import { discardBookDetailOpenRequest, requestBookDetailOpen } from "../books/bo
 import router, { routeNames, settingsRouteNames } from "../../router";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import PrimaryNavigation from "../../ui/PrimaryNavigation.vue";
+import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 
 function openSearch(): void {
@@ -359,7 +360,13 @@ onBeforeUnmount(() => {
     <PrimaryNavigation />
     <main class="home-page-main" @touchstart.passive="handlePullStart" @touchmove.passive="handlePullMove"
       @touchend="handlePullEnd" @touchcancel="handlePullCancel" @wheel.passive="handleWheelPull">
-      <section class="home-discovery" :class="{ 'home-discovery-empty': !visibleResults.length }">
+      <SubpageHeader title="发现" :back="false" large>
+        <template #actions>
+          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="搜索" @click="openSearch"><PrototypeIcon name="search" /></KButton>
+          <KButton rounded inline clear class="size-11 p-0" type="button" aria-label="管理栏目" @click="manageHome"><PrototypeIcon name="tune" /></KButton>
+        </template>
+      </SubpageHeader>
+      <section class="home-discovery ui-page-content" :class="{ 'home-discovery-empty': !visibleResults.length }">
         <!-- 标签靠左，分类筛选和操作按钮靠右。 -->
         <div class="discover-filter-bar">
           <nav v-if="orderedTabs.length" class="home-tabs" aria-label="发现页面">
@@ -370,13 +377,6 @@ onBeforeUnmount(() => {
           <div class="discover-controls">
             <SelectMenu id="discover-type-button" v-model="activeType" label="内容类型"
               :options="typeFilters.map(filter => ({ value: filter.id, label: filter.title }))" />
-            <KButton rounded inline clear class="discover-icon-button gap-2 size-11 p-0" type="button" aria-label="搜索" title="搜索" @click="openSearch">
-              <PrototypeIcon name="search" />
-            </KButton>
-            <KButton rounded inline clear class="discover-icon-button gap-2 size-11 p-0" type="button" aria-label="管理栏目" title="管理栏目"
-              @click="manageHome">
-              <PrototypeIcon name="tune" />
-            </KButton>
           </div>
         </div>
 
@@ -426,8 +426,8 @@ onBeforeUnmount(() => {
 <style scoped>
 @layer components {
 /* 页面滚动容器；触顶时限制浏览器自己的回弹，由页面处理下拉刷新。 */
-.home-page-layout { display:flex; width:100%; height:100dvh; min-height:0; overflow:hidden; padding-top:var(--safe-top); background:var(--app-background); }
-.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 var(--ui-page-gutter) var(--safe-bottom); }
+.home-page-layout { display:flex; width:100%; height:100dvh; min-height:0; overflow:hidden; background:var(--app-background); }
+.home-page-main { flex:1; min-width:0; min-height:0; overflow-x:hidden; overflow-y:auto; overscroll-behavior-y:contain; padding:0 0 var(--safe-bottom); }
 /* 下拉时显示的提示条和图标状态。 */
 .home-pull-refresh { display:flex; align-items:center; justify-content:center; gap:8px; overflow:hidden; color:var(--app-muted); font-size:var(--ui-font-caption); transition:height .12s ease; }
 .home-pull-refresh-icon { display:grid; width:16px; height:16px; place-items:center; }
@@ -435,24 +435,24 @@ onBeforeUnmount(() => {
 .home-pull-refresh-icon.ready svg { transform:rotate(180deg); }
 .home-pull-refresh-icon.refreshing svg { animation:home-spin .8s linear infinite; }
 /* 标签靠左，分类筛选和操作按钮靠右排列。 */
-.home-discovery { width:100%; max-width:calc(var(--app-content-width) - var(--ui-page-gutter) * 2); min-width:0; margin:0 auto; padding:24px 0 32px; }
-.home-discovery-empty { display:flex; flex-direction:column; min-height:100%; }
+.home-discovery { min-width:0; }
+.home-discovery-empty { display:flex; flex-direction:column; min-height:calc(100% - 132px); }
 .home-discovery-empty .discover-filter-bar { flex:none; }
 .discover-filter-bar { display:flex; justify-content:space-between; align-items:center; gap:20px; min-height:50px; margin-bottom:20px; padding:0 0 12px; border-bottom:1px solid var(--app-line); }
 .home-tabs { display:flex; min-width:0; align-items:center; gap:4px; overflow-x:auto; scrollbar-width:none; }
 .home-tabs::-webkit-scrollbar { display:none; }
-.home-tabs button { flex:none; padding:5px 2px; }
+.home-tabs button { flex:none; }
 .home-tabs button.active { color:var(--app-text); font-weight:600; }
 .discover-controls { display:flex; flex:none; align-items:center; gap:12px; }
 .discover-icon-button { display:grid; width:30px; height:30px; padding:0; place-items:center; }
 .discover-icon-button svg { width:18px; height:18px; }
-.discovery-content-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:29px 24px; }
+.discovery-content-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(var(--ui-cover-min-width),1fr)); gap:var(--ui-grid-gap); }
 .discovery-cover-card { min-width:0; }
 .discovery-cover-action { display:block; width:100%; padding:0; border:0; background:transparent; text-align:left; cursor:pointer; }
-.discovery-cover-art { position:relative; display:block; width:100%; overflow:hidden; aspect-ratio:3/4; border-radius:13px; background:linear-gradient(140deg,#466f6d,#1b3235); transition:transform .15s,box-shadow .15s; }
+.discovery-cover-art { position:relative; display:block; width:100%; overflow:hidden; aspect-ratio:3/4; border-radius:13px; background:linear-gradient(140deg,#466f6d,#1b3235);  }
 .discovery-cover-art img { width:100%; height:100%; object-fit:cover; display:block; }
 .discovery-cover-placeholder { position:absolute; inset:0; overflow:hidden; }
-.discovery-cover-placeholder::before { content:""; position:absolute; width:76%; height:72%; right:-28%; top:15%; border-radius:50%; background:#fff2; filter:blur(1px); }
+.discovery-cover-placeholder::before { content:""; position:absolute; width:76%; height:72%; right:-28%; top:15%; border-radius:50%; background:#fff2; }
 .discovery-cover-placeholder::after { content:""; position:absolute; left:-25%; right:-20%; bottom:-37%; height:65%; border-radius:50%; background:#0003; }
 /* 封面卡片文字、加载/空状态和错误提示。 */
 .discovery-cover-copy { display:flex; flex-direction:column; min-width:0; padding:8px 1px 0; gap:3px; }
@@ -463,17 +463,13 @@ onBeforeUnmount(() => {
 .home-discovery-empty .discover-grid-state { flex:1; min-height:160px; text-align:center; }
 @keyframes home-spin { to {transform:rotate(360deg)} }
 /* 屏幕变窄时减少卡片列数并调整工具栏布局。 */
-@media(max-width:1120px) { .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:29px 12px; } }
 @media(max-width:860px) {
-  .home-page-main { padding:0 var(--ui-page-gutter) calc(var(--ui-nav-height) + var(--safe-bottom)); }
-  .discovery-content-grid { grid-template-columns:repeat(3,minmax(0,1fr)); }
+  .home-page-main { padding:0 0 calc(var(--ui-nav-height) + var(--safe-bottom)); }
 }
 @media(max-width:640px) {
-  .discovery-content-grid { grid-template-columns:repeat(2,minmax(0,1fr)); gap:22px 11px; }
   .discover-filter-bar { gap:8px; margin-bottom:16px; padding-bottom:10px; }
   .home-tabs { gap:8px; }
   .discover-controls { gap:5px; }
-  .discover-icon-button { width:28px; height:28px; }
 }
 }
 </style>

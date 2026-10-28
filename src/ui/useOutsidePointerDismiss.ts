@@ -2,6 +2,11 @@ import { onBeforeUnmount, onMounted, watch } from "vue";
 
 const openMenus = new Set<(event: KeyboardEvent) => void>();
 
+export function popoverOwner(target: EventTarget | null): HTMLElement | null {
+  const id = target instanceof Element ? target.closest<HTMLElement>("[data-popover-owner]")?.dataset.popoverOwner : undefined;
+  return id ? document.getElementById(id) : null;
+}
+
 export function useOutsidePointerDismiss(
   isOpen: () => boolean,
   containsTarget: (target: EventTarget | null) => boolean,
@@ -14,7 +19,7 @@ export function useOutsidePointerDismiss(
     if (open) returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   });
   const onPointerDown = (event: PointerEvent): void => {
-    if (!isOpen() || containsTarget(event.target)) return;
+    if (!isOpen() || containsTarget(event.target) || containsTarget(popoverOwner(event.target))) return;
     dismiss();
   };
 

@@ -5,7 +5,6 @@ import type { ReaderContextFeatures } from "./readerContext";
 import type { ChapterResource } from "../../api/types";
 import type { BookSourceSwitchContract } from "../sources/sourceContext";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
-import BackButton from "../../ui/BackButton.vue";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";
 import BookSourceSwitchView from "../sources/BookSourceSwitchView.vue";
 import BookCatalogPanel from "../books/BookCatalogPanel.vue";
@@ -23,7 +22,7 @@ export default defineComponent({
     bookSourceSwitch: { type: Object as PropType<BookSourceSwitchContract>, required: true },
     shelfBatchRecoveryRequired: { type: Boolean, required: true },
   },
-  components: { KSegmented, KSegmentedButton, KPreloader, KListInput, SubpageHeader, KRange, KCheckbox, KButton, KGlass, KToolbar, KToolbarPane, KList, KListItem, KRadio, BackButton, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel, SelectMenu,
+  components: { KSegmented, KSegmentedButton, KPreloader, KListInput, SubpageHeader, KRange, KCheckbox, KButton, KGlass, KToolbar, KToolbarPane, KList, KListItem, KRadio, PrototypeIcon, BookSourceSwitchView, BookCatalogPanel, SelectMenu,
     TtsSettingsPage: defineAsyncComponent(() => import("../settings/TtsSettingsPage.vue")) },
   setup(props) {
     const context = {
@@ -33,6 +32,21 @@ export default defineComponent({
       closeReader: props.closeReader,
     };
     const comicBrightness = ref(100);
+    const ttsEngineOptions = computed(() => {
+      const reader = settings.value.reader;
+      const voices = context.ttsVoices.value;
+      const configs = httpTtsConfigs.value;
+      return [
+        { value: "system:", label: "系统默认语音", group: "本地语音" },
+        ...(reader.ttsVoiceURI && !voices.some(voice => voice.voiceURI === reader.ttsVoiceURI)
+          ? [{ value: `system:${reader.ttsVoiceURI}`, label: "已保存语音不可用（系统默认）", group: "本地语音" }] : []),
+        ...voices.map(voice => ({ value: `system:${voice.voiceURI}`, label: voice.name + (voice.lang ? `（${voice.lang}）` : ""), group: "本地语音" })),
+        ...(reader.ttsEngine === "http" && reader.httpTtsConfigId && !configs.some(item => item.id === reader.httpTtsConfigId)
+          ? [{ value: `http:${reader.httpTtsConfigId}`, label: "当前网络朗读配置不可用", disabled: true, group: "网络朗读" }] : []),
+        ...(!configs.length ? [{ value: "http:", label: "尚未添加网络朗读配置", disabled: true, group: "网络朗读" }] : []),
+        ...configs.map(item => ({ value: `http:${item.id}`, label: item.name + (item.enabled ? "" : "（已停用）"), disabled: !item.enabled, group: "网络朗读" })),
+      ];
+    });
     async function openReaderSources(_fromReader = true): Promise<void> {
       context.readerDirectoryOpen.value = false;
       await props.bookSourceSwitch.openBookSourceSwitch(true);
@@ -173,7 +187,7 @@ export default defineComponent({
     let comicTouchStart: { x: number; y: number } | null = null;
     const clampValue = (value: number, min: number, max: number): number =>
       Math.min(max, Math.max(min, value));
-    return { ...context, ctx: proxyRefs(context), readingBook, settings, readingModes, horizontalReaderEdges, uiStyles, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, clampValue, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
+    return { ...context, ctx: proxyRefs(context), readingBook, settings, readingModes, horizontalReaderEdges, uiStyles, appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, httpTtsConfigs, ttsEngineOptions, clampValue, comicBrightness, comicPageIndex, comicPageCount, requestComicCounter, onComicTouchStart, onComicTouchEnd, comicReadMode, comicTapAt: handleComicTapAt, comicPanel, audioToolPanel, openAudioToolPanel, openAudioAdvanced, nextComicImage, turnReaderEdge, openComicPanel, changeReaderMode, replaceReaderChapterSource };
   },
 });
 </script>
@@ -392,9 +406,9 @@ export default defineComponent({
           </span><small>{{ ttsActive ? ctx.ttsPaused ? '已暂停' : '朗读中' : '朗读' }}</small></KButton>
         <KButton rounded :tonal="ctx.readerControlsOpen && readerControlsMode === 'appearance'" :clear="!(ctx.readerControlsOpen && readerControlsMode === 'appearance')" inline v-if="!ctx.readingMediaChapter" type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current"
           :class="{ active: ctx.readerControlsOpen && readerControlsMode === 'appearance' }"
-          @click="ctx.openReaderControls('appearance')"><span class="reader-appearance-glyph">Aa</span><small>{{
+          @click="ctx.openReaderControls('appearance')"><span class="reader-appearance-glyph" aria-hidden="true">Aa</span><small>{{
             ctx.readingPdfPage ? '缩放' : ctx.readingImagePage ? '图片适配' : '显示' }}</small></KButton>
-        <!-- The header's More action owns advanced settings, as in the prototype. -->
+        <!-- Advanced settings are available from the header. -->
       </nav></KToolbarPane>
     </KToolbar>
     <section v-if="readerTtsSettingsOpen" class="reader-book-page reader-tts-settings" data-back-layer @click.stop>
@@ -402,11 +416,9 @@ export default defineComponent({
     </section>
     <section v-if="readerDirectoryOpen && readingBook" class="reader-book-page" data-back-layer @click.stop
       @keydown.esc.stop.prevent="readerDirectoryOpen = false">
-      <header class="reader-book-page-header">
-        <BackButton label="返回阅读菜单" @click="readerDirectoryOpen = false" />
-        <div><strong>目录</strong><small>{{ readingBook.title }}</small></div>
-        <small>{{ readingBook.chapters.length }} 项</small>
-      </header>
+      <SubpageHeader title="目录" :subtitle="readingBook.title" back-label="返回阅读菜单" local-back @back="readerDirectoryOpen = false">
+        <template #actions><span class="px-3 text-sm text-[var(--app-muted)]">{{ readingBook.chapters.length }} 项</span></template>
+      </SubpageHeader>
       <BookCatalogPanel :book="readingBook" :current-index="ctx.readingChapterIndex" :busy="readerBusy" :locked="shelfBatchRecoveryRequired" auto-locate
         :can-download="readingBook.canChangeSource === true && !!readingBook.sourceId"
         :can-replace="readingBook.canChangeSource === true && !readingBook.mediaType"
@@ -441,7 +453,7 @@ export default defineComponent({
         class="setting-control compact-setting">
         <div><label for="reader-chapter-jump">跳转章节</label><small>共 {{ readingBook?.chapters?.length ?? 0 }} 章</small>
         </div>
-        <KListInput component="div" input-id="reader-chapter-jump" type="number" inputmode="numeric" min="1" :max="readingBook?.chapters?.length ?? 0" :value="ctx.readingChapterIndex + 1" :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter" />
+        <KListInput class="my-0!" outline component="div" input-id="reader-chapter-jump" type="number" inputmode="numeric" min="1" :max="readingBook?.chapters?.length ?? 0" :value="ctx.readingChapterIndex + 1" :disabled="readerBusy || shelfBatchRecoveryRequired" @change="jumpReaderChapter" />
       </div>
       <div
         v-if="readerControlsMode === 'appearance' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
@@ -499,30 +511,13 @@ export default defineComponent({
         <div class="reader-tts-description"><label for="reader-tts-engine">朗读引擎</label><small v-if="ttsNotice">{{
             ttsNotice }}</small><small v-if="ttsActive && ttsChunkProgress">片段 {{
               ttsChunkProgress.current }} / {{ ttsChunkProgress.total }}</small></div>
-        <KListInput component="div" input-id="reader-tts-engine" :value="ttsEngineSelection" :disabled="ttsActive || readerBusy" type="select" @change="selectTtsEngine(($event.target as HTMLSelectElement).value)">
-          <optgroup label="本地语音">
-            <option value="system:">系统默认语音</option>
-            <option
-              v-if="settings.reader.ttsVoiceURI && !ttsVoices.some((voice) => voice.voiceURI === settings.reader.ttsVoiceURI)"
-              :value="`system:${settings.reader.ttsVoiceURI}`">已保存语音不可用（系统默认）</option>
-            <option v-for="voice in ttsVoices" :key="voice.voiceURI" :value="`system:${voice.voiceURI}`">{{ voice.name
-              }}{{ voice.lang ? `（${voice.lang}）` : '' }}</option>
-          </optgroup>
-          <optgroup label="网络朗读">
-            <option
-              v-if="settings.reader.ttsEngine === 'http' && settings.reader.httpTtsConfigId && !httpTtsConfigs.some((item) => item.id === settings.reader.httpTtsConfigId)"
-              :value="`http:${settings.reader.httpTtsConfigId}`" disabled>当前网络朗读配置不可用</option>
-            <option v-if="!httpTtsConfigs.length" value="http:" disabled>尚未添加网络朗读配置</option>
-            <option v-for="item in httpTtsConfigs" :key="item.id" :value="`http:${item.id}`" :disabled="!item.enabled">
-              {{ item.name }}{{ item.enabled ? '' : '（已停用）' }}</option>
-          </optgroup>
-        </KListInput>
+        <SelectMenu id="reader-tts-engine" label="朗读引擎" :model-value="ttsEngineSelection" :disabled="ttsActive || readerBusy"
+          :options="ttsEngineOptions" @update:model-value="selectTtsEngine" />
         <KButton rounded inline clear v-if="!httpTtsConfigs.some((item) => item.enabled)" type="button" class="gap-2"
           @click="ctx.openHttpTtsSettings">添加网络朗读源</KButton>
-        <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label><KListInput component="div" input-id="reader-tts-start-position" :value="settings.reader.ttsStartPosition" type="select" @change="settings.reader.ttsStartPosition = ($event.target as HTMLSelectElement).value === 'chapter' ? 'chapter' : 'current'">
-            <option value="current">当前位置</option>
-            <option value="chapter">本章开头</option>
-          </KListInput></div>
+        <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label>
+          <SelectMenu id="reader-tts-start-position" label="朗读起点" v-model="settings.reader.ttsStartPosition"
+            :options="[{ value: 'current', label: '当前位置' }, { value: 'chapter', label: '本章开头' }]" /></div>
         <div class="reader-tts-row reader-tts-rate"><label for="reader-tts-rate">语速</label><KRange input-id="reader-tts-rate"
             :disabled="ttsActive && settings.reader.ttsEngine === 'system'"
             :min="0.5" :max="settings.reader.ttsEngine === 'system' ? 4 : 5" :step="0.1" :value="settings.reader.ttsRate"
@@ -549,7 +544,7 @@ export default defineComponent({
       <div
         v-if="readerControlsMode === 'search' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="setting-control reader-find-control">
-        <KListInput component="div" input-id="reader-find-input" type="search" autocomplete="off" placeholder="输入要查找的文字" @keydown="handleReaderFindKeydown" :value="readerFindQuery" @input="readerFindQuery = ($event.target as HTMLInputElement).value" />
+        <KListInput class="my-0!" outline component="div" input-id="reader-find-input" type="search" autocomplete="off" placeholder="输入要查找的文字" @keydown="handleReaderFindKeydown" :value="readerFindQuery" @input="readerFindQuery = ($event.target as HTMLInputElement).value" />
         <div class="reader-find-actions-row">
           <small>{{ readerFindQuery.trim() ? readerFindMatches.length ? `${readerFindIndex + 1} /
             ${readerFindMatches.length}` : '无匹配' : '' }}</small>
@@ -600,10 +595,10 @@ export default defineComponent({
         <div class="setting-control compact-setting">
           <div><label>字号</label><small>{{ settings.reader.fontSizePx }} px</small></div>
           <div class="range-control">
-            <KButton rounded inline clear class="gap-2" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx - 1, 12, 36)">−</KButton>
+            <KButton rounded inline clear class="gap-2" aria-label="减小字号" :disabled="settings.reader.fontSizePx <= 12" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx - 1, 12, 36)">−</KButton>
             <KRange :min="12" :max="36" :value="settings.reader.fontSizePx"
               @input="settings.reader.fontSizePx = Number(($event.target as HTMLInputElement).value)"  class="min-w-0 flex-1" />
-            <KButton rounded inline clear class="gap-2" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx + 1, 12, 36)">＋</KButton>
+            <KButton rounded inline clear class="gap-2" aria-label="增大字号" :disabled="settings.reader.fontSizePx >= 36" @click="settings.reader.fontSizePx = clampValue(settings.reader.fontSizePx + 1, 12, 36)">＋</KButton>
           </div>
         </div>
         <div class="setting-control compact-setting">

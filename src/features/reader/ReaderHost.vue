@@ -62,6 +62,9 @@ const readerPresented = computed(() => player.readerVisible && !player.readerMin
 const audioSession = computed(() => player.readingMediaChapter);
 const showPlaybackBar = computed(() => player.readerVisible && (player.ttsActive || audioSession.value && player.readerMinimized)
   && !player.readerControlsOpen && !player.readerDirectoryOpen && !player.readerTtsSettingsOpen && !player.readerOverlayOpen);
+watch(() => showPlaybackBar.value && player.readerMinimized, visible => {
+  document.body.classList.toggle("has-global-playback", visible);
+}, { immediate: true });
 const playbackPreparing = computed(() => audioSession.value ? player.readerBusy || player.readerMediaBuffering
   : !player.ttsChunkProgress || player.ttsBuffering && !player.ttsPaused);
 const playbackPaused = computed(() => audioSession.value ? !player.readerMediaPlaying : player.ttsPaused);
@@ -325,6 +328,7 @@ watch(() => settings.value.uiStyle, async () => {
   if (readerPresented.value) readerFeatures.handleReaderResize();
 });
 onBeforeUnmount(() => {
+  document.body.classList.remove("has-global-playback");
   if (fullscreenUsed) void fullscreenUpdate.catch(() => {}).then(() => setSystemUiHidden(false)).catch(() => {});
 });
 </script>
