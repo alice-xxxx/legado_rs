@@ -12,6 +12,9 @@ on:
       updater:
         type: boolean
         default: false
+      tiers:
+        type: string
+        default: '1'
   workflow_dispatch:
     inputs:
       platform:
@@ -19,64 +22,82 @@ on:
         type: choice
         default: all
         options: [all, desktop, android, ios]
+      tiers:
+        description: 'Independent tiers: 1 mainstream, 2 compatibility, 3 Android x86'
+        type: choice
+        default: '1'
+        options: ['1', '2', '3', '1,2', '1,3', '2,3', '1,2,3']
 
 concurrency:
-  group: package-${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  group: package-${{ github.workflow }}-${{ inputs.ref || github.ref }}-${{ inputs.platform }}-${{ inputs.tiers }}
   cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  prepare:
+    name: Select targets and build frontend
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      desktop: ${{ steps.targets.outputs.desktop }}
+      android: ${{ steps.targets.outputs.android }}
+      has_desktop: ${{ steps.targets.outputs.has_desktop }}
+      has_android: ${{ steps.targets.outputs.has_android }}
+      ios: ${{ steps.targets.outputs.ios }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Select independent target tiers
+        id: targets
+        env:
+          TIERS: ${{ inputs.tiers }}
+          PLATFORM: ${{ inputs.platform }}
+        run: python scripts/release.py matrix --tiers "$TIERS" --platform "$PLATFORM"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: false
+      - run: npm ci
+      - run: npm run build
+      - uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
   desktop:
     name: Desktop (${{ matrix.platform }} ${{ matrix.arch }})
-    if: inputs.platform == 'all' || inputs.platform == 'desktop'
+    needs: prepare
+    if: needs.prepare.outputs.has_desktop == 'true'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-24.04
-            platform: linux
-            arch: x64
-            target: x86_64-unknown-linux-gnu
-            bundles: appimage,deb
-          - runner: ubuntu-24.04-arm
-            platform: linux
-            arch: arm64
-            target: aarch64-unknown-linux-gnu
-            bundles: appimage,deb
-          - runner: macos-15-intel
-            platform: macos
-            arch: x64
-            target: x86_64-apple-darwin
-            bundles: dmg
-          - runner: macos-latest
-            platform: macos
-            arch: arm64
-            target: aarch64-apple-darwin
-            bundles: dmg
-          - runner: windows-latest
-            platform: windows
-            arch: x64
-            target: x86_64-pc-windows-msvc
-            bundles: nsis
-          - runner: windows-11-arm
-            platform: windows
-            arch: arm64
-            target: aarch64-pc-windows-msvc
-            bundles: nsis
+      matrix: ${{ fromJSON(needs.prepare.outputs.desktop) }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: dist
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -85,6 +106,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
           key: ${{ matrix.target }}
+          cache-on-failure: true
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -93,8 +115,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
-          # 全平台并行时，Linux/macOS 缓存分别由 Android/iOS 写入，避免重复抢占同一个键。
-          cache-read-only: ${{ inputs.platform == 'all' && ((runner.os == 'Linux' && runner.arch == 'X64') || (runner.os == 'macOS' && runner.arch == 'ARM64')) }}
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -135,7 +155,7 @@ jobs:
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: npm run tauri -- build ${{ !inputs.updater && '--no-sign' || '' }} --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ inputs.updater && '--config src-tauri/tauri.updater.conf.json' || '' }}
+        run: npm run tauri -- build --config src-tauri/tauri.ci.conf.json ${{ !inputs.updater && '--no-sign' || '' }} --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ inputs.updater && '--config src-tauri/tauri.updater.conf.json' || '' }}
       - uses: actions/upload-artifact@v7
         with:
           name: Foliver-${{ matrix.platform }}-${{ matrix.arch }}
@@ -152,39 +172,28 @@ jobs:
 
   android:
     name: Android (${{ matrix.abi }}) signed release APK
-    if: inputs.platform == 'all' || inputs.platform == 'android'
+    needs: prepare
+    if: needs.prepare.outputs.has_android == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            abi: arm64-v8a
-            target: aarch64
-            rust: aarch64-linux-android
-          - arch: armv7
-            abi: armeabi-v7a
-            target: armv7
-            rust: armv7-linux-androideabi
-          - arch: x64
-            abi: x86_64
-            target: x86_64
-            rust: x86_64-linux-android
-          - arch: x86
-            abi: x86
-            target: i686
-            rust: i686-linux-android
+      matrix: ${{ fromJSON(needs.prepare.outputs.android) }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: dist
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -193,6 +202,7 @@ jobs:
         with:
           workspaces: src-tauri -> target
           key: ${{ matrix.rust }}
+          cache-on-failure: true
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -200,7 +210,6 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
-          cache-read-only: ${{ matrix.arch != 'arm64' }}
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools build-tools;${{ env.ANDROID_BUILDTOOLS }} ndk;${{ env.ANDROID_NDK }} cmake;${{ env.ANDROID_CMAKE }}'
@@ -231,7 +240,7 @@ jobs:
           FOLIVER_ANDROID_KEY_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEY_PASSWORD }}
           RELEASE_UPDATE: ${{ inputs.updater }}
         run: |
-          args=()
+          args=(--config src-tauri/tauri.ci.conf.json)
           if [ "$RELEASE_UPDATE" = 'true' ]; then
             # One monotonic code per release run, shared by all ABIs and retries.
             # Start above the 0.1.x codes used before CI-managed versioning.
@@ -305,19 +314,25 @@ jobs:
 
   ios:
     name: iOS unsigned release IPA
-    if: inputs.platform == 'all' || inputs.platform == 'ios'
+    needs: prepare
+    if: needs.prepare.outputs.ios == 'true'
     runs-on: macos-latest
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: frontend-dist
+          path: dist
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24
+          cache: npm
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -325,6 +340,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          cache-on-failure: true
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -363,7 +379,7 @@ jobs:
       - run: npm run tauri -- ios init --ci
       - run: npm run icons
       - name: Package unsigned device IPA
-        run: npm run tauri -- ios build --no-sign --ci
+        run: npm run tauri -- ios build --no-sign --ci --config src-tauri/tauri.ci.conf.json
       - uses: actions/upload-artifact@v7
         with:
           name: Foliver-ios-arm64-unsigned

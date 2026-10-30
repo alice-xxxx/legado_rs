@@ -6,6 +6,11 @@ on:
   pull_request:
   workflow_dispatch:
   workflow_call:
+    inputs:
+      release:
+        description: 'Native release jobs perform the compilation checks'
+        type: boolean
+        default: false
 
 concurrency:
   group: checks-${{ github.workflow }}-${{ github.ref }}
@@ -15,8 +20,33 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Workflow and release checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Validate GitHub workflows
+        uses: docker://rhysd/actionlint:1.7.11
+      - name: Check release automation
+        run: |
+          python -m unittest discover -s scripts/tests -p 'test_*.py'
+          node --test scripts/tests/*.test.cjs
+
   check:
-    name: Frontend, Rust and release checks
+    name: Frontend and Rust checks
+    needs: quality
+    if: ${{ !inputs.release }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -29,15 +59,6 @@ jobs:
           node-version: 24
           cache: npm
           package-manager-cache: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.13'
-      - name: Validate GitHub workflows
-        uses: docker://rhysd/actionlint:1.7.11
-      - name: Check release automation
-        run: |
-          python -m unittest discover -s scripts/tests -p 'test_*.py'
-          node --test scripts/tests/*.test.cjs
       - run: node src-tauri/toolchain.mjs --github-env
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2

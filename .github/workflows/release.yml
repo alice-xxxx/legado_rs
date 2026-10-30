@@ -10,6 +10,11 @@ on:
         description: 'Keep the completed release as a draft'
         type: boolean
         default: false
+      tiers:
+        description: 'Independent tiers: 1 mainstream, 2 compatibility, 3 Android x86'
+        type: choice
+        default: '1'
+        options: ['1', '2', '3', '1,2', '1,3', '2,3', '1,2,3']
 
 concurrency:
   group: release-foliver
@@ -27,6 +32,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      tiers: ${{ steps.targets.outputs.tiers }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +54,13 @@ jobs:
         with:
           script: |
             await require('./.github/scripts/release.cjs').validate({ github, context });
+      - name: Validate selected target tiers
+        id: targets
+        env:
+          TIERS: ${{ inputs.tiers || '1' }}
+        run: |
+          python scripts/release.py matrix --tiers "$TIERS"
+          echo "tiers=$TIERS" >> "$GITHUB_OUTPUT"
       - name: Check signing configuration
         env:
           FOLIVER_ANDROID_KEYSTORE_BASE64: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_BASE64 }}
@@ -67,6 +80,8 @@ jobs:
     name: Check source
     needs: prepare
     uses: ./.github/workflows/ci.yml
+    with:
+      release: true
 
   build:
     name: Build release
@@ -76,6 +91,7 @@ jobs:
       platform: all
       ref: ${{ needs.prepare.outputs.commit }}
       updater: true
+      tiers: ${{ needs.prepare.outputs.tiers }}
     secrets: inherit
 
   publish:
@@ -91,6 +107,7 @@ jobs:
       RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
       RELEASE_DRAFT: ${{ inputs.draft || false }}
       GH_TOKEN: ${{ github.token }}
+      RELEASE_TIERS: ${{ needs.prepare.outputs.tiers }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -104,7 +121,7 @@ jobs:
           pattern: Foliver-*
           path: artifacts
       - name: Validate all packages and generate update manifest
-        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT"
+        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT" --tiers "$RELEASE_TIERS"
       - name: Create release tag and stage draft
         id: draft
         uses: actions/github-script@v8
@@ -122,23 +139,3 @@ jobs:
         with:
           script: |
             await require('./.github/scripts/release.cjs').publish({ github, context, core });
-
-  result:
-    name: Release result
-    if: always()
-    needs: [prepare, checks, build, publish]
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - name: Report result
-        env:
-          RESULTS: ${{ toJSON(needs) }}
-        run: |
-          python - <<'PY'
-          import json, os
-          jobs = json.loads(os.environ['RESULTS'])
-          failed = [name for name, job in jobs.items() if job['result'] != 'success']
-          if failed:
-              raise SystemExit(f"Release incomplete: {', '.join(failed)}. Check the first failed job; incomplete packages are never published.")
-          print('Release complete.')
-          PY

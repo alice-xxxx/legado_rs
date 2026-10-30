@@ -61,19 +61,19 @@ npm run tauri -- ios build --no-sign --ci
 
 工作流职责：
 
-- **CI**：PR 和 `main` 提交检查工作流语法、发版逻辑、前端构建、JVM 引擎及 Rust 编译。发版前复用同一套检查，无需签名 Secret。
-- **Package Foliver**：手动构建指定平台，只保存 Actions 附件，不创建 Release。
-- **Release Foliver**：校验版本与签名配置，执行 CI，全平台构建，汇总校验附件后创建标签并发布 Release。
+- **CI**：PR 和 `main` 提交检查工作流语法、发版逻辑、前端构建、JVM 引擎及 Rust 编译，无需签名 Secret。
+- **Package Foliver**：手动选择平台和目标级别，只保存 Actions 附件，不创建 Release。
+- **Release Foliver**：校验版本与签名配置，执行工作流检查和发版测试，构建所选目标，汇总校验附件后创建标签并发布 Release。实际打包已经包含编译，不再重复完整 Linux CI。
 
 ### 手动发版
 
-打开 Actions → Release Foliver → Run workflow，选择源码分支或已有标签，直接运行即可。工作流从 `package.json` 读取版本，与 npm 锁文件、Tauri、Cargo 及 Cargo 锁文件核对，固定本次源码 SHA。**不需要填写或提前创建版本标签**。例如所选源码版本为 `0.1.0`，全部构建成功后会自动创建 `v0.1.0` 标签并发布。
+打开 Actions → Release Foliver → Run workflow，选择源码分支或已有标签，以及 `tiers`（默认 `1`）。工作流从 `package.json` 读取版本，与 npm 锁文件、Tauri、Cargo 及 Cargo 锁文件核对，固定本次源码 SHA。**不需要填写或提前创建版本标签**。例如所选源码版本为 `0.1.0`，所选目标全部构建成功后会自动创建 `v0.1.0` 标签并发布。
 
 默认公开发布；勾选 `draft` 时仅保留已校验的草稿，随后可在 GitHub 手动发布。已公开的同名版本不重复构建或覆盖，已有标签不允许移动到其他源码。需要发新版本时先同步版本、提交，再运行工作流。
 
 ### 标签发版
 
-推送 `vX.Y.Z` 标签自动发版，补丁版本正常支持。`v1.0.0-beta.1`、`v1.0.0-rc.1` 等会标记为 GitHub Prerelease。标签必须与源码中的应用版本一致。标准稳定版本号与预发布版本号均不允许前导零；不使用构建元数据 `+build` 作为发版版本。
+推送 `vX.Y.Z` 标签自动构建一级目标并发版，补丁版本正常支持。`v1.0.0-beta.1`、`v1.0.0-rc.1` 等会标记为 GitHub Prerelease。需要二、三级时使用手动入口选择。标签必须与源码中的应用版本一致。标准稳定版本号与预发布版本号均不允许前导零；不使用构建元数据 `+build` 作为发版版本。
 
 用 Python 3.11+ 同步版本，提交后推送标签：
 
@@ -91,15 +91,19 @@ git push origin v0.1.1
 
 ### 构建、签名与发布
 
-所有架构固定使用同一源码提交，构建 job 只读仓库。构建以下支持架构：
+所有架构固定使用同一源码提交，构建 job 只读仓库。目标分三级，定义统一保存在 [build-targets.json](../scripts/build-targets.json)，构建矩阵、产物校验和更新清单共用该文件：
 
-| 平台 | 架构 | 安装包 |
+| 级别 | 目标 | 用途 |
 |---|---|---|
-| Windows | x64、ARM64 | 各一个 NSIS `.exe` |
-| macOS | Intel x64、Apple Silicon ARM64 | 各一个 `.dmg` |
-| Linux | x64、ARM64 | 各一个 `.AppImage` 和 `.deb` |
-| Android | arm64-v8a、armeabi-v7a、x86_64、x86 | 各一个签名 `.apk` |
-| iOS | ARM64 真机 | 一个未签名 `.ipa` |
+| 一级 | Windows x64、macOS ARM64、Linux x64、Android ARM64、iOS ARM64 真机 | 常规发版，5 个原生构建任务 |
+| 二级 | Android ARMv7、macOS Intel x64、Windows ARM64、Linux ARM64 | 老手机、部分阅读设备、存量 Intel Mac、在售 ARM 笔记本及补充桌面设备，4 个任务 |
+| 三级 | Android x86_64、x86 | 模拟器及特殊设备场景，2 个任务，不作为常规手机发版目标 |
+
+级别相互独立：`tiers=2` 只构建二级，`tiers=3` 只构建三级，不附带一级；可选择 `1,2`、`1,3`、`2,3` 或 `1,2,3` 组合。Package 还可用 `platform` 取平台交集，例如 `tiers=2, platform=android` 仅构建 ARMv7；没有匹配目标时在启动原生 runner 前报错。未选级别不创建原生构建任务，也不参与完整性校验。相同版本需包含多个级别时一次选择对应组合；已公开版本仍不覆盖，补充测试包可通过 Package 独立构建。
+
+Windows 使用 NSIS `.exe`，macOS 使用 `.dmg`，Linux 提供 `.AppImage` 和 `.deb`，Android 提供签名 `.apk`，iOS 提供未签名 `.ipa`。这套分级决定默认构建范围，保留全部目标的按需构建能力，并不将 ARM 笔记本归为淘汰设备。
+
+前端与架构无关，同次打包只编译一次前端，生成共享 `frontend-dist`，各原生任务下载后使用 `tauri.ci.conf.json` 跳过重复的前端编译。原生任务仍安装自身所需的 Tauri CLI，使用 npm 缓存；Rust 依赖在编译失败时也保存缓存，减少重跑成本。各原生任务没有相互依赖，矩阵中某个目标失败不会取消其他目标，但所选集合不完整时不发布 Release。
 
 桌面书源引擎需要附带 Java 21，因此桌面仅支持 x64/ARM64，不提供 Windows x86 或 Linux ARMv7 安装包。iOS 发版提供真机安装包；开发用模拟器产物不加入 Release。各桌面架构在对应的原生 runner 构建，JRE、JNI 和 Rust 架构一致。
 
@@ -116,11 +120,11 @@ Android 的 ABI 列表由 `android.abis` 配置。单独准备某个 ABI 的 AAR
 
 Release 工作流在开始时检查这些配置和 `TAURI_SIGNING_PRIVATE_KEY` 是否齐全。只有最后汇总发布的 job 获得 `contents: write`。Windows/macOS 尚未配置系统证书签名，iOS IPA 需自行签名后安装，当前不自动提交应用商店。
 
-全部 11 个构建任务成功后，CI 汇总并校验 13 个安装包及签名更新包，统一命名为 `Foliver-v版本-平台-架构.扩展名`，同时生成 `SHA256SUMS`、`release-manifest.json` 和 `latest.json`。manifest 包含源码提交、构建链接、预发布标记、文件大小与 SHA-256；校验文件也覆盖两个 manifest 和签名文件。缺少任意架构、安装包或更新签名即停止，不创建标签或 Release。
+所选任务全部成功后，CI 汇总并校验对应安装包及签名更新包，统一命名为 `Foliver-v版本-平台-架构.扩展名`，同时生成 `SHA256SUMS`、`release-manifest.json` 和 `latest.json`。manifest 包含所选级别与目标、源码提交、构建链接、预发布标记、文件大小与 SHA-256；校验文件也覆盖两个 manifest 和签名文件。缺少任意所选架构、安装包或更新签名即停止，不创建标签或 Release。
 
 附件完整后创建标签和暂存草稿，生成更新说明，上传并校验附件数量、状态、大小以及 GitHub 返回的 SHA-256。全部通过后才公开发布；中途失败会保留草稿，重新运行失败的 job 可继续上传，保留编辑过的说明并清理过期附件。公开版本不会被修改。
 
-只有高于全部现有稳定版本的新稳定版会成为 GitHub `latest`。预发布与历史稳定版不会替换当前稳定更新入口。发版工作流串行执行，单个平台构建失败即阻止发布，最终结果 job 会明确报告失败环节。
+只有高于全部现有稳定版本的新稳定版会成为 GitHub `latest`。预发布与历史稳定版不会替换当前稳定更新入口。发版工作流串行执行，所选目标中的任意构建失败即阻止发布，可直接在对应 job 查看错误。
 
 流程参考 [Tauri 官方流水线](https://v2.tauri.app/distribute/pipelines/github/)、[Readest](https://github.com/readest/readest/blob/main/.github/workflows/release.yml) 与 [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/blob/dev/.github/workflows/release.yml) 的版本驱动、矩阵构建和 Release 汇总方式，按本项目的 KMP 引擎及移动端构建补充处理。
 
@@ -140,4 +144,4 @@ Release 工作流在开始时检查这些配置和 `TAURI_SIGNING_PRIVATE_KEY` �
 
 更新公钥在 `tauri.conf.json`；对应私钥保存在本地被 Git 忽略的 `.signing/updater.key`，CI 使用 Actions Secret `TAURI_SIGNING_PRIVATE_KEY`。当前密钥无密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可为空；若以后换用带密码的密钥，设置对应 Secret。私钥必须另外备份，后续版本保持使用同一密钥，避免已安装客户端无法验证更新。
 
-更新清单含 12 个目标：Windows、macOS 各两个，Linux 两种格式各两个，Android 四个。共上传 30 个附件：13 个安装包、2 个 macOS 更新归档、12 个签名和 3 个清单/校验文件。CI 在草稿生成后把更新说明写入 `latest.json`，再重新计算校验值；手工修改草稿说明后，可重跑 Release 汇总 job 同步更新清单。公开发布仍由人工完成。
+更新清单只包含本次选择的目标；默认一级生成 6 个安装包、1 个 macOS 更新归档、5 个签名和 3 个清单/校验文件，共 15 个附件。选择全部三级时为 13 个安装包、2 个 macOS 更新归档、12 个签名和 3 个清单/校验文件，共 30 个附件。未包含在最新稳定版中的架构没有对应自动更新包，需要在发版时选择该级别。CI 在草稿生成后把更新说明写入 `latest.json`，再重新计算校验值；手工修改草稿说明后，可重跑 Release 汇总 job 同步更新清单。是否公开由 `draft` 参数决定。

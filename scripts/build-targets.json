@@ -1,0 +1,13 @@
+[
+  {"id":"windows-x64","tier":1,"platform":"windows","arch":"x64","runner":"windows-latest","target":"x86_64-pc-windows-msvc","bundles":"nsis","packages":[".exe"],"updates":{".exe":"windows-x86_64-nsis"}},
+  {"id":"macos-arm64","tier":1,"platform":"macos","arch":"arm64","runner":"macos-latest","target":"aarch64-apple-darwin","bundles":"dmg","packages":[".dmg"],"updates":{".app.tar.gz":"darwin-aarch64-app"}},
+  {"id":"linux-x64","tier":1,"platform":"linux","arch":"x64","runner":"ubuntu-24.04","target":"x86_64-unknown-linux-gnu","bundles":"appimage,deb","packages":[".AppImage",".deb"],"updates":{".AppImage":"linux-x86_64-appimage",".deb":"linux-x86_64-deb"}},
+  {"id":"android-arm64","tier":1,"platform":"android","arch":"arm64","abi":"arm64-v8a","target":"aarch64","rust":"aarch64-linux-android","packages":[".apk"],"updates":{".apk":"android-aarch64"}},
+  {"id":"ios-arm64-unsigned","tier":1,"platform":"ios","arch":"arm64","packages":[".ipa"],"updates":{}},
+  {"id":"android-armv7","tier":2,"platform":"android","arch":"armv7","abi":"armeabi-v7a","target":"armv7","rust":"armv7-linux-androideabi","packages":[".apk"],"updates":{".apk":"android-armv7"}},
+  {"id":"macos-x64","tier":2,"platform":"macos","arch":"x64","runner":"macos-15-intel","target":"x86_64-apple-darwin","bundles":"dmg","packages":[".dmg"],"updates":{".app.tar.gz":"darwin-x86_64-app"}},
+  {"id":"windows-arm64","tier":2,"platform":"windows","arch":"arm64","runner":"windows-11-arm","target":"aarch64-pc-windows-msvc","bundles":"nsis","packages":[".exe"],"updates":{".exe":"windows-aarch64-nsis"}},
+  {"id":"linux-arm64","tier":2,"platform":"linux","arch":"arm64","runner":"ubuntu-24.04-arm","target":"aarch64-unknown-linux-gnu","bundles":"appimage,deb","packages":[".AppImage",".deb"],"updates":{".AppImage":"linux-aarch64-appimage",".deb":"linux-aarch64-deb"}},
+  {"id":"android-x64","tier":3,"platform":"android","arch":"x64","abi":"x86_64","target":"x86_64","rust":"x86_64-linux-android","packages":[".apk"],"updates":{".apk":"android-x86_64"}},
+  {"id":"android-x86","tier":3,"platform":"android","arch":"x86","abi":"x86","target":"i686","rust":"i686-linux-android","packages":[".apk"],"updates":{".apk":"android-i686"}}
+]

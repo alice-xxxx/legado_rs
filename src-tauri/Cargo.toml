@@ -43,7 +43,6 @@ desktop = [
     "tauri/dbus",
 ]
 mobile-runtime = [
-    "dep:tauri-plugin-update-installer",
     "dep:tauri-plugin-sql",
     "dep:sqlx",
     "dep:tauri-build",
@@ -122,5 +121,5 @@ strip = true
 tauri-plugin-updater = { version = "2.14.1", optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
-tauri-plugin-update-installer = { path = "plugins/update-installer", optional = true }
+tauri-plugin-update-installer = { path = "plugins/update-installer" }
 minisign-verify = "0.3"

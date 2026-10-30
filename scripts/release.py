@@ -14,31 +14,35 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 IDENTIFIER = r"(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(" + IDENTIFIER + r"(?:\." + IDENTIFIER + r")*))?")
-PACKAGES = {
-    "windows-x64": (".exe",),
-    "windows-arm64": (".exe",),
-    "macos-x64": (".dmg",),
-    "macos-arm64": (".dmg",),
-    "linux-x64": (".AppImage", ".deb"),
-    "linux-arm64": (".AppImage", ".deb"),
-    "android-arm64": (".apk",),
-    "android-armv7": (".apk",),
-    "android-x64": (".apk",),
-    "android-x86": (".apk",),
-    "ios-arm64-unsigned": (".ipa",),
-}
-UPDATES = {
-    "windows-x64": ((".exe", "windows-x86_64-nsis"),),
-    "windows-arm64": ((".exe", "windows-aarch64-nsis"),),
-    "macos-x64": ((".app.tar.gz", "darwin-x86_64-app"),),
-    "macos-arm64": ((".app.tar.gz", "darwin-aarch64-app"),),
-    "linux-x64": ((".AppImage", "linux-x86_64-appimage"), (".deb", "linux-x86_64-deb")),
-    "linux-arm64": ((".AppImage", "linux-aarch64-appimage"), (".deb", "linux-aarch64-deb")),
-    "android-arm64": ((".apk", "android-aarch64"),),
-    "android-armv7": ((".apk", "android-armv7"),),
-    "android-x64": ((".apk", "android-x86_64"),),
-    "android-x86": ((".apk", "android-i686"),),
-}
+TARGETS = json.loads((ROOT / "scripts/build-targets.json").read_text(encoding="utf-8"))
+
+
+def selected_targets(tiers="1", platform="all"):
+    levels = tiers.split(",")
+    if not levels or len(set(levels)) != len(levels) or any(level not in ("1", "2", "3") for level in levels):
+        raise ValueError("Select independent tiers: 1, 2, 3, or a comma-separated combination")
+    targets = [target for target in TARGETS if str(target["tier"]) in levels and (
+        platform == "all" or target["platform"] == platform or
+        (platform == "desktop" and target["platform"] in ("windows", "macos", "linux")))]
+    if not targets:
+        raise ValueError(f"No {platform} targets in tiers {tiers}")
+    return targets
+
+
+def matrix(tiers, platform):
+    targets = selected_targets(tiers, platform)
+    groups = {
+        "desktop": [target for target in targets if target["platform"] in ("windows", "macos", "linux")],
+        "android": [target for target in targets if target["platform"] == "android"],
+    }
+    outputs = {name: json.dumps({"include": rows}, separators=(",", ":")) for name, rows in groups.items()}
+    outputs.update({f"has_{name}": str(bool(rows)).lower() for name, rows in groups.items()})
+    outputs["ios"] = str(any(target["platform"] == "ios" for target in targets)).lower()
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
+            stream.writelines(f"{key}={value}\n" for key, value in outputs.items())
+    print(f"Tiers {tiers}: " + ", ".join(target["id"] for target in targets))
+    return outputs
 
 
 def read_json(path):
@@ -113,12 +117,14 @@ def set_version(version, root=ROOT):
     print(f"App version: {version}")
 
 
-def collect(tag, commit, source, output, root=ROOT):
+def collect(tag, commit, source, output, root=ROOT, tiers="1"):
     version = check(tag, root)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected a full source commit SHA")
+    targets = selected_targets(tiers)
+    packages = {target["id"]: target["packages"] for target in targets}
     selected = []
-    for target, extensions in PACKAGES.items():
+    for target, extensions in packages.items():
         for extension in extensions:
             files = list((source / f"Foliver-{target}").rglob(f"*{extension}"))
             if len(files) != 1 or files[0].stat().st_size == 0:
@@ -128,8 +134,9 @@ def collect(tag, commit, source, output, root=ROOT):
     repository = os.environ.get("GITHUB_REPOSITORY", "alice-xxxx/legado_rs")
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
     base_url = f"{server}/{repository}/releases/download/{tag}"
-    for target, formats in UPDATES.items():
-        for extension, key in formats:
+    for config in targets:
+        target = config["id"]
+        for extension, key in config["updates"].items():
             files = list((source / f"Foliver-{target}").rglob(f"*{extension}"))
             if len(files) != 1 or not files[0].stat().st_size:
                 raise ValueError(f"Expected one updater package: {target} {extension}")
@@ -138,7 +145,7 @@ def collect(tag, commit, source, output, root=ROOT):
             if not signature_file.is_file() or not signature_file.stat().st_size:
                 raise ValueError(f"Missing updater signature: {signature_file.name}")
             name = f"Foliver-{tag}-{target}{extension}"
-            if extension not in PACKAGES[target]:
+            if extension not in packages[target]:
                 selected.append((target, file, name))
             selected.append((target, signature_file, name + ".sig"))
             with file.open("rb") as stream:
@@ -160,6 +167,8 @@ def collect(tag, commit, source, output, root=ROOT):
         "version": version,
         "tag": tag,
         "commit": commit,
+        "tiers": sorted({target["tier"] for target in targets}),
+        "targets": [target["id"] for target in targets],
         "prerelease": bool(VERSION.fullmatch(version)[4]),
         "build": f"{server}/{repository}/actions/runs/{run_id}" if run_id else None,
         "assets": assets,
@@ -168,7 +177,7 @@ def collect(tag, commit, source, output, root=ROOT):
     updater = {"version": version, "notes": "", "pub_date": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "platforms": platforms}
     (output / "latest.json").write_text(json_text(updater), encoding="utf-8")
     checksums(output)
-    print(f"Collected {sum(map(len, PACKAGES.values()))} installers and {len(platforms)} updater entries for {tag}")
+    print(f"Collected {sum(map(len, packages.values()))} installers and {len(platforms)} updater entries for {tag}")
 
 
 def checksums(output):
@@ -194,11 +203,15 @@ def main():
     commands.add_parser("version").add_argument("version")
     validate = commands.add_parser("check")
     validate.add_argument("tag", nargs="?", default="", help="Expected tag; omit to read the app version")
+    builds = commands.add_parser("matrix")
+    builds.add_argument("--tiers", default="1")
+    builds.add_argument("--platform", choices=("all", "desktop", "android", "ios"), default="all")
     assets = commands.add_parser("collect")
     assets.add_argument("tag")
     assets.add_argument("commit")
     assets.add_argument("--input", type=Path, default=Path("artifacts"))
     assets.add_argument("--output", type=Path, default=Path("release-assets"))
+    assets.add_argument("--tiers", default="1")
     notes = commands.add_parser("finalize")
     notes.add_argument("notes", type=Path)
     notes.add_argument("--output", type=Path, default=Path("release-assets"))
@@ -214,8 +227,10 @@ def main():
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                 stream.write(f"tag={tag}\nversion={version}\ncommit={commit}\nprerelease={prerelease}\n")
         print(f"Validated {tag} at {commit} ({'prerelease' if prerelease == 'true' else 'stable'})")
+    elif args.command == "matrix":
+        matrix(args.tiers, args.platform)
     elif args.command == "collect":
-        collect(args.tag, args.commit, args.input, args.output)
+        collect(args.tag, args.commit, args.input, args.output, tiers=args.tiers)
     else:
         finalize(args.notes, args.output)
 

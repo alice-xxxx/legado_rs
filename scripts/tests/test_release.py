@@ -36,15 +36,14 @@ class ReleaseTests(unittest.TestCase):
     def write_json(self, name, value):
         (self.root / name).write_text(json.dumps(value), encoding="utf8")
 
-    def seed_artifacts(self):
-        for target, extensions in release.PACKAGES.items():
-            folder = self.artifacts / f"Foliver-{target}"
+    def seed_artifacts(self, tiers="1"):
+        for target in release.selected_targets(tiers):
+            folder = self.artifacts / f"Foliver-{target['id']}"
             folder.mkdir(parents=True)
-            for extension in extensions:
-                (folder / f"installer{extension}").write_bytes(f"{target}{extension}".encode())
-        for target, formats in release.UPDATES.items():
-            for extension, _ in formats:
-                package = self.artifacts / f"Foliver-{target}" / f"installer{extension}"
+            for extension in target["packages"]:
+                (folder / f"installer{extension}").write_bytes(f"{target['id']}{extension}".encode())
+            for extension in target["updates"]:
+                package = folder / f"installer{extension}"
                 if not package.exists():
                     package.write_bytes(b"updater archive")
                 package.with_name(package.name + ".sig").write_text("signed fixture")
@@ -64,6 +63,7 @@ class ReleaseTests(unittest.TestCase):
         scripts = self.root / "scripts"
         scripts.mkdir()
         (scripts / "release.py").write_bytes(Path(release.__file__).read_bytes())
+        (scripts / "build-targets.json").write_bytes((Path(release.__file__).parent / "build-targets.json").read_bytes())
         subprocess.run(["git", "init", "--quiet", str(self.root)], check=True)
         subprocess.run(["git", "-C", str(self.root), "add", "."], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(self.root), "-c", "user.name=Release test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"], check=True)
@@ -99,8 +99,8 @@ class ReleaseTests(unittest.TestCase):
 
     def test_all_architectures_signatures_manifest_and_checksums(self):
         release.set_version("0.1.1", self.root)
-        self.seed_artifacts()
-        release.collect("v0.1.1", self.commit, self.artifacts, self.output, self.root)
+        self.seed_artifacts("1,2,3")
+        release.collect("v0.1.1", self.commit, self.artifacts, self.output, self.root, tiers="1,2,3")
         self.assertEqual(len(list(self.output.iterdir())), 30)
         manifest = json.loads((self.output / "release-manifest.json").read_text())
         self.assertEqual(manifest["commit"], self.commit)
@@ -127,17 +127,62 @@ class ReleaseTests(unittest.TestCase):
 
     def test_missing_architecture_never_creates_output(self):
         self.seed_artifacts()
-        (self.artifacts / "Foliver-android-x86/installer.apk").unlink()
-        with self.assertRaisesRegex(ValueError, "android-x86"):
+        (self.artifacts / "Foliver-android-arm64/installer.apk").unlink()
+        with self.assertRaisesRegex(ValueError, "android-arm64"):
             release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root)
         self.assertFalse(self.output.exists())
 
     def test_missing_signature_never_creates_output(self):
         self.seed_artifacts()
-        (self.artifacts / "Foliver-linux-arm64/installer.deb.sig").unlink()
+        (self.artifacts / "Foliver-linux-x64/installer.deb.sig").unlink()
         with self.assertRaisesRegex(ValueError, "Missing updater signature"):
             release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root)
         self.assertFalse(self.output.exists())
+
+    def test_tiers_select_independent_device_groups(self):
+        expected = {
+            "1": {"windows-x64", "macos-arm64", "linux-x64", "android-arm64", "ios-arm64-unsigned"},
+            "2": {"windows-arm64", "macos-x64", "linux-arm64", "android-armv7"},
+            "3": {"android-x64", "android-x86"},
+        }
+        self.assertEqual({target["id"] for target in release.selected_targets()}, expected["1"])
+        for tiers in ("1", "2", "3", "1,2", "1,3", "2,3", "1,2,3"):
+            with self.subTest(tiers=tiers):
+                selected = set.union(*(expected[tier] for tier in tiers.split(",")))
+                outputs = release.matrix(tiers, "all")
+                rows = json.loads(outputs["desktop"])["include"] + json.loads(outputs["android"])["include"]
+                ids = {target["id"] for target in rows}
+                if outputs["ios"] == "true":
+                    ids.add("ios-arm64-unsigned")
+                self.assertEqual(ids, selected)
+                self.assertEqual(outputs["has_desktop"], str(any(target["platform"] in ("windows", "macos", "linux") for target in rows)).lower())
+                self.assertEqual(outputs["has_android"], str(any(target["platform"] == "android" for target in rows)).lower())
+
+    def test_every_tier_combination_collects_only_selected_artifacts(self):
+        for tiers in ("1", "2", "3", "1,2", "1,3", "2,3", "1,2,3"):
+            with self.subTest(tiers=tiers):
+                self.artifacts = self.root / f"artifacts-{tiers}"
+                self.output = self.root / f"output-{tiers}"
+                self.seed_artifacts(tiers)
+                release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root, tiers=tiers)
+                targets = release.selected_targets(tiers)
+                manifest = release.read_json(self.output / "release-manifest.json")
+                self.assertEqual(set(manifest["targets"]), {target["id"] for target in targets})
+                self.assertEqual(manifest["tiers"], [int(tier) for tier in tiers.split(",")])
+                self.assertEqual({asset["target"] for asset in manifest["assets"]}, set(manifest["targets"]))
+                updater = release.read_json(self.output / "latest.json")
+                self.assertEqual(set(updater["platforms"]), {key for target in targets for key in target["updates"].values()})
+                for package in updater["platforms"].values():
+                    self.assertTrue((self.output / package["url"].rsplit("/", 1)[1]).is_file())
+                self.assert_checksums()
+
+    def test_platform_filter_and_invalid_tiers(self):
+        self.assertEqual([target["id"] for target in release.selected_targets("2", "android")], ["android-armv7"])
+        for tiers in ("", "0", "4", "1,1", "1,", "1;echo bad"):
+            with self.subTest(tiers=tiers), self.assertRaises(ValueError):
+                release.matrix(tiers, "all")
+        with self.assertRaisesRegex(ValueError, "No ios targets"):
+            release.matrix("2", "ios")
 
     def test_duplicate_package_never_creates_output(self):
         self.seed_artifacts()
