@@ -1,18 +1,18 @@
 name: Release Foliver
-run-name: Release ${{ inputs.tag || github.ref_name }}
+run-name: Release from ${{ github.ref_name }}
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
-      tag:
-        description: 'Existing release tag (vX.Y.Z)'
-        required: true
-        type: string
-  push:
-    tags: ['v[0-9]+.[0-9]+.0']
+      draft:
+        description: 'Keep the completed release as a draft'
+        type: boolean
+        default: false
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref_name }}
+  group: release-foliver
   cancel-in-progress: false
 
 permissions:
@@ -22,24 +22,33 @@ jobs:
   prepare:
     name: Validate release
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ inputs.tag || github.ref_name }}
-          path: release-source
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Validate tag and app versions
+      - name: Read app version and validate source
         id: version
         env:
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: python scripts/release.py check "$RELEASE_TAG" --root release-source ${{ github.event_name == 'workflow_dispatch' && '--allow-patch' || '' }}
-      - name: Check release signing secrets
+          RELEASE_TAG: ${{ github.event_name == 'push' && github.ref_name || '' }}
+        run: python scripts/release.py check "$RELEASE_TAG"
+      - name: Check release state
+        uses: actions/github-script@v8
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
+        with:
+          script: |
+            await require('./.github/scripts/release.cjs').validate({ github, context });
+      - name: Check signing configuration
         env:
           FOLIVER_ANDROID_KEYSTORE_BASE64: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_BASE64 }}
           FOLIVER_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_PASSWORD }}
@@ -49,33 +58,19 @@ jobs:
         run: |
           for name in FOLIVER_ANDROID_KEYSTORE_BASE64 FOLIVER_ANDROID_KEYSTORE_PASSWORD FOLIVER_ANDROID_KEY_ALIAS FOLIVER_ANDROID_KEY_PASSWORD TAURI_SIGNING_PRIVATE_KEY; do
             if [ -z "${!name}" ]; then
-              echo "::error::Missing secret: $name"
+              echo "::error::Missing repository secret: $name"
               exit 1
             fi
           done
-      - name: Reject published releases and automatic downgrades
-        uses: actions/github-script@v8
-        env:
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          MANUAL_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
-        with:
-          script: |
-            const version = tag => /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag)?.slice(1).map(Number);
-            const candidate = version(process.env.RELEASE_TAG);
-            const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
-            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
-            for (const release of releases) {
-              if (release.draft) continue;
-              if (release.tag_name === process.env.RELEASE_TAG) throw new Error('Published releases cannot be overwritten');
-              const published = version(release.tag_name);
-              if (process.env.MANUAL_RELEASE !== 'true' && published && compare(candidate, published) <= 0) {
-                throw new Error(`${process.env.RELEASE_TAG} must be newer than published ${release.tag_name}`);
-              }
-            }
+
+  checks:
+    name: Check source
+    needs: prepare
+    uses: ./.github/workflows/ci.yml
 
   build:
-    name: Build every supported architecture
-    needs: prepare
+    name: Build release
+    needs: [prepare, checks]
     uses: ./.github/workflows/build.yml
     with:
       platform: all
@@ -83,22 +78,24 @@ jobs:
       updater: true
     secrets: inherit
 
-  release:
-    name: Assemble draft release
+  publish:
+    name: Verify and publish release
     needs: [prepare, build]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
     env:
       RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.prepare.outputs.commit }}
+      RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+      RELEASE_DRAFT: ${{ inputs.draft || false }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.commit }}
-          path: release-source
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -106,62 +103,42 @@ jobs:
         with:
           pattern: Foliver-*
           path: artifacts
-      - name: Check and name every installer, generate checksums
-        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT" --root release-source ${{ github.event_name == 'workflow_dispatch' && '--allow-patch' || '' }}
-      - name: Create or reuse draft
+      - name: Validate all packages and generate update manifest
+        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT"
+      - name: Create release tag and stage draft
         id: draft
         uses: actions/github-script@v8
         with:
           script: |
-            const tag = process.env.RELEASE_TAG;
-            let { data: ref } = await github.rest.git.getRef({ ...context.repo, ref: `tags/${tag}` });
-            let object = ref.object;
-            while (object.type === 'tag') {
-              const { data } = await github.rest.git.getTag({ ...context.repo, tag_sha: object.sha });
-              object = data.object;
-            }
-            if (object.sha !== process.env.RELEASE_COMMIT) throw new Error('Release tag moved during build');
-            const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
-            let release = releases.find(item => item.tag_name === tag);
-            if (release && !release.draft) throw new Error('Published releases cannot be overwritten');
-            if (!release) {
-              ({ data: release } = await github.rest.repos.createRelease({
-                ...context.repo,
-                tag_name: tag,
-                target_commitish: process.env.RELEASE_COMMIT,
-                name: `Foliver ${tag}`,
-                draft: true,
-                prerelease: false,
-                generate_release_notes: true,
-                body: '安装包按平台和架构分别提供。Android APK 已签名；Windows、macOS 安装包及 iOS IPA 未签名，IPA 需自行签名后安装。\n\n下载后可使用 `SHA256SUMS` 核对文件完整性；`release-manifest.json` 记录源码提交、构建链接及每个安装包的校验值。\n\n',
-              }));
-            }
-            core.setOutput('id', release.id);
-            core.setOutput('url', release.html_url);
-            require('node:fs').writeFileSync(`${process.env.RUNNER_TEMP}/foliver-release-notes.json`, JSON.stringify({ notes: release.body || '', pub_date: release.created_at }));
-      - name: Add release notes to app update manifest
+            await require('./.github/scripts/release.cjs').stage({ github, context, core });
+      - name: Add release notes and finalize checksums
         run: python scripts/release.py finalize "$RUNNER_TEMP/foliver-release-notes.json"
       - name: Upload release assets
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
-      - name: Verify draft assets and write summary
+      - name: Verify uploaded assets and publish
         uses: actions/github-script@v8
         env:
           RELEASE_ID: ${{ steps.draft.outputs.id }}
-          RELEASE_URL: ${{ steps.draft.outputs.url }}
         with:
           script: |
-            const fs = require('node:fs');
-            const release_id = Number(process.env.RELEASE_ID);
-            const { data: release } = await github.rest.repos.getRelease({ ...context.repo, release_id });
-            if (!release.draft) throw new Error('Release was published during asset upload');
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...context.repo, release_id, per_page: 100 });
-            for (const name of fs.readdirSync('release-assets')) {
-              if (!assets.some(asset => asset.name === name && asset.size === fs.statSync(`release-assets/${name}`).size && asset.state === 'uploaded')) {
-                throw new Error(`Missing or incomplete release asset: ${name}`);
-              }
-            }
-            await core.summary
-              .addHeading(`Foliver ${process.env.RELEASE_TAG}`)
-              .addLink('检查并发布草稿 Release', process.env.RELEASE_URL)
-              .addRaw('\n\n所有平台和架构已构建，安装包、签名更新包、latest.json 及校验文件已上传。请检查草稿后手动发布。\n')
-              .write();
+            await require('./.github/scripts/release.cjs').publish({ github, context, core });
+
+  result:
+    name: Release result
+    if: always()
+    needs: [prepare, checks, build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          failed = [name for name, job in jobs.items() if job['result'] != 'success']
+          if failed:
+              raise SystemExit(f"Release incomplete: {', '.join(failed)}. Check the first failed job; incomplete packages are never published.")
+          print('Release complete.')
+          PY

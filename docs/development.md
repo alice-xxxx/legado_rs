@@ -59,25 +59,39 @@ npm run tauri -- ios build --no-sign --ci
 
 ## 版本发布
 
-只有新版本标签 `vX.Y.0` 自动触发发版，例如 `v0.2.0`、`v1.0.0`。普通提交、补丁标签（`v0.2.1`）和预发布标签均不自动触发。自动发版拒绝不高于已发布版本的标签。
+工作流职责：
 
-手动发版：打开 Actions → Release Foliver → Run workflow，在 `tag` 中填写仓库已存在的正式版本标签 `vX.Y.Z`。手动允许补丁和旧版本，不受自动发版的版本范围及新旧限制；仍校验标签与应用版本一致、构建全部支持平台和架构、上传签名更新包并生成草稿。手动发版使用所选工作流版本的发版脚本校验和汇总标签源码，因此旧标签不需要包含最新版发版脚本。客户端自动更新仍只接受更高的 `X.Y.0` 版本。
+- **CI**：PR 和 `main` 提交检查工作流语法、发版逻辑、前端构建、JVM 引擎及 Rust 编译。发版前复用同一套检查，无需签名 Secret。
+- **Package Foliver**：手动构建指定平台，只保存 Actions 附件，不创建 Release。
+- **Release Foliver**：校验版本与签名配置，执行 CI，全平台构建，汇总校验附件后创建标签并发布 Release。
 
-已有同名公开 Release 一律在构建前拒绝覆盖。失败后通过 Actions 的 Re-run failed jobs 重试；草稿可以更新，公开 Release 不覆盖。
+### 手动发版
 
-用 Python 3.11+ 同步应用版本，提交后推送标签：
+打开 Actions → Release Foliver → Run workflow，选择源码分支或已有标签，直接运行即可。工作流从 `package.json` 读取版本，与 npm 锁文件、Tauri、Cargo 及 Cargo 锁文件核对，固定本次源码 SHA。**不需要填写或提前创建版本标签**。例如所选源码版本为 `0.1.0`，全部构建成功后会自动创建 `v0.1.0` 标签并发布。
+
+默认公开发布；勾选 `draft` 时仅保留已校验的草稿，随后可在 GitHub 手动发布。已公开的同名版本不重复构建或覆盖，已有标签不允许移动到其他源码。需要发新版本时先同步版本、提交，再运行工作流。
+
+### 标签发版
+
+推送 `vX.Y.Z` 标签自动发版，补丁版本正常支持。`v1.0.0-beta.1`、`v1.0.0-rc.1` 等会标记为 GitHub Prerelease。标签必须与源码中的应用版本一致。标准稳定版本号与预发布版本号均不允许前导零；不使用构建元数据 `+build` 作为发版版本。
+
+用 Python 3.11+ 同步版本，提交后推送标签：
 
 ```sh
-python scripts/release.py version 0.2.0
-python scripts/release.py check v0.2.0
+python scripts/release.py version 0.1.1
+python scripts/release.py check v0.1.1
 git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml src-tauri/Cargo.lock
-git commit -m "chore: release v0.2.0"
-git tag -a v0.2.0 -m "Foliver v0.2.0"
+git commit -m "chore: release v0.1.1"
+git tag -a v0.1.1 -m "Foliver v0.1.1"
 git push origin HEAD
-git push origin v0.2.0
+git push origin v0.1.1
 ```
 
-CI 校验标签与 npm、Tauri、Cargo 及两个锁文件的版本一致，并让所有构建使用同一个提交。发版固定构建以下全部支持架构：
+不传标签运行 `python scripts/release.py check` 可检查当前应用版本。预发布可使用 `python scripts/release.py version 1.0.0-rc.1`。CI 创建标签使用 `GITHUB_TOKEN`，不会递归触发另一轮标签发版。
+
+### 构建、签名与发布
+
+所有架构固定使用同一源码提交，构建 job 只读仓库。构建以下支持架构：
 
 | 平台 | 架构 | 安装包 |
 |---|---|---|
@@ -91,6 +105,8 @@ CI 校验标签与 npm、Tauri、Cargo 及两个锁文件的版本一致，并�
 
 Android 的 ABI 列表由 `android.abis` 配置。单独准备某个 ABI 的 AAR 时使用 `-Plegado.androidAbis=arm64-v8a`（替换成目标 ABI），再用 Tauri 的 `--target` 构建对应 APK。CI 会验证 APK 签名、实际 ABI，以及该 ABI 下的 Rust 和 QuickJS 动态库。
 
+发版 APK 的 `versionName` 使用应用版本，`versionCode` 使用 `1000000 + GITHUB_RUN_NUMBER`，四个 ABI 与同次重跑保持一致。这个计数起点高于此前 `0.1.x` 的默认构建号，并让 RC → 正式版的构建号递增。普通 Package 构建仍使用源码中的默认构建号。
+
 仓库 Actions Secrets 需要保留以下四项 Android 签名配置：
 
 - `FOLIVER_ANDROID_KEYSTORE_BASE64`：PKCS12 keystore 的 Base64 内容。
@@ -98,17 +114,21 @@ Android 的 ABI 列表由 `android.abis` 配置。单独准备某个 ABI 的 AAR
 - `FOLIVER_ANDROID_KEY_ALIAS`：签名 alias。
 - `FOLIVER_ANDROID_KEY_PASSWORD`：签名密钥密码。
 
-Release 工作流在开始时检查这些配置是否齐全。只有最后汇总 Release 的 job 获得 `contents: write`；构建 job 保持只读权限。Windows/macOS 沿用未签名分发，iOS IPA 需自行签名后安装，当前不自动提交应用商店。
+Release 工作流在开始时检查这些配置和 `TAURI_SIGNING_PRIVATE_KEY` 是否齐全。只有最后汇总发布的 job 获得 `contents: write`。Windows/macOS 尚未配置系统证书签名，iOS IPA 需自行签名后安装，当前不自动提交应用商店。
 
-全部 11 个构建任务成功后，CI 汇总并校验 13 个安装包及签名更新包，统一命名为 `Foliver-vX.Y.0-平台-架构.扩展名`，同时生成 `SHA256SUMS`、`release-manifest.json` 和 `latest.json`。manifest 包含源码提交、构建链接、文件大小与 SHA-256；校验文件也覆盖两个 manifest 和签名文件。缺少任意架构、安装包或更新签名即停止，不创建新的草稿。
+全部 11 个构建任务成功后，CI 汇总并校验 13 个安装包及签名更新包，统一命名为 `Foliver-v版本-平台-架构.扩展名`，同时生成 `SHA256SUMS`、`release-manifest.json` 和 `latest.json`。manifest 包含源码提交、构建链接、预发布标记、文件大小与 SHA-256；校验文件也覆盖两个 manifest 和签名文件。缺少任意架构、安装包或更新签名即停止，不创建标签或 Release。
 
-最后创建 GitHub Release 草稿、自动生成更新说明、上传安装包，并核对上传状态和大小。已有草稿重跑时更新同名附件，保留手工编辑的说明。打开 Actions 汇总中的草稿链接检查，再手动点击 Publish release；CI 不自动公开发布。
+附件完整后创建标签和暂存草稿，生成更新说明，上传并校验附件数量、状态、大小以及 GitHub 返回的 SHA-256。全部通过后才公开发布；中途失败会保留草稿，重新运行失败的 job 可继续上传，保留编辑过的说明并清理过期附件。公开版本不会被修改。
+
+只有高于全部现有稳定版本的新稳定版会成为 GitHub `latest`。预发布与历史稳定版不会替换当前稳定更新入口。发版工作流串行执行，单个平台构建失败即阻止发布，最终结果 job 会明确报告失败环节。
+
+流程参考 [Tauri 官方流水线](https://v2.tauri.app/distribute/pipelines/github/)、[Readest](https://github.com/readest/readest/blob/main/.github/workflows/release.yml) 与 [Clash Verge Rev](https://github.com/clash-verge-rev/clash-verge-rev/blob/dev/.github/workflows/release.yml) 的版本驱动、矩阵构建和 Release 汇总方式，按本项目的 KMP 引擎及移动端构建补充处理。
 
 ## 应用自动更新
 
 “我的 → 关于”提供应用名称、当前版本、系统与架构、GitHub 项目链接、问题反馈、启动时检查开关与手动检查入口。问题反馈打开 GitHub Issues 表单，预填版本与平台，由用户提交。页面使用仓库根目录 `LICENSE`、`THIRD_PARTY_NOTICES.txt`、`PRIVACY.txt` 展示离线可读的项目许可、主要第三方组件的许可原文与隐私说明；升级组件时同步更新第三方声明。正式构建默认仅在启动后后台检查一次；开发构建保留手动检查。关闭启动时检查后仍可手动操作。自动检查失败保持安静，手动检查和安装失败在界面显示具体错误。
 
-所有平台只读取已公开 Release 的 `latest.json`，草稿不会推送到客户端。客户端只接受更高的 `X.Y.0` 正式版本。发现新版后显示说明，由用户决定是否下载和更新，不强制退出应用。选择“忽略此版本”后会保存该版本号，下次启动不再自动提示该版本；手动检查仍可查看和安装，后续新版本正常提示。“稍后”仅关闭本次弹窗。
+所有平台只读取 GitHub 最新稳定 Release 的 `latest.json`，草稿和预发布不会推送到稳定客户端。客户端接受更高的正式版本，包含补丁版本。发现新版后显示说明，由用户决定是否下载和更新，不强制退出应用。选择“忽略此版本”后会保存该版本号，下次启动不再自动提示该版本；手动检查仍可查看和安装，后续新版本正常提示。“稍后”仅关闭本次弹窗。
 
 - Windows：校验签名后启动 NSIS 更新程序，退出并由安装器重新启动。
 - macOS：使用额外生成的 `.app.tar.gz` 更新应用，再由用户点击重启。

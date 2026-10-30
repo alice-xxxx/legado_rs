@@ -12,7 +12,8 @@ import subprocess
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
+IDENTIFIER = r"(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+VERSION = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(" + IDENTIFIER + r"(?:\." + IDENTIFIER + r")*))?")
 PACKAGES = {
     "windows-x64": (".exe",),
     "windows-arm64": (".exe",),
@@ -66,14 +67,14 @@ def versions(root):
     }
 
 
-def check(tag, root=ROOT, allow_patch=False):
+def check(tag="", root=ROOT):
+    current = versions(root)
+    tag = tag or f"v{current['package.json']}"
     match = VERSION.fullmatch(tag.removeprefix("v"))
     if not tag.startswith("v") or not match:
-        raise ValueError("Expected a stable version tag vX.Y.Z without leading zeroes")
-    if not allow_patch and match[3] != "0":
-        raise ValueError("Releases require vX.Y.0; patch and prerelease versions do not release")
+        raise ValueError("Expected vX.Y.Z or vX.Y.Z-rc.N without leading zeroes")
     version = tag[1:]
-    mismatches = {path: value for path, value in versions(root).items() if value != version}
+    mismatches = {path: value for path, value in current.items() if value != version}
     if mismatches:
         raise ValueError(f"Version must match {tag}: {mismatches}")
     return version
@@ -81,7 +82,7 @@ def check(tag, root=ROOT, allow_patch=False):
 
 def set_version(version, root=ROOT):
     if not VERSION.fullmatch(version):
-        raise ValueError("Expected X.Y.Z without leading zeroes")
+        raise ValueError("Expected X.Y.Z or X.Y.Z-rc.N without leading zeroes")
     versions(root)  # Parse and validate every input before writing any file.
     updates = {}
     for name in ("package.json", "package-lock.json", "src-tauri/tauri.conf.json"):
@@ -112,8 +113,8 @@ def set_version(version, root=ROOT):
     print(f"App version: {version}")
 
 
-def collect(tag, commit, source, output, root=ROOT, allow_patch=False):
-    version = check(tag, root, allow_patch)
+def collect(tag, commit, source, output, root=ROOT):
+    version = check(tag, root)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected a full source commit SHA")
     selected = []
@@ -159,6 +160,7 @@ def collect(tag, commit, source, output, root=ROOT, allow_patch=False):
         "version": version,
         "tag": tag,
         "commit": commit,
+        "prerelease": bool(VERSION.fullmatch(version)[4]),
         "build": f"{server}/{repository}/actions/runs/{run_id}" if run_id else None,
         "assets": assets,
     }
@@ -191,15 +193,12 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("version").add_argument("version")
     validate = commands.add_parser("check")
-    validate.add_argument("tag")
+    validate.add_argument("tag", nargs="?", default="", help="Expected tag; omit to read the app version")
     assets = commands.add_parser("collect")
     assets.add_argument("tag")
     assets.add_argument("commit")
     assets.add_argument("--input", type=Path, default=Path("artifacts"))
     assets.add_argument("--output", type=Path, default=Path("release-assets"))
-    for command in (validate, assets):
-        command.add_argument("--root", type=Path, default=ROOT, help="Tagged source checkout")
-        command.add_argument("--allow-patch", action="store_true", help="Allow manual vX.Y.Z releases")
     notes = commands.add_parser("finalize")
     notes.add_argument("notes", type=Path)
     notes.add_argument("--output", type=Path, default=Path("release-assets"))
@@ -207,14 +206,16 @@ def main():
     if args.command == "version":
         set_version(args.version)
     elif args.command == "check":
-        version = check(args.tag, args.root, args.allow_patch)
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.root, text=True).strip()
+        version = check(args.tag)
+        tag = f"v{version}"
+        prerelease = str(bool(VERSION.fullmatch(version)[4])).lower()
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
-                stream.write(f"tag={args.tag}\nversion={version}\ncommit={commit}\n")
-        print(f"Validated {args.tag} at {commit}")
+                stream.write(f"tag={tag}\nversion={version}\ncommit={commit}\nprerelease={prerelease}\n")
+        print(f"Validated {tag} at {commit} ({'prerelease' if prerelease == 'true' else 'stable'})")
     elif args.command == "collect":
-        collect(args.tag, args.commit, args.input, args.output, args.root, args.allow_patch)
+        collect(args.tag, args.commit, args.input, args.output)
     else:
         finalize(args.notes, args.output)
 

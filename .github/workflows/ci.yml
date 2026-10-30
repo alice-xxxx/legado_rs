@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' || !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Frontend, Rust and release checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          package-manager-cache: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Validate GitHub workflows
+        uses: docker://rhysd/actionlint:1.7.11
+      - name: Check release automation
+        run: |
+          python -m unittest discover -s scripts/tests -p 'test_*.py'
+          node --test scripts/tests/*.test.cjs
+      - run: node src-tauri/toolchain.mjs --github-env
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: check-linux-x64
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
+      - name: Install Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential curl file libayatana-appindicator3-dev libssl-dev librsvg2-dev libwebkit2gtk-4.1-dev libxdo-dev
+      - run: npm ci
+      - run: npm run icons
+      - name: Prepare desktop engine
+        working-directory: src-tauri/plugins/source-engine/engine
+        run: bash ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
+      - run: npm run build
+      - run: cargo check --lib --locked --manifest-path src-tauri/Cargo.toml

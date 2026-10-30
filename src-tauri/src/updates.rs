@@ -96,7 +96,7 @@ pub async fn check_app_update(
         .ok_or("更新版本缺失")?
         .parse()
         .map_err(|error: semver::Error| error.to_string())?;
-    if version.patch != 0 || !version.pre.is_empty() || !version.build.is_empty() {
+    if !version.pre.is_empty() || !version.build.is_empty() {
         return Err("更新来源不是正式发版版本".into());
     }
     if version <= app.package_info().version {
