@@ -42,6 +42,7 @@ val quickJsFileName = when (hostOs) {
     else -> "liblegado_quickjs.so"
 }
 val preparedQuickJsLibrary = layout.buildDirectory.file("native-jvm/$hostPlatform/$quickJsFileName").get().asFile
+extra["quickJsLibrary"] = preparedQuickJsLibrary
 val quickJsCppSources = layout.projectDirectory.dir("src/native/cpp").asFile
 val quickJsNgSources = layout.projectDirectory.dir("src/native/quickjs-ng").asFile
 val java21Launcher = javaToolchains.launcherFor {

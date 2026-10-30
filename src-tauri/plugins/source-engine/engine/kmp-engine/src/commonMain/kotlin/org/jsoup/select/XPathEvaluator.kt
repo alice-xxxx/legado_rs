@@ -1,6 +1,7 @@
 package org.jsoup.select
 
 import com.fleeksoft.ksoup.nodes.Element
+import com.fleeksoft.ksoup.nodes.Document
 import com.fleeksoft.ksoup.nodes.Node
 import com.fleeksoft.ksoup.nodes.TextNode
 import com.fleeksoft.ksoup.select.Elements
@@ -13,6 +14,8 @@ import kotlin.reflect.KClass
  * Supports basic XPath 1.0 patterns used in legado book sources
  */
 class XPathEvaluator {
+
+    private var positions: Map<Element, Pair<Int, Int>> = emptyMap()
 
     companion object {
         fun evaluate(xpath: String, element: Element): List<Node> {
@@ -29,11 +32,24 @@ class XPathEvaluator {
     fun eval(xpath: String, element: Element): List<Node> {
         val trimmed = xpath.trim()
 
+        val union = BalanceScan.splitQuoted(trimmed, '|', pair = false)
+        if (union.size > 1) return union.flatMap { eval(it, element) }.distinct()
+
+        if (trimmed.endsWith("/text()")) {
+            val recursive = trimmed.endsWith("//text()")
+            val path = trimmed.dropLast(if (recursive) 8 else 7)
+            val roots = if (path.isEmpty()) listOf(element) else selectByPath(path, element)
+            fun texts(root: Node): List<TextNode> = root.childNodes().flatMap {
+                when { it is TextNode -> listOf(it); recursive -> texts(it); else -> emptyList() }
+            }
+            return roots.flatMap(::texts).distinct()
+        }
+
         // Handle attribute selection: path/@attr
-        if (trimmed.contains("/@")) {
-            val parts = trimmed.split("/@", limit = 2)
-            val elementPath = parts[0].ifEmpty { "." }
-            val attrName = parts[1]
+        val attribute = Regex("/@([\\w:.-]+)$").find(trimmed)
+        if (attribute != null) {
+            val elementPath = trimmed.substring(0, attribute.range.first).ifEmpty { "." }
+            val attrName = attribute.groupValues[1]
 
             val elements = if (elementPath == ".") {
                 listOf(element)
@@ -67,7 +83,7 @@ class XPathEvaluator {
             else -> trimmed
         }
 
-        val root = if (isAbsolute) element.ownerDocument() ?: element else element
+        val root = element
 
         //按 // 分割路径, 每段是相对路径, 段间为后代递归关系
         //如 "div//a/b" → ["div", "a/b"]；引号内与 `[]` 内的 `/` 不作分隔符
@@ -76,7 +92,7 @@ class XPathEvaluator {
 
         //第一段: 若路径以 // 开头则递归搜索, 否则相对搜索
         var currentNodes = if (isRecursiveRoot) {
-            selectDescendants(segments[0], root)
+            selectDescendants(segments[0], root, includeSelf = true)
         } else {
             selectRelative(segments[0], root)
         }
@@ -96,12 +112,12 @@ class XPathEvaluator {
     /**
      * 后代递归搜索: 在 element 的所有后代中匹配 segment (segment 可含多级相对路径)
      */
-    private fun selectDescendants(segment: String, element: Element): List<Element> {
+    private fun selectDescendants(segment: String, element: Element, includeSelf: Boolean = false): List<Element> {
         val parts = parsePathParts(segment)
         if (parts.isEmpty()) return listOf(element)
 
         //对第一段做递归后代搜索
-        var currentNodes = selectStep(parts[0], element, descendants = true)
+        var currentNodes = selectStep(parts[0], element, descendants = true, includeSelf = includeSelf)
 
         //segment 内剩余路径段用相对路径处理 (如 "div/a" 中的 "/a")
         if (parts.size == 1) return currentNodes
@@ -206,23 +222,49 @@ class XPathEvaluator {
      * 同名分支只有一处差异：[PathPart.AllChildren] 与空标签的 [PathPart.TagWithPredicate]
      * 在后代步下取全部后代、在相对步下只取直接子级，故用 [descendants] 显式区分）。
      */
-    private fun selectStep(part: PathPart, element: Element, descendants: Boolean): List<Element> {
+    private fun selectStep(part: PathPart, element: Element, descendants: Boolean, includeSelf: Boolean = false): List<Element> {
+        fun candidates(test: String): List<Element> {
+            val axis = test.substringBefore("::", "")
+            val tag = test.substringAfter("::")
+            val nodes = if (axis.isNotEmpty()) {
+                when (axis) {
+                    "self" -> listOf(element)
+                    "parent" -> listOfNotNull(element.parent())
+                    "child" -> element.children().toList()
+                    "descendant" -> collectAllDescendants(element)
+                    "descendant-or-self" -> listOf(element) + collectAllDescendants(element)
+                    "ancestor", "ancestor-or-self" -> generateSequence(if (axis == "ancestor") element.parent() else element) { it.parent() }.toList()
+                    "following-sibling" -> element.nextElementSiblings().toList()
+                    "preceding-sibling" -> element.previousElementSiblings().toList()
+                    "following", "preceding" -> {
+                        val all = collectAllDescendants(generateSequence(element) { it.parent() }.last())
+                        val at = all.indexOf(element)
+                        val excluded = (if (axis == "following") collectAllDescendants(element) else element.parents()).toSet()
+                        if (axis == "following") all.drop(at + 1).filter { it !in excluded }
+                        else all.take(at).asReversed().filter { it !in excluded }
+                    }
+                    else -> throw NoStackTraceException("XPath 轴不支持: $axis")
+                }
+            } else if (descendants) {
+                val nodes = if (tag.isEmpty() || tag == "*") listOf(element) + collectAllDescendants(element) else element.getElementsByTag(tag)
+                nodes.filter { it !is Document && (includeSelf || it !== element) }
+            } else element.children().toList()
+            return nodes.filter { tag.isEmpty() || tag == "*" || it.tagName().equals(tag, true) }
+        }
         return when (part) {
             is PathPart.Parent -> {
                 val parent = element.parent()
                 if (parent is Element) listOf(parent) else emptyList()
             }
             is PathPart.Current -> listOf(element)
-            is PathPart.AllChildren ->
-                if (descendants) collectAllDescendants(element) else element.children()
-            is PathPart.Tag -> element.getElementsByTag(part.name)
+            is PathPart.AllChildren -> candidates("*")
+            is PathPart.Tag -> candidates(part.name)
             is PathPart.TagWithPredicate -> {
-                val elements = if (part.tag.isEmpty()) {
-                    if (descendants) collectAllDescendants(element) else element.children()
-                } else {
-                    element.getElementsByTag(part.tag)
+                val elements = candidates(part.tag)
+                if (!descendants || "::" in part.tag) filterByPredicate(elements, part.predicates) else {
+                    val matches = elements.groupBy { it.parent() }.values.flatMap { filterByPredicate(it, part.predicates) }.toSet()
+                    elements.filter { it in matches }
                 }
-                filterByPredicate(elements, part.predicates)
             }
         }
     }
@@ -232,8 +274,16 @@ class XPathEvaluator {
         if (predicates.isEmpty()) return elements
 
         //谓词各解析一次成 AST, 再逐个元素复用 (旧实现每个元素重跑一遍全部正则)
-        val exprs = predicates.map { parsePredicate(it) }
-        return elements.filter { element -> exprs.all { it.eval(element) } }
+        val old = positions
+        return try {
+            var matches = elements
+            for (predicate in predicates) {
+                positions = matches.mapIndexed { index, element -> element to (index + 1 to matches.size) }.toMap()
+                val expr = parsePredicate(predicate)
+                matches = matches.filter { expr.eval(it) }
+            }
+            matches
+        } finally { positions = old }
     }
 
 
@@ -248,6 +298,7 @@ class XPathEvaluator {
                 c == '(' -> { toks.add(PTok.Open); i++ }
                 c == ')' -> { toks.add(PTok.Close); i++ }
                 c == ',' -> { toks.add(PTok.Comma); i++ }
+                c == '-' -> { toks.add(PTok.Minus); i++ }
                 c == '=' -> { toks.add(PTok.Rel(RelOp.Eq)); i++ }
                 c == '!' -> {
                     if (i + 1 >= src.length || src[i + 1] != '=') {
@@ -304,18 +355,25 @@ class XPathEvaluator {
                     toks.add(PTok.Num(value)); i = j
                 }
 
-                c.isLetter() -> {
+                c == '.' || c == '*' || c.isLetter() -> {
                     var j = i
                     while (j < src.length && (src[j].isLetterOrDigit() || src[j] == '-' || src[j] == '_')) j++
                     val word = src.substring(i, j)
                     var k = j
                     while (k < src.length && src[k] == ' ') k++
                     when {
-                        //名字后紧跟 `(` 才是函数; 否则是节点测试 (`[a]` 这种) 或不认识的裸词, 一律抛错,
-                        //不得像旧实现那样非锚定匹配后当命中
-                        k < src.length && src[k] == '(' -> toks.add(PTok.Func(word.lowercase()))
                         word == "and" || word == "or" || word == "not" -> toks.add(PTok.Kw(word))
-                        else -> throw NoStackTraceException(unsupported(src))
+                        k < src.length && src[k] == '(' -> toks.add(PTok.Func(word.lowercase()))
+                        else -> {
+                            j = i
+                            while (j < src.length && !src[j].isWhitespace() && src[j] !in "=<>!,)") {
+                                if (src[j] == '[') {
+                                    j = BalanceScan.chomp(src, j, '[', ']')
+                                    if (j < 0) throw NoStackTraceException(unsupported(src))
+                                } else j++
+                            }
+                            toks.add(PTok.Path(src.substring(i, j)))
+                        }
                     }
                     i = j
                 }
@@ -341,10 +399,7 @@ class XPathEvaluator {
      * 形态对不上就抛 [NoStackTraceException]。旧实现末尾一句 `return true` 把坏规则伪装成
      * "全部命中" (archive `modules/jsoup-compat` 那份同名手写件同样如此), 那是原版缺陷, 不复刻。
      *
-     * 仍未实现的合法形态 (同样抛错, 它们不是标准外写法, 只是本件这个子集没做): 子元素与文本节点
-     * 测试、各类轴 —— `[a]`、`[a='x']`、`[text()='x']`、`[*]`、`[node()]`、`[../@id='x']`、`[@*]`,
-     * 以及 `matches()`/`ends-with()`/`string()`/`substring()`/`string-length()`/`count()`/
-     * `normalize-space()`/`local-name()`。
+     * 节点路径可用于存在性测试与比较，如 `[a]`、`[.//a]`、`[ancestor::footer]`。
      * 语法不整 (残缺括号、多余 token、不认识的函数) 同样按不支持抛错, 不静默放行。
      */
     private fun parsePredicate(predicate: String): PredExpr {
@@ -361,10 +416,12 @@ class XPathEvaluator {
         object Open : PTok()
         object Close : PTok()
         object Comma : PTok()
+        object Minus : PTok()
         class Rel(val op: RelOp) : PTok()
         class Kw(val word: String) : PTok()
         class Func(val name: String) : PTok()
         class Attr(val name: String) : PTok()
+        class Path(val value: String) : PTok()
         class Num(val value: Double) : PTok()
         class Str(val value: String) : PTok()
     }
@@ -401,12 +458,14 @@ class XPathEvaluator {
         class Text(val v: String) : PV()
         class Num(val v: Double) : PV()
         class Flag(val v: Boolean) : PV()
+        class Nodes(val values: List<String>) : PV()
         object Missing : PV()
 
         fun bool(): Boolean = when (this) {
             is Text -> v.isNotEmpty()
             is Num -> !v.isNaN() && v != 0.0
             is Flag -> v
+            is Nodes -> values.isNotEmpty()
             Missing -> false
         }
 
@@ -420,6 +479,7 @@ class XPathEvaluator {
                 else -> v.toString()
             }
             is Flag -> v.toString()
+            is Nodes -> values.firstOrNull().orEmpty()
             Missing -> ""
         }
 
@@ -428,6 +488,7 @@ class XPathEvaluator {
             is Num -> v
             is Text -> v.trim().toDoubleOrNull() ?: Double.NaN
             is Flag -> if (v) 1.0 else 0.0
+            is Nodes -> text().trim().toDoubleOrNull() ?: Double.NaN
             Missing -> Double.NaN
         }
     }
@@ -495,16 +556,24 @@ class XPathEvaluator {
                 is NumberLiteral -> PredExpr { e -> positionEquals(e, operand.value) }
                 //裸属性 = 存在性测试: 规范里属性节点集非空即为真, 与属性值是不是空串无关
                 is AttrOperand -> PredExpr { e -> e.hasAttr(operand.name) }
-                else -> PredExpr { e -> operand.of(e).bool() }
+                else -> PredExpr { e ->
+                    val value = operand.of(e)
+                    if (value is PV.Num) positionEquals(e, value.v) else value.bool()
+                }
             }
         }
 
         private fun parseOperand(): Operand {
             val t = toks.getOrNull(pos) ?: throw NoStackTraceException(unsupported(src))
-            return when (t) {
+            val operand = when (t) {
                 is PTok.Attr -> {
                     pos++
                     AttrOperand(t.name)
+                }
+
+                is PTok.Path -> {
+                    pos++
+                    Operand { e -> PV.Nodes(eval(t.value, e).map { if (it is Element) it.wholeText() else (it as? TextNode)?.getWholeText().orEmpty() }) }
                 }
 
                 is PTok.Num -> {
@@ -532,6 +601,12 @@ class XPathEvaluator {
 
                 else -> throw NoStackTraceException(unsupported(src))
             }
+            if (toks.getOrNull(pos) === PTok.Minus) {
+                pos++
+                val right = parseOperand()
+                return Operand { e -> PV.Num(operand.of(e).num() - right.of(e).num()) }
+            }
+            return operand
         }
 
         /** 本件认得的函数只有这几个; 名字对不上直接抛错 (不静默当命中)。 */
@@ -549,6 +624,11 @@ class XPathEvaluator {
                 "true", "false" -> {
                     expect(PTok.Close)
                     Operand { PV.Flag(name == "true") }
+                }
+
+                "text" -> {
+                    expect(PTok.Close)
+                    Operand { e -> PV.Nodes(e.textNodes().map { it.getWholeText() }) }
                 }
 
                 "contains", "starts-with" -> {
@@ -576,6 +656,8 @@ class XPathEvaluator {
     /** 相等/关系比较。空节点集参与比较恒 false (§3.1: 节点集与另一侧逐个比, 空集无对象)。 */
     private fun compare(op: RelOp, left: PV, right: PV): Boolean {
         if (left is PV.Missing || right is PV.Missing) return false
+        if (left is PV.Nodes) return left.values.any { compare(op, PV.Text(it), right) }
+        if (right is PV.Nodes) return right.values.any { compare(op, left, PV.Text(it)) }
         return when (op) {
             RelOp.Eq -> valuesEqual(left, right)
             RelOp.Ne -> !valuesEqual(left, right)
@@ -600,33 +682,11 @@ class XPathEvaluator {
         return a.compareTo(b)
     }
 
-    /** 纯数字谓词 `[n]`: 规范里是位置测试, 序号取同名兄弟的 1 基序号 (§2.1)。 */
+    /** 数字谓词按当前候选集的 1 基位置筛选。 */
     private fun positionEquals(element: Element, n: Double): Boolean =
         n >= 1 && n == kotlin.math.floor(n) && siblingPositionAndTotal(element).first.toDouble() == n
 
-    /**
-     * 元素在其父节点**同名**子元素序列中的 1 基序号，与同名子元素总数。
-     *
-     * 基准为 W3C XPath 1.0 的谓词位置语义（节点先经节点测试过滤、位置从 1 开始）：
-     * archive 在 `modules/jsoup-compat` 自带一份同名的手写实现（`selectDescendants` 的 `[n]` 走 0 基
-     * 且未按标签名过滤、`position()=n` 走 1 基全兄弟），三处互相矛盾。本件不拿“原版也这么错”当包袱，
-     * 只按规范定对错，并让 `[n]`/`position()=n`/`last()` 共用本函数一个序号口径。
-     */
-    private fun siblingPositionAndTotal(element: Element): Pair<Int, Int> {
-        //无父节点（文档根）时它就是候选集里唯一节点: 序号 1、总数 1, `[1]`/`last()` 都应命中
-        val parent = element.parent() ?: return 1 to 1
-        val tag = element.tagName()
-        var position = 0
-        var total = 0
-        for (child in parent.children()) {
-            if (child.tagName() == tag) {
-                total++
-                if (child === element) position = total
-            }
-        }
-        //找不到自身序号时不做"当成第 1 个"的回退: 那会把错选伪装成命中
-        return position to total
-    }
+    private fun siblingPositionAndTotal(element: Element): Pair<Int, Int> = positions[element] ?: (1 to 1)
 }
 
 sealed class PathPart {
@@ -643,14 +703,6 @@ fun Element.selectXpath(xpath: String): Elements {
 }
 
 // KClass 版（原 java.lang.Class 版泄漏 JVM 类型, commonMain 不可用）。
-// type 仅用于筛节点种类, 现仅 AnalyzeByXPath 以 Element/Node 调用, 结果最终只保留 Element。
-fun <T : Node> Element.selectXpath(xpath: String, type: KClass<T>): Elements {
-    val result = XPathEvaluator.evaluate(xpath, this)
-    val elements = Elements()
-    result.forEach { node ->
-        if (node is Element && type.isInstance(node)) {
-            elements.add(node)
-        }
-    }
-    return elements
-}
+@Suppress("UNCHECKED_CAST")
+fun <T : Node> Element.selectXpath(xpath: String, type: KClass<T>): List<T> =
+    XPathEvaluator.evaluate(xpath, this).filter { type.isInstance(it) } as List<T>

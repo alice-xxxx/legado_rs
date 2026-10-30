@@ -52,7 +52,7 @@ final class SourceBrowser {
         }
         page.seed(seed.toString(),()->{
             if(page.offline)page.view.loadDataWithBaseURL(page.target,"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data:\">"+input.optString("html"),"text/html","UTF-8",null);
-            else if(page.interactive&&!input.optString("html").isEmpty())page.view.loadDataWithBaseURL(page.target,input.optString("html"),"text/html","UTF-8",null);
+            else if(!input.optString("html").isEmpty())page.view.loadDataWithBaseURL(page.target,input.optString("html"),"text/html","UTF-8",null);
             else page.view.loadUrl(page.target,requestHeaders);
         });
         if(page.interactive){page.dialog.show();if(!input.optBoolean("waitForResult",true))page.resolve(page.response("",page.target));}
@@ -60,6 +60,7 @@ final class SourceBrowser {
     private final class Page {
         final JSONObject input;final Invoke invoke;final boolean login,offline,interactive;
         final WebView view;final CookieManager cookies;final AlertDialog dialog;final String profile,target;
+        final java.util.regex.Pattern overrideUrl;
         boolean returned=false,closed=false,evaluated=false;
         final Runnable timeout=()->close("浏览器请求超时");
         final Runnable cancellation=new Runnable(){public void run(){
@@ -70,6 +71,7 @@ final class SourceBrowser {
         Page(JSONObject input,Invoke invoke,boolean login)throws Exception{
             this.input=input;this.invoke=invoke;this.login=login;
             target=url(input.getString(login?"loginUrl":"baseUrl"));offline=!login&&"OFFLINE_SNAPSHOT".equals(input.getString("mode"));interactive=login||"INTERACTIVE_PAGE".equals(input.optString("mode"));
+            String pattern=input.optString("overrideUrlRegex","");overrideUrl=pattern.isEmpty()?null:java.util.regex.Pattern.compile(pattern);
             if(!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))throw new Exception("当前系统 WebView 不支持独立书源会话，请更新 Android System WebView");
             profile="foliver-source-"+UUID.randomUUID();view=new WebView(activity);WebViewCompat.setProfile(view,profile);
             cookies=WebViewCompat.getProfile(view).getCookieManager();
@@ -91,7 +93,13 @@ final class SourceBrowser {
             }
             view.setTag(bridge);
             view.setWebViewClient(new WebViewClient(){
-                @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request){String scheme=request.getUrl().getScheme();return offline||!("http".equals(scheme)||"https".equals(scheme));}
+                @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request){
+                    String target=request.getUrl().toString(),scheme=request.getUrl().getScheme();
+                    if(!offline&&overrideUrl!=null&&overrideUrl.matcher(target).matches()){
+                        handler.post(()->{if(!closed){resolve(response(target,target));close(null);}});return true;
+                    }
+                    return offline||!("http".equals(scheme)||"https".equals(scheme));
+                }
                 @Override public void onPageFinished(WebView web,String url){if(!login&&!interactive)evaluate();}
                 @Override public void onReceivedError(WebView web,WebResourceRequest request,WebResourceError error){if(request.isForMainFrame())close(error.getDescription().toString());}
                 @Override public boolean onRenderProcessGone(WebView web,RenderProcessGoneDetail detail){close("浏览器渲染进程已结束");return true;}
@@ -101,7 +109,8 @@ final class SourceBrowser {
         void evaluate(){
             if(evaluated||closed)return;evaluated=true;
             String script=input.optString("javaScript"),bridge=(String)view.getTag();long delay=input.optLong("delayTimeMs");
-            String js="(async()=>{try{await new Promise(r=>setTimeout(r,"+delay+"));let value="+JSONObject.quote(script)+"?await(0,eval)("+JSONObject.quote(script)+"):document.documentElement.outerHTML;window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({body:String(value??''),finalUrl:location.href}));}catch(e){window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({error:String(e)}));}})()";
+            String capture=overrideUrl==null?"window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({body:String(value??''),finalUrl:location.href}));":"";
+            String js="(async()=>{try{await new Promise(r=>setTimeout(r,"+delay+"));let value="+JSONObject.quote(script)+"?await(0,eval)("+JSONObject.quote(script)+"):document.documentElement.outerHTML;"+capture+"}catch(e){window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({error:String(e)}));}})()";
             run(()->view.evaluateJavascript(js,null));
         }
         // CookieManager 回调与 WebView 回调不经过插件命令的异常边界。

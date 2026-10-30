@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Checkbox as KCheckbox, Button as KButton, Popover as KPopover } from "konsta/vue";
+import KPopover from "./DropdownPopover.vue";
+import { Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
 import { ref } from "vue";
 import PrototypeIcon from "./PrototypeIcon.vue";
 

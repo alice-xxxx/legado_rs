@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ListInput as KListInput, Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import { ListInput as KListInput, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 // 书源页管理本地筛选和选择视图；保存、登录、导入等副作用交给应用层处理。
 import { computed, ref, watch } from "vue";
 import { useVirtualList } from "../../ui/useVirtualList";
@@ -174,7 +175,7 @@ useOutsidePointerDismiss(
             </div></KPopover>
           </template>
         </ManagedListToolbar>
-        <div v-if="filteredSources.length" ref="sourceViewport" class="source-master-list" @scroll.passive="filterMenuOpen = false; actionsMenuOpen = false; openSourceMenuId = null">
+        <div v-if="filteredSources.length" ref="sourceViewport" class="source-master-list">
           <div :ref="sourceWindow.list">
           <div aria-hidden="true" :style="{ height: `${sourceRange.top}px` }"></div>
           <ManagedListRow v-for="source in visibleSources" :key="source.id"

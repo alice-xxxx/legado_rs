@@ -51,6 +51,9 @@ function vueTypecheckWatch(): Plugin {
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [vue(), tailwindcss(), vueTypecheckWatch()],
+  resolve: {
+    alias: { "konsta/material-colors": fileURLToPath(new URL("./node_modules/konsta/color-utils/md-colors.js", import.meta.url)) },
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

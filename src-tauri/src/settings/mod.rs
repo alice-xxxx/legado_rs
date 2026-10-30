@@ -50,6 +50,11 @@ pub(crate) async fn save(
     let mut config: crate::settings::SettingsDocument =
         serde_json::from_value(document.clone()).map_err(|error| error.to_string())?;
     let reader = &config.reader;
+    if config.material_color.as_ref().is_some_and(|color| {
+        color.len() != 7 || !color.starts_with('#') || !color.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+    }) {
+        return Err("无效主题颜色".into());
+    }
     if ![15, 30, 60, 120].contains(&config.source_http_timeout_seconds)
         || !(12.0..=36.0).contains(&reader.font_size_px)
         || !(1.2..=2.8).contains(&reader.line_height)

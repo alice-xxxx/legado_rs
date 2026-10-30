@@ -26,6 +26,7 @@ pub(crate) struct Request {
     pub title: String,
     pub wait_for_result: bool,
     pub execution_id: Option<String>,
+    pub override_url_regex: Option<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 pub(crate) struct Header {
@@ -51,6 +52,7 @@ pub(crate) fn native(input: &str) -> String {
                 || request.delay_time_ms > 15000
                 || request.html.len() > 16 * 1024 * 1024
                 || request.java_script.len() > 2 * 1024 * 1024
+                || request.override_url_regex.as_ref().is_some_and(|r| r.len() > 4096)
             {
                 return Err("浏览器请求超限".into());
             }

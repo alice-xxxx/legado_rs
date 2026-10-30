@@ -458,6 +458,7 @@ export interface AppSettingsResource {
   schemaVersion: number;
   theme: AppTheme;
   uiStyle: UiStyle;
+  materialColor?: string;
   sourceHttpTimeoutSeconds: number;
   reader: ReaderSettings;
   home: HomeConfigDocument;

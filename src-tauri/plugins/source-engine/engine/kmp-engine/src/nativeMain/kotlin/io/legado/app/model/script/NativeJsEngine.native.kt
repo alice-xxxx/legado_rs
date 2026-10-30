@@ -356,11 +356,10 @@ object NativeJsEngine : JsEngine {
      * - IIFE 隔离 let/const/var, 不污染 topScope。
      * - eval + return: 返回末尾表达式值 (对齐 rhino script.exec)。完成值是 eval/script 目标
      *   特有语义, 函数调用只认显式 return, 故源码无法逐字嵌入函数体 (对齐 JVM 实证结论)。
-     * - 已知限制: user JS 顶层 return 落在 eval 里, 报 "Illegal return statement"。
+     * - Rhino 顶层 return 由共用语法适配器识别，按函数体执行。
      */
     override fun wrapJsForEval(jsStr: String): String {
-        val jsLiteral = escapeJsString(RhinoSyntax.normalize(jsStr))
-        return "(function(){with(__currentBindings()){return eval($jsLiteral);}})()"
+        return RhinoSyntax.wrapForEval(jsStr)
     }
 
     /** [wrapJsForEval] 包装后编译为 bytecode, 供 [evalInSubScope] 执行 (对齐 JVM compileForSubScope)。 */
@@ -1455,7 +1454,7 @@ function __registerJsFunctionNative(jsObjectExpr, dangerousApi) {
 function __wrapJavaHandle(handle) {
     return null;
 }
-    """.trimIndent() + "\n" + NativeJsExtensionsBridge.JS_FACTORY_CODE
+    """.trimIndent() + "\n" + JAVA_STRING_COMPAT + "\n" + NativeJsExtensionsBridge.JS_FACTORY_CODE
 
 }
 

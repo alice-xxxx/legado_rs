@@ -14,9 +14,9 @@ object SourceVerificationHelpShared {
         return if(useBrowser)provider.awaitBrowser(owner,url,title,refetchAfterSuccess).body?:throw NoStackTraceException("验证响应没有内容")
             else provider.getVerificationCode(url,owner).ifBlank{throw NoStackTraceException("验证结果为空")}
     }
-    fun startBrowser(source:BaseSource?,url:String,title:String,saveResult:Boolean?=false,refetchAfterSuccess:Boolean?=true,asBottomSheet:Boolean=false){
+    fun startBrowser(source:BaseSource?,url:String,title:String,saveResult:Boolean?=false,refetchAfterSuccess:Boolean?=true,asBottomSheet:Boolean=false,html:String?=null){
         val owner=source?:throw NoStackTraceException("浏览器请求缺少书源")
         require(url.length<64*1024){"浏览器地址过长"}
-        VerificationUiProviders.get().startBrowser(owner,url,title,saveResult,refetchAfterSuccess,asBottomSheet)
+        VerificationUiProviders.get().startBrowser(owner,url,title,saveResult,refetchAfterSuccess,asBottomSheet,html)
     }
 }

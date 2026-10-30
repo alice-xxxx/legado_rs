@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Searchbar as KSearchbar, Preloader as KPreloader, Popover as KPopover, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import { Searchbar as KSearchbar, Preloader as KPreloader, Checkbox as KCheckbox, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { notify } from "../../app/notifications";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";

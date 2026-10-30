@@ -155,7 +155,7 @@
 .reader-chapter-progress, .reader-audio-progress { display: grid; min-width: 0; gap: 8px; }
 .reader-chapter-position { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .setting-control { display: grid; gap: 8px; padding: 8px 0; }
-.compact-setting { grid-template-columns: minmax(72px, auto) minmax(0, 1fr); align-items: center; gap: 10px; }
+.compact-setting { grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); align-items: center; gap: 10px; }
 .compact-setting > div:first-child { display: flex; flex-direction: column; }
 .compact-setting small { font-size: var(--ui-font-caption); line-height: 1.5; }
 .reader-source-tools { display: grid; gap: 8px; margin: 8px 0; }
@@ -226,7 +226,7 @@
 }
 .reader-video-episodes nav { display: flex; gap: 8px; overflow-x: auto; padding: 3px; overscroll-behavior-x: contain; }
 .reader-video-options { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
-.reader-video-option { display: flex; min-width: 140px; align-items: center; gap: 12px; color: var(--app-muted); font-size: var(--ui-font-caption); }
+.reader-video-option { display: flex; flex: 1; min-width: 140px; align-items: center; justify-content: space-between; gap: 12px; color: var(--app-muted); font-size: var(--ui-font-caption); }
 .reader-video-option > span { flex: none; }
 .reader-video-episodes nav > button {
   flex: none;
@@ -243,7 +243,7 @@
   display: flex; align-items: center;
   justify-content: space-between; gap: 8px;
 }
-.reader-tts-description { display: grid; gap: 4px; }
+.reader-tts-description { display: grid; min-width: 0; gap: 4px; overflow-wrap: anywhere; }
 .reader-tts-row > label { flex: none; min-width: 4em; }
 .reader-tts-continuous { display: flex; align-items: center; gap: 7px; }
 .reader-tts-actions, .reader-find-buttons { display: flex; justify-content: flex-end; gap: 7px; }

@@ -6040,6 +6040,9 @@ dependencies = [
  "imageproc",
  "jni 0.22.4",
  "ndk-context",
+ "objc2-foundation",
+ "objc2-web-kit",
+ "regex",
  "reqwest",
  "rustls-platform-verifier",
  "serde",
@@ -6049,6 +6052,10 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "webkit2gtk",
+ "webview2-com",
+ "windows",
+ "windows-core",
 ]
 
 [[package]]

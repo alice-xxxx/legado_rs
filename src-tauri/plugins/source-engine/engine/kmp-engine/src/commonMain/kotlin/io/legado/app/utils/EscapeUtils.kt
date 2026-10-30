@@ -5,9 +5,11 @@ import com.fleeksoft.ksoup.parser.Parser
 object EscapeUtils {
 
     private const val FORM_FEED_CODE = 0x0C
+    private val htmlEntity = Regex("&(?:#[xX][0-9a-fA-F]+|#[0-9]+|[a-zA-Z][a-zA-Z0-9]+);")
 
     fun unescapeHtml(input: String): String {
-        return Parser.unescapeEntities(input, false)
+        // 与阅读的 unescapeHtml4 一致，仅解码完整实体，不能把 URL 的 &section 变成 §ion。
+        return htmlEntity.replace(input) { Parser.unescapeEntities(it.value, false) }
     }
 
     fun unescapeJson(input: String): String {

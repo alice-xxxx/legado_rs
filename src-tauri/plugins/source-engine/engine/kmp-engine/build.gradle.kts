@@ -373,7 +373,13 @@ kotlin {
             implementation("com.squareup.okio:okio:3.18.1")
             implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
         }
+        commonTest.dependencies { implementation(kotlin("test")) }
     }
+}
+
+tasks.named<Test>("jvmTest") {
+    dependsOn(rootProject.tasks.named("prepareQuickJsNative"))
+    systemProperty("legado.quickjs.lib", rootProject.extra["quickJsLibrary"] as File)
 }
 
 androidComponents {

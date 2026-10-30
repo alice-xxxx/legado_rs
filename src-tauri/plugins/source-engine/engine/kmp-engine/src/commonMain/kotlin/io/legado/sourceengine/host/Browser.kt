@@ -1,11 +1,14 @@
 package io.legado.sourceengine.host
 
 import io.legado.app.utils.randomUUIDString
+import io.legado.app.utils.NetworkUtils
+import io.legado.app.help.http.*
 import kotlinx.serialization.*
 import kotlinx.serialization.json.*
+import kotlin.coroutines.coroutineContext
 
 @Serializable enum class HostBrowserMode { OFFLINE_SNAPSHOT,DYNAMIC_PAGE,INTERACTIVE_PAGE }
-@Serializable data class HostBrowserRequest(val capabilityId:String,val html:String,val baseUrl:String,val javaScript:String,val delayTimeMs:Long=0,val mode:HostBrowserMode=HostBrowserMode.OFFLINE_SNAPSHOT,val method:String="GET",val headers:List<HostHeader> = emptyList(),val useCookieJar:Boolean=false,val cookieScope:String?=null,val title:String="",val waitForResult:Boolean=true,val executionId:String?=null)
+@Serializable data class HostBrowserRequest(val capabilityId:String,val html:String,val baseUrl:String,val javaScript:String,val delayTimeMs:Long=0,val mode:HostBrowserMode=HostBrowserMode.OFFLINE_SNAPSHOT,val method:String="GET",val headers:List<HostHeader> = emptyList(),val useCookieJar:Boolean=false,val cookieScope:String?=null,val title:String="",val waitForResult:Boolean=true,val executionId:String?=null,val overrideUrlRegex:String?=null)
 @Serializable data class HostBrowserResponse(val capabilityId:String,val finalUrl:String,val body:String,val cookieHeader:String="")
 /** 内嵌页面作为内容传给浏览器，不作为登录网址或 Cookie 域名。 */
 internal object BrowserContent {
@@ -33,6 +36,27 @@ internal object BrowserContent {
     }
 }
 object SourceBrowserSnapshot { fun newCapabilityId()=randomUUIDString().replace("-","") }
+
+/** 旧 java.webView API 与 URL 的 webView 选项共用原生浏览器。 */
+internal object HostBackstageWebViews:BackstageWebViewFactory {
+    override fun create(url:String?,html:String?,encode:String?,tag:String?,headerMap:Map<String,String>?,sourceRegex:String?,overrideUrlRegex:String?,javaScript:String?,delayTime:Long)=object:BackstageWebViewHandle {
+        override suspend fun getStrResponse():StrResponse {
+            require(sourceRegex.isNullOrBlank()){"当前浏览器尚不支持资源嗅探"}
+            val host=coroutineContext[SourceEngineHostContext]?.host?:SourceEngineHostRegistry.current()?:error("缺少浏览器宿主")
+            val target=url?.takeIf{it.isNotBlank()}?:tag?.takeIf{it.startsWith("http")}?:"https://foliver.invalid/"
+            val headers=headerMap.orEmpty()
+            val response=host.executeBrowser(HostBrowserRequest(
+                capabilityId=SourceBrowserSnapshot.newCapabilityId(),html=html.orEmpty(),baseUrl=target,
+                javaScript=javaScript.orEmpty(),delayTimeMs=1000+delayTime.coerceIn(0,14000),mode=HostBrowserMode.DYNAMIC_PAGE,
+                headers=headers.filterKeys{!it.equals(cookieJarHeader,true)}.map{HostHeader(it.key,it.value)},
+                useCookieJar=headers.keys.any{it.equals(cookieJarHeader,true)},cookieScope=NetworkUtils.getSubDomain(target),
+                overrideUrlRegex=overrideUrlRegex?.takeIf{it.isNotBlank()}
+            ))
+            if(response.cookieHeader.isNotBlank())CookieStoreProviders.get()?.replaceCookie(target,response.cookieHeader)
+            return StrResponse(response.finalUrl,response.body)
+        }
+    }
+}
 internal object BrowserWire {
     fun encode(request:HostBrowserRequest)=wire.encodeToString(request)
     fun decode(text:String,request:HostBrowserRequest):HostBrowserResponse {

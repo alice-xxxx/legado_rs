@@ -1,15 +1,15 @@
 <script setup lang="ts">
 import BookCover from "../../ui/BookCover.vue";
-import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Popover as KPopover } from "konsta/vue";
+import { Searchbar as KSearchbar, Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
-// 页面直接显示全局 history 中的阅读记录；改动由 historyStore 自动保存。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { bookPreviews, loadBookPreviews } from "../books/bookDetailState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
 import { backupBusy } from "./backupState";
-import { readingStatistics } from "./readingStatistics";
+import { readingHistoryBooks, readingStatistics } from "./readingStatistics";
 import type { AppBootstrap, ReadingHistoryResource, ReadingStatisticsResource } from "../../api/types";
 import { history as appHistory } from "./historyStore";
 import router, { routeNames } from "../../router";
@@ -60,7 +60,7 @@ useOutsidePointerDismiss(() => menuBookId.value !== null,
 
 const statisticsData = computed<ReadingStatisticsResource>(() => statisticsPeriod.value === "all" ? history.value : periodStatistics.value);
 const days = computed(() => statisticsData.value.days);
-const books = computed(() => statisticsData.value.books);
+const books = computed(() => readingHistoryBooks(statisticsData.value.books, bookPreviews.value));
 const totalDurationMs = computed(() => statisticsData.value.totalDurationMs);
 const totalSessions = computed(() => statisticsData.value.totalSessions);
 const allTimeTotalSessions = computed(() => history.value.totalSessions);
@@ -131,6 +131,7 @@ async function loadPageData(_snapshot?: AppBootstrap): Promise<void> {
   loading.value = true;
   loadError.value = "";
   try {
+    await loadBookPreviews(history.value.books.map(book => book.bookId));
     if (disposed || currentRestoreRevision !== restoreRevision || requestRevision !== loadRevision) return;
     await refreshStatistics();
   } catch (error) {

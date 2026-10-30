@@ -63,7 +63,10 @@ internal object HostHttpClient:OkHttpClientProvider,OkHttpProxyClientProvider {
                         .protocol(Protocol.HTTP_1_1).code(redirect.status).message("").header("Location",redirect.toUrl)
                         .apply{prior?.let(::priorResponse)}.build()
                 }
-                val resultHeaders=Headers.Builder().apply{response.headers.forEach{add(it.name,it.value)}}.build()
+                val resultHeaders=Headers.Builder().apply{response.headers.forEach{
+                    require(it.value.none{c->c!='\t'&&(c.code<32||c.code==127)}){"响应头含控制字符"}
+                    addUnsafeNonAscii(it.name,it.value)
+                }}.build()
                 Response.Builder().request(request.newBuilder().url(response.finalUrl).build())
                     .protocol(Protocol.HTTP_1_1).code(response.status).message(response.reason).headers(resultHeaders)
                     .body(response.body.toResponseBody(resultHeaders["Content-Type"]?.toMediaTypeOrNull()))

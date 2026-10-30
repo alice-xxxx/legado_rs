@@ -1,5 +1,19 @@
 import type { ReadingHistoryResource, ReadingStatisticsResource } from "../../api/types";
 
+export function readingHistoryBooks(books: ReadingHistoryResource["books"], titles: Readonly<Record<string, { title: string }>>) {
+  const grouped = new Map<string, ReadingHistoryResource["books"][number]>();
+  for (const book of [...books].sort((a, b) => b.lastReadAtMs - a.lastReadAtMs || a.bookId.localeCompare(b.bookId))) {
+    const title = titles[book.bookId]?.title.trim();
+    const key = title ? `title:${title}` : `id:${book.bookId}`;
+    const current = grouped.get(key);
+    if (current) {
+      current.sessionCount += book.sessionCount;
+      current.totalDurationMs += book.totalDurationMs;
+    } else grouped.set(key, { ...book });
+  }
+  return [...grouped.values()];
+}
+
 /** Clip sessions to the requested window, retaining each session's time zone. */
 export function readingStatistics(history: ReadingHistoryResource, fromMs: number, toMs: number): ReadingStatisticsResource {
   if (fromMs >= toMs || toMs - fromMs > 31 * 86_400_000) throw new Error("阅读统计时间范围无效。");

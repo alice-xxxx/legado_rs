@@ -600,6 +600,9 @@ object QuickJsEngine {
                 QuickJsNative.nativeFreeHandle(ctxPtr, valueHandle)
             }
         }
+        if (key == "java" && converted != null) {
+            QuickJsNative.nativeEval(ctxPtr, "globalThis.java=__withJavaPackages(globalThis.java)")
+        }
         return true
     }
 
@@ -633,14 +636,12 @@ object QuickJsEngine {
      * - eval + return: 返回末尾表达式值 (对齐 rhino script.exec)。完成值是 eval/script 目标
      *   特有语义, 函数调用只认显式 return, 故源码无法逐字嵌入函数体 (会丢末尾表达式值,
      *   jvmTest testWrapJsForEvalPreservesReturnValue 实证)。
-     * - 已知限制: user JS 顶层 return 落在 eval 里, 报 "Illegal return statement",
-     *   rhino 顶层 return 扩展无法对齐; 书源请用末尾表达式或自带 IIFE。
+     * - Rhino 顶层 return 由共用语法适配器识别，按函数体执行。
      *
      * 用于复用 sharedScope 的场景; jsLib 本身在 topScope 上定义, 不需要包裹。
      */
     fun wrapJsForEval(jsStr: String): String {
-        val jsLiteral = JsStringUtils.escape(io.legado.app.model.script.RhinoSyntax.normalize(jsStr))
-        return "(function(){with(__currentBindings()){return eval($jsLiteral);}})()"
+        return io.legado.app.model.script.RhinoSyntax.wrapForEval(jsStr)
     }
 
     /** [wrapJsForEval] 包装后编译为 bytecode, 供 [evalInSubScope] 执行。 */

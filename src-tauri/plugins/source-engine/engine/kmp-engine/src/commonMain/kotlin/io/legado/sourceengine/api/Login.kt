@@ -8,19 +8,13 @@ import io.legado.app.help.source.VerificationUiProvider
 import io.legado.app.help.source.VerificationUiProviders
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.help.http.StrResponse
-import io.legado.app.help.coroutine.runBlockingInScope
-import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.sourceengine.host.BrowserContent
-import io.legado.sourceengine.host.HostBrowserRequest
-import io.legado.sourceengine.host.HostBrowserMode
-import io.legado.sourceengine.host.HostHeader
-import io.legado.sourceengine.host.SourceBrowserSnapshot
-import io.legado.sourceengine.host.SourceEngineHostContext
 import io.legado.app.help.ui.*
 import io.legado.app.help.toast.*
 import io.legado.app.utils.KS_JSON
 import io.legado.app.utils.NetworkUtils
 import io.legado.sourceengine.host.SourceEngineHostRegistry
+import io.legado.sourceengine.host.HostVerificationUi
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.encodeToString
 
@@ -84,21 +78,6 @@ object SourceLogin {
         }
         return LoginForm("form",canLogin,fields,actions,layout)
     }
-    private fun awaitBrowser(source:BaseSource,url:String,title:String,refetch:Boolean):StrResponse {
-        val host=SourceEngineHostRegistry.current()?:error("缺少浏览器宿主")
-        val context=SourceEngineHostContext(host)
-        return runBlockingInScope(context) {
-            val target=AnalyzeUrlCore(url,source=source,coroutineContext=context)
-            val rendered=host.executeBrowser(HostBrowserRequest(
-                capabilityId=SourceBrowserSnapshot.newCapabilityId(),html="",baseUrl=target.url,javaScript="",
-                mode=HostBrowserMode.INTERACTIVE_PAGE,title=title,waitForResult=true,
-                headers=target.headerMap.entries.map{HostHeader(it.key,it.value)},
-                useCookieJar=source.enabledCookieJar==true,cookieScope=NetworkUtils.getSubDomain(target.url)
-            ))
-            if(rendered.cookieHeader.isNotBlank())CookieStoreProviders.get()!!.replaceCookie(target.url,rendered.cookieHeader)
-            if(refetch)target.getStrResponse()else StrResponse(rendered.finalUrl,rendered.body)
-        }
-    }
     private fun submit(source:BookSource,action:LoginAction.Submit):LoginState {
         val form=form(source);require(action.fields.size<=64&&action.fields.all{(name,value)->name.isNotEmpty()&&name.length<=128&&value.length<=16384}){"登录字段无效"}
         val before=source.getLoginInfoMap().orEmpty()
@@ -117,17 +96,9 @@ object SourceLogin {
         val oldUi=JsUiProviders.impl;val oldToast=Toasters.current()
         val oldVerification=VerificationUiProviders.current();var pendingWeb=web?.let{LoginWeb(it,CookieStoreProviders.get()!!.getCookie(it))}
         VerificationUiProviders.register(object:VerificationUiProvider {
-            override fun startBrowser(source:BaseSource,url:String,title:String,saveResult:Boolean?,refetchAfterSuccess:Boolean?,asBottomSheet:Boolean) {
-                val html=BrowserContent.html(url)
-                if(html!=null){
-                    val host=SourceEngineHostRegistry.current()?:error("缺少浏览器宿主")
-                    runBlockingInScope(SourceEngineHostContext(host)){
-                        host.executeBrowser(HostBrowserRequest(
-                            capabilityId=SourceBrowserSnapshot.newCapabilityId(),html=html,
-                            baseUrl=source.getKey().takeIf(::isWeb)?:"https://foliver.invalid/",
-                            javaScript="",mode=HostBrowserMode.INTERACTIVE_PAGE,title=title,waitForResult=false
-                        ))
-                    }
+            override fun startBrowser(source:BaseSource,url:String,title:String,saveResult:Boolean?,refetchAfterSuccess:Boolean?,asBottomSheet:Boolean,html:String?) {
+                if(html!=null||BrowserContent.html(url)!=null||url.contains(",{")) {
+                    (oldVerification?:HostVerificationUi).startBrowser(source,url,title,saveResult,refetchAfterSuccess,asBottomSheet,html)
                 }else{
                     require(isWeb(url)){"登录网址无效"}
                     pendingWeb=LoginWeb(url,CookieStoreProviders.get()!!.getCookie(url))
@@ -139,8 +110,8 @@ object SourceLogin {
             }
             override fun getVerificationCode(url:String,source:BaseSource):String =
                 oldVerification?.getVerificationCode(url,source)?:error("此登录动作需要验证码交互窗口")
-            override fun awaitBrowser(source:BaseSource,url:String,title:String,refetchAfterSuccess:Boolean):StrResponse =
-                oldVerification?.awaitBrowser(source,url,title,refetchAfterSuccess)?:SourceLogin.awaitBrowser(source,url,title,refetchAfterSuccess)
+            override fun awaitBrowser(source:BaseSource,url:String,title:String,refetchAfterSuccess:Boolean,html:String?):StrResponse =
+                (oldVerification?:HostVerificationUi).awaitBrowser(source,url,title,refetchAfterSuccess,html)
         })
         JsUiProviders.impl=object:JsUiProvider{
             override fun refresh(target:String){refresh+=target}
@@ -152,7 +123,7 @@ object SourceLogin {
             check(source.putLoginInfo(KS_JSON.encodeToString(fields))){"无法保存登录输入"}
             if(scripts.isNotEmpty()){
                 val code=source.getLoginJs().orEmpty()+"\n;"+scripts.joinToString("\n;"){"(function(){\n$it\n}).call(this);"}
-                source.evalJS(code){this["result"]=fields}
+                source.evalJS(code){this["result"]=fields;this["book"]=null;this["chapter"]=null;this["isLongClick"]=false}
             }
             LoginState(message=if(input)null else "登录操作已执行。",
                 inputUpdates=if(input)emptyMap()else form.fields.filter{it.password}.associate{it.name to ""},

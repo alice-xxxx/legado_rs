@@ -36,6 +36,20 @@ object JsBootstrap {
 // 必须保留在 JS 层: with 语句需要 JS 对象作为目标。
 var __bindingsStack__ = [];
 
+// java 同时提供源辅助方法和 Java 包入口；缺失的辅助方法仍保持 undefined。
+var __javaHelpers = new WeakMap();
+function __withJavaPackages(target) {
+    if (!target || typeof target !== 'object') return target;
+    if (__javaHelpers.has(target)) return __javaHelpers.get(target);
+    var proxy = new Proxy(target, {get: function(obj, key) {
+        var value = Reflect.get(obj, key, obj);
+        if (value === undefined && /^(lang|util|net|io|security|nio|text|time|math|awt|beans|sql)$/.test(String(key))) return Packages.java[key];
+        return typeof value === 'function' ? value.bind(obj) : value;
+    }});
+    __javaHelpers.set(target, proxy);
+    return proxy;
+}
+
 function __currentBindings() {
     return __bindingsStack__[__bindingsStack__.length - 1] || {};
 }
@@ -49,7 +63,7 @@ function __currentBindings() {
 function __enterBindings() {
     var obj = {};
     for (var i = 0; i < arguments.length; i += 2) {
-        obj[arguments[i]] = arguments[i + 1];
+        obj[arguments[i]] = arguments[i] === 'java' ? __withJavaPackages(arguments[i + 1]) : arguments[i + 1];
     }
     // 同步写入 globalThis, 让 this.java 在 jsLib 函数内生效
     var prev = {};
@@ -270,5 +284,5 @@ function JavaAdapter(superClass, implementation) {
 
 // __getDangerousApi 由 QuickJsNative.nativeDefineBinding 注册为 native binding, 从 ctx opaque 读值,
 // 这里不定义 JS stub —— top-level function 声明会覆盖 globalThis 上的同名属性, 让 native binding 失效.
-    """.trimIndent()
+    """.trimIndent() + "\n" + io.legado.app.model.script.JAVA_STRING_COMPAT
 }

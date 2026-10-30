@@ -9,6 +9,8 @@ pub struct SettingsDocument {
     pub theme: AppTheme,
     #[serde(default)]
     pub ui_style: UiStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material_color: Option<String>,
     #[serde(default)]
     pub webdav_backup: WebDavBackupConfig,
     pub schema_version: u32,
@@ -25,6 +27,7 @@ impl Default for SettingsDocument {
             source_http_timeout_seconds: default_source_http_timeout_seconds(),
             theme: AppTheme::System,
             ui_style: UiStyle::default(),
+            material_color: None,
             webdav_backup: WebDavBackupConfig::default(),
             reader: ReaderDefaults::default(),
             home: HomeConfigDocument::default(),

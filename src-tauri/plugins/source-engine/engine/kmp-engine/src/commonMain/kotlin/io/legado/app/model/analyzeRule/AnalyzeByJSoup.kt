@@ -140,15 +140,13 @@ class AnalyzeByJSoup(doc: Any) {
                 val rs = rsRule.splitRule("@")
 
                 val el = if (rs.size > 1) {
-                    val el = Elements()
-                    el.add(temp)
+                    var el = Elements(temp)
                     for (rl in rs) {
                         val es = Elements()
                         for (et in el) {
                             es.addAll(getElements(et, rl))
                         }
-                        el.clear()
-                        el.addAll(es)
+                        el = es
                     }
                     el
                 } else ElementsSingle().getElementsSingle(temp, ruleStr)

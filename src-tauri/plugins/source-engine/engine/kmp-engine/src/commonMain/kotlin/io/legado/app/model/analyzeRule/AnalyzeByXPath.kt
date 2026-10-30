@@ -45,15 +45,7 @@ class AnalyzeByXPath(doc: Any) {
 
     private fun getResult(xPath: String): List<Node>? {
         return try {
-            if (xPath.contains("/@")) {
-                val parts = xPath.split("/@", limit = 2)
-                val elementPath = parts[0].ifEmpty { "." }
-                val attrName = parts[1]
-                val elements = baseElement.selectXpath(elementPath, Element::class)
-                elements.map { TextNode(it.attr(attrName)) }
-            } else {
-                baseElement.selectXpath(xPath, Node::class)
-            }
+            baseElement.selectXpath(xPath, Node::class)
         } catch (_: Exception) {
             null
         }
@@ -140,7 +132,7 @@ class AnalyzeByXPath(doc: Any) {
 
     private fun getNodeText(node: Node): String {
         return when (node) {
-            is Element -> node.text()
+            is Element -> node.outerHtml()
             is TextNode -> node.text()
             else -> node.toString()
         }

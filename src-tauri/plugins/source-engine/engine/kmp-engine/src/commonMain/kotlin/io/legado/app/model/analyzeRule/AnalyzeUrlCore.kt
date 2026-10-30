@@ -290,7 +290,9 @@ open class AnalyzeUrlCore(
         // 空字符串早返回，避免不必要的编译执行开销
         if (jsStr.isBlank()) return null
         val bindings = buildScriptBindings { bindings ->
+            AppConst.JsVarName.entries.forEach { bindings[it.key] = null }
             variables?.forEach { (k, v) -> bindings[k.key] = v }
+            bindings["infoMap"] = selectedOptions
             bindings["java"] = this
             // 响应阶段(loginCheckJs/请求头 JS)需要"当前请求 URL"，所以优先用 url；
             // 但 {{...}} 模板求值发生在 analyzeUrl() 之前，此时 url 还是空，降级用构造器传入的 baseUrl
@@ -357,7 +359,8 @@ open class AnalyzeUrlCore(
                 return if (option?.useWebView == true && allowWebView) {
                     getWebViewResponse(jsStr, sourceRegex)
                 } else {
-                    getOkHttpStrResponse()
+                    val response = getOkHttpStrResponse()
+                    option?.bodyJs?.let { StrResponse(response.raw(), evalJS(it, response.body).toString()) } ?: response
                 }
             } finally {
                 saveCookie()
@@ -396,7 +399,7 @@ open class AnalyzeUrlCore(
                 html = "",
                 baseUrl = url,
                 javaScript = option?.webJs ?: jsStr.orEmpty(),
-                delayTimeMs = option?.let { max(0L, it.webViewDelayTime ?: 0L) } ?: 1000L,
+                delayTimeMs = 1000 + (option?.webViewDelayTime ?: 0L).coerceIn(0, 14000),
                 mode = HostBrowserMode.DYNAMIC_PAGE,
                 method = "GET",
                 headers = headerMap.entries
@@ -679,6 +682,9 @@ open class AnalyzeUrlCore(
             set(value) {
                 field = value?.ifBlank { null }
             }
+
+        var bodyJs: String? = null
+            set(value) { field = value?.ifBlank { null } }
 
         /**
          * 解析完url参数时执行的js

@@ -73,6 +73,7 @@ object UrlOptionSerializer : KSerializer<AnalyzeUrlCore.UrlOption> {
             value.origin?.let { put("origin", it) }
             value.type?.let { put("type", it) }
             value.webJs?.let { put("webJs", it) }
+            value.bodyJs?.let { put("bodyJs", it) }
             value.js?.let { put("js", it) }
             value.retry?.let { put("retry", it) }
             value.serverID?.let { put("serverID", it) }
@@ -115,6 +116,7 @@ object UrlOptionSerializer : KSerializer<AnalyzeUrlCore.UrlOption> {
             origin = obj.flexString("origin")
             type = obj.flexString("type")
             webJs = obj.flexString("webJs")
+            bodyJs = obj.flexString("bodyJs")
             js = obj.flexString("js")
             retry = obj.flexNumber("retry")?.toInt()
             serverID = obj.flexNumber("serverID")?.toLong()

@@ -2,7 +2,7 @@ package io.legado.app.model.analyzeRule
 
 import com.fleeksoft.ksoup.nodes.Node
 import io.legado.app.constant.AppConst
-import io.legado.app.constant.AppPattern.JS_PATTERN
+import io.legado.app.constant.AppPattern.RULE_JS_PATTERN
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
 import io.legado.app.data.entities.BookSource
@@ -25,6 +25,17 @@ import io.legado.app.model.script.buildScriptBindings
 import io.legado.app.utils.Closeable
 import io.legado.app.utils.EscapeUtils
 import io.legado.app.utils.KS_JSON_STRICT
+import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.GSON
+import io.legado.app.utils.toJson
+import io.legado.sourceengine.host.HostBrowserRequest
+import io.legado.sourceengine.host.HostBrowserMode
+import io.legado.sourceengine.host.HostHeader
+import io.legado.sourceengine.host.SourceBrowserSnapshot
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.URL
 import io.legado.app.utils.decodeStringMapOrNull
@@ -187,6 +198,26 @@ open class AnalyzeRuleCore(
     /**
      * 获取文本列表
      */
+    private fun evalWebJS(js: String, result: Any): Any? {
+        val host = SourceEngineHostRegistry.current() ?: error("缺少浏览器宿主")
+        val url = redirectUrl?.toString() ?: baseUrl ?: source?.getKey().orEmpty()
+        val input = GSON.toJson(if (result is Node) result.toString() else result)
+        val script = "(async function(){var result=$input;return JSON.stringify(await eval(${KS_JSON.encodeToString(js)}));})()"
+        val response = runBlocking(coroutineContext) {
+            host.executeBrowser(HostBrowserRequest(
+                capabilityId = SourceBrowserSnapshot.newCapabilityId(), html = content.toString(), baseUrl = url,
+                javaScript = script, delayTimeMs = 1000, mode = HostBrowserMode.DYNAMIC_PAGE,
+                headers = source?.getHeaderMap(true).orEmpty().map { HostHeader(it.key, it.value) },
+                useCookieJar = source?.enabledCookieJar == true, cookieScope = NetworkUtils.getSubDomain(url)
+            ))
+        }
+        return when (val value = KS_JSON.parseToJsonElement(response.body.ifBlank { "null" })) {
+            JsonNull -> null
+            is JsonPrimitive -> value.content
+            else -> value
+        }
+    }
+
     fun getStringList(rule: String?): List<String>? = getStringList(rule, null, false)
 
     fun getStringList(rule: String?, mContent: Any?): List<String>? =
@@ -213,53 +244,34 @@ open class AnalyzeRuleCore(
         val content = mContent ?: this.content
         if (content != null && ruleList.isNotEmpty()) {
             result = content
-            // JS 返回的对象在 Kotlin 侧是 NativeObject (对齐 rhino NativeObject)
-            // JsonPath 返回的普通 Map 走 else 分支, 执行后续 JS/JsonPath 等
-            val jsObj = JsEngines.asJsObject(result)
-            if (jsObj != null) {
-                val sourceRule = ruleList.first()
+            for (sourceRule in ruleList) {
                 putRule(sourceRule.putMap)
-                sourceRule.makeUpRule(jsObj)
-                result = if (sourceRule.getParamSize() > 1) {
-                    // get {{}}
-                    sourceRule.rule
-                } else {
-                    // 键值直接访问
-                    jsObj[sourceRule.rule]
-                }
-                result?.let {
-                    if (sourceRule.replaceRegex.isNotEmpty() && it is List<*>) {
-                        result = it.map { o ->
-                            replaceRegex(o.toString(), sourceRule)
+                sourceRule.makeUpRule(result)
+                result ?: continue
+                val rule = sourceRule.rule
+                if (rule.isNotEmpty()) {
+                    result = when (sourceRule.mode) {
+                        Mode.WebJs -> evalWebJS(rule, result).let { value ->
+                            if (value is JsonArray) value.map { (it as? JsonPrimitive)?.content ?: it.toString() } else value
                         }
-                    } else if (sourceRule.replaceRegex.isNotEmpty()) {
-                        result = replaceRegex(result.toString(), sourceRule)
+                        Mode.Js -> evalJS(rule, result)
+                        Mode.Json -> getAnalyzeByJSonPath(result).getStringList(rule)
+                        Mode.XPath -> getAnalyzeByXPath(result).getStringList(rule)
+                        Mode.Default -> {
+                            val obj = JsEngines.asJsObject(result)
+                            if (obj != null) obj[rule] else getAnalyzeByJSoup(result).getStringList(rule)
+                        }
+                        else -> rule
                     }
                 }
-            } else {
-                for (sourceRule in ruleList) {
-                    putRule(sourceRule.putMap)
-                    sourceRule.makeUpRule(result)
-                    result ?: continue
-                    val rule = sourceRule.rule
-                    if (rule.isNotEmpty()) {
-                        result = when (sourceRule.mode) {
-                            Mode.Js -> evalJS(rule, result)
-                            Mode.Json -> getAnalyzeByJSonPath(result).getStringList(rule)
-                            Mode.XPath -> getAnalyzeByXPath(result).getStringList(rule)
-                            Mode.Default -> getAnalyzeByJSoup(result).getStringList(rule)
-                            else -> rule
-                        }
+                if (sourceRule.replaceRegex.isNotEmpty() && result is List<*>) {
+                    val newList = ArrayList<String>()
+                    for (item in result) {
+                        newList.add(replaceRegex(item.toString(), sourceRule))
                     }
-                    if (sourceRule.replaceRegex.isNotEmpty() && result is List<*>) {
-                        val newList = ArrayList<String>()
-                        for (item in result) {
-                            newList.add(replaceRegex(item.toString(), sourceRule))
-                        }
-                        result = newList
-                    } else if (sourceRule.replaceRegex.isNotEmpty()) {
-                        result = replaceRegex(result.toString(), sourceRule)
-                    }
+                    result = newList
+                } else if (sourceRule.replaceRegex.isNotEmpty()) {
+                    result = replaceRegex(result.toString(), sourceRule)
                 }
             }
         }
@@ -323,46 +335,29 @@ open class AnalyzeRuleCore(
         val content = mContent ?: this.content
         if (content != null && ruleList.isNotEmpty()) {
             result = content
-            // JS 返回的对象在 Kotlin 侧是 NativeObject (对齐 rhino NativeObject)
-            // JsonPath 返回的普通 Map 走 else 分支, 执行后续 JS/JsonPath 等
-            // 否则 `$.postTime<js>格式化</js>` 这类规则只取到原始时间戳,JS 被跳过。
-            val jsObj = JsEngines.asJsObject(result)
-            if (jsObj != null) {
-                val sourceRule = ruleList.first()
+            for (sourceRule in ruleList) {
                 putRule(sourceRule.putMap)
-                sourceRule.makeUpRule(jsObj)
-                result = if (sourceRule.getParamSize() > 1) {
-                    // get {{}}
-                    sourceRule.rule
-                } else {
-                    // 键值直接访问
-                    jsObj[sourceRule.rule]?.toString()
-                }?.let {
-                    replaceRegex(it, sourceRule)
-                }
-            } else {
-                for (sourceRule in ruleList) {
-                    putRule(sourceRule.putMap)
-                    sourceRule.makeUpRule(result)
-                    result ?: continue
-                    val rule = sourceRule.rule
-                    if (rule.isNotBlank() || sourceRule.replaceRegex.isEmpty()) {
-                        result = when (sourceRule.mode) {
-                            Mode.Js -> evalJS(rule, result)
-                            Mode.Json -> getAnalyzeByJSonPath(result).getString(rule)
-                            Mode.XPath -> getAnalyzeByXPath(result).getString(rule)
-                            Mode.Default -> if (isUrl) {
-                                getAnalyzeByJSoup(result).getString0(rule)
-                            } else {
-                                getAnalyzeByJSoup(result).getString(rule)
-                            }
-
-                            else -> rule
+                sourceRule.makeUpRule(result)
+                result ?: continue
+                val rule = sourceRule.rule
+                if (rule.isNotBlank() || sourceRule.replaceRegex.isEmpty()) {
+                    result = when (sourceRule.mode) {
+                        Mode.WebJs -> evalWebJS(rule, result)
+                        Mode.Js -> evalJS(rule, result)
+                        Mode.Json -> getAnalyzeByJSonPath(result).getString(rule)
+                        Mode.XPath -> getAnalyzeByXPath(result).getString(rule)
+                        Mode.Default -> {
+                            val obj = JsEngines.asJsObject(result)
+                            if (obj != null) obj[rule]
+                            else if (isUrl) getAnalyzeByJSoup(result).getString0(rule)
+                            else getAnalyzeByJSoup(result).getString(rule)
                         }
+
+                        else -> rule
                     }
-                    if (result != null && sourceRule.replaceRegex.isNotEmpty()) {
-                        result = replaceRegex(result.toString(), sourceRule)
-                    }
+                }
+                if (result != null && sourceRule.replaceRegex.isNotEmpty()) {
+                    result = replaceRegex(result.toString(), sourceRule)
                 }
             }
         }
@@ -403,6 +398,7 @@ open class AnalyzeRuleCore(
                 result ?: continue
                 val rule = sourceRule.rule
                 result = when (sourceRule.mode) {
+                    Mode.WebJs -> evalWebJS(rule, result)
                     Mode.Regex -> AnalyzeByRegex.getElement(
                         result.toString(),
                         rule.splitNotBlank("&&")
@@ -436,6 +432,7 @@ open class AnalyzeRuleCore(
                 result ?: continue
                 val rule = sourceRule.rule
                 result = when (sourceRule.mode) {
+                    Mode.WebJs -> evalWebJS(rule, result)?.let { AnalyzeByJSonPath(it).getList("$") }
                     Mode.Regex -> AnalyzeByRegex.getElements(
                         result.toString(),
                         rule.splitNotBlank("&&")
@@ -450,7 +447,11 @@ open class AnalyzeRuleCore(
         }
         result?.let {
             // QuickJS can return a Java Object[] as well as a JS array converted to List.
-            return if (it is Array<*>) it.filterNotNull() else it as List<Any>
+            return when (it) {
+                is Array<*> -> it.filterNotNull()
+                is String -> AnalyzeByJSonPath(it).getList("$")
+                else -> it as List<Any>
+            }
         }
         return ArrayList()
     }
@@ -559,14 +560,14 @@ open class AnalyzeRuleCore(
         }
         var tmp: String
         // Pattern.matcher → Regex.findAll: groups[n]?.value 对应 matcher.group(n) (null 若组未参与匹配)
-        for (match in JS_PATTERN.findAll(ruleStr)) {
+        for (match in RULE_JS_PATTERN.findAll(ruleStr)) {
             if (match.range.first > start) {
                 tmp = ruleStr.substring(start, match.range.first).trim()
                 if (tmp.isNotEmpty()) {
                     ruleList.add(SourceRule(tmp, mMode))
                 }
             }
-            ruleList.add(SourceRule(match.groups[2]?.value ?: match.groups[1]?.value ?: "", Mode.Js))
+            ruleList.add(SourceRule(match.groups[3]?.value ?: match.groups[1]?.value ?: "", if (match.groups[2] != null) Mode.WebJs else Mode.Js))
             start = match.range.last + 1
         }
 
@@ -606,7 +607,7 @@ open class AnalyzeRuleCore(
 
         init {
             rule = when {
-                mode == Mode.Js || mode == Mode.Regex -> ruleStr
+                mode == Mode.Js || mode == Mode.WebJs || mode == Mode.Regex -> ruleStr
                 ruleStr.startsWith("@CSS:", true) -> {
                     mode = Mode.Default
                     ruleStr
@@ -632,7 +633,7 @@ open class AnalyzeRuleCore(
                     ruleStr
                 }
 
-                ruleStr.startsWith("/") -> {//XPath特征很明显,无需配置单独的识别标头
+                ruleStr.startsWith("/") || ruleStr.startsWith("./") || ruleStr.startsWith("../") -> {
                     mode = Mode.XPath
                     ruleStr
                 }
@@ -650,7 +651,7 @@ open class AnalyzeRuleCore(
             if (evalMatches.isNotEmpty()) {
                 val firstMatch = evalMatches.first()
                 tmp = rule.substring(start, firstMatch.range.first)
-                if (mode != Mode.Js && mode != Mode.Regex &&
+                if (mode != Mode.Js && mode != Mode.WebJs && mode != Mode.Regex &&
                     (firstMatch.range.first == 0 || !tmp.contains("##"))
                 ) {
                     mode = Mode.Regex
@@ -695,7 +696,7 @@ open class AnalyzeRuleCore(
             // Pattern.matcher → Regex.findAll: 先收集所有匹配, 替代 while(find)+do-while(find) 语义
             val regexMatches = regexPattern.findAll(ruleStrArray[0]).toList()
             if (regexMatches.isNotEmpty()) {
-                if (mode != Mode.Js && mode != Mode.Regex) {
+                if (mode != Mode.Js && mode != Mode.WebJs && mode != Mode.Regex) {
                     mode = Mode.Regex
                 }
                 for (match in regexMatches) {
@@ -786,6 +787,8 @@ open class AnalyzeRuleCore(
                     || ruleStr.startsWith("$.")
                     || ruleStr.startsWith("$[")
                     || ruleStr.startsWith("//")
+                    || ruleStr.startsWith("./")
+                    || ruleStr.startsWith("../")
         }
 
         fun getParamSize(): Int {
@@ -794,7 +797,7 @@ open class AnalyzeRuleCore(
     }
 
     enum class Mode {
-        XPath, Json, Default, Js, Regex
+        XPath, Json, Default, Js, Regex, WebJs
     }
 
     /**
@@ -838,8 +841,7 @@ open class AnalyzeRuleCore(
      *   (避免重复执行报 "redeclaration of 'xxx'")
      * - eval 返回末尾表达式值(对齐 rhino script.exec 返回最后一个表达式;
      *   完成值是 eval/script 目标特有语义, 函数调用只认显式 return, 包装离不开 eval)
-     * - 已知限制: 顶层 return 落在 eval 里报 "Illegal return statement",
-     *   rhino 的顶层 return 扩展无法对齐
+     * - 顶层 return 交给共用 Rhino 语法适配器处理。
      * - bindings 通过 [io.legado.app.model.script.JsEngine.injectBindings] 写入 globalThis, jsLib 里
      *   定义在 topScope 上的自由函数 (如 `lk`) 内部访问 `cache` 等 binding 也能命中,
      *   执行后由 [io.legado.app.model.script.JsEngine.evalInSubScope] 调 cleanupBindings 删除, 避免残留。

@@ -16,6 +16,8 @@ JDK、Kotlin、KSP、Gradle、AGP 与 Android SDK/NDK 的版本统一维护在 [
 
 需要 Node.js 24、Rust stable、JDK 21、CMake 和 C/C++ 工具链。Linux 系统依赖见 CI。
 
+Windows 使用 `x86_64-pc-windows-gnu` 时，需要在 `PATH` 中提供 MinGW 的 `gcc`、`g++`；项目会为 CMake 指定这套编译器，避免误选面向 MSVC 的 Clang。已有错误编译器缓存时，先运行 `cargo clean --manifest-path src-tauri/Cargo.toml -p opusic-sys` 再重新构建。
+
 ```sh
 npm ci
 bash src-tauri/plugins/source-engine/engine/gradlew -p src-tauri/plugins/source-engine/engine --no-daemon --console=plain prepareDesktopJvmRuntime

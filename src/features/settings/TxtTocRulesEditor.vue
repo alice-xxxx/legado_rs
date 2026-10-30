@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 // 列表使用全局规则；表单只编辑当前规则的草稿。
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
@@ -72,6 +73,7 @@ const selectedIds = ref<string[]>([]);
 const deleteTargets = ref<TxtTocRule[]>([]);
 const openRuleMenuId = ref<string | null>(null);
 const actionsMenuOpen = ref(false);
+const actionsMenuTarget = ref<HTMLElement>();
 const addMenuOpen = ref(false);
 const initialRuleSnapshot = ref("");
 const filterPanelOpen = ref(false);
@@ -496,7 +498,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="selectAddAction('url')">网络链接导入</KButton>
   </div>
 </KPopover>
-    <div class="txt-toc-editor__body" :class="{ 'txt-toc-editor__body--empty': rules.length === 0 }">
+    <div class="txt-toc-editor__body">
       <aside class="txt-toc-editor__master">
         <header class="txt-toc-editor__summary">
           <div><strong>{{ enabledRuleCount }} 个启用</strong><small>{{ rules.length }} / 64 个配置</small></div>
@@ -508,25 +510,25 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
           :filter-expanded="filterPanelOpen"
           :actions-expanded="actionsMenuOpen"
           @toggle-filter="toggleFilterPanel"
-          @toggle-actions="actionsMenuOpen = !actionsMenuOpen; filterPanelOpen = false; addMenuOpen = false; openRuleMenuId = null"
+          @toggle-actions="actionsMenuTarget = $event.currentTarget as HTMLElement; actionsMenuOpen = !actionsMenuOpen; filterPanelOpen = false; addMenuOpen = false; openRuleMenuId = null"
         >
           <template #actions-menu>
-            <div v-if="actionsMenuOpen" class="grid gap-1 p-2">
+            <KPopover v-if="actionsMenuOpen" opened :target="actionsMenuTarget" class="txt-toc-editor__actions-menu">
+              <div class="grid gap-1 p-2">
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
               <span class="txt-toc-editor__menu-hint">保存时会检查正则表达式</span>
-            </div>
+              </div>
+            </KPopover>
           </template>
           <template #filter-menu>
-            <Teleport to="body">
               <KPopover opened :backdrop="false" v-if="filterPanelOpen" class="txt-toc-editor__filter-menu w-60 max-w-[calc(100vw-32px)]" :target="filterMenuTarget"><div class="grid gap-1 p-2">
                 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'all'; filterPanelOpen = false">全部规则</KButton>
                 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'enabled'; filterPanelOpen = false">仅启用</KButton>
                 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'disabled'; filterPanelOpen = false">仅停用</KButton>
               </div></KPopover>
-            </Teleport>
           </template>
         </ManagedListToolbar>
-        <div class="txt-toc-editor__list-scroll" @scroll.passive="filterPanelOpen = false; actionsMenuOpen = false; openRuleMenuId = null">
+        <div class="txt-toc-editor__list-scroll">
         <p v-if="atRuleLimit" class="txt-toc-editor__notice">最多保存 64 条规则；删除一条后可以继续添加。</p>
         <p v-if="rules.length === 0" class="txt-toc-editor__no-rules">还没有规则</p>
         <div v-else-if="!visibleRules.length" class="txt-toc-editor__empty">
@@ -655,7 +657,6 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__top-actions{position:relative;display:flex;justify-content:flex-end}
 .txt-toc-editor__stale{margin:0 0 15px;padding:12px;border:1px solid var(--app-warning-line);border-radius:10px;background:var(--app-panel-soft);color:var(--app-warning);font-size:var(--ui-font-caption);line-height:1.6}
 .txt-toc-editor__body{display:grid;grid-template-columns:1fr;min-width:0;height:100%;min-height:0;overflow:hidden;background:var(--app-background)}
-.txt-toc-editor__body--empty{grid-template-columns:minmax(0,1fr)}
 .txt-toc-editor__master{display:flex;flex-direction:column;min-width:0;height:100%;min-height:0;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));background:var(--app-background)}
 .txt-toc-editor__summary{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;padding:3px}
 .txt-toc-editor__summary>div{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%}
@@ -664,7 +665,7 @@ function appendImportedRules(document: TxtTocRulesDocument): void {
 .txt-toc-editor__add{display:inline-flex;align-items:center;gap:4px}
 .txt-toc-editor__add .prototype-icon{width:16px;height:16px}
 .txt-toc-editor__filter-menu button{width:100%;min-height:34px;padding:0 10px;text-align:left}
-.txt-toc-editor__menu-hint{display:block;padding:8px 10px;color:var(--txt-muted);font-size:var(--ui-font-caption);line-height:1.5;border-top:1px solid var(--txt-line)}
+.txt-toc-editor__menu-hint{display:block;padding:8px 10px;color:var(--app-muted);font-size:var(--ui-font-caption);line-height:1.5;border-top:1px solid var(--app-line)}
 .txt-toc-editor__list{display:grid;gap:3px}
 .txt-toc-editor__list-scroll{display:flex;flex:1 1 auto;flex-direction:column;min-height:0;margin-right:-14px;padding-right:14px;overflow-y:auto;overscroll-behavior:contain}
 .txt-toc-editor__no-rules{display:grid;flex:1 1 auto;place-items:center;margin:0;color:var(--txt-muted);font-size:var(--ui-font-caption)}

@@ -76,6 +76,42 @@ object RhinoSyntax {
         edits.sortedByDescending{it.start}.forEach{result.setRange(it.start,it.end,it.text)}
         return result.toString()
     }
+    /** Rhino 允许脚本顶层 return；普通脚本仍用 eval 保留末尾表达式的完成值。 */
+    fun wrapForEval(source:String):String {
+        val normalized=normalize(source)
+        val scanner=Scan(normalized)
+        val tokens=generateSequence{scanner.next()}.toList()
+        val parentheses=mutableListOf<Int>()
+        val blocks=mutableListOf<Boolean>()
+        val controls=setOf("if","for","while","switch","catch","with")
+        var functionDepth=0
+        var closedParen=-1
+        var hasReturn=false
+        var tailStart=0
+        tokens.forEachIndexed{i,t->
+            when(t.text) {
+                "(" -> parentheses+=i
+                ")" -> closedParen=if(parentheses.isEmpty())-1 else parentheses.removeAt(parentheses.lastIndex)
+                "{" -> {
+                    val function=tokens.getOrNull(i-1)?.text=="=>" ||
+                        (tokens.getOrNull(i-1)?.text==")"&&closedParen>=0&&tokens.getOrNull(closedParen-1)?.text !in controls)
+                    blocks+=function
+                    if(function)functionDepth++
+                }
+                "}" -> {
+                    if(blocks.isNotEmpty()&&blocks.removeAt(blocks.lastIndex))functionDepth--
+                    if(blocks.isEmpty()&&parentheses.isEmpty())tailStart=i+1
+                }
+                ";" -> if(blocks.isEmpty()&&parentheses.isEmpty()&&i<tokens.lastIndex)tailStart=i+1
+                "return" -> if(functionDepth==0&&tokens.getOrNull(i-1)?.text !in setOf(".","?.")&&tokens.getOrNull(i+1)?.text!=":")hasReturn=true
+            }
+        }
+        val tail=tokens.getOrNull(tailStart)
+        val statement=setOf("var","let","const","if","else","for","while","do","switch","try","class","function","return","throw","break","continue",";",".","?.")
+        val body=if(hasReturn&&tail!=null&&tail.text !in statement)normalized.substring(0,tail.start)+"return "+normalized.substring(tail.start) else normalized
+        val script=if(hasReturn)"(function(){\n$body\n}).call(this)" else normalized
+        return "(function(){with(__currentBindings()){return eval(${KS_JSON.encodeToString(script)});}})()"
+    }
     fun normalize(source:String):String {
         val scanner=Scan(source)
         val tokens=generateSequence{scanner.next()}.toList()

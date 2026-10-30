@@ -630,8 +630,15 @@ interface JsExtensionsCommon {
 
     fun reLoginView() = refreshUi("login")
 
-    fun upLoginData(data: Map<String, Any?>) {
-        JsUiProviders.impl?.updateLoginData(data.mapValues { it.value?.toString().orEmpty() })
+    fun reLoginView(deltaUp: Boolean) = reLoginView()
+
+    fun refreshBookInfo() = refreshUi("book")
+    fun refreshBookToc() = refreshUi("book")
+    fun refreshContent() = refreshUi("book")
+    fun copyText(text: String) = copy(text)
+
+    fun upLoginData(data: Map<String, Any?>?) {
+        data?.let { JsUiProviders.impl?.updateLoginData(it.mapValues { it.value?.toString().orEmpty() }) }
         refreshUi("login")
     }
 
@@ -979,17 +986,26 @@ interface JsExtensionsCommon {
         )
     }
 
+    fun startBrowser(url: String, title: String, html: String?) {
+        jsContext.ensureActive()
+        SourceVerificationHelpShared.startBrowser(getSource(), url, title, html = html)
+    }
+
     /**
      * 使用内置浏览器打开链接，并等待网页结果
      */
     fun startBrowserAwait(url: String, title: String, refetchAfterSuccess: Boolean): StrResponse {
+        return startBrowserAwait(url, title, refetchAfterSuccess, null)
+    }
+
+    fun startBrowserAwait(url: String, title: String, refetchAfterSuccess: Boolean, html: String?): StrResponse {
         jsContext.ensureActive()
         val source = getSource() ?: throw NoStackTraceException("startBrowser source cannot be null")
-        return VerificationUiProviders.get().awaitBrowser(source,url,title,refetchAfterSuccess)
+        return VerificationUiProviders.get().awaitBrowser(source,url,title,refetchAfterSuccess,html)
     }
 
     fun startBrowserAwait(url: String, title: String): StrResponse {
-        return startBrowserAwait(url, title, false)
+        return startBrowserAwait(url, title, true)
     }
 
     /**

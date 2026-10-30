@@ -9,6 +9,8 @@ import kotlin.io.encoding.Base64
 
 /** 规则层的旧协议对象委托给当前宿主能力，不注册应用服务或空实现。 */
 internal fun installStores(){
+    BackstageWebViewProviders.register(HostBackstageWebViews)
+    VerificationUiProviders.register(HostVerificationUi)
     SourceStorageProviders.impl=EngineStorage
     Toasters.register(object:Toaster{
         override fun toast(message:String){println("[source] $message")}

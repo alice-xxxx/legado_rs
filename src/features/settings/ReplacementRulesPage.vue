@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton, Glass as KGlass } from "konsta/vue";
+import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 import SelectMenu from "../../ui/SelectMenu.vue";
 // All pages share the rule document; this form owns only its edit draft.
@@ -170,6 +171,7 @@ function requestCloseEditor(): void {
   else closeEditor();
 }
 const actionsMenuOpen = ref(false);
+const actionsMenuTarget = ref<HTMLElement>();
 const addMenuOpen = ref(false);
 const filterPanelOpen = ref(false);
 const filterMenuTarget = ref<HTMLElement>();
@@ -436,7 +438,7 @@ function toggleFilterPanel(event: MouseEvent): void {
 </script>
 
 <template>
-  <section class="replacement-rules-page" :class="{ 'replacement-rules-page--empty': rules.length === 0 && !draft }">
+  <section class="replacement-rules-page">
     <SubpageHeader wide class="replacement-global-header col-span-full row-start-1" title="替换与净化" back-label="返回高级设置" @back="returnToAdvancedSettings" >
 <template #actions><div class="replacement-add-wrap">
         <KButton rounded inline clear type="button" class="replacement-global-add gap-2"
@@ -454,9 +456,9 @@ function toggleFilterPanel(event: MouseEvent): void {
 <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="chooseAddAction('url')">网络链接导入</KButton>
   </div>
 </KPopover>
-    <div v-if="loadError" class="replacement-page-message error" role="alert">读取替换规则失败：{{ loadError }}</div>
-    <div v-else-if="notice" class="replacement-page-message" :class="noticeKind" role="status">{{ notice }}</div>
     <div class="replacement-master">
+      <div v-if="loadError" class="replacement-page-message error" role="alert">读取替换规则失败：{{ loadError }}</div>
+      <div v-else-if="notice" class="replacement-page-message" :class="noticeKind" role="status">{{ notice }}</div>
       <div class="replacement-config-summary">
         <div><strong>{{ enabledCount }} 个启用</strong><small>{{ rules.length }} 个配置</small></div>
 
@@ -467,25 +469,25 @@ function toggleFilterPanel(event: MouseEvent): void {
         :filter-expanded="filterPanelOpen"
         :actions-expanded="actionsMenuOpen"
         @toggle-filter="toggleFilterPanel"
-          @toggle-actions="actionsMenuOpen = !actionsMenuOpen; addMenuOpen = false; filterPanelOpen = false; openRuleMenuId = null"
+          @toggle-actions="actionsMenuTarget = $event.currentTarget as HTMLElement; actionsMenuOpen = !actionsMenuOpen; addMenuOpen = false; filterPanelOpen = false; openRuleMenuId = null"
       >
         <template #actions-menu>
-          <KGlass component="div" :highlight="false" v-if="actionsMenuOpen" class="replacement-menu rounded-2xl material:bg-md-light-surface-2 material:dark:bg-md-dark-surface-2">
+          <KPopover v-if="actionsMenuOpen" opened :target="actionsMenuTarget" class="replacement-actions-menu">
+            <div class="grid gap-1 p-2">
             <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="busy" @click="batchMode = !batchMode; selectedIds = []; actionsMenuOpen = false">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
-          </KGlass>
+            </div>
+          </KPopover>
         </template>
         <template #filter-menu>
-          <Teleport to="body">
             <KPopover opened :backdrop="false" v-if="filterPanelOpen" class="replacement-filter-panel w-60 max-w-[calc(100vw-32px)]" :target="filterMenuTarget"><div class="grid gap-1 p-2">
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'all'; filterPanelOpen = false">全部规则</KButton>
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'enabled'; filterPanelOpen = false">仅启用</KButton>
           <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="statusFilter = 'disabled'; filterPanelOpen = false">仅停用</KButton>
             </div></KPopover>
-          </Teleport>
         </template>
       </ManagedListToolbar>
 
-      <div class="replacement-rule-list" @scroll.passive="filterPanelOpen = false; actionsMenuOpen = false; openRuleMenuId = null">
+      <div class="replacement-rule-list">
         <ManagedListRow
           v-for="rule in filteredRules"
           :key="rule.id"
@@ -563,7 +565,6 @@ function toggleFilterPanel(event: MouseEvent): void {
         </div>
       </form>
     </main>
-    <div v-else class="hidden min-[861px]:grid place-content-center text-[var(--app-muted)]">选择左侧规则进行编辑，或添加新规则</div>
     <div v-if="replacementImportOpen" class="replacement-import-scrim" data-back-layer
       @click.self="!replacementImportBusy && replacementRulesFeature.cancelReplacementRulesUrlImport()">
       <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="replacement-import-dialog w-[min(420px,calc(100vw-32px))] max-h-[88dvh] overflow-auto">
@@ -615,10 +616,8 @@ function toggleFilterPanel(event: MouseEvent): void {
   color: var(--rr-ink);
 }
 .replacement-field .k-list-input { min-width:0; }
-.replacement-menu { position:absolute; z-index:5; top:calc(100% + 5px); right:0; min-width:170px; display:grid; gap:2px; padding:5px; }
 .replacement-filter-panel button { display:block; width:100%; min-height:34px; padding:0 10px; text-align:left; }
-.replacement-menu button { min-height:34px; padding:0 9px; text-align:left; }
-.replacement-rule-list { min-width:0;min-height:0;flex:1 1 auto;display:grid;align-content:start;gap:3px;margin-right:-14px;padding:0 14px 0 0;overflow-y:auto;overscroll-behavior:contain; }
+.replacement-rule-list { min-width:0;min-height:0;flex:1 1 auto;display:flex;flex-direction:column;gap:3px;margin-right:-14px;padding:0 14px 0 0;overflow-y:auto;overscroll-behavior:contain; }
 .replacement-page-message { padding:7px 14px; color:var(--rr-muted); font-size:var(--ui-font-caption); }
 .replacement-page-message.error { color:var(--red); }
 .replacement-text-button, .replacement-secondary-button, .replacement-primary-button { min-height:34px; padding:0 11px; }
@@ -648,13 +647,13 @@ function toggleFilterPanel(event: MouseEvent): void {
   gap: 5px;
 }
 .replacement-global-add .prototype-icon{width:16px;height:16px}
-.replacement-config-summary{display:flex;justify-content:space-between;gap:8px;padding:8px 5px 10px;margin:0}
-.replacement-config-summary>div{display:flex;justify-content:space-between;gap:10px;width:100%}
+.replacement-config-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:3px;margin:0 0 10px}
+.replacement-config-summary>div{display:flex;justify-content:space-between;gap:12px;width:100%}
 .replacement-config-summary strong{color:var(--app-subtle);font-size:var(--ui-font-caption);font-weight:500}
 .replacement-config-summary small{color:var(--app-subtle);font-size:var(--ui-font-caption)}
 .replacement-selection-bar{position:static;z-index:4;display:flex;flex:none;align-items:center;gap:4px;flex-wrap:wrap;margin-top:auto;padding:8px 4px;border-top:1px solid var(--rr-line);background:var(--app-background)}
 .replacement-selection-count{margin-left:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);white-space:nowrap}
-.replacement-rule-empty{align-self:center;justify-self:center;margin:auto;color:var(--rr-muted);font-size:var(--ui-font-caption);text-align:center}
+.replacement-rule-empty{display:grid;flex:1 1 auto;place-items:center;margin:0;color:var(--rr-muted);font-size:var(--ui-font-caption);text-align:center}
 .replacement-detail{min-width:0;min-height:0;overflow-y:auto;padding-bottom:calc(48px + var(--ui-playback-inset));background:var(--app-background)}
 .replacement-editor-form{display:block;max-width:var(--app-content-width);margin-inline:auto;padding:0 var(--ui-page-gutter);border:0;border-radius:0;background:transparent}
 .replacement-editor-section{padding:18px 0;border-top:1px solid var(--rr-line)}
@@ -671,10 +670,9 @@ function toggleFilterPanel(event: MouseEvent): void {
 .replacement-editor-upstream>span{flex:1;min-width:200px}
 .replacement-master{display:flex;flex-direction:column;min-width:0;min-height:0;height:100%;max-height:none;overflow:hidden}
 @media(min-width:861px){
-  .replacement-rules-page{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr);align-items:start}
+  .replacement-rules-page{display:grid;grid-template-columns:300px minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}
   .replacement-master{grid-row:2;grid-column:1;min-width:0;box-sizing:border-box;height:100%;max-height:none;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));border-right:1px solid var(--rr-line);background:var(--app-background)}
   .replacement-detail{grid-row:2;grid-column:2}
-  .replacement-rules-page--empty .replacement-master{grid-column:1/-1;border-right:0}
 }
 @media(max-width:860px){
   .replacement-rules-page{display:flex;flex-direction:column}

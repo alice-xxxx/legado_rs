@@ -363,7 +363,7 @@ export default defineComponent({
         class="reader-menu-surface" @click.stop="onReaderSurfaceClick" />
     </div>
     <KToolbar v-if="ctx.readingImagePage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError" :key="settings.uiStyle + '-comic'"
-      component="footer" class="reader-footer reader-comic-dock absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      component="footer" class="reader-footer reader-comic-dock absolute" tabbar-icons tabbar-labels inner-class="mx-auto w-full max-w-[640px]">
       <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
         <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
@@ -380,7 +380,7 @@ export default defineComponent({
       </nav></KToolbarPane>
     </KToolbar>
     <KToolbar v-if="ctx.readingPdfPage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError" :key="settings.uiStyle + '-pdf'"
-      component="footer" class="reader-footer reader-pdf-dock absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      component="footer" class="reader-footer reader-pdf-dock absolute" tabbar-icons tabbar-labels inner-class="mx-auto w-full max-w-[640px]">
       <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
         <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
@@ -394,7 +394,7 @@ export default defineComponent({
       </nav></KToolbarPane>
     </KToolbar>
     <KToolbar v-if="!ctx.readingMediaChapter && !ctx.readingImagePage && !ctx.readingPdfPage" v-show="readerMenuOpen || readerBusy || ctx.readerChapterError"
-      :key="settings.uiStyle + '-text'" component="footer" class="reader-footer absolute" tabbar-icons tabbar-labels inner-class="w-full max-w-[640px]">
+      :key="settings.uiStyle + '-text'" component="footer" class="reader-footer absolute" tabbar-icons tabbar-labels inner-class="mx-auto w-full max-w-[640px]">
       <KToolbarPane class="w-full"><nav class="reader-bottom-nav h-full">
         <KButton rounded inline clear type="button" class="reader-nav-action flex-1 flex-col gap-1 h-full min-w-0 px-1 text-current" @click="ctx.openReaderDirectory"><span>
             <PrototypeIcon name="list" />
@@ -509,11 +509,11 @@ export default defineComponent({
       <div
         v-if="readerControlsMode === 'tts' && !ctx.readingMediaChapter && !ctx.readingPdfPage && !ctx.readingImagePage"
         class="reader-tts-panel">
-        <div class="reader-tts-description"><label for="reader-tts-engine">朗读引擎</label><small v-if="ttsNotice">{{
+        <div class="reader-tts-row"><div class="reader-tts-description"><label for="reader-tts-engine">朗读引擎</label><small v-if="ttsNotice">{{
             ttsNotice }}</small><small v-if="ttsActive && ttsChunkProgress">片段 {{
               ttsChunkProgress.current }} / {{ ttsChunkProgress.total }}</small></div>
         <SelectMenu id="reader-tts-engine" label="朗读引擎" :model-value="ttsEngineSelection" :disabled="ttsActive || readerBusy"
-          :options="ttsEngineOptions" @update:model-value="selectTtsEngine" />
+          :options="ttsEngineOptions" @update:model-value="selectTtsEngine" /></div>
         <KButton rounded inline clear v-if="!httpTtsConfigs.some((item) => item.enabled)" type="button" class="gap-2"
           @click="ctx.openHttpTtsSettings">添加网络朗读源</KButton>
         <div class="reader-tts-row"><label for="reader-tts-start-position">朗读起点</label>

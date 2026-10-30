@@ -1,4 +1,5 @@
 import { computed, ref, watch } from "vue";
+import materialColors from "konsta/material-colors";
 import type { AppTheme, ReadingTheme, UiStyle } from "../../api/types";
 import { settings } from "./settingsStore";
 
@@ -8,6 +9,13 @@ export const appThemes: ReadonlyArray<readonly [AppTheme, string]> = [
 export const uiStyles: ReadonlyArray<readonly [UiStyle, string]> = [
   ["material", "Material"], ["ios", "iOS"],
 ];
+export const defaultMaterialColor = "#007aff";
+export const materialColorPresets = [
+  [defaultMaterialColor, "蓝色"], ["#6750a4", "紫色"], ["#386a20", "绿色"],
+  ["#006a6a", "青色"], ["#a04100", "橙色"], ["#984061", "玫瑰"],
+] as const;
+export const resolvedMaterialColor = computed(() => /^#[0-9a-f]{6}$/i.test(settings.value.materialColor ?? "")
+  ? settings.value.materialColor!.toLowerCase() : defaultMaterialColor);
 export const readingThemes: ReadonlyArray<readonly [ReadingTheme, string]> = [
   ["white", "纯白"], ["paper", "纸张"], ["sepia", "护眼"], ["dark", "深色"],
 ];
@@ -36,5 +44,12 @@ export function initializeTheme(): () => void {
     document.documentElement.classList.toggle("k-ios", style === "ios");
     document.documentElement.classList.toggle("k-material", style === "material");
   }, { immediate: true, flush: "sync" });
-  return () => { stop(); media.removeEventListener("change", onChange); };
+  const stopColor = watch([resolvedMaterialColor, () => settings.value.uiStyle], ([color, style]) => {
+    for (const [token, value] of Object.entries(materialColors(color))) {
+      const property = `--k-color-${token}`;
+      if (style === "material") document.documentElement.style.setProperty(property, value);
+      else document.documentElement.style.removeProperty(property);
+    }
+  }, { immediate: true, flush: "sync" });
+  return () => { stop(); stopColor(); media.removeEventListener("change", onChange); };
 }

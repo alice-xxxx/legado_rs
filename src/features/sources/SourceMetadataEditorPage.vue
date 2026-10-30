@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import SubpageHeader from "../../ui/SubpageHeader.vue";
-import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Popover as KPopover } from "konsta/vue";
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import { computed, ref } from "vue";
 import type { SourceMetadata } from "../../api/types";
 import PrototypeIcon from "../../ui/PrototypeIcon.vue";

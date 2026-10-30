@@ -8,7 +8,7 @@ private struct LoginStart:Decodable{let sourceId:String;let sessionId:String;let
 private struct LoginSession:Decodable{let sourceId:String;let sessionId:String}
 private struct BrowserHeader:Decodable{let name:String;let value:String}
 private struct BrowserRequest:Decodable{
-    let capabilityId:String;let html:String;let baseUrl:String;let javaScript:String;let delayTimeMs:UInt64;let mode:String;let method:String;let headers:[BrowserHeader];let title:String;let waitForResult:Bool;let executionId:String?
+    let capabilityId:String;let html:String;let baseUrl:String;let javaScript:String;let delayTimeMs:UInt64;let mode:String;let method:String;let headers:[BrowserHeader];let title:String;let waitForResult:Bool;let executionId:String?;let overrideUrlRegex:String?
 }
 private func failure(_ text:String)->NSError{NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:text])}
 private func pageURL(_ text:String)throws->Foundation.URL{guard let url=Foundation.URL(string:text),["http","https"].contains(url.scheme ?? ""),url.host != nil,url.user == nil,url.password == nil else{throw failure("浏览器地址无效")};return url}
@@ -54,7 +54,7 @@ final class SourceBrowser {
                     if let rules=rules{page.web.configuration.userContentController.add(rules)}
                     page.web.loadHTMLString(request.html,baseURL:page.target)
                 }
-            }else if request.mode=="INTERACTIVE_PAGE" && !request.html.isEmpty{
+            }else if !request.html.isEmpty{
                 page.web.loadHTMLString(request.html,baseURL:page.target)
             }else{
                 var input=URLRequest(url:page.target);for header in request.headers where header.name.lowercased() != "cookie"{input.setValue(header.value,forHTTPHeaderField:header.name)}
@@ -73,11 +73,13 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
     let id=UUID();weak var owner:SourceBrowser?
     let invoke:Invoke;let target:Foundation.URL;let login:LoginStart?;let request:BrowserRequest?
     let web:WKWebView
+    private let overrideUrl:NSRegularExpression?
     private let bridge="foliver_"+UUID().uuidString.replacingOccurrences(of:"-",with:"")
     private var timeout:DispatchWorkItem?;private var poll:Timer?
     private var returned=false;private var closed=false;private var evaluated=false
     init(owner:SourceBrowser,invoke:Invoke,url:Foundation.URL,login:LoginStart?,request:BrowserRequest?)throws{
         self.owner=owner;self.invoke=invoke;self.target=url;self.login=login;self.request=request
+        overrideUrl=try (request?.overrideUrlRegex).map{try NSRegularExpression(pattern:"^(?:"+$0+")$")}
         let config=WKWebViewConfiguration();config.websiteDataStore = .nonPersistent();web=WKWebView(frame:CGRect(x:0,y:0,width:900,height:700),configuration:config)
         super.init(nibName:nil,bundle:nil)
         web.navigationDelegate=self;config.userContentController.add(self,name:bridge)
@@ -128,6 +130,11 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
         }
     }
     func webView(_ webView:WKWebView,decidePolicyFor navigationAction:WKNavigationAction,decisionHandler:@escaping(WKNavigationActionPolicy)->Void){
+        if let regex=overrideUrl,let request=request,let value=navigationAction.request.url?.absoluteString,regex.firstMatch(in:value,range:NSRange(value.startIndex...,in:value)) != nil{
+            decisionHandler(.cancel)
+            cookies{[self] cookie in resolve(["capabilityId":request.capabilityId,"finalUrl":value,"body":value,"cookieHeader":cookie]);close(nil)}
+            return
+        }
         let scheme=navigationAction.request.url?.scheme ?? ""
         decisionHandler(["http","https","about"].contains(scheme) ? .allow:.cancel)
     }
@@ -138,7 +145,8 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
     private func evaluate(){
         guard !closed,!evaluated,let request=request else{return};evaluated=true
         let script=quoted(request.javaScript),name=quoted(bridge)
-        let source="(async()=>{try{await new Promise(r=>setTimeout(r,\(request.delayTimeMs)));let value=\(script)?await(0,eval)(\(script)):document.documentElement.outerHTML;window.webkit.messageHandlers[\(name)].postMessage({body:String(value??''),finalUrl:location.href});}catch(e){window.webkit.messageHandlers[\(name)].postMessage({error:String(e)});}})()"
+        let capture=overrideUrl==nil ? "window.webkit.messageHandlers[\(name)].postMessage({body:String(value??''),finalUrl:location.href});":""
+        let source="(async()=>{try{await new Promise(r=>setTimeout(r,\(request.delayTimeMs)));let value=\(script)?await(0,eval)(\(script)):document.documentElement.outerHTML;\(capture)}catch(e){window.webkit.messageHandlers[\(name)].postMessage({error:String(e)});}})()"
         web.evaluateJavaScript(source+";void 0;"){[weak self] _,error in if let error=error{self?.close(error.localizedDescription)}}
     }
     func userContentController(_ userContentController:WKUserContentController,didReceive message:WKScriptMessage){

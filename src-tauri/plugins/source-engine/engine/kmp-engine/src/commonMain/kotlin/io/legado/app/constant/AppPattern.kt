@@ -4,6 +4,7 @@ package io.legado.app.constant
 object AppPattern {
     val JS_PATTERN: Regex =
         Regex("<js>([\\w\\W]*?)</js>|@js:([\\w\\W]*)", RegexOption.IGNORE_CASE)
+    val RULE_JS_PATTERN: Regex = Regex("<js>([\\w\\W]*?)</js>|@(web)?js:([\\w\\W]*)", RegexOption.IGNORE_CASE)
     val EXP_PATTERN: Regex = Regex("\\{\\{([\\w\\W]*?)\\}\\}")
 
     //url 参数选项分隔符（逗号后紧跟 { 视为 UrlOption），AnalyzeUrl.paramPattern 委托此值

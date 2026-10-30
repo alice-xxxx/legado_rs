@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Button as KButton, Segmented as KSegmented, SegmentedButton as KSegmentedButton } from "konsta/vue";
+import { Dialog as KDialog, DialogButton as KDialogButton, Button as KButton, Segmented as KSegmented, SegmentedButton as KSegmentedButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";

@@ -226,7 +226,9 @@ object JavaObjectBridge {
         val alias = when (name) {
             "android.util.Base64" -> "io.legado.sourceengine.compat.AndroidBase64"
             "io.legado.app.model.analyzeRule.AnalyzeRule" -> "io.legado.app.model.analyzeRule.AnalyzeRuleCore"
-            else -> throw missing
+            else -> if (name.startsWith("org.jsoup.nodes.") || name.startsWith("org.jsoup.select.")) {
+                name.replaceFirst("org.jsoup.", "com.fleeksoft.ksoup.")
+            } else throw missing
         }
         Class.forName(alias, false, this.javaClass.classLoader)
     }
@@ -396,6 +398,7 @@ object JavaObjectBridge {
         // 异常不 catch: 传播到调用方, 对齐 Raw 路径 (见 callInstanceMethodRaw 注释)。
         // 本方法为非 Raw 版本 (无 native 调用者), 保留供潜在复用; catch 吞异常会掩盖错误。
         val javaArgs = jsToJavaArgs(args)
+        normalizeCipherParameters(obj, methodName, javaArgs)
         // 静态分派表 (KSP 生成): 命中直接调用, miss 落反射, 行为零变化
         JsDispatchRegistry.forClass(obj.javaClass)?.let { dispatcher ->
             val r = dispatcher.call(obj, methodName, javaArgs)
@@ -454,7 +457,7 @@ object JavaObjectBridge {
         args: Array<Any?>,
         dangerousApi: Boolean
     ): Any? {
-        if (obj is CharSequence && methodName == "toJSON") return obj.toString()
+        if ((obj is CharSequence || obj is com.fleeksoft.ksoup.nodes.Node) && methodName == "toJSON") return obj.toString()
         // JS 的默认类型转换会调用实例 valueOf()；Java 包装类同名的静态
         // valueOf(value) 不能接收这个零参数调用。返回 JS 基本值，保留有参重载。
         if (methodName == "valueOf" && args.isEmpty()) {
@@ -1003,7 +1006,7 @@ object JavaObjectBridge {
         dangerousApi: Boolean
     ): Any? {
         if (!JsSecurityPolicy.isObjectVisible(obj, dangerousApi)) return null
-        if (obj is CharSequence && fieldName == "toJSON") return METHOD_MARKER
+        if ((obj is CharSequence || obj is com.fleeksoft.ksoup.nodes.Node) && fieldName == "toJSON") return METHOD_MARKER
 
         val collectionVal = getCollectionField(obj, fieldName)
         if (collectionVal != null) {
@@ -1231,6 +1234,7 @@ object JavaObjectBridge {
         // 对齐 rhino WrappedException。原先 catch 返回 null 让 JS 侧拿到 null
         // 完全不知出错, 且让 native 的 ExceptionCheck 分支成为死代码。
         val javaArgs = Array(args.size) { i -> unwrapHandleValue(args[i]) }
+        normalizeCipherParameters(obj, methodName, javaArgs)
         // 静态分派表 (KSP 生成, @JsApi 面): 命中免反射直接调用, 返回原始对象;
         // miss (重载不在表内/suspend/vararg 等) 落原反射路径, 行为零变化。
         // obj 为 Class 时是静态调用语义, 不走实例分派表。
@@ -1849,9 +1853,34 @@ object JavaObjectBridge {
             return if (cached === CACHE_MISS) null else cached as Method
         }
 
-        val method = findMethodImpl(clazz, name, args)
+        val method = findMethodImpl(clazz, name, args)?.let(::publicDeclaration)
         methodCache.checkCapacity()
         methodCache[cacheKey] = method ?: CACHE_MISS
+        return method
+    }
+
+    // Android 接受用 GCMParameterSpec 传递 ChaCha20-Poly1305 nonce，桌面 JDK 要求 IvParameterSpec。
+    private fun normalizeCipherParameters(obj: Any, name: String, args: Array<Any?>) {
+        if (obj !is javax.crypto.Cipher || name != "init" || !obj.algorithm.equals("ChaCha20-Poly1305", true)) return
+        args.forEachIndexed { index, value ->
+            if (value is javax.crypto.spec.GCMParameterSpec && value.tLen == 128)
+                args[index] = javax.crypto.spec.IvParameterSpec(value.iv)
+        }
+    }
+
+    // JDK 内部实现类的模块不可反射打开；从公开父类/接口取得同签名方法仍会虚分派。
+    private fun publicDeclaration(method: Method): Method {
+        val owner = method.declaringClass
+        if (!owner.name.startsWith("sun.") && !owner.name.startsWith("jdk.internal.") &&
+            Modifier.isPublic(owner.modifiers)) return method
+        for (parent in owner.interfaces + listOfNotNull(owner.superclass)) {
+            val declared = try { parent.getMethod(method.name, *method.parameterTypes) }
+                catch (_: NoSuchMethodException) { continue }
+            val accessible = publicDeclaration(declared)
+            if (Modifier.isPublic(accessible.declaringClass.modifiers) &&
+                !accessible.declaringClass.name.startsWith("sun.") &&
+                !accessible.declaringClass.name.startsWith("jdk.internal.")) return accessible
+        }
         return method
     }
 
@@ -1983,14 +2012,14 @@ object JavaObjectBridge {
     private fun isPrimitiveWrapperOf(primitiveType: Class<*>, wrapperType: Class<*>): Boolean {
         if (!primitiveType.isPrimitive) return false
         return when (primitiveType) {
-            Int::class.javaPrimitiveType -> wrapperType == Int::class.java
-            Long::class.javaPrimitiveType -> wrapperType == Long::class.java
-            Boolean::class.javaPrimitiveType -> wrapperType == Boolean::class.java
-            Double::class.javaPrimitiveType -> wrapperType == Double::class.java
-            Float::class.javaPrimitiveType -> wrapperType == Float::class.java
-            Short::class.javaPrimitiveType -> wrapperType == Short::class.java
-            Byte::class.javaPrimitiveType -> wrapperType == Byte::class.java
-            Char::class.javaPrimitiveType -> wrapperType == Char::class.java
+            Int::class.javaPrimitiveType -> wrapperType == Int::class.javaObjectType
+            Long::class.javaPrimitiveType -> wrapperType == Long::class.javaObjectType
+            Boolean::class.javaPrimitiveType -> wrapperType == Boolean::class.javaObjectType
+            Double::class.javaPrimitiveType -> wrapperType == Double::class.javaObjectType
+            Float::class.javaPrimitiveType -> wrapperType == Float::class.javaObjectType
+            Short::class.javaPrimitiveType -> wrapperType == Short::class.javaObjectType
+            Byte::class.javaPrimitiveType -> wrapperType == Byte::class.javaObjectType
+            Char::class.javaPrimitiveType -> wrapperType == Char::class.javaObjectType
             else -> false
         }
     }
@@ -2224,18 +2253,7 @@ object JavaObjectBridge {
                 else -> false
             }
         }
-        val wrapper = when (paramType) {
-            Int::class.javaPrimitiveType -> Int::class.java
-            Long::class.javaPrimitiveType -> Long::class.java
-            Boolean::class.javaPrimitiveType -> Boolean::class.java
-            Double::class.javaPrimitiveType -> Double::class.java
-            Float::class.javaPrimitiveType -> Float::class.java
-            Short::class.javaPrimitiveType -> Short::class.java
-            Byte::class.javaPrimitiveType -> Byte::class.java
-            Char::class.javaPrimitiveType -> Char::class.java
-            else -> return false
-        }
-        return wrapper.isAssignableFrom(argType)
+        return isPrimitiveWrapperOf(paramType, argType)
     }
 
     /**

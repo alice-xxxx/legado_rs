@@ -171,7 +171,7 @@ interface JsEngine {
     /**
      * 把 JS 包成可子 scope 执行的形式。
      * - quickjs: `(function(){with(__currentBindings()){return eval(<源码>);}})()`
-     *   （eval 承载末尾表达式完成值，IIFE 隔离声明；顶层 return 落在 eval 里不可用）
+     *   （eval 承载末尾表达式完成值，IIFE 隔离声明；语法适配器处理顶层 return）
      * - rhino: 直接返回源码（rhino 原生支持顶层 return + 子 scope 词法隔离）
      */
     fun wrapJsForEval(jsStr: String): String

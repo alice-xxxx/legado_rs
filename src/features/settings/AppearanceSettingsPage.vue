@@ -7,7 +7,7 @@ import { pickReaderBackgroundImage } from "../../api/settings";
 import type { ReaderSettings } from "../../api/types";
 import { settings } from "./settingsStore";
 import { isReadingMode, readingModes } from "./readerModes";
-import { appThemes, readingThemes, resolvedReadingTheme, setReaderTheme, uiStyles } from "./themeState";
+import { appThemes, defaultMaterialColor, materialColorPresets, readingThemes, resolvedMaterialColor, resolvedReadingTheme, setReaderTheme, uiStyles } from "./themeState";
 import { backupBusy } from "./backupState";
 import { shelfBatchRecoveryRequired } from "../../app/recoveryState";
 import { notify } from "../../app/notifications";
@@ -74,6 +74,26 @@ function clearBackground(): void {
             :active="settings.uiStyle === style[0]" :aria-pressed="settings.uiStyle === style[0]"
             :disabled="blocked" @click="settings.uiStyle = style[0]">{{ style[1] }}</KSegmentedButton>
         </KSegmented>
+        <template v-if="settings.uiStyle === 'material'">
+          <header class="appearance-color-heading"><h2>主题颜色</h2>
+            <KButton clear inline rounded type="button" :disabled="blocked || resolvedMaterialColor === defaultMaterialColor"
+              @click="settings.materialColor = defaultMaterialColor">恢复默认</KButton>
+          </header>
+          <div class="appearance-color-options" role="group" aria-label="主题颜色">
+            <KButton v-for="[color, name] in materialColorPresets" :key="color" clear rounded type="button"
+              class="h-auto! min-h-16 min-w-0 flex-col gap-2 px-0! py-2!"
+              :aria-label="name" :aria-pressed="resolvedMaterialColor === color" :disabled="blocked"
+              @click="settings.materialColor = color">
+              <span class="appearance-color-swatch" :style="{ background: color }"
+                :class="{ 'is-selected': resolvedMaterialColor === color }"></span>{{ name }}
+            </KButton>
+          </div>
+          <div class="appearance-custom-color">
+            <label for="material-custom-color">自定义颜色</label>
+            <input id="material-custom-color" type="color" :value="resolvedMaterialColor" :disabled="blocked"
+              @input="settings.materialColor = ($event.target as HTMLInputElement).value" />
+          </div>
+        </template>
         <header><h2>应用主题</h2></header>
         <KSegmented strong rounded class="mb-5" aria-label="应用主题">
           <KSegmentedButton v-for="theme in appThemes" :key="theme[0]" type="button"
@@ -268,6 +288,13 @@ function clearBackground(): void {
 .appearance-settings-stack{display:grid;gap:var(--ui-space-6);min-width:0}
 .appearance-workspace-group>header{margin:0 0 8px}
 .appearance-workspace-group h2{margin:0;color:var(--app-text);font-size:var(--ui-font-body);font-weight:600}
+.appearance-color-heading{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.appearance-color-options{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:4px}
+.appearance-color-swatch{width:28px;height:28px;border-radius:50%;border:1px solid var(--app-line)}
+.appearance-color-swatch.is-selected{outline:2px solid var(--app-accent);outline-offset:3px}
+.appearance-custom-color{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:56px;margin-bottom:16px}
+.appearance-custom-color input{width:48px;height:44px;padding:4px;border:1px solid var(--app-line);border-radius:var(--ui-radius);background:var(--app-surface);cursor:pointer}
+.appearance-custom-color input:focus-visible{outline:2px solid var(--app-accent);outline-offset:3px}
 .appearance-setting-row{box-sizing:border-box;display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,.8fr);align-items:center;gap:10px;min-height:58px;padding:9px 0;border-bottom:1px solid var(--app-line)}
 .appearance-workspace-group .appearance-setting-row:last-child{border-bottom:0}
 .appearance-setting-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
@@ -298,9 +325,6 @@ function clearBackground(): void {
   .appearance-setting-row{grid-template-columns:minmax(0,1fr) minmax(110px,.8fr);gap:8px}
   .appearance-theme-options{gap:5px}
   .appearance-theme-option>span{height:40px}
-}
-@media(max-width:380px){
- .appearance-setting-row{grid-template-columns:1fr;gap:7px}
 }
 }
 </style>

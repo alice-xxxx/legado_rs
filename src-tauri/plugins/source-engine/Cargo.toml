@@ -11,12 +11,13 @@ links = "tauri-plugin-source-engine"
 [features]
 # Kotlin/Native 构建移动端 Rust 静态库时不启用桌面应用特性。
 native-mobile = ["tauri/wry"]
-desktop-runtime = ["tauri/wry"]
+desktop-runtime = ["tauri/wry", "dep:webview2-com", "dep:windows-core", "dep:windows", "dep:webkit2gtk", "dep:objc2-foundation", "dep:objc2-web-kit", "dep:regex"]
 
 [dependencies]
 tauri = { version = "2", default-features = false }
 serde = "1.0"
 serde_json = "1"
+regex = { version = "1", optional = true }
 base64 = "0.23"
 reqwest = { version = "0.13", features = ["cookies", "multipart", "socks", "stream", "gzip", "brotli", "deflate"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "fs", "sync", "time"] }
@@ -27,6 +28,18 @@ imageproc = { version = "0.27.0", default-features = false }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 jni = { version = "0.22.4", features = ["invocation"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = { version = "0.39", optional = true }
+windows-core = { version = "0.62", optional = true }
+windows = { version = "0.62", features = ["Win32_UI_Shell", "Win32_System_Com"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_40"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSURL", "NSURLRequest"], optional = true }
+objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "WKWebView", "WKNavigation"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"

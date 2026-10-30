@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Popover as KPopover, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import { ListInput as KListInput, Dialog as KDialog, DialogButton as KDialogButton, Toggle as KToggle, Button as KButton } from "konsta/vue";
+import KPopover from "../../ui/DropdownPopover.vue";
 import SubpageHeader from "../../ui/SubpageHeader.vue";
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -492,7 +493,7 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
 </script>
 
 <template>
-  <section class="settings-card http-tts-config-card" :class="{ 'http-tts-config-card--empty': !editorOpen && configs.length === 0 }">
+  <section class="settings-card http-tts-config-card">
     <SubpageHeader wide class="http-tts-topbar col-span-full row-start-1" title="TTS 引擎" :back-label="embedded ? '返回阅读菜单' : '返回高级设置'" @back="returnToAdvancedSettings" >
 <template #actions><div ref="addMenuTarget" class="http-tts-top-add">
         <KButton rounded inline clear type="button" class="gap-2"
@@ -522,23 +523,19 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
         @toggle-actions="toggleActionsMenu"
       >
         <template #actions-menu>
-          <Teleport to="body">
             <KPopover opened :backdrop="false" v-if="actionsMenuOpen" class="http-tts-actions-menu w-60 max-w-[calc(100vw-32px)]" :target="actionsMenuTarget"><div class="grid gap-1 p-2">
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="toggleBatchManagement">{{ batchMode ? '退出批量管理' : '批量管理' }}</KButton>
             </div></KPopover>
-          </Teleport>
         </template>
         <template #filter-menu>
-          <Teleport to="body">
             <KPopover opened :backdrop="false" v-if="filterMenuOpen" class="http-tts-filter-menu w-60 max-w-[calc(100vw-32px)]" :target="filterMenuTarget"><div class="grid gap-1 p-2">
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'all'; filterMenuOpen = false">全部配置</KButton>
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'enabled'; filterMenuOpen = false">仅启用</KButton>
               <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" @click="enabledFilter = 'disabled'; filterMenuOpen = false">仅停用</KButton>
             </div></KPopover>
-          </Teleport>
         </template>
       </ManagedListToolbar>
-      <div class="http-tts-items-scroll" @scroll.passive="openConfigMenuId = null; filterMenuOpen = false; actionsMenuOpen = false">
+      <div class="http-tts-items-scroll">
       <ManagedListRow name="系统朗读" subtitle="不使用远程朗读" :enabled="false"
         :busy="blocked" :show-menu="false"
         @open="selectPlaybackConfig('')" />
@@ -571,12 +568,10 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
           @click="requestBulkDelete">删除</KButton>
       </footer>
     </nav>
-    <Teleport to="body">
       <KPopover opened :backdrop="false" v-if="openConfigMenu" class="http-tts-config-menu w-60 max-w-[calc(100vw-32px)]" :target="configMenuTarget"><div class="grid gap-1 p-2">
         <KButton rounded inline clear class="gap-2 w-full justify-start text-current" type="button" :disabled="actionsBlocked || !openConfigMenu.enabled || selectedConfigId === openConfigMenu.id" @click="selectPlaybackConfig(openConfigMenu.id)">设为当前朗读</KButton>
         <KButton rounded inline clear class="k-color-brand-danger gap-2 w-full justify-start" type="button" :disabled="actionsBlocked" @click="requestDeleteConfig(openConfigMenu.id)">删除配置</KButton>
       </div></KPopover>
-    </Teleport>
     <p v-if="!importUrlOpen && (error || (!editorOpen && editorError))" class="source-identity-confirmation">{{ editorError || error }}</p>
 
     </div>
@@ -722,7 +717,6 @@ watch(() => [configs.value.length, selectedConfigId.value, blocked.value], openI
   background:var(--app-background);
   color: var(--app-text);
 }
-.http-tts-config-card--empty{grid-template-columns:minmax(0,1fr)}
 .http-tts-top-add{position:relative}
 .http-tts-overview{box-sizing:border-box;grid-column:1;grid-row:2;min-width:0;height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden;padding:14px 14px calc(14px + var(--ui-playback-inset));border-right:1px solid var(--tts-line);background:var(--app-background)}
 .http-tts-master-list{display:flex;flex:1 1 auto;flex-direction:column;gap:3px;min-height:0;margin:0;overflow:hidden}

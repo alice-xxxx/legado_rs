@@ -3,6 +3,9 @@
 #[path = "books/import.rs"]
 pub(crate) mod book_import;
 pub(crate) mod database;
+#[cfg(test)]
+#[path = "../../tmp/source-compat/probe.rs"]
+mod source_compat_probe;
 mod file_access;
 pub(crate) use tauri_plugin_source_engine::http as http_client;
 #[path = "books/information.rs"]
