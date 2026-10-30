@@ -92,7 +92,8 @@ val buildIosNativeQuickJs = tasks.register<Exec>("buildIosNativeQuickJs") {
     outputs.dir(layout.buildDirectory.dir("iosNativeLibs"))
 }
 
-val androidAbis = listOf("arm64-v8a")
+val androidAbis = providers.gradleProperty("legado.androidAbis")
+    .orElse(engineToolchain.getProperty("android.abis")).get().split(' ')
 val quickJsAndroidRoot = projectDir.resolve("../src/native/cpp").canonicalFile
 val quickJsAndroidSources = projectDir.resolve("../src/native/quickjs-ng").canonicalFile
 val androidNdkRoot = providers.provider { locateAndroidNdk().canonicalFile }
@@ -245,6 +246,7 @@ kotlin {
         namespace = "io.legado.sourceengine.kmp"
         compileSdk = engineToolchain.getProperty("android.compileSdk").toInt()
         minSdk = engineToolchain.getProperty("android.minSdk").toInt()
+        withHostTest {}
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget(engineToolchain.getProperty("android.jvmTarget")))
         }

@@ -24,6 +24,11 @@ val toolchain = Properties().apply {
     rootDir.resolve("../toolchain.properties").inputStream().use { load(it) }
 }
 extra["engineToolchain"] = toolchain
+val androidAbis = providers.gradleProperty("legado.androidAbis")
+    .orElse(toolchain.getProperty("android.abis")).get().split(' ')
+check(androidAbis.isNotEmpty() && androidAbis.all { it in toolchain.getProperty("android.abis").split(' ') }) {
+    "Unsupported Android ABIs: $androidAbis"
+}
 val sourceEngineRuntimeClasspath = sourceSets.main.get().runtimeClasspath
 val hostOs = when {
     System.getProperty("os.name").lowercase().contains("win") -> "windows"
@@ -238,6 +243,7 @@ tasks.register("stageTauriAndroidAar") {
     description = "Stage the KMP Android engine AAR for the Tauri mobile plugin"
     dependsOn(":kmp-engine:bundleAndroidMainAar")
     inputs.file(projectDir.resolve("kmp-engine/build/outputs/aar/kmp-engine.aar"))
+    inputs.property("androidAbis", androidAbis)
     outputs.file(stagedTauriAndroidAar)
 
     doLast {
@@ -245,14 +251,14 @@ tasks.register("stageTauriAndroidAar") {
         check(sourceAar.isFile) { "KMP Android AAR was not produced: ${sourceAar.absolutePath}" }
         stagedTauriAndroidAar.parentFile.mkdirs()
 
-        // Keep only arm64 JNI, including when the input AAR contains stale multi-ABI outputs.
+        // Keep only the selected ABIs, including when the input AAR contains stale outputs.
         // Tauri owns the Rust app library; the AAR supplies QuickJS, not another Rust Host instance.
         ZipFile(sourceAar).use { input ->
             ZipOutputStream(stagedTauriAndroidAar.outputStream().buffered()).use { output ->
                 input.entries().asSequence()
                     .filterNot {
                         it.name.startsWith("jni/") &&
-                            (!it.name.startsWith("jni/arm64-v8a/") || it.name.endsWith("/liblegado_lib.so") || it.name.endsWith("/libfoliver_lib.so"))
+                            (it.name.split('/').getOrNull(1) !in androidAbis || it.name.endsWith("/liblegado_lib.so") || it.name.endsWith("/libfoliver_lib.so"))
                     }
                     .forEach { entry ->
                         output.putNextEntry(ZipEntry(entry.name))

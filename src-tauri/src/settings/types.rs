@@ -16,6 +16,10 @@ pub struct SettingsDocument {
     pub schema_version: u32,
     #[serde(default = "default_source_http_timeout_seconds")]
     pub source_http_timeout_seconds: u64,
+    #[serde(default = "default_auto_check_updates")]
+    pub auto_check_updates: bool,
+    #[serde(default)]
+    pub ignored_update_version: Option<String>,
     pub reader: ReaderDefaults,
     pub home: HomeConfigDocument,
 }
@@ -25,6 +29,8 @@ impl Default for SettingsDocument {
         Self {
             schema_version: SCHEMA_VERSION,
             source_http_timeout_seconds: default_source_http_timeout_seconds(),
+            auto_check_updates: true,
+            ignored_update_version: None,
             theme: AppTheme::System,
             ui_style: UiStyle::default(),
             material_color: None,
@@ -54,4 +60,8 @@ pub enum UiStyle {
 
 fn default_source_http_timeout_seconds() -> u64 {
     15
+}
+
+fn default_auto_check_updates() -> bool {
+    true
 }

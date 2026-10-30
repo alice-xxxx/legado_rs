@@ -460,6 +460,8 @@ export interface AppSettingsResource {
   uiStyle: UiStyle;
   materialColor?: string;
   sourceHttpTimeoutSeconds: number;
+  autoCheckUpdates?: boolean;
+  ignoredUpdateVersion?: string | null;
   reader: ReaderSettings;
   home: HomeConfigDocument;
   lastBackupAtMs?: number | null;

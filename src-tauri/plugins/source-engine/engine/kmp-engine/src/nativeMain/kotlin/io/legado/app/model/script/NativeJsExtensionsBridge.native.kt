@@ -762,6 +762,10 @@ object NativeJsExtensionsBridge {
                 obj.upLoginData(data.mapValues { (_, value) -> (value as? kotlinx.serialization.json.JsonPrimitive)?.content })
                 jsUndefined()
             }
+            obj is JsExtensionsCommon && methodId == 417 -> {
+                obj.reLoginView((args.getOrNull(0) as? Boolean) ?: false)
+                jsUndefined()
+            }
             // ============ 字体族 (500-599) ============
             obj is JsExtensionsCommon && methodId == 501 -> {
                 // queryTTF(data[, useCache]) → QueryTTF handle (null → 0, JS 层转 null)
@@ -1208,6 +1212,7 @@ function __createJavaObj(handle) {
     obj.deviceID = function() { return __nativeDispatch(handle, 414, []); };
     obj.refreshExplore = function() { __nativeDispatch(handle, 415, []); };
     obj.upLoginData = function(data) { __nativeDispatch(handle, 416, [JSON.stringify(data)]); };
+    obj.reLoginView = function(deltaUp) { __nativeDispatch(handle, 417, [deltaUp]); };
     obj.startBrowser = function(url, title) { __nativeDispatch(handle, 408, [url, title]); };
     obj.startBrowserAwait = function(url, title, refetchAfterSuccess) {
         return __createStrResponseObj(__nativeDispatch(handle, 409, [url, title, refetchAfterSuccess]));

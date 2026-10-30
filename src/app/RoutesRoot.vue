@@ -6,6 +6,7 @@ import PrimaryNavigation from "../ui/PrimaryNavigation.vue";
 import { disposeSearchState } from "../features/discovery/searchState";
 import { installNativeBackNavigation } from "./nativeBack";
 import { installDialogInteractions } from "../ui/dialogInteractions";
+import { initializeAppUpdates } from "../features/settings/appUpdates";
 
 const route = useRoute();
 const mainPage = computed(() => route.name === routeNames.home || route.name === routeNames.shelf || route.name === routeNames.settings);
@@ -13,9 +14,11 @@ const mainPage = computed(() => route.name === routeNames.home || route.name ===
 onBeforeUnmount(disposeSearchState);
 let disposeNativeBack: (() => void) | undefined;
 let disposeDialogs: (() => void) | undefined;
-onMounted(() => { disposeNativeBack = installNativeBackNavigation(); disposeDialogs = installDialogInteractions(); });
+let disposeUpdates: (() => void) | undefined;
+onMounted(() => { disposeNativeBack = installNativeBackNavigation(); disposeDialogs = installDialogInteractions(); disposeUpdates = initializeAppUpdates(); });
 onBeforeUnmount(() => disposeNativeBack?.());
 onBeforeUnmount(() => disposeDialogs?.());
+onBeforeUnmount(() => disposeUpdates?.());
 </script>
 
 <template>

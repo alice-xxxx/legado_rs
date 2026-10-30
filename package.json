@@ -2,6 +2,7 @@
   "name": "foliver",
   "private": true,
   "version": "0.1.0",
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
     "postinstall": "patch-package",
@@ -34,10 +35,11 @@
     "patch-package": "^8.0.1",
     "tailwindcss": "^4.3.3",
     "typescript": "~6.0.3",
-    "vite": "^8.0.16",
+    "vite": "^8.3.5",
     "vue-tsc": "^3.3.5"
   },
   "allowScripts": {
-    "core-js": false
+    "core-js": false,
+    "fsevents": false
   }
 }

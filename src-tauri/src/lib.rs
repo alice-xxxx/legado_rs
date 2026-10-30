@@ -18,6 +18,8 @@ pub(crate) mod sources;
 #[path = "settings/mod.rs"]
 mod settings;
 mod support;
+#[cfg(any(feature = "desktop", feature = "mobile-runtime"))]
+mod updates;
 // 备份、书籍和书架。
 #[path = "backup/mod.rs"]
 pub mod backup;
@@ -124,7 +126,12 @@ pub fn run() {
             }
         }))
     };
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(tauri_plugin_update_installer::init());
     let builder = builder
+        .manage(updates::Updates::default())
         .plugin(tauri_plugin_screen::init())
         .plugin(tauri_plugin_navigation::init())
         .plugin(tauri_plugin_system_media::init())
@@ -244,6 +251,10 @@ pub fn run() {
     });
     let invoke_handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
         resources::app_bootstrap,
+        updates::get_app_info,
+        updates::check_app_update,
+        updates::install_app_update,
+        updates::restart_after_update,
         reading_tools::tts::start_tts,
         reading_tools::tts::tts_voices,
         reading_tools::tts::stop_tts,

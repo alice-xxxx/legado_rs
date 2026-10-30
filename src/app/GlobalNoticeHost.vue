@@ -4,11 +4,13 @@ import { confirmation, answerConfirmation } from "./confirmation";
 import { dismissToast, toast, toastKind } from "./notifications";
 import { shelfBatchRecoveryMessage, shelfBatchRecoveryRequired, shelfBatchRecoveryTitle } from "./recoveryState";
 import { getReaderSession } from "../features/reader/readerSession";
+import AppUpdateDialog from "../features/settings/AppUpdateDialog.vue";
 
 const readerVisible = getReaderSession().readerVisible;
 </script>
 
 <template>
+  <AppUpdateDialog />
   <section v-if="confirmation" class="modal-backdrop z-[170]" @click.self="answerConfirmation(false)">
     <KDialog title-font-size-ios="text-[length:var(--ui-font-heading)]" title-font-size-material="text-[length:var(--ui-font-heading)]" opened :backdrop="false" class="w-[min(420px,calc(100vw-32px))]">
       <template #title><h2>{{ confirmation.title }}</h2></template>

@@ -75,7 +75,7 @@ class JsApiProcessor(
             downloadFile,encodeURI,equals,evalJS,get,get7zStringContent,getCookie,getHeaderMap,
             getRarStringContent,getSource,getString,getStringList,getZipStringContent,hashCode,head,
             HMacBase64,HMacHex,log,login,loginUi,logType,md5Encode,md5Encode16,openUrl,post,put,
-            queryBase64TTF,queryTTF,readTxtFile,replaceFont,showLoginDialog,showSourceVariableDialog,
+            queryBase64TTF,queryTTF,readTxtFile,reLoginView,replaceFont,showLoginDialog,showSourceVariableDialog,
             startBrowser,startBrowserAwait,strToBytes,toURL,toString,upLoginData,webView,webViewGetOverrideUrl,
             webViewGetSource,
             org.jsoup.Connection.Response.url,

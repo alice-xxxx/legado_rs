@@ -13,6 +13,7 @@ try {
   if (error?.code !== "ENOENT") throw error;
   gradleProperties = "";
 }
+gradleProperties = gradleProperties.replace(/^android\.proguard\.failOnMissingFiles\s*=.*(?:\r?\n|$)/gm, "");
 const configCacheProperty = /^org\.gradle\.configuration-cache\s*=.*$/m;
 if (configCacheProperty.test(gradleProperties)) {
   gradleProperties = gradleProperties.replace(configCacheProperty, "org.gradle.configuration-cache=false");
@@ -95,17 +96,8 @@ if (existingRustlsDependency.test(contents)) {
 } else {
   contents = contents.replace("dependencies {", `dependencies {\n    ${rustlsAndroidDependency}`);
 }
-const arm64Marker = "// Foliver supports Android arm64 only.";
-if (!contents.includes(arm64Marker)) {
-  contents += `
-android {
-    ${arm64Marker}
-    defaultConfig {
-        ndk { abiFilters.clear(); abiFilters.add("arm64-v8a") }
-    }
-}
-`;
-}
+// Remove the old generated restriction; Tauri's --target now selects each APK's ABI.
+contents = contents.replace(/(?:android|extensions\.configure<com\.android\.build\.api\.dsl\.ApplicationExtension>) \{\r?\n\s*\/\/ Foliver supports Android arm64 only\.[\s\S]*?^\}\r?\n?/m, "");
 // Keep generated app bytecode aligned with the engine's Android target.
 contents = contents.replace(/sourceCompatibility\s*=[^\r\n]+/g, 'sourceCompatibility = JavaVersion.toVersion("' + toolchain["android.jvmTarget"] + '")')
   .replace(/targetCompatibility\s*=[^\r\n]+/g, 'targetCompatibility = JavaVersion.toVersion("' + toolchain["android.jvmTarget"] + '")')
@@ -150,7 +142,7 @@ tasks.configureEach {
 }
 
 if (!contents.includes(marker)) {
-  const androidBlock = /android \{\r?\n/;
+  const androidBlock = /(?:android|extensions\.configure<com\.android\.build\.api\.dsl\.ApplicationExtension>) \{\r?\n/;
   if (!androidBlock.test(contents)) {
     throw new Error(`Cannot find the Android DSL block in ${buildFile.pathname}`);
   }

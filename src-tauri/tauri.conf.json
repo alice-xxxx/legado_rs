@@ -79,6 +79,11 @@
     }
   },
   "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI4MjZDQkQ1NTFFNjlFMUUKUldRZW51WlIxY3NtdU5idEg4WVZobzJFMWExU2g0RVhVOXlkeVBXdFVEMUd0ZElxTWRxSFFlNEkK",
+      "endpoints": ["https://github.com/alice-xxxx/legado_rs/releases/latest/download/latest.json"],
+      "requireSignedVersion": true
+    },
     "deep-link": {
       "mobile": [
         {

@@ -6,6 +6,8 @@ export const defaultSettings: AppSettingsResource = {
   theme: "system",
   uiStyle: "material",
   sourceHttpTimeoutSeconds: 15,
+  autoCheckUpdates: true,
+  ignoredUpdateVersion: null,
   home: { tabs: [{ id: "tab-home", title: "主页", sortOrder: 0, sections: [] }] },
   reader: {
     fontSizePx: 19,

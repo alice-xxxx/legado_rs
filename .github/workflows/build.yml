@@ -1,6 +1,17 @@
 name: Package Foliver
 
 on:
+  workflow_call:
+    inputs:
+      platform:
+        type: string
+        default: all
+      ref:
+        type: string
+        default: ''
+      updater:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       platform:
@@ -10,7 +21,7 @@ on:
         options: [all, desktop, android, ios]
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: package-${{ github.workflow }}-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 permissions:
@@ -18,26 +29,47 @@ permissions:
 
 jobs:
   desktop:
-    name: Desktop (${{ matrix.os }})
+    name: Desktop (${{ matrix.platform }} ${{ matrix.arch }})
     if: inputs.platform == 'all' || inputs.platform == 'desktop'
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+            target: x86_64-unknown-linux-gnu
             bundles: appimage,deb
-            installers: |
-              src-tauri/target/release/bundle/appimage/*.AppImage
-              src-tauri/target/release/bundle/deb/*.deb
-          - os: macos-latest
+          - runner: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
+            target: aarch64-unknown-linux-gnu
+            bundles: appimage,deb
+          - runner: macos-15-intel
+            platform: macos
+            arch: x64
+            target: x86_64-apple-darwin
             bundles: dmg
-            installers: src-tauri/target/release/bundle/dmg/*.dmg
-          - os: windows-latest
+          - runner: macos-latest
+            platform: macos
+            arch: arm64
+            target: aarch64-apple-darwin
+            bundles: dmg
+          - runner: windows-latest
+            platform: windows
+            arch: x64
+            target: x86_64-pc-windows-msvc
             bundles: nsis
-            installers: src-tauri/target/release/bundle/nsis/*.exe
+          - runner: windows-11-arm
+            platform: windows
+            arch: arm64
+            target: aarch64-pc-windows-msvc
+            bundles: nsis
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
@@ -45,18 +77,22 @@ jobs:
           node-version: 24
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.target }}
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
+          architecture: ${{ matrix.arch == 'arm64' && 'aarch64' || 'x64' }}
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
           # 全平台并行时，Linux/macOS 缓存分别由 Android/iOS 写入，避免重复抢占同一个键。
-          cache-read-only: ${{ inputs.platform == 'all' && runner.os != 'Windows' }}
+          cache-read-only: ${{ inputs.platform == 'all' && ((runner.os == 'Linux' && runner.arch == 'X64') || (runner.os == 'macOS' && runner.arch == 'ARM64')) }}
       - name: Install Linux dependencies
         if: runner.os == 'Linux'
         run: |
@@ -69,31 +105,75 @@ jobs:
         working-directory: src-tauri/plugins/source-engine/engine
         run: bash ./gradlew --no-daemon --console=plain prepareDesktopJvmRuntime
       - name: Prepare desktop engine and compact Java runtime
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.arch == 'x64'
         working-directory: src-tauri/plugins/source-engine/engine
         env:
           CMAKE_GENERATOR: Ninja
           CC: gcc
           CXX: g++
         run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        with:
+          arch: arm64
+      - name: Prepare ARM64 desktop engine and compact Java runtime
+        if: runner.os == 'Windows' && matrix.arch == 'arm64'
+        working-directory: src-tauri/plugins/source-engine/engine
+        env:
+          CMAKE_GENERATOR: Ninja
+          CC: cl
+          CXX: cl
+        run: .\gradlew.bat --no-daemon --console=plain prepareDesktopJvmRuntime
       - name: Configure Linux runtime library search
         if: runner.os == 'Linux'
         run: echo "LD_LIBRARY_PATH=$GITHUB_WORKSPACE/src-tauri/plugins/source-engine/engine/build/source-engine/runtime/jre/lib/server:$GITHUB_WORKSPACE/src-tauri/plugins/source-engine/engine/build/source-engine/runtime/jre/lib:$GITHUB_WORKSPACE/src-tauri/plugins/source-engine/engine/build/source-engine/runtime/jre/lib/jli${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" >> "$GITHUB_ENV"
       - name: Package release installers
-        run: npm run tauri -- build --no-sign --bundles ${{ matrix.bundles }}
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: npm run tauri -- build ${{ !inputs.updater && '--no-sign' || '' }} --target ${{ matrix.target }} --bundles ${{ matrix.bundles }} ${{ inputs.updater && '--config src-tauri/tauri.updater.conf.json' || '' }}
       - uses: actions/upload-artifact@v7
         with:
-          name: Foliver-${{ runner.os }}
-          path: ${{ matrix.installers }}
+          name: Foliver-${{ matrix.platform }}-${{ matrix.arch }}
+          overwrite: true
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/nsis/*.exe
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/**/*.sig
           if-no-files-found: error
           retention-days: 14
 
   android:
-    name: Android arm64 signed release APK
+    name: Android (${{ matrix.abi }}) signed release APK
     if: inputs.platform == 'all' || inputs.platform == 'android'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            abi: arm64-v8a
+            target: aarch64
+            rust: aarch64-linux-android
+          - arch: armv7
+            abi: armeabi-v7a
+            target: armv7
+            rust: armv7-linux-androideabi
+          - arch: x64
+            abi: x86_64
+            target: x86_64
+            rust: x86_64-linux-android
+          - arch: x86
+            abi: x86
+            target: i686
+            rust: i686-linux-android
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
@@ -102,10 +182,11 @@ jobs:
           package-manager-cache: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: ${{ matrix.rust }}
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
+          key: ${{ matrix.rust }}
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
@@ -113,7 +194,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6
         with:
           cache-provider: basic
-          cache-read-only: false
+          cache-read-only: ${{ matrix.arch != 'arm64' }}
       - uses: android-actions/setup-android@v4
         with:
           packages: 'platform-tools build-tools;${{ env.ANDROID_BUILDTOOLS }} ndk;${{ env.ANDROID_NDK }} cmake;${{ env.ANDROID_CMAKE }}'
@@ -124,7 +205,7 @@ jobs:
           echo "NDK_HOME=$ANDROID_HOME/ndk/${{ env.ANDROID_NDK }}" >> "$GITHUB_ENV"
       - name: Build Android engine AAR and QuickJS JNI
         working-directory: src-tauri/plugins/source-engine/engine
-        run: bash ./gradlew --no-daemon --console=plain stageTauriAndroidAar
+        run: bash ./gradlew --no-daemon --console=plain -Plegado.androidAbis=${{ matrix.abi }} stageTauriAndroidAar
       - run: npm ci
       - run: npm run tauri -- android init --ci
       - run: npm run icons
@@ -136,14 +217,16 @@ jobs:
         run: |
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/foliver-android.p12"
           chmod 600 "$RUNNER_TEMP/foliver-android.p12"
-      - name: Package signed arm64 APK
+      - name: Package signed APK
         env:
           FOLIVER_ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/foliver-android.p12
           FOLIVER_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_PASSWORD }}
           FOLIVER_ANDROID_KEY_ALIAS: ${{ secrets.FOLIVER_ANDROID_KEY_ALIAS }}
           FOLIVER_ANDROID_KEY_PASSWORD: ${{ secrets.FOLIVER_ANDROID_KEY_PASSWORD }}
-        run: npm run tauri -- android build --apk --ci --target aarch64
-      - name: Verify signed arm64 APK
+        run: npm run tauri -- android build --apk --ci --target ${{ matrix.target }}
+      - name: Verify signed APK
+        env:
+          EXPECTED_ABI: ${{ matrix.abi }}
         run: |
           python - <<'PY'
           import os
@@ -153,22 +236,34 @@ jobs:
 
           apks = list(Path("src-tauri/gen/android/app/build/outputs/apk").rglob("*-release.apk"))
           if len(apks) != 1:
-              raise SystemExit(f"Expected one arm64 release APK, found {len(apks)}")
+              raise SystemExit(f"Expected one release APK, found {len(apks)}")
           with ZipFile(apks[0]) as apk:
               libraries = {name for name in apk.namelist() if name.startswith("lib/") and name.endswith(".so")}
           abis = {name.split("/")[1] for name in libraries}
-          if abis != {"arm64-v8a"}:
+          abi = os.environ["EXPECTED_ABI"]
+          if abis != {abi}:
               raise SystemExit(f"Unexpected APK architectures: {sorted(abis)}")
           for library in ("libfoliver_lib.so", "liblegado_quickjs.so"):
-              if f"lib/arm64-v8a/{library}" not in libraries:
-                  raise SystemExit(f"Missing arm64 library: {library}")
-          subprocess.run([str(Path(os.environ["ANDROID_HOME"]) / "build-tools/36.0.0/apksigner"), "verify", str(apks[0])], check=True)
-          print(f"Verified signed arm64 APK: {apks[0]}")
+              if f"lib/{abi}/{library}" not in libraries:
+                  raise SystemExit(f"Missing {abi} library: {library}")
+          subprocess.run([str(Path(os.environ["ANDROID_HOME"]) / "build-tools" / os.environ["ANDROID_BUILDTOOLS"] / "apksigner"), "verify", str(apks[0])], check=True)
+          print(f"Verified signed {abi} APK: {apks[0]}")
           PY
+      - name: Sign APK for app updates
+        if: inputs.updater
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          version="$(node -p 'require("./package.json").version')"
+          find src-tauri/gen/android/app/build/outputs/apk -name '*-release.apk' -exec npm run tauri -- signer sign --app-version "$version" '{}' \;
       - uses: actions/upload-artifact@v7
         with:
-          name: Foliver-Android-arm64-signed-release
-          path: src-tauri/gen/android/app/build/outputs/apk/**/*-release.apk
+          name: Foliver-android-${{ matrix.arch }}
+          overwrite: true
+          path: |
+            src-tauri/gen/android/app/build/outputs/apk/**/*-release.apk
+            src-tauri/gen/android/app/build/outputs/apk/**/*-release.apk.sig
           if-no-files-found: error
           retention-days: 14
       - name: Remove runner signing key
@@ -181,6 +276,8 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
       - name: Read toolchain versions
         run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
@@ -234,7 +331,8 @@ jobs:
         run: npm run tauri -- ios build --no-sign --ci
       - uses: actions/upload-artifact@v7
         with:
-          name: Foliver-iOS-unsigned
+          name: Foliver-ios-arm64-unsigned
+          overwrite: true
           path: src-tauri/gen/apple/build/**/*.ipa
           if-no-files-found: error
           retention-days: 14

@@ -16,6 +16,7 @@ export const routeNames = {
   settingsOther: "settings-other",
   settingsCache: "settings-cache",
   settingsNetwork: "settings-network",
+  settingsAbout: "settings-about",
   settingsTts: "settings-tts",
   settingsRules: "settings-rules",
   settingsHomeConfig: "settings-home-config",
@@ -24,7 +25,7 @@ export const routeNames = {
 
 export type AppRouteName = (typeof routeNames)[keyof typeof routeNames];
 export type AppScreen = "home" | "shelf" | "search" | "sources" | "settings" | "detail";
-export type SettingsSection = "home" | "appearance" | "backup" | "history" | "bookmarks" | "other" | "cache" | "network" | "tts" | "rules" | "home-config" | "txt-toc";
+export type SettingsSection = "home" | "appearance" | "backup" | "history" | "bookmarks" | "other" | "cache" | "network" | "about" | "tts" | "rules" | "home-config" | "txt-toc";
 
 export const settingsRouteNames: Record<SettingsSection, AppRouteName> = {
   home: routeNames.settings,
@@ -35,6 +36,7 @@ export const settingsRouteNames: Record<SettingsSection, AppRouteName> = {
   other: routeNames.settingsOther,
   cache: routeNames.settingsCache,
   network: routeNames.settingsNetwork,
+  about: routeNames.settingsAbout,
   tts: routeNames.settingsTts,
   rules: routeNames.settingsRules,
   "home-config": routeNames.settingsHomeConfig,
@@ -65,6 +67,7 @@ export interface AppRouteNamedMap {
   "settings-other": StaticRoute<typeof routeNames.settingsOther, "/settings/other">;
   "settings-cache": StaticRoute<typeof routeNames.settingsCache, "/settings/other/cache">;
   "settings-network": StaticRoute<typeof routeNames.settingsNetwork, "/settings/other/network">;
+  "settings-about": StaticRoute<typeof routeNames.settingsAbout, "/settings/about">;
   "settings-tts": StaticRoute<typeof routeNames.settingsTts, "/settings/other/tts">;
   "settings-rules": StaticRoute<typeof routeNames.settingsRules, "/settings/rules">;
   "settings-home-config": StaticRoute<typeof routeNames.settingsHomeConfig, "/settings/home-config">;
@@ -133,6 +136,7 @@ export const appRoutes = [
   { path: "/settings/other", name: routeNames.settingsOther, component: loadOtherSettings, meta: { screen: "settings", settingsSection: "other" } },
   { path: "/settings/other/cache", name: routeNames.settingsCache, component: loadChapterCacheSettings, meta: { screen: "settings", settingsSection: "cache" } },
   { path: "/settings/other/network", name: routeNames.settingsNetwork, component: loadNetworkSettings, meta: { screen: "settings", settingsSection: "network" } },
+  { path: "/settings/about", name: routeNames.settingsAbout, component: () => import("../features/settings/AboutPage.vue"), meta: { screen: "settings", settingsSection: "about" } },
   { path: "/settings/other/tts", name: routeNames.settingsTts, component: loadTtsSettings, meta: { screen: "settings", settingsSection: "tts" } },
   { path: "/settings/rules", name: routeNames.settingsRules, component: loadReplacementRules, meta: { screen: "settings", settingsSection: "rules" } },
   { path: "/settings/home-config", name: routeNames.settingsHomeConfig, component: loadHomeConfigEditor, meta: { screen: "settings", settingsSection: "home-config" } },

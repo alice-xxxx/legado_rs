@@ -248,7 +248,7 @@ fn navigate(
             .with_webview(move |view| {
                 #[cfg(target_os = "linux")]
                 {
-                    use webkit2gtk::prelude::*;
+                    use webkit2gtk::{URIRequestExt, WebViewExt};
                     if let Some(html) = html {
                         view.inner().load_html(&html, Some(target.as_str()));
                         let _ = send.send(Ok(()));

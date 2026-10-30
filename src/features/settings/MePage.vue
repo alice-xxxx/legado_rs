@@ -5,7 +5,7 @@ import SettingsActionRow from "../../ui/SettingsActionRow.vue";
 
 type Item = {
   destination: SettingsSection | "sources";
-  icon: "history" | "bookmark" | "download" | "source" | "appearance" | "backup" | "settings";
+  icon: "history" | "bookmark" | "download" | "source" | "appearance" | "backup" | "settings" | "info";
   title: string;
 };
 
@@ -19,6 +19,7 @@ const appItems: Item[] = [
   { destination: "appearance", icon: "appearance", title: "外观、阅读与播放" },
   { destination: "backup", icon: "backup", title: "数据与同步" },
   { destination: "other", icon: "settings", title: "高级设置" },
+  { destination: "about", icon: "info", title: "关于" },
 ];
 
 function navigate(destination: Item["destination"]): void {
