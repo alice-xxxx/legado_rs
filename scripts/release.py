@@ -66,9 +66,11 @@ def versions(root):
     }
 
 
-def check(tag, root=ROOT):
+def check(tag, root=ROOT, allow_patch=False):
     match = VERSION.fullmatch(tag.removeprefix("v"))
-    if not tag.startswith("v") or not match or match[3] != "0":
+    if not tag.startswith("v") or not match:
+        raise ValueError("Expected a stable version tag vX.Y.Z without leading zeroes")
+    if not allow_patch and match[3] != "0":
         raise ValueError("Releases require vX.Y.0; patch and prerelease versions do not release")
     version = tag[1:]
     mismatches = {path: value for path, value in versions(root).items() if value != version}
@@ -110,8 +112,8 @@ def set_version(version, root=ROOT):
     print(f"App version: {version}")
 
 
-def collect(tag, commit, source, output, root=ROOT):
-    version = check(tag, root)
+def collect(tag, commit, source, output, root=ROOT, allow_patch=False):
+    version = check(tag, root, allow_patch)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected a full source commit SHA")
     selected = []
@@ -188,12 +190,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("version").add_argument("version")
-    commands.add_parser("check").add_argument("tag")
+    validate = commands.add_parser("check")
+    validate.add_argument("tag")
     assets = commands.add_parser("collect")
     assets.add_argument("tag")
     assets.add_argument("commit")
     assets.add_argument("--input", type=Path, default=Path("artifacts"))
     assets.add_argument("--output", type=Path, default=Path("release-assets"))
+    for command in (validate, assets):
+        command.add_argument("--root", type=Path, default=ROOT, help="Tagged source checkout")
+        command.add_argument("--allow-patch", action="store_true", help="Allow manual vX.Y.Z releases")
     notes = commands.add_parser("finalize")
     notes.add_argument("notes", type=Path)
     notes.add_argument("--output", type=Path, default=Path("release-assets"))
@@ -201,14 +207,14 @@ def main():
     if args.command == "version":
         set_version(args.version)
     elif args.command == "check":
-        version = check(args.tag)
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
+        version = check(args.tag, args.root, args.allow_patch)
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=args.root, text=True).strip()
         if os.environ.get("GITHUB_OUTPUT"):
             with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as stream:
                 stream.write(f"tag={args.tag}\nversion={version}\ncommit={commit}\n")
         print(f"Validated {args.tag} at {commit}")
     elif args.command == "collect":
-        collect(args.tag, args.commit, args.input, args.output)
+        collect(args.tag, args.commit, args.input, args.output, args.root, args.allow_patch)
     else:
         finalize(args.notes, args.output)
 

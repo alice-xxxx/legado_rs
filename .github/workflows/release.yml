@@ -1,12 +1,18 @@
 name: Release Foliver
-run-name: Release ${{ github.ref_name }}
+run-name: Release ${{ inputs.tag || github.ref_name }}
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing release tag (vX.Y.Z)'
+        required: true
+        type: string
   push:
     tags: ['v[0-9]+.[0-9]+.0']
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -14,21 +20,25 @@ permissions:
 
 jobs:
   prepare:
-    name: Validate new release
+    name: Validate release
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          path: release-source
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
       - name: Validate tag and app versions
         id: version
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: python scripts/release.py check "$RELEASE_TAG"
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: python scripts/release.py check "$RELEASE_TAG" --root release-source ${{ github.event_name == 'workflow_dispatch' && '--allow-patch' || '' }}
       - name: Check release signing secrets
         env:
           FOLIVER_ANDROID_KEYSTORE_BASE64: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_BASE64 }}
@@ -43,10 +53,11 @@ jobs:
               exit 1
             fi
           done
-      - name: Reject published or older versions
+      - name: Reject published releases and automatic downgrades
         uses: actions/github-script@v8
         env:
           RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          MANUAL_RELEASE: ${{ github.event_name == 'workflow_dispatch' }}
         with:
           script: |
             const version = tag => /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag)?.slice(1).map(Number);
@@ -54,8 +65,10 @@ jobs:
             const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
             const releases = await github.paginate(github.rest.repos.listReleases, { ...context.repo, per_page: 100 });
             for (const release of releases) {
+              if (release.draft) continue;
+              if (release.tag_name === process.env.RELEASE_TAG) throw new Error('Published releases cannot be overwritten');
               const published = version(release.tag_name);
-              if (!release.draft && published && compare(candidate, published) <= 0) {
+              if (process.env.MANUAL_RELEASE !== 'true' && published && compare(candidate, published) <= 0) {
                 throw new Error(`${process.env.RELEASE_TAG} must be newer than published ${release.tag_name}`);
               }
             }
@@ -82,8 +95,10 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.commit }}
+          path: release-source
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
@@ -92,7 +107,7 @@ jobs:
           pattern: Foliver-*
           path: artifacts
       - name: Check and name every installer, generate checksums
-        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT"
+        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT" --root release-source ${{ github.event_name == 'workflow_dispatch' && '--allow-patch' || '' }}
       - name: Create or reuse draft
         id: draft
         uses: actions/github-script@v8
