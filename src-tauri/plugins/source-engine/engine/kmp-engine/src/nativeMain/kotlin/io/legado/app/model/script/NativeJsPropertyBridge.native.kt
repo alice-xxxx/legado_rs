@@ -3,8 +3,6 @@
 
 package io.legado.app.model.script
 
-import com.fleeksoft.ksoup.nodes.Element
-import com.fleeksoft.ksoup.nodes.Node
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.Book
@@ -49,7 +47,7 @@ import kotlinx.cinterop.cValue
  *   2300-2399 BaseBook 变量/方法面 (getVariable/putVariable 等) | 2400-2499 BookChapter 变量/方法面 |
  *   2500-2599 cookie (SourceNetworkProvider) | 2600-2699 cache (SourceCacheProvider) |
  *   2700-3199 属性写 (setterId = getterId + 1000, 对应 1700-2199 的 var 字段) |
- *   3200-3299 ksoup Element/Node 方法面 (src binding 逐项循环场景)
+ *   DOM 方法由 JavaClassCompat 处理，与 Packages.org.jsoup 使用同一通路。
  *   注: 属性名→propId 在 JS 工厂静态绑定; 读/写经同一对象同一 propId 语义, setter 仅偏移 +1000,
  *   与 JVM 端 JavaObjectBridge 的 findGetter/findSetter (bean 属性读写) 对齐。
  * - JS 侧由工厂函数 (__createBookObj 等) 用 Object.defineProperty 挂 getter/setter,
@@ -58,7 +56,7 @@ import kotlinx.cinterop.cValue
  * - 语义对齐 JVM 端 JsApiDispatcher.getProperty(target, name): miss 返回 null
  *   (调用方转 undefined, 等价 NO_MATCH); 写 miss 静默 (与 JVM 端 setter 反射找不到时一致)。
  * - 嵌套对象 (AnalyzeRuleCore.chapter/ruleData): getter 返回 handle, JS 侧工厂函数包装
- *   (与 getSource/queryTTF 同模式; handle 不入 scope.handles, 泄漏量每次访问一个, 同已知取舍)。
+ *   嵌套对象的 handle 统一登记到当前 scope，随本次执行或 scope 关闭回收。
  *
  * # hot path
  * 一次属性读取: 1 次 handle 表 HashMap get + 1 次 when(propId) 整数跳转 +
@@ -569,33 +567,6 @@ object NativeJsPropertyBridge {
         // (JS plain object 参数无法还原为 Kotlin Map) 不写, 报告"未覆盖"
         methodId == 3110 -> (obj as? AnalyzeRuleCore)?.let { b -> b.nextChapterUrl = toNullableString(args.getOrNull(0)); jsUndefined() }
 
-        // ============ ksoup Element/Node 方法面 (3200-3299, src binding 逐项循环) ============
-        // 对齐 JVM 端 JavaObjectBridge 反射 ksoup 真实 API (方法名直配); Element 独有方法用 as? Element
-        methodId == 3201 -> (obj as? Element)?.let { stringToJsValue(ctx, it.text()) } // text()
-        methodId == 3202 -> (obj as? Element)?.let { stringToJsValue(ctx, it.ownText()) } // ownText()
-        methodId == 3203 -> (obj as? Element)?.let { stringToJsValue(ctx, it.html()) } // html()
-        methodId == 3204 -> (obj as? Node)?.let { stringToJsValue(ctx, it.outerHtml()) } // outerHtml()
-        methodId == 3205 -> (obj as? Node)?.let { stringToJsValue(ctx, it.toString()) } // toString()
-        methodId == 3206 -> (obj as? Node)?.let { stringToJsValue(ctx, it.attr(args.getString(0))) } // attr(name)
-        methodId == 3207 -> (obj as? Node)?.let {
-            qjs_NewBool(ctx, if (it.hasAttr(args.getString(0))) 1 else 0)
-        } // hasAttr(name) → Boolean
-        methodId == 3208 -> (obj as? Node)?.let { stringToJsValue(ctx, it.absUrl(args.getString(0))) } // absUrl(name)
-        methodId == 3209 -> (obj as? Element)?.let {
-            nodeListToJsHandleArray(ctx, it.select(args.getString(0)))
-        } // select(css) → handle 数组
-        methodId == 3210 -> (obj as? Element)?.let {
-            nodeListToJsHandleArray(ctx, it.children())
-        } // children() → handle 数组
-        methodId == 3211 -> (obj as? Node)?.let { node ->
-            val p = node.parent()
-            if (p == null) jsNull() else qjs_NewFloat64(ctx, registerNodeHandle(p).toDouble())
-        } // parent() → 单 handle 或 null
-        methodId == 3212 -> (obj as? Element)?.let { stringToJsValue(ctx, it.tagName()) } // tagName()
-        methodId == 3213 -> (obj as? Element)?.let { stringToJsValue(ctx, it.id()) } // id()
-        methodId == 3214 -> (obj as? Element)?.let { stringToJsValue(ctx, it.className()) } // className()
-        methodId == 3215 -> (obj as? Element)?.let { stringToJsValue(ctx, it.value()) } // value() (ksoup 无 val(), 对齐 JVM 反射面)
-
         else -> null // 未命中 → undefined (等价 JsDispatchRegistry.NO_MATCH)
     }
 
@@ -815,40 +786,8 @@ function __createCacheObj(handle) {
     return obj;
 }
 
-function __createElementObj(handle) {
-    if (!handle || handle <= 0) return null;
-    var obj = {};
-    obj.__h = handle;
-    // ksoup Element/Node 方法面 (3200-3299, 对齐 JVM 反射 ksoup API)
-    obj.text = function() { return __nativeDispatch(handle, 3201, []); };
-    obj.ownText = function() { return __nativeDispatch(handle, 3202, []); };
-    obj.html = function() { return __nativeDispatch(handle, 3203, []); };
-    obj.outerHtml = function() { return __nativeDispatch(handle, 3204, []); };
-    obj.toString = function() { return __nativeDispatch(handle, 3205, []); };
-    obj.attr = function(name) { return __nativeDispatch(handle, 3206, [name]); };
-    obj.hasAttr = function(name) { return __nativeDispatch(handle, 3207, [name]); };
-    obj.absUrl = function(name) { return __nativeDispatch(handle, 3208, [name]); };
-    obj.select = function(css) {
-        var hs = __nativeDispatch(handle, 3209, [css]);
-        if (!hs) return [];
-        var out = [];
-        for (var i = 0; i < hs.length; i++) out.push(__createElementObj(hs[i]));
-        return out;
-    };
-    obj.children = function() {
-        var hs = __nativeDispatch(handle, 3210, []);
-        if (!hs) return [];
-        var out = [];
-        for (var i = 0; i < hs.length; i++) out.push(__createElementObj(hs[i]));
-        return out;
-    };
-    obj.parent = function() { return __createElementObj(__nativeDispatch(handle, 3211, [])); };
-    obj.tagName = function() { return __nativeDispatch(handle, 3212, []); };
-    obj.id = function() { return __nativeDispatch(handle, 3213, []); };
-    obj.className = function() { return __nativeDispatch(handle, 3214, []); };
-    obj.value = function() { return __nativeDispatch(handle, 3215, []); };
-    return obj;
-}
+function __createElementObj(handle) { return __createJavaCompatObj(handle, false); }
+
     """.trimIndent()
 
     // ============ 工具方法: JSValue 构造 ============
@@ -912,49 +851,7 @@ function __createElementObj(handle) {
         (getOrNull(index) as? String) ?: ""
 
     /** 任意 Kotlin 值 → JSValue (variables 属性/getFromMemory 返回值用, 与 bridge 的 anyToJs 同语义)。 */
-    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> = when (value) {
-        null -> jsNull()
-        is String -> stringToJsValue(ctx, value)
-        is Boolean -> qjs_NewBool(ctx, if (value) 1 else 0)
-        is Number -> qjs_NewFloat64(ctx, value.toDouble())
-        is Map<*, *> -> {
-            val obj = JS_NewObject(ctx)
-            for ((k, v) in value) {
-                val key = k?.toString() ?: continue
-                JS_SetPropertyStr(ctx, obj, key, anyToJs(ctx, v))
-            }
-            obj
-        }
+    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> =
+        NativeJsEngine.toJsValue(ctx, value) ?: stringToJsValue(ctx, value.toString())
 
-        is List<*> -> {
-            val arr = JS_NewArray(ctx)
-            value.forEachIndexed { i, v ->
-                JS_SetPropertyUint32(ctx, arr, i.toUInt(), anyToJs(ctx, v))
-            }
-            arr
-        }
-
-        else -> stringToJsValue(ctx, value.toString())
-    }
-
-    // ============ 工具方法: ksoup 节点 handle (3200-3299 段专用) ============
-
-    /**
-     * 注册 ksoup 节点 handle 并登记到当前 scope (select/children/parent 每次返回新节点,
-     * 不登记会在逐项循环里泄漏 M×N 个 handle; 由 releaseNewHandles / scope close 统一回收)。
-     */
-    private fun registerNodeHandle(node: Node): Long {
-        val handle = NativeJsExtensionsBridge.registerObject(node)
-        NativeJsEngine.currentScope()?.handles?.add(handle)
-        return handle
-    }
-
-    /** 节点列表 → JS 数组 (handle 数字), JS 侧 __createElementObj 逐个包装。 */
-    private fun nodeListToJsHandleArray(ctx: CPointer<JSContext>, nodes: List<Node>): CValue<JSValue> {
-        val arr = JS_NewArray(ctx)
-        nodes.forEachIndexed { i, node ->
-            JS_SetPropertyUint32(ctx, arr, i.toUInt(), qjs_NewFloat64(ctx, registerNodeHandle(node).toDouble()))
-        }
-        return arr
-    }
 }

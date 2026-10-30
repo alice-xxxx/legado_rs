@@ -4,6 +4,7 @@
 package io.legado.app.model.script
 
 import com.fleeksoft.ksoup.nodes.Node
+import com.fleeksoft.ksoup.select.Elements
 import io.legado.app.help.JsCryptoProviders
 import io.legado.app.data.entities.BaseBook
 import io.legado.app.data.entities.BaseSource
@@ -130,7 +131,7 @@ import kotlinx.atomicfu.locks.synchronized
  * - 2200+: 带参分派 (NativeJsPropertyBridge.dispatchWithArgs): 2300-2399 book 变量/方法面 |
  *   2400-2499 chapter 变量/方法面 | 2500-2599 cookie (SourceNetworkProvider) |
  *   2600-2699 cache (SourceCacheProvider) | 2700-3199 属性写 (setterId = getterId + 1000) |
- *   3200-3299 ksoup Element/Node 方法面 (src binding 逐项循环) |
+ *   3400-3404 JavaClassCompat (类加载、构造、静态成员、对象方法) |
  *   3301-3308 ImageOps stateless PNG byte-array bridge (decode/encode/split/stitch/crop/rotate/flip/size)
  * - 5000+: KSP 生成表 (NativeGeneratedDispatch, JsApiProcessor 按 jsapi.nativeTargets 目标类生成;
  *   dispatch 顶部查表优先, JS 闭包按工厂分区注入 `// @@methods:<factory>@@` 标记处)
@@ -156,7 +157,8 @@ object NativeJsExtensionsBridge {
      * 全局共享: iOS/鸿蒙各线程独立 scope 并发 eval, register/unregister/lookup 跨线程
      * 访问同一表; K/N 无 ConcurrentHashMap, 所有操作由 [handleTableLock] 串行化。
      */
-    private val handleTable = HashMap<Long, Any>()
+    private data class Entry(val scope: NativeJsScope, val value: Any)
+    private val handleTable = HashMap<Long, Entry>()
 
     /** handle 表全局锁 (可重入; 临界区只做 map 操作, 不含 JS 回调/IO, 无死锁风险)。 */
     private val handleTableLock = SynchronizedObject()
@@ -170,15 +172,17 @@ object NativeJsExtensionsBridge {
 
     /** 注册 Kotlin 对象, 返回 handle */
     fun registerObject(obj: Any): Long = synchronized(handleTableLock) {
+        val scope = checkNotNull(NativeJsEngine.currentScope()) { "Java object requires an active JS scope" }
         handleCounter += 1
         val handle = handleCounter
-        handleTable[handle] = obj
+        handleTable[handle] = Entry(scope, obj)
+        scope.handles.add(handle)
         handle
     }
 
     /** 取 Kotlin 对象 */
     fun getObject(handle: Long): Any? = synchronized(handleTableLock) {
-        handleTable[handle]
+        handleTable[handle]?.takeIf { it.scope === NativeJsEngine.currentScope() }?.value
     }
 
     /** 注销 handle (scope close 时调用) */
@@ -204,8 +208,8 @@ object NativeJsExtensionsBridge {
         ext: Any,
         scope: NativeJsScope
     ): CValue<JSValue> {
+        check(NativeJsEngine.currentScope() === scope) { "Java object requires its active JS scope" }
         val handle = registerObject(ext)
-        scope.handles.add(handle)
         // 调用 JS 工厂函数 __createJavaObj(handle) 或 __createCryptoObj(handle)
         val factoryFn = when (ext) {
             is ImageOps -> "__createImageOpsObj"
@@ -214,6 +218,7 @@ object NativeJsExtensionsBridge {
             is Sign -> "__createSignObj"
             is QueryTTF -> "__createQueryTTFObj"
             is StrResponse -> "__createStrResponseObj"
+            is Connection.Response -> "__createJavaCompatObj"
             is JsURL -> "__createJsUrlObj"
             // 复杂对象属性桥 (NativeJsPropertyBridge): 工厂带属性 getter
             // RSS 拦截 JS 专属: RssJsApi 分支须在 BaseSource 之前 (RssJsExtensionsNative 同时是两者),
@@ -227,10 +232,11 @@ object NativeJsExtensionsBridge {
             is SourceNetworkProvider -> "__createCookieObj"
             is SourceCacheProvider -> "__createCacheObj"
             // ksoup Element/Node (src binding 逐项循环场景, 工厂见 NativeJsPropertyBridge)
-            is Node -> "__createElementObj"
-            else -> "__createJavaObj"
+            is Node -> "__createJavaCompatObj"
+            is Elements, is StringBuilder, is Connection -> "__createJavaCompatObj"
+            else -> if (JavaClassCompat.supports(ext)) "__createJavaCompatObj" else "__createJavaObj"
         }
-        val js = "$factoryFn($handle)"
+        val js = if (factoryFn == "__createJavaCompatObj") "$factoryFn($handle,${JavaClassCompat.isCollection(ext)})" else "$factoryFn($handle)"
         // JS_Eval 执行工厂函数, 返回 JS 对象 (qjsEvalUtf8: input_len 按 UTF-8 字节数传)
         val result = qjsEvalUtf8(ctx, js, "<bridge>", qjs_EvalTypeGlobal())
         // result 是 JS 对象, 调用方负责 JS_FreeValue
@@ -271,15 +277,38 @@ object NativeJsExtensionsBridge {
         val ctxNotNull = ctx ?: return jsUndefined()
         if (argc < 3 || argv == null) return jsUndefined()
         var imageOpsDispatch = false
+        var javaCompatDispatch = false
         try {
             val handle = qjs_ValueGetFloat64(argv[0L].readValue()).toLong()
             val methodId = qjs_ValueGetInt(argv[1L].readValue())
             val argsArray = argv[2L].readValue()
+            javaCompatDispatch = methodId in 3400..3404
+            if (javaCompatDispatch) {
+                val args = jsArrayToList(ctxNotNull, argsArray)
+                val result = when (methodId) {
+                    3400 -> JavaClassCompat.loadClass(args.getString(0))
+                    3401 -> JavaClassCompat.construct((args[0] as Number).toInt(), args[1] as List<Any?>)
+                    3402 -> JavaClassCompat.callStatic((args[0] as Number).toInt(), args.getString(1), args[2] as List<Any?>)
+                    3404 -> JavaClassCompat.field((args[0] as Number).toInt(), args.getString(1))
+                    else -> {
+                        JavaClassCompat.call(getObject(handle) ?: error("Java object was released"), args.getString(0), args[1] as List<Any?>)
+                    }
+                }
+                if (methodId == 3401 && result is String) {
+                    val reference = registerObject(result)
+                    return qjsEvalUtf8(ctxNotNull, "Object.defineProperty(Object(${GSON.toJson(result)}),'__javaCompatHandle__',{value:$reference})", "<java-string>", qjs_EvalTypeGlobal())
+                }
+                return NativeJsEngine.toJsValue(ctxNotNull, result) ?: error("Unsupported Java return value")
+            }
             val obj = getObject(handle) ?: return jsUndefined()
             imageOpsDispatch = obj is ImageOps &&
                 methodId in (IMAGE_OPS_METHOD_BASE + 1)..(IMAGE_OPS_METHOD_BASE + 8)
             return dispatch(ctxNotNull, obj, methodId, argsArray)
         } catch (t: Throwable) {
+            if (javaCompatDispatch) {
+                val message = t.message?.take(512) ?: "Java compatibility call failed"
+                return JS_Throw(ctxNotNull, qjsEvalUtf8(ctxNotNull, "new Error(${GSON.toJson(message)})", "<java-compat>", qjs_EvalTypeGlobal()))
+            }
             if (imageOpsDispatch) {
                 // Image decode/transform failures must reach the rule's try/catch instead of
                 // becoming `undefined` and failing later at an unrelated operation.
@@ -459,7 +488,7 @@ object NativeJsExtensionsBridge {
                 val crypto = NativeSymmetricCrypto(transformation, key)
                 if (iv != null && iv.isNotEmpty()) crypto.setIv(iv)
                 val handle = registerObject(crypto)
-                // 注意: crypto handle 不添加到 scope.handles, 因为调用方 scope 不可达
+                // registerObject 统一登记到当前 scope。
                 // crypto 对象生命周期与 JS 引用绑定, handle 泄漏量可控 (每次调用一个)
                 qjs_NewFloat64(ctx, handle.toDouble())
             }
@@ -624,46 +653,13 @@ object NativeJsExtensionsBridge {
                 qjs_NewFloat64(ctx, registerObject(resp).toDouble())
             }
             obj is JsExtensionsCommon && methodId == 304 -> {
-                // webView(html, url, js[, delayTime]) — common 内部 runBlocking 同步返回
-                val delay = (args.getOrNull(3) as? Number)?.toLong()
-                val body = if (delay != null) {
-                    obj.webView(args.getStringOrNull(0), args.getStringOrNull(1), args.getStringOrNull(2), delay)
-                } else {
-                    obj.webView(args.getStringOrNull(0), args.getStringOrNull(1), args.getStringOrNull(2))
-                }
-                stringToJsValue(ctx, body)
+                stringToJsValue(ctx, obj.webView(args.getStringOrNull(0), args.getStringOrNull(1), args.getStringOrNull(2), args.webDelay(3)))
             }
             obj is JsExtensionsCommon && methodId == 305 -> {
-                // webViewGetSource(html, url, js, sourceRegex[, delayTime])
-                val delay = (args.getOrNull(4) as? Number)?.toLong()
-                val body = if (delay != null) {
-                    obj.webViewGetSource(
-                        args.getStringOrNull(0), args.getStringOrNull(1),
-                        args.getStringOrNull(2), args.getStringOrNull(3), delay
-                    )
-                } else {
-                    obj.webViewGetSource(
-                        args.getStringOrNull(0), args.getStringOrNull(1),
-                        args.getStringOrNull(2), args.getStringOrNull(3)
-                    )
-                }
-                stringToJsValue(ctx, body)
+                stringToJsValue(ctx, obj.webViewGetSource(args.getStringOrNull(0), args.getStringOrNull(1), args.getStringOrNull(2), args.getStringOrNull(3), args.webDelay(4)))
             }
             obj is JsExtensionsCommon && methodId == 306 -> {
-                // webViewGetOverrideUrl(html, url, js, overrideUrlRegex[, delayTime])
-                val delay = (args.getOrNull(4) as? Number)?.toLong()
-                val body = if (delay != null) {
-                    obj.webViewGetOverrideUrl(
-                        args.getStringOrNull(0), args.getStringOrNull(1),
-                        args.getStringOrNull(2), args.getStringOrNull(3), delay
-                    )
-                } else {
-                    obj.webViewGetOverrideUrl(
-                        args.getStringOrNull(0), args.getStringOrNull(1),
-                        args.getStringOrNull(2), args.getStringOrNull(3)
-                    )
-                }
-                stringToJsValue(ctx, body)
+                stringToJsValue(ctx, obj.webViewGetOverrideUrl(args.getStringOrNull(0), args.getStringOrNull(1), args.getStringOrNull(2), args.getStringOrNull(3), args.webDelay(4)))
             }
             obj is JsExtensionsCommon && methodId == 307 -> {
                 // getCookie(tag[, key])
@@ -1183,9 +1179,9 @@ function __createJavaObj(handle) {
         return out;
     };
     obj.connect = function(urlStr, header) { return __createStrResponseObj(__nativeDispatch(handle, 303, [urlStr, header])); };
-    obj.webView = function(html, url, js, delayTime) { return __nativeDispatch(handle, 304, [html, url, js, delayTime]); };
-    obj.webViewGetSource = function(html, url, js, sourceRegex, delayTime) { return __nativeDispatch(handle, 305, [html, url, js, sourceRegex, delayTime]); };
-    obj.webViewGetOverrideUrl = function(html, url, js, overrideUrlRegex, delayTime) { return __nativeDispatch(handle, 306, [html, url, js, overrideUrlRegex, delayTime]); };
+    obj.webView = function(...args) { return __nativeDispatch(handle, 304, args); };
+    obj.webViewGetSource = function(...args) { return __nativeDispatch(handle, 305, args); };
+    obj.webViewGetOverrideUrl = function(...args) { return __nativeDispatch(handle, 306, args); };
     obj.getCookie = function(tag, key) { return __nativeDispatch(handle, 307, [tag, key]); };
     // java.get 重载: 单参 = 变量读取 (25), 双/三参 = 网络 GET (309)。
     obj.get = function(a, b, timeoutMs) {
@@ -1448,25 +1444,8 @@ function __createJsUrlObj(handle) {
     }
 
     /** JSValue → Kotlin 值 (基本类型 + Array + String; null/undefined → null, boolean → Boolean) */
-    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? {
-        if (qjs_IsNull(v) != 0 || qjs_IsUndefined(v) != 0) {
-            return null
-        }
-        if (qjs_IsBool(v) != 0) {
-            return qjs_ValueGetBool(v) != 0
-        }
-        if (qjs_IsNumber(v) != 0) {
-            return qjs_ValueGetFloat64(v)
-        }
-        if (qjs_IsString(v) != 0) {
-            return jsValueToString(ctx, v)
-        }
-        if (JS_IsArray(v)) {
-            return jsArrayToList(ctx, v)
-        }
-        // 其他类型 fallback 到字符串
-        return jsValueToString(ctx, v)
-    }
+    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? =
+        NativeJsEngine.fromJsValue(ctx, v)
 
     /** 构造 JS undefined JSValue */
     private fun jsUndefined(): CValue<JSValue> = cValue {
@@ -1491,12 +1470,16 @@ function __createJsUrlObj(handle) {
         return GSON.fromJsonObject<Map<String, String>>(json).getOrNull() ?: emptyMap()
     }
 
+    private fun List<Any?>.webDelay(index: Int): Long =
+        (getOrNull(if (getOrNull(index) is Boolean) index + 1 else index) as? Number)?.toLong() ?: 0L
+
     /** List 取可空 String (webView html/url/js 等可空参数) */
     private fun List<Any?>.getStringOrNull(index: Int): String? =
         getOrNull(index) as? String
 
     /** data 参数: Utf8String 直传, JS Array → ByteArray, 其余 null (queryTTF 等可空数据参数)。 */
     private fun List<Any?>.getDataArgOrNull(index: Int): Any? = when (val v = getOrNull(index)) {
+        is ByteArray -> v
         is String -> v
         is List<*> -> ByteArray(v.size) { (v[it] as? Number)?.toInt()?.toByte() ?: 0 }
         else -> null
@@ -1504,6 +1487,7 @@ function __createJsUrlObj(handle) {
 
     /** 取 data 参数: Utf8String 直传, JS Array → ByteArray, 其余归一为空串 (与 getString 同宽松策略)。 */
     private fun List<Any?>.getDataArg(index: Int): Any = when (val v = getOrNull(index)) {
+        is ByteArray -> v
         is String -> v
         is List<*> -> ByteArray(v.size) { (v[it] as? Number)?.toInt()?.toByte() ?: 0 }
         else -> ""
@@ -1511,6 +1495,7 @@ function __createJsUrlObj(handle) {
 
     /** key/iv 参数转字节: Utf8String → UTF-8 字节, JS Array → ByteArray, null/undefined → null。 */
     private fun Any?.toBytesOrNull(): ByteArray? = when (this) {
+        is ByteArray -> this
         is String -> encodeToByteArray()
         is List<*> -> ByteArray(size) { (this[it] as? Number)?.toInt()?.toByte() ?: 0 }
         else -> null
@@ -1541,32 +1526,6 @@ function __createJsUrlObj(handle) {
      * 基本类型直转; Map/List 递归构造 JS 对象/数组 (JS_SetProperty 转移所有权, 不额外 free);
      * 其余对象 toString 降级 (与 JVM 反射包装的差异, 复杂对象不可桥接)。
      */
-    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> = when (value) {
-        null -> jsNull()
-        is String -> stringToJsValue(ctx, value)
-        is Boolean -> qjs_NewBool(ctx, if (value) 1 else 0)
-        is Number -> {
-            val d = value.toDouble()
-            if (d.isNaN() || d.isInfinite()) jsNull() else qjs_NewFloat64(ctx, d)
-        }
-
-        is Map<*, *> -> {
-            val obj = JS_NewObject(ctx)
-            for ((k, v) in value) {
-                val key = k?.toString() ?: continue
-                JS_SetPropertyStr(ctx, obj, key, anyToJs(ctx, v))
-            }
-            obj
-        }
-
-        is List<*> -> {
-            val arr = JS_NewArray(ctx)
-            value.forEachIndexed { i, v ->
-                JS_SetPropertyUint32(ctx, arr, i.toUInt(), anyToJs(ctx, v))
-            }
-            arr
-        }
-
-        else -> stringToJsValue(ctx, value.toString())
-    }
+    private fun anyToJs(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue> =
+        NativeJsEngine.toJsValue(ctx, value) ?: stringToJsValue(ctx, value.toString())
 }

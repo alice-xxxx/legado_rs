@@ -1,5 +1,7 @@
 package com.script.quickjs
 
+import io.legado.app.model.script.JsBootstrap
+
 import com.script.jsdispatch.JsValueConverters
 import com.script.quickjs.QuickJsEngine.cacheBootstrapGlobals
 import com.script.quickjs.QuickJsEngine.cacheBootstrapHelpers

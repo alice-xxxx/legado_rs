@@ -7,6 +7,7 @@ import kotlin.coroutines.*
 interface SourceEngineHost {
     val executionId:String
     val dataDirectory:String
+    val isCancelled:Boolean get()=false
     val supportsDynamicBrowser:Boolean get()=true
     val storage:HostStorage
     suspend fun executeHttp(request:HostHttpRequest):HostHttpResponse
@@ -19,7 +20,7 @@ internal class SourceEngineHostContext(val host:SourceEngineHost):AbstractCorout
 object SourceEngineHostRegistry {
     private val lane=IoDispatcher.limitedParallelism(1)
     fun current():SourceEngineHost?=currentHost()
-    @kotlin.jvm.JvmStatic fun executionCancelled()=current()?.executionId?.let(::sourceExecutionCancelled)?:false
+    @kotlin.jvm.JvmStatic fun executionCancelled()=current()?.isCancelled?:false
     internal fun <T> onThread(host:SourceEngineHost,block:()->T):T {
         val old=currentHost();setHost(host);return try{block()}finally{setHost(old)}
     }
@@ -32,6 +33,7 @@ internal expect fun sourceExecutionCancelled(id:String):Boolean
 
 /** 每项原生能力各自实现，不使用事件总线。 */
 abstract class NativeHost(override val executionId:String,override val dataDirectory:String):SourceEngineHost {
+    override val isCancelled:Boolean get()=sourceExecutionCancelled(executionId)
     internal val imageScope=NativeImages.Scope()
     protected abstract fun http(request:String):String
     protected abstract fun store(request:String):String

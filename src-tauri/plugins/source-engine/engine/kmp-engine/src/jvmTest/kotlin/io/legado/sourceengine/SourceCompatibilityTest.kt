@@ -32,6 +32,7 @@ class SourceCompatibilityTest {
         val url = AnalyzeUrlCore("https://example.org/?q={{key || 'default'}}")
         assertEquals("https://example.org/?q=default", url.url)
         assertEquals("true", url.evalJS("key===null && page===null && speakText===null && speakSpeed===null && infoMap===null").toString())
+        assertEquals("true", AnalyzeRuleCore().evalJS("key===null && page===null && speakText===null && speakSpeed===null").toString())
     }
 
     @Test fun listsReturnedAsJsonAreParsed() {

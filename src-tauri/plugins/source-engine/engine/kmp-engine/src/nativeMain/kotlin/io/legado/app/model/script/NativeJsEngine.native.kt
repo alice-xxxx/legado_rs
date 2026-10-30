@@ -3,7 +3,6 @@
 
 package io.legado.app.model.script
 
-import com.fleeksoft.ksoup.nodes.Node
 import com.script.jsdispatch.JsValueConverters
 
 import io.legado.app.data.entities.BookChapterLike
@@ -156,8 +155,8 @@ internal fun qjsEvalUtf8(
  *
  * 与 [QuickJsJsEngine] 差异: 编译缓存 = quickjs bytecode (JS_Eval + JS_EVAL_FLAG_COMPILE_ONLY +
  * JS_WriteObject 序列化, 自带 atom 表可跨 ctx/runtime 复用);
- * Java 桥 = JS_SetPropertyStr + Map/List (无反射); Packages/importClass 等 LiveConnect
- * 通路恒失败 (桩函数返回 0/false/null), 需改用 java.* JsExtensions 绑定;
+ * Java 桥无反射；Packages/importClass 经 JavaClassCompat 委托到 KMP 的 DOM、编码和加密实现；
+ * 未支持的类不能加载，未支持的方法抛出明确错误；
  * JavaAdapter 抛异常; 资源管理 = JS_FreeContext/JS_FreeRuntime。
  *
  * 注册: 宿主启动早期经 registerNativeJsEngines 注册到 [JsEngines]。
@@ -212,7 +211,7 @@ object NativeJsEngine : JsEngine {
     override fun getRuntimeScope(bindings: JsBindings): JsScope {
         val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
         val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        // 注入 bootstrap (bindingsStack + Java 类相关 stub + JsExtensions 桥接工厂)
+        // 注入共用包入口和 Native 方法分派。
         evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
         // 注册 native 分派函数 __nativeDispatch 到 globalThis (供 JsExtensions 桥接 JS 层回调)
         registerNativeDispatch(ctx)
@@ -493,6 +492,9 @@ object NativeJsEngine : JsEngine {
                         // JS_SetPropertyStr 转移 jsValue 所有权, 不需要 JS_FreeValue(jsValue)
                         JS_SetPropertyStr(ctx, global, key, jsValue)
                         injectedKeys.add(key)
+                    }
+                    if ("java" in injectedKeys) {
+                        evalInternal(ctx, "globalThis.java=__withJavaPackages(globalThis.java);void 0", "<java-packages>", checkException = true)
                     }
                 }
             } finally {
@@ -827,7 +829,7 @@ object NativeJsEngine : JsEngine {
      * 注意: 调用方负责 JS_FreeValue(input), 本函数不释放 input;
      * 但本函数内部创建的临时 JSValue (如 array 元素、object 属性值) 会即时 JS_FreeValue。
      */
-    private fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? {
+    internal fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? {
         if (qjs_IsUndefined(v) != 0 || qjs_IsNull(v) != 0) return null
         if (qjs_IsBool(v) != 0) return qjs_ValueGetBool(v) != 0
         if (qjs_IsNumber(v) != 0) {
@@ -849,6 +851,7 @@ object NativeJsEngine : JsEngine {
             }
         }
         if (qjs_IsObject(v) != 0) {
+            compatObject(ctx, v)?.let { return it }
             // Uint8Array/TypedArray (解密脚本返回值): 直接拷回 ByteArray,
             // ImageUtils.decode 的 is ByteArray 分支直接消费, 无需 List 中间态
             tryGetUint8ArrayBytes(ctx, v)?.let { return it }
@@ -950,8 +953,12 @@ object NativeJsEngine : JsEngine {
      *
      * @return JSValue, 或 null 表示跳过此 binding (复杂对象不桥接)
      */
-    private fun toJsValue(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue>? {
+    internal fun toJsValue(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue>? {
         val converted = JsValueConverters.convertAll(value)
+        if (JavaClassCompat.supports(converted)) {
+            val scope = threadLocalScope.value ?: return null
+            return NativeJsExtensionsBridge.createJsObject(ctx, converted!!, scope)
+        }
         return when (converted) {
             null -> jsNullValue()
             is Boolean -> qjs_NewBool(ctx, if (converted) 1 else 0)
@@ -974,41 +981,28 @@ object NativeJsEngine : JsEngine {
 
             is List<*> -> listToJsArray(ctx, converted)
             is ByteArray -> byteArrayToJsUint8Array(ctx, converted)
-            is JsExtensionsCommon -> {
-                // JsExtensions 桥接: 通过 handle 表 + JS 工厂函数桥接为 JS 对象 (NativeJsExtensionsBridge)
-                // 需要当前 scope (threadLocalScope) 记录 handle, close 时清理
-                val currentScope = threadLocalScope.value
-                    ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
-            }
-            is ImageOps -> {
-                // image.* is a KMP source-engine API. The provider is wrapped inside this
-                // QuickJS scope; image refs remain JS-private PNG byte arrays, not native handles.
-                val currentScope = threadLocalScope.value ?: return null
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
-            }
-            is BookLike, is BookChapterLike -> {
-                // 复杂对象 (book/chapter) 桥接: 复用 handle 表 + 属性 getter 工厂
-                // (NativeJsPropertyBridge, propertyId 1700+); 放在 JsExtensionsCommon 之后保持原通路顺序
-                val currentScope = threadLocalScope.value
-                    ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
-            }
+            is JsExtensionsCommon, is ImageOps, is BookLike, is BookChapterLike,
             is SourceNetworkProvider, is SourceCacheProvider -> {
-                // cookie/cache binding: 复用 createJsObject 工厂映射表 (__createCookieObj/__createCacheObj),
-                // 不重复写工厂判断; 与上方复杂对象分支同型 (handle 表 + scope 记录)
-                val currentScope = threadLocalScope.value
-                    ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
-            }
-            is Node -> {
-                // ksoup 节点 (src binding 逐项循环场景): 同 book/chapter 的 handle 表 + 属性工厂
-                val currentScope = threadLocalScope.value
-                    ?: return null  // 无 scope 上下文, 跳过 (非 injectBindings 调用路径)
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, currentScope)
+                val scope = threadLocalScope.value ?: return null
+                NativeJsExtensionsBridge.createJsObject(ctx, converted, scope)
             }
             else -> null  // 真·未知类型跳过注入 (调用方 continue), 不注册 handle 不泄漏
         }
+    }
+
+    internal fun compatObject(ctx: CPointer<JSContext>, value: CValue<JSValue>): Any? {
+        if (qjs_IsObject(value) == 0) return null
+        for (key in arrayOf("__javaCompatHandle__", "__h")) {
+            val handleValue = JS_GetPropertyStr(ctx, value, key)
+            try {
+                if (qjs_IsNumber(handleValue) != 0) {
+                    NativeJsExtensionsBridge.getObject(qjs_ValueGetFloat64(handleValue).toLong())?.let { return it }
+                }
+            } finally {
+                JS_FreeValue(ctx, handleValue)
+            }
+        }
+        return null
     }
 
     /** Map 递归转 JS object (供 JS_SetPropertyStr 注入)。 */
@@ -1083,7 +1077,7 @@ object NativeJsEngine : JsEngine {
                 val byteOffset = jsPropNumber(ctx, v, "byteOffset")?.toInt() ?: 0
                 val byteLength = jsPropNumber(ctx, v, "byteLength")?.toInt()
                     ?: (totalSize - byteOffset).coerceAtLeast(0)
-                if (byteOffset < 0 || byteLength <= 0 || byteLength > maxBytes) {
+                if (byteOffset !in 0..totalSize || byteLength < 0 || byteLength > maxBytes || byteLength > totalSize - byteOffset) {
                     return@memScoped null
                 }
                 val len = minOf(byteLength, (totalSize - byteOffset).coerceAtLeast(0))
@@ -1253,7 +1247,7 @@ object NativeJsEngine : JsEngine {
 
     /**
      * 释放 scope 中快照后新增的 handle (本次注入注册的), 防共享 topScope 长期膨胀
-     * (对齐 JVM releaseNewHandles; 属性 getter 的嵌套 handle 不在 scope.handles, 不受影响)。
+     * 包括属性 getter、DOM 和加密方法返回的嵌套对象。
      */
     private fun releaseNewHandles(scope: NativeJsScope, snapshotSize: Int) {
         val handles = scope.handles
@@ -1337,124 +1331,7 @@ object NativeJsEngine : JsEngine {
         return sb.toString()
     }
 
-    /**
-     * native 端 (iOS/鸿蒙) bootstrap 脚本。
-     *
-     * 仅注入 [evalInSubScope] 需要的 bindings 子 scope 栈 (与 quickjs JsBootstrap 一致):
-     * - `__bindingsStack__` / `__currentBindings` / `__enterBindings` / `__exitBindings`
-     *
-     * Java 类相关 (Packages/JavaImporter/JavaAdapter/__loadJavaClass 等): native 无 Java 反射,
-     * LiveConnect 通路恒失败 (桩函数返回 0/false/null 或抛异常), 书源需改用 java.* JsExtensions 绑定:
-     * - `__loadJavaClass` → 0 (类加载恒失败)
-     * - `__classExists` → false
-     * - `__isInterface` → false
-     * - `__callStaticMethod` → null
-     * - `__newJavaInstance` / `__getStaticField` / `__setStaticField` → null/false (无对象实例化/字段反射)
-     * - `__newJavaAdapter` → 抛异常 (native 无 Java 反射)
-     * - `__getDangerousApi` → true (native 无安全模型, 无 Java 反射可旁路)
-     *
-     * 这些桩让 bootstrap 不依赖 native binding (quickjs 通过 nativeDefineBinding 注册),
-     * JS 层直接定义全局函数, 行为等价于"binding 调用 Kotlin 后返回桩值"。
-     */
-    private val BOOTSTRAP_CODE: String = """
-// ============ bindings 子 scope 栈 (与 quickjs JsBootstrap 一致) ============
-var __bindingsStack__ = [];
-
-function __currentBindings() {
-    return __bindingsStack__[__bindingsStack__.length - 1] || {};
-}
-
-function __enterBindings() {
-    var obj = {};
-    for (var i = 0; i < arguments.length; i += 2) {
-        obj[arguments[i]] = arguments[i + 1];
-    }
-    var prev = {};
-    var existed = {};
-    var keys = Object.keys(obj);
-    for (var i = 0; i < keys.length; i++) {
-        var key = keys[i];
-        existed[key] = globalThis.hasOwnProperty(key);
-        if (existed[key]) prev[key] = globalThis[key];
-        globalThis[key] = obj[key];
-    }
-    obj.__prevGlobals__ = prev;
-    obj.__prevKeys__ = keys;
-    obj.__prevExisted__ = existed;
-    __bindingsStack__.push(obj);
-}
-
-function __exitBindings() {
-    var obj = __bindingsStack__.pop();
-    if (obj && obj.__prevKeys__) {
-        var prev = obj.__prevGlobals__;
-        var keys = obj.__prevKeys__;
-        var existed = obj.__prevExisted__;
-        for (var i = 0; i < keys.length; i++) {
-            var key = keys[i];
-            if (existed[key]) {
-                globalThis[key] = prev[key];
-            } else {
-                delete globalThis[key];
-            }
-        }
-    }
-}
-
-// ============ Java 类兼容面 (native 无 Java 反射, LiveConnect 通路恒失败) ============
-// 与 quickjs 端一致: Packages/importClass/JavaAdapter 等 rhino LiveConnect 兼容 API 通过
-// __loadJavaClass/__callStaticMethod 等桩函数回 Kotlin 分派。native 无 Java 反射, 桩函数
-// 恒定返回 0/false/null, 书源 JS 明确失败 (规则层 runCatching 后呈现为规则错误);
-// 跨端书源请改用 java.* JsExtensions 绑定 (native 全量支持)。
-
-function __getDangerousApi() {
-    // native 无 Java 反射亦无安全模型: 不存在可旁路的任意类加载, dangerousApi 语义
-    // 天然全放行 (放行也不会新增能力, 仅让书源走 java.* 路径)
-    return true;
-}
-
-function __loadJavaClass(fullName, dangerousApi) {
-    // native 无 Java 反射: 类加载恒失败, 返回 0 (类句柄, 表示加载失败)
-    return 0;
-}
-
-function __classExists(fullName, dangerousApi) {
-    return false;
-}
-
-function __isInterface(classHandle, dangerousApi) {
-    return false;
-}
-
-function __newJavaInstance(classHandle, args, dangerousApi) {
-    // native 无对象实例化 (无反射), 返回 null 让书源明确失败
-    return null;
-}
-
-function __callStaticMethod(classHandle, methodName, args, dangerousApi) {
-    return null;
-}
-
-function __getStaticField(classHandle, fieldName, dangerousApi) {
-    return null;
-}
-
-function __setStaticField(classHandle, fieldName, value, dangerousApi) {
-    return false;
-}
-
-function __newJavaAdapter(classHandle, jsFnHandle, dangerousApi) {
-    throw new Error('JavaAdapter not supported on native (no Java reflection); use java.* JsExtensions bindings instead');
-}
-
-function __registerJsFunctionNative(jsObjectExpr, dangerousApi) {
-    return 0;
-}
-
-function __wrapJavaHandle(handle) {
-    return null;
-}
-    """.trimIndent() + "\n" + JAVA_STRING_COMPAT + "\n" + NativeJsExtensionsBridge.JS_FACTORY_CODE
+    private val BOOTSTRAP_CODE = JsBootstrap.code + "\n" + NATIVE_JAVA_BOOTSTRAP + "\n" + NativeJsExtensionsBridge.JS_FACTORY_CODE
 
 }
 

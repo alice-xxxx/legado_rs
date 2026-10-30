@@ -16,6 +16,9 @@ import kotlin.concurrent.Volatile
  * app 端注册时机: JsEnginesAndroid / registerDesktopSourceProviders / registerNativeJsEngines。
  */
 interface JsCryptoProvider : JsEncodeUtils {
+    fun digestBytes(algorithm: String, data: ByteArray): ByteArray
+    fun hmacBytes(algorithm: String, key: ByteArray, data: ByteArray): ByteArray
+    fun randomBytes(size: Int): ByteArray
 
     /**
      * 创建对称加解密器。key 为 null 时使用随机密钥, iv 非空时设置初始向量。

@@ -1,7 +1,7 @@
-package com.script.quickjs
+package io.legado.app.model.script
 
 /**
- * JS bootstrap 脚本, 在 QuickJs ctx 创建后立即 evaluate。注入:
+ * 各平台共用的 JS bootstrap；类和对象调用由平台 binding 分派。注入:
  * 1. `Packages` + `java`/`javax`/`android`/`org`/`com`/`io`/`cn` 顶级别名 (Proxy 按需 __loadJavaClass)。
  * 2. `JavaImporter` / `importClass` / `importPackage` —— rhino LiveConnect 兼容 API。
  * 3. `JavaAdapter` —— 走 `__newJavaAdapter` 创建 java.lang.reflect.Proxy。

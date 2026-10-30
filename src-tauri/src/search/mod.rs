@@ -1,18 +1,18 @@
 //! 统一搜索入口：所有书源搜索都在此请求 KMP，并使用相同结果结构向 Vue emit。
 
-use tauri_plugin_source_engine::SearchRequest;
 use crate::{
     sources::SourceRecord,
     support::{now_ms, text_at},
 };
-use futures_util::{stream, StreamExt};
+use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     collections::HashMap,
     sync::Arc,
     time::{Duration, Instant},
 };
+use tauri_plugin_source_engine::SearchRequest;
 
 pub(crate) struct Search {
     pub(crate) sources: Arc<crate::sources::Catalog>,
@@ -61,7 +61,6 @@ pub(crate) const SEARCH_CONCURRENCY: usize = if cfg!(any(target_os = "ios", targ
 } else {
     8
 };
-const SEARCH_SOURCE_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Search {
     /// 唯一搜索入口：直接请求 KMP、按精度过滤，每个源完成后立即发送结果。
@@ -124,7 +123,11 @@ impl Search {
                     let _cancel_on_drop = token.clone().drop_guard();
                     let mut response_time_ms = None;
                     let response = async {
-                        let request = SearchRequest { source: (&source.source).try_into()?, keyword: keyword.to_owned(), page: page as i32 };
+                        let request = SearchRequest {
+                            source: (&source.source).try_into()?,
+                            keyword: keyword.to_owned(),
+                            page: page as i32,
+                        };
                         let _slot = self
                             .search_slots
                             .acquire()
@@ -132,13 +135,22 @@ impl Search {
                             .map_err(|error| error.to_string())?;
                         // 从取得执行名额后计时，排除本地并发排队时间。
                         let started = Instant::now();
+                        let timeout =
+                            Duration::from_secs(crate::source_http::network_timeout_seconds());
                         let response = tokio::time::timeout(
-                            SEARCH_SOURCE_TIMEOUT,
+                            timeout,
                             self.executor.search(request, token.clone()),
                         )
                         .await
-                        .unwrap_or_else(|_| Err("Source search timed out after 10000 ms".into()))
-                        .and_then(|page| serde_json::to_value(page).map_err(|error| error.to_string()));
+                        .unwrap_or_else(|_| {
+                            Err(format!(
+                                "Source search timed out after {} ms",
+                                timeout.as_millis()
+                            ))
+                        })
+                        .and_then(|page| {
+                            serde_json::to_value(page).map_err(|error| error.to_string())
+                        });
                         response_time_ms = Some(started.elapsed().as_millis() as u64);
                         response
                     }

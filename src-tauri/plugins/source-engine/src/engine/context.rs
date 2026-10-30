@@ -28,7 +28,9 @@ impl Lease {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let call = Call {
             cancel,
-            deadline: search.then(|| Instant::now() + Duration::from_secs(10)),
+            deadline: search.then(|| {
+                Instant::now() + Duration::from_secs(crate::http::network_timeout_seconds())
+            }),
             storage: context.storage.clone(),
         };
         CALLS
@@ -67,4 +69,48 @@ pub(crate) fn get(id: &str) -> Result<Arc<Call>> {
 }
 pub(crate) fn cancelled(id: &str) -> bool {
     get(id).is_err()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{KeyFilter, Namespace};
+
+    struct Storage;
+    impl StorageHost for Storage {
+        fn get(&self, _: Namespace, _: &str) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn put(&self, _: Namespace, _: &str, _: &str, _: Option<u64>) -> Result<()> {
+            Ok(())
+        }
+        fn remove(&self, _: Namespace, _: KeyFilter) -> Result<Vec<String>> {
+            Ok(vec![])
+        }
+    }
+
+    #[test]
+    fn configured_search_budget_preserves_immediate_cancellation() {
+        let previous = crate::http::network_timeout_seconds();
+        crate::http::set_network_timeout_seconds(60);
+        let cancellation = CancellationToken::new();
+        let context = EngineContext {
+            data_dir: Default::default(),
+            resource_dir: None,
+            storage: Arc::new(Storage),
+            cancellation: Some(cancellation.clone()),
+        };
+        let lease = Lease::enter(&context, true).unwrap();
+        let remaining = get(&lease.0)
+            .unwrap()
+            .deadline
+            .unwrap()
+            .duration_since(Instant::now());
+        cancellation.cancel();
+        let stopped = cancelled(&lease.0);
+        drop(lease);
+        crate::http::set_network_timeout_seconds(previous);
+        assert!(remaining > Duration::from_secs(30));
+        assert!(stopped);
+    }
 }

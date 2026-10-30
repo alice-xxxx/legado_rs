@@ -98,7 +98,7 @@ open class AnalyzeUrlCore(
     hasLoginHeader: Boolean = true,
     private val selectedOptions: Map<String, String>? = null,
     /** 额外注入到 evalJS 作用域的键值对，例如 key、page */
-    private val variables: Map<AppConst.JsVarName, Any>? = null
+    internal val variables: Map<AppConst.JsVarName, Any>? = null
 ) : JsExtensionsCommon {
 
     private var tmpUrl = rawUrl

@@ -82,6 +82,7 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
         overrideUrl=try (request?.overrideUrlRegex).map{try NSRegularExpression(pattern:"^(?:"+$0+")$")}
         let config=WKWebViewConfiguration();config.websiteDataStore = .nonPersistent();web=WKWebView(frame:CGRect(x:0,y:0,width:900,height:700),configuration:config)
         super.init(nibName:nil,bundle:nil)
+        web.customUserAgent=request?.headers.first{$0.name.lowercased()=="user-agent"}?.value
         web.navigationDelegate=self;config.userContentController.add(self,name:bridge)
         self.title=login != nil ? "书源登录":request?.title
         owner.pages[id]=self

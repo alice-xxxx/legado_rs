@@ -125,6 +125,11 @@ interface JsEncodeUtilsDefaults : JsEncodeUtils {
  * key 为 null 时 hutool 使用随机密钥; iv 非空时 hutool setIv 原地设置后返回自身。
  */
 object JsCryptoProviderJvm : JsCryptoProvider, JsEncodeUtilsDefaults {
+    override fun digestBytes(algorithm: String, data: ByteArray): ByteArray = java.security.MessageDigest.getInstance(algorithm).digest(data)
+    override fun hmacBytes(algorithm: String, key: ByteArray, data: ByteArray): ByteArray = javax.crypto.Mac.getInstance(algorithm).run {
+        init(javax.crypto.spec.SecretKeySpec(key, algorithm)); doFinal(data)
+    }
+    override fun randomBytes(size: Int): ByteArray = ByteArray(size).also { java.security.SecureRandom().nextBytes(it) }
 
     override fun createSymmetricCrypto(
         transformation: String,
@@ -132,7 +137,11 @@ object JsCryptoProviderJvm : JsCryptoProvider, JsEncodeUtilsDefaults {
         iv: ByteArray?
     ): SymmetricCrypto {
         val crypto = SymmetricCryptoAndroid(transformation, key)
-        if (iv != null && iv.isNotEmpty()) crypto.setIv(iv)
+        if (iv != null && iv.isNotEmpty()) {
+            if (transformation.split('/').getOrNull(1).equals("GCM", ignoreCase = true)) {
+                crypto.setParams(javax.crypto.spec.GCMParameterSpec(128, iv))
+            } else crypto.setIv(iv)
+        }
         return crypto
     }
 

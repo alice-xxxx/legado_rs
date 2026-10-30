@@ -51,6 +51,7 @@ object BookList {
         SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, "≡获取成功:${analyzeUrl.ruleUrl}")
         SourceDebugLoggers.impl?.log(bookSource.bookSourceUrl, body, state = 10, showTime = false)
         val analyzeRule = AnalyzeRuleFactories.create(ruleData, bookSource)
+        analyzeRule.variables = analyzeUrl.variables
         analyzeRule.setContent(body).setBaseUrl(baseUrl)
         analyzeRule.setRedirectUrl(baseUrl)
         analyzeRule.coroutineContext = currentCoroutineContext()

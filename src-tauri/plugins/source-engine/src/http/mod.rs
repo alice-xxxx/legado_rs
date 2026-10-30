@@ -24,6 +24,18 @@ static IO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 pub fn set_network_timeout_seconds(seconds: u64) {
     TIMEOUT.store(seconds.clamp(1, 300), Ordering::Relaxed);
 }
+pub fn network_timeout_seconds() -> u64 {
+    TIMEOUT.load(Ordering::Relaxed)
+}
+pub fn request_error(error: reqwest::Error) -> String {
+    let mut cause: Option<&dyn std::error::Error> = Some(&error);
+    let mut messages = Vec::new();
+    while let Some(error) = cause {
+        messages.push(error.to_string());
+        cause = error.source();
+    }
+    messages.join(": ")
+}
 pub fn builder() -> ClientBuilder {
     defaults(true)
 }
@@ -234,7 +246,7 @@ async fn send(
             .clone();
         client = client.cookie_provider(jar);
     }
-    let client = client.build().map_err(|e| e.to_string())?;
+    let client = client.build().map_err(request_error)?;
     let method =
         reqwest::Method::from_bytes(request.method.as_bytes()).map_err(|e| e.to_string())?;
     let mut headers = HeaderMap::new();
@@ -280,7 +292,7 @@ async fn send(
     } else if let Some(body) = request.body_base64 {
         outgoing = outgoing.body(STANDARD.decode(body).map_err(|e| e.to_string())?);
     }
-    let mut response = outgoing.send().await.map_err(|e| e.to_string())?;
+    let mut response = outgoing.send().await.map_err(request_error)?;
     let status = response.status();
     let final_url = response.url().to_string();
     let headers = response
@@ -292,7 +304,7 @@ async fn send(
         })
         .collect();
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+    while let Some(chunk) = response.chunk().await.map_err(request_error)? {
         if body.len() + chunk.len() > 64 * 1024 * 1024 {
             return Err("HTTP 响应超过 64 MiB".into());
         }

@@ -18,7 +18,7 @@ internal object HostHttpClient:OkHttpClientProvider,OkHttpProxyClientProvider {
     private val proxies=ConcurrentHashMap<String,KmpHttpClient>()
     override val okHttpClient by lazy{client(null)}
     override fun getProxyClient(proxy:String?)=if(proxy.isNullOrBlank())okHttpClient else proxies.getOrPut(proxy){client(proxy)}
-    fun install(){OkHttpClientProviders.register(this);OkHttpProxyClientProviders.impl=this}
+    fun install(){OkHttpClientProviders.register(this);OkHttpProxyClientProviders.impl=this;org.jsoup.Jsoup.clientFactory={okHttpClient}}
     private data class Metadata(val cookies:Boolean)
     private fun client(proxy:String?):KmpHttpClient {
         return OkHttpClient.Builder()

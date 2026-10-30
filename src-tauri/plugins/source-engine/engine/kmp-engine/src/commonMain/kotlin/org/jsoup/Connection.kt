@@ -148,6 +148,8 @@ interface Connection {
 
     /** 执行请求,返回 [Response] */
     fun execute(): Response
+    fun get(): Document = method(Method.GET).execute().parse()
+    fun post(): Document = method(Method.POST).execute().parse()
 
     /** 当前请求对象 */
     fun request(): Request

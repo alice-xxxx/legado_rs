@@ -853,6 +853,7 @@ open class AnalyzeRuleCore(
         // 空字符串早返回，避免不必要的编译执行开销
         if (jsStr.isBlank()) return null
         val bindings = buildScriptBindings { bindings ->
+            AppConst.JsVarName.entries.forEach { bindings[it.key] = null }
             variables?.forEach { (k, v) -> bindings[k.key] = v }
             bindings["java"] = this
             bindings["cookie"] = SourceNetworkProviders.impl?.asBinding()

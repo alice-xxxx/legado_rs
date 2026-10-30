@@ -333,7 +333,7 @@ interface JsExtensionsCommon {
      * @param js 用来取返回值的js语句, 没有就返回整个源代码
      * @return 返回js获取的内容
      */
-    fun webView(html: String?, url: String?, js: String?, delayTime: Long = 1000L): String? {
+    fun webView(html: String?, url: String?, js: String?, delayTime: Long = 0L): String? {
         if (JsExtensionsPlatform.isMainThread()) {
             error("webView must be called on a background thread")
         }
@@ -350,7 +350,10 @@ interface JsExtensionsCommon {
         }
     }
 
-    fun webView(html: String?, url: String?, js: String?) = webView(html, url, js, 1000L)
+    fun webView(html: String?, url: String?, js: String?) = webView(html, url, js, 0L)
+
+    @Suppress("UNUSED_PARAMETER")
+    fun webView(html: String?, url: String?, js: String?, cacheFirst: Boolean) = webView(html, url, js)
 
     /**
      * 使用webView获取资源url
@@ -360,7 +363,7 @@ interface JsExtensionsCommon {
         url: String?,
         js: String?,
         sourceRegex: String?,
-        delayTime: Long = 1000L
+        delayTime: Long = 0L
     ): String? {
         if (JsExtensionsPlatform.isMainThread()) {
             error("webViewGetSource must be called on a background thread")
@@ -380,7 +383,14 @@ interface JsExtensionsCommon {
     }
 
     fun webViewGetSource(html: String?, url: String?, js: String?, sourceRegex: String?) =
-        webViewGetSource(html, url, js, sourceRegex, 1000L)
+        webViewGetSource(html, url, js, sourceRegex, 0L)
+
+    @Suppress("UNUSED_PARAMETER")
+    fun webViewGetSource(html: String?, url: String?, js: String?, sourceRegex: String?, cacheFirst: Boolean, delayTime: Long = 0L) =
+        webViewGetSource(html, url, js, sourceRegex, delayTime)
+
+    fun webViewGetSource(html: String?, url: String?, js: String?, sourceRegex: String?, cacheFirst: Boolean) =
+        webViewGetSource(html, url, js, sourceRegex, cacheFirst, 0L)
 
     /**
      * 使用webView获取跳转url
@@ -390,7 +400,7 @@ interface JsExtensionsCommon {
         url: String?,
         js: String?,
         overrideUrlRegex: String?,
-        delayTime: Long = 1000L
+        delayTime: Long = 0L
     ): String? {
         if (JsExtensionsPlatform.isMainThread()) {
             error("webViewGetOverrideUrl must be called on a background thread")
@@ -410,7 +420,14 @@ interface JsExtensionsCommon {
     }
 
     fun webViewGetOverrideUrl(html: String?, url: String?, js: String?, overrideUrlRegex: String?) =
-        webViewGetOverrideUrl(html, url, js, overrideUrlRegex, 1000L)
+        webViewGetOverrideUrl(html, url, js, overrideUrlRegex, 0L)
+
+    @Suppress("UNUSED_PARAMETER")
+    fun webViewGetOverrideUrl(html: String?, url: String?, js: String?, overrideUrlRegex: String?, cacheFirst: Boolean, delayTime: Long = 0L) =
+        webViewGetOverrideUrl(html, url, js, overrideUrlRegex, delayTime)
+
+    fun webViewGetOverrideUrl(html: String?, url: String?, js: String?, overrideUrlRegex: String?, cacheFirst: Boolean) =
+        webViewGetOverrideUrl(html, url, js, overrideUrlRegex, cacheFirst, 0L)
 
     /**
      * 访问网络,返回String

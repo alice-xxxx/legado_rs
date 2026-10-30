@@ -5,17 +5,27 @@ import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.utils.KS_JSON
 import io.legado.app.help.source.SourceNetworkProviders
 import io.legado.sourceengine.host.*
+import io.legado.sourceengine.api.NativeCodec
+import io.legado.sourceengine.api.ReaderSource
 import kotlinx.serialization.json.*
 import java.io.IOException
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.*
 import kotlin.test.*
 
 class HostCompatibilityTest {
     private class Host(val content:String="original",val header:String="inline; filename=\"流媒体.json\""):NativeHost("fixture",".") {
+        override val isCancelled=false
         var browserRequest:HostBrowserRequest?=null
+        var httpRequest:JsonObject?=null
         var browserBody="\"audio-url\""
+        var beforeHttp:(()->Unit)?=null
         override fun http(request:String):String {
-            val url=KS_JSON.parseToJsonElement(request).jsonObject.getValue("url")
+            beforeHttp?.invoke()
+            httpRequest=KS_JSON.parseToJsonElement(request).jsonObject
+            val url=httpRequest!!.getValue("url")
             return buildJsonObject {
                 put("ok",true)
                 putJsonObject("value") {
@@ -83,5 +93,60 @@ class HostCompatibilityTest {
             factory.create(url="https://example.org/page",overrideUrlRegex="pixiv:.*").getStrResponse()
             assertEquals("pixiv:.*",host.browserRequest?.overrideUrlRegex)
         }
+    }
+
+    @Test fun jsoupUsesTheSameHostTransportAndHeadersAsOtherRules() {
+        val host=Host(content="<p>Host transport</p>")
+        SourceEngineHostRegistry.onThread(host) {
+            val response=org.jsoup.Jsoup.connect("https://host.invalid/").header("X-Test","verified").execute()
+            assertEquals("Host transport",response.parse().text())
+        }
+        assertEquals("https://host.invalid/",host.httpRequest?.get("url")?.jsonPrimitive?.content)
+        assertTrue(host.httpRequest!!.getValue("headers").jsonArray.any { it.jsonObject["name"]?.jsonPrimitive?.content=="X-Test" && it.jsonObject["value"]?.jsonPrimitive?.content=="verified" })
+        val rule=AnalyzeRuleCore().setContent("", "https://host.invalid/")
+        SourceEngineHostRegistry.onThread(host) {
+            assertEquals("Host transport",rule.getString("@js:org.jsoup.Jsoup.connect('https://host.invalid/').get().select('p').text()"))
+            assertEquals("Host transport",rule.getString("@js:org.jsoup.Jsoup.connect('https://host.invalid/').data('key','value').post().select('p').text()"))
+        }
+        assertEquals("POST",host.httpRequest?.get("method")?.jsonPrimitive?.content)
+    }
+
+    @Test fun legacyWebViewCacheFlagDoesNotBecomeANumericDelay() {
+        val host=Host().apply { browserBody="legacy" }
+        val rule=AnalyzeRuleCore().setContent("<p>fixture</p>","https://example.org/")
+        SourceEngineHostRegistry.onThread(host) {
+            for (flag in listOf(false,true)) {
+                assertEquals("legacy",rule.getString("@js:java.webView(null,'https://example.org/','document.title',$flag)"))
+                assertEquals(1000L,host.browserRequest?.delayTimeMs)
+                assertEquals("legacy",rule.getString("@js:java.webViewGetOverrideUrl(null,'https://example.org/','','pixiv:.*',$flag,17)"))
+                assertEquals(1017L,host.browserRequest?.delayTimeMs)
+                assertEquals("pixiv:.*",host.browserRequest?.overrideUrlRegex)
+            }
+        }
+    }
+
+    @Test fun resultRulesAndSharedFunctionsReceiveTheCurrentSearchVariables() {
+        val host=Host()
+        fun request(keyword:String,page:Int)=NativeCodec.decodeSearchRequest("""{"source":{"bookSourceUrl":"https://example.org/","searchUrl":"https://example.org/?q={{key}}&page={{page}}","jsLib":"function label(){return key+'-'+page;}","ruleSearch":{"bookList":"@js:[{name:label(),url:'https://example.org/book'}]","name":"name","bookUrl":"url"}},"keyword":"$keyword","page":$page}""")
+        kotlinx.coroutines.runBlocking {
+            SourceEngineHostRegistry.withHost(host) {
+                assertEquals("我的-2",ReaderSource.search(request("我的",2)).books.single().name)
+                assertEquals("系统-3",ReaderSource.search(request("系统",3)).books.single().name)
+            }
+        }
+    }
+
+    @Test fun aBlockedScriptRequestDoesNotBlockOtherSourceHosts() = runBlocking {
+        val entered=CountDownLatch(1);val release=CountDownLatch(1)
+        val firstHost=Host(content="first").apply { beforeHttp={entered.countDown();check(release.await(10,TimeUnit.SECONDS))} }
+        val secondHost=Host(content="second")
+        fun request()=NativeCodec.decodeSourceRequest("""{"source":{"bookSourceUrl":"https://host.invalid/","exploreUrl":"@js:JSON.stringify([{title:java.ajax('https://host.invalid/'),url:'https://host.invalid/'}]);"}}""")
+        val first=async(Dispatchers.Default) { SourceEngineHostRegistry.withHost(firstHost) { ReaderSource.exploreKinds(request()) } }
+        try {
+            assertTrue(entered.await(5,TimeUnit.SECONDS))
+            val second=withTimeout(5000) { SourceEngineHostRegistry.withHost(secondHost) { ReaderSource.exploreKinds(request()) } }
+            assertEquals("second",second.categories.single().title)
+        } finally { release.countDown() }
+        assertEquals("first",first.await().categories.single().title)
     }
 }

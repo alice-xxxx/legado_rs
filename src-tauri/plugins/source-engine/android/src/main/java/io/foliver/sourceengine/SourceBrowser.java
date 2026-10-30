@@ -15,7 +15,19 @@ final class SourceBrowser {
     private final Handler handler=new Handler(Looper.getMainLooper());
     private final Map<String,Page> sessions=new HashMap<>();
     private final Set<Page> pages=new HashSet<>();
-    SourceBrowser(Activity activity){this.activity=activity;}
+    SourceBrowser(Activity activity){
+        this.activity=activity;
+        activity.runOnUiThread(()->{
+            try{
+                if(!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))return;
+                ProfileStore store=ProfileStore.getInstance();
+                for(String name:store.getAllProfileNames())if(name.startsWith("foliver-source-")){
+                    // Loaded profiles can only be deleted after the process restarts.
+                    try{store.deleteProfile(name);}catch(IllegalStateException loaded){}
+                }
+            }catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理旧书源浏览器失败",failure);}
+        });
+    }
     void destroy(){activity.runOnUiThread(()->{for(Page page:new ArrayList<>(pages))page.close("浏览器已销毁");});}
     private static String url(String value)throws Exception{
         android.net.Uri url=android.net.Uri.parse(value);
@@ -48,6 +60,7 @@ final class SourceBrowser {
         JSONObject input=new JSONObject(invoke.getRawArgs());Page page=new Page(input,invoke,false);
         StringBuilder seed=new StringBuilder();JSONArray headers=input.getJSONArray("headers");Map<String,String> requestHeaders=new HashMap<>();
         for(int i=0;i<headers.length();i++){JSONObject h=headers.getJSONObject(i);String name=h.getString("name"),value=h.getString("value");
+            if(name.equalsIgnoreCase("User-Agent"))page.view.getSettings().setUserAgentString(value);
             if(name.equalsIgnoreCase("Cookie"))seed.append(value).append(';');else requestHeaders.put(name,value);
         }
         page.seed(seed.toString(),()->{
@@ -59,7 +72,7 @@ final class SourceBrowser {
     }
     private final class Page {
         final JSONObject input;final Invoke invoke;final boolean login,offline,interactive;
-        final WebView view;final CookieManager cookies;final AlertDialog dialog;final String profile,target;
+        final WebView view;final CookieManager cookies;final AlertDialog dialog;final String target;
         final java.util.regex.Pattern overrideUrl;
         boolean returned=false,closed=false,evaluated=false;
         final Runnable timeout=()->close("浏览器请求超时");
@@ -71,9 +84,9 @@ final class SourceBrowser {
         Page(JSONObject input,Invoke invoke,boolean login)throws Exception{
             this.input=input;this.invoke=invoke;this.login=login;
             target=url(input.getString(login?"loginUrl":"baseUrl"));offline=!login&&"OFFLINE_SNAPSHOT".equals(input.getString("mode"));interactive=login||"INTERACTIVE_PAGE".equals(input.optString("mode"));
-            String pattern=input.optString("overrideUrlRegex","");overrideUrl=pattern.isEmpty()?null:java.util.regex.Pattern.compile(pattern);
+            String pattern=input.isNull("overrideUrlRegex")?"":input.getString("overrideUrlRegex");overrideUrl=pattern.isEmpty()?null:java.util.regex.Pattern.compile(pattern);
             if(!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))throw new Exception("当前系统 WebView 不支持独立书源会话，请更新 Android System WebView");
-            profile="foliver-source-"+UUID.randomUUID();view=new WebView(activity);WebViewCompat.setProfile(view,profile);
+            String profile="foliver-source-"+UUID.randomUUID();view=new WebView(activity);WebViewCompat.setProfile(view,profile);
             cookies=WebViewCompat.getProfile(view).getCookieManager();
             view.getSettings().setJavaScriptEnabled(true);view.getSettings().setDomStorageEnabled(!offline);view.getSettings().setAllowFileAccess(false);view.getSettings().setAllowContentAccess(false);view.getSettings().setBlockNetworkLoads(offline);view.getSettings().setCacheMode(WebSettings.LOAD_NO_CACHE);
             dialog=new AlertDialog.Builder(activity).setTitle(login?"书源登录":input.optString("title","书源页面")).setView(view).setPositiveButton(login?"返回应用":"完成",null).setNegativeButton("关闭",null).create();
@@ -127,7 +140,7 @@ final class SourceBrowser {
             if(closed)return;closed=true;handler.removeCallbacks(timeout);handler.removeCallbacks(cancellation);pages.remove(this);
             if(login)sessions.remove(input.optString("sessionId"));
             if(!returned){returned=true;invoke.reject(error==null?"浏览器会话已结束":error);}
-            for(Runnable cleanup:new Runnable[]{dialog::dismiss,view::stopLoading,view::destroy,()->ProfileStore.getInstance().deleteProfile(profile)}){
+            for(Runnable cleanup:new Runnable[]{dialog::dismiss,view::stopLoading,()->cookies.removeAllCookies(null),()->WebViewCompat.getProfile(view).getWebStorage().deleteAllData(),()->view.clearCache(true),view::destroy}){
                 try{cleanup.run();}catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理书源浏览器失败",failure);}
             }
         }

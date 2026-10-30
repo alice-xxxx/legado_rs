@@ -65,13 +65,10 @@ pub(crate) async fn text(input: &str, limit: usize) -> Result<String, String> {
 }
 
 fn request_error(error: reqwest::Error) -> String {
-    let mut cause: Option<&dyn std::error::Error> = Some(&error);
-    let mut messages = Vec::new();
-    while let Some(error) = cause {
-        messages.push(error.to_string());
-        cause = error.source();
-    }
-    format!("获取导入内容失败：{}", messages.join("："))
+    format!(
+        "获取导入内容失败：{}",
+        crate::http_client::request_error(error)
+    )
 }
 
 #[cfg(test)]

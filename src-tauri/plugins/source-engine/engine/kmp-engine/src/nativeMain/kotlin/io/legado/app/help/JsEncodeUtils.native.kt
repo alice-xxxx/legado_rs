@@ -98,6 +98,9 @@ interface JsEncodeUtilsDefaults : JsEncodeUtils {
  * (mbedTLS 主实现, 异常回落 iOS Security.framework / 鸿蒙 cryptoFramework napi, 见各类注释)。
  */
 object JsCryptoProviderNative : JsCryptoProvider, JsEncodeUtilsDefaults {
+    override fun digestBytes(algorithm: String, data: ByteArray): ByteArray = NativeDigestOps.digest(algorithm, data)
+    override fun hmacBytes(algorithm: String, key: ByteArray, data: ByteArray): ByteArray = NativeHmacOps.hmac(algorithm, key, data)
+    override fun randomBytes(size: Int): ByteArray = io.legado.app.help.crypto.NativeAesOps.randomKey(size)
 
     override fun createSymmetricCrypto(
         transformation: String,
