@@ -26,6 +26,9 @@ def selected_targets(tiers="1", platform="all"):
         (platform == "desktop" and target["platform"] in ("windows", "macos", "linux")))]
     if not targets:
         raise ValueError(f"No {platform} targets in tiers {tiers}")
+    for target in targets:
+        if ".app.tar.gz" in target["updates"] and "app" not in target["bundles"].split(","):
+            raise ValueError(f"{target['id']} updater requires the app bundle target; dmg alone cannot generate it")
     return targets
 
 
@@ -117,19 +120,33 @@ def set_version(version, root=ROOT):
     print(f"App version: {version}")
 
 
+def artifact_files(target, directory, updater=True):
+    files = {}
+    extensions = dict.fromkeys(target["packages"] + (list(target["updates"]) if updater else []))
+    for extension in extensions:
+        matches = list(directory.rglob(f"*{extension}"))
+        if len(matches) != 1 or not matches[0].stat().st_size:
+            raise ValueError(f"Expected one nonempty {target['id']} {extension}, found {len(matches)}")
+        files[extension] = matches[0]
+    if updater:
+        for extension in target["updates"]:
+            signature = files[extension].with_name(files[extension].name + ".sig")
+            if not signature.is_file() or not signature.stat().st_size:
+                raise ValueError(f"Missing updater signature: {signature.name}")
+    return files
+
+
 def collect(tag, commit, source, output, root=ROOT, tiers="1"):
     version = check(tag, root)
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected a full source commit SHA")
     targets = selected_targets(tiers)
+    artifacts = {target["id"]: artifact_files(target, source / f"Foliver-{target['id']}") for target in targets}
     packages = {target["id"]: target["packages"] for target in targets}
     selected = []
     for target, extensions in packages.items():
         for extension in extensions:
-            files = list((source / f"Foliver-{target}").rglob(f"*{extension}"))
-            if len(files) != 1 or files[0].stat().st_size == 0:
-                raise ValueError(f"Expected one nonempty {target} {extension}, found {len(files)}")
-            selected.append((target, files[0], f"Foliver-{tag}-{target}{extension}"))
+            selected.append((target, artifacts[target][extension], f"Foliver-{tag}-{target}{extension}"))
     platforms = {}
     repository = os.environ.get("GITHUB_REPOSITORY", "alice-xxxx/legado_rs")
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
@@ -137,13 +154,8 @@ def collect(tag, commit, source, output, root=ROOT, tiers="1"):
     for config in targets:
         target = config["id"]
         for extension, key in config["updates"].items():
-            files = list((source / f"Foliver-{target}").rglob(f"*{extension}"))
-            if len(files) != 1 or not files[0].stat().st_size:
-                raise ValueError(f"Expected one updater package: {target} {extension}")
-            file = files[0]
+            file = artifacts[target][extension]
             signature_file = file.with_name(file.name + ".sig")
-            if not signature_file.is_file() or not signature_file.stat().st_size:
-                raise ValueError(f"Missing updater signature: {signature_file.name}")
             name = f"Foliver-{tag}-{target}{extension}"
             if extension not in packages[target]:
                 selected.append((target, file, name))
@@ -206,6 +218,10 @@ def main():
     builds = commands.add_parser("matrix")
     builds.add_argument("--tiers", default="1")
     builds.add_argument("--platform", choices=("all", "desktop", "android", "ios"), default="all")
+    verify = commands.add_parser("verify")
+    verify.add_argument("target", choices=[target["id"] for target in TARGETS])
+    verify.add_argument("directory", type=Path)
+    verify.add_argument("--updater", action="store_true")
     assets = commands.add_parser("collect")
     assets.add_argument("tag")
     assets.add_argument("commit")
@@ -229,6 +245,10 @@ def main():
         print(f"Validated {tag} at {commit} ({'prerelease' if prerelease == 'true' else 'stable'})")
     elif args.command == "matrix":
         matrix(args.tiers, args.platform)
+    elif args.command == "verify":
+        target = next(target for target in TARGETS if target["id"] == args.target)
+        files = artifact_files(target, args.directory, args.updater)
+        print(f"Verified {args.target}: " + ", ".join(file.name for file in files.values()))
     elif args.command == "collect":
         collect(args.tag, args.commit, args.input, args.output, tiers=args.tiers)
     else:

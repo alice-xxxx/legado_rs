@@ -7,6 +7,7 @@ import tempfile
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location("release", Path(__file__).resolve().parents[1] / "release.py")
 release = importlib.util.module_from_spec(spec)
@@ -58,6 +59,29 @@ class ReleaseTests(unittest.TestCase):
     def test_manual_version_is_read_from_source_without_tag(self):
         self.assertEqual(release.check(root=self.root), "0.1.0")
         self.assertFalse((self.root / ".git").exists())
+
+    def test_macos_updater_requires_explicit_app_bundle(self):
+        for target in release.TARGETS:
+            if target["platform"] != "macos":
+                continue
+            broken = {**target, "bundles": "dmg"}
+            with self.subTest(target=target["id"]), patch.object(release, "TARGETS", [broken]):
+                with self.assertRaisesRegex(ValueError, "updater requires the app bundle"):
+                    release.matrix(str(target["tier"]), "desktop")
+
+    def test_macos_dmg_alone_is_not_a_complete_updater_build(self):
+        target = next(target for target in release.TARGETS if target["id"] == "macos-arm64")
+        self.artifacts.mkdir()
+        (self.artifacts / "Foliver_0.1.0_aarch64.dmg").write_bytes(b"dmg")
+        self.assertEqual(set(release.artifact_files(target, self.artifacts, updater=False)), {".dmg"})
+        with self.assertRaisesRegex(ValueError, r"macos-arm64 \.app\.tar\.gz"):
+            release.artifact_files(target, self.artifacts)
+        archive = self.artifacts / "Foliver.app.tar.gz"
+        archive.write_bytes(b"archive")
+        with self.assertRaisesRegex(ValueError, "Missing updater signature"):
+            release.artifact_files(target, self.artifacts)
+        archive.with_name(archive.name + ".sig").write_text("signature")
+        self.assertEqual(set(release.artifact_files(target, self.artifacts)), {".dmg", ".app.tar.gz"})
 
     def test_cli_writes_canonical_version_commit_and_channel_without_tags(self):
         scripts = self.root / "scripts"

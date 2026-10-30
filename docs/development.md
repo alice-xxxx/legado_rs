@@ -105,6 +105,8 @@ Windows 使用 NSIS `.exe`，macOS 使用 `.dmg`，Linux 提供 `.AppImage` 和 
 
 前端与架构无关，同次打包只编译一次前端，生成共享 `frontend-dist`，各原生任务下载后使用 `tauri.ci.conf.json` 跳过重复的前端编译。原生任务仍安装自身所需的 Tauri CLI，使用 npm 缓存；Rust 依赖在编译失败时也保存缓存，减少重跑成本。各原生任务没有相互依赖，矩阵中某个目标失败不会取消其他目标，但所选集合不完整时不发布 Release。
 
+macOS 必须显式构建 `app,dmg`：只选 `dmg` 时 Tauri 会删除用于打包的临时 `.app`，不生成自动更新的 `.app.tar.gz` 和签名。选择目标时会提前验证此约束；每个桌面任务上传前还会调用 `scripts/release.py verify`，使用与最终汇总相同的规则检查安装包、更新包和签名，缺失时直接让对应构建任务失败。
+
 桌面书源引擎需要附带 Java 21，因此桌面仅支持 x64/ARM64，不提供 Windows x86 或 Linux ARMv7 安装包。iOS 发版提供真机安装包；开发用模拟器产物不加入 Release。各桌面架构在对应的原生 runner 构建，JRE、JNI 和 Rust 架构一致。
 
 Android 的 ABI 列表由 `android.abis` 配置。单独准备某个 ABI 的 AAR 时使用 `-Plegado.androidAbis=arm64-v8a`（替换成目标 ABI），再用 Tauri 的 `--target` 构建对应 APK。CI 会验证 APK 签名、实际 ABI，以及该 ABI 下的 Rust 和 QuickJS 动态库。
