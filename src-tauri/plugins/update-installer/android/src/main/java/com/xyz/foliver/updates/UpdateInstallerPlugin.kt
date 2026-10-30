@@ -13,6 +13,8 @@ import app.tauri.plugin.Invoke
 import app.tauri.plugin.Plugin
 import java.io.File
 
+class UpdateFileProvider : FileProvider()
+
 @TauriPlugin
 class UpdateInstallerPlugin(private val activity: Activity) : Plugin(activity) {
     @Command
