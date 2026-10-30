@@ -27,7 +27,6 @@ class ReleaseTests(unittest.TestCase):
         (self.root / "src-tauri/Cargo.lock").write_text(
             '[[package]]\nname = "foliver"\nversion = "0.1.0"\n\n'
             '[[package]]\nname = "independent-plugin"\nversion = "9.8.7"\n')
-        self.commit = "a" * 40
         self.artifacts = self.root / "artifacts"
         self.output = self.root / "release-assets"
 
@@ -49,12 +48,13 @@ class ReleaseTests(unittest.TestCase):
                     package.write_bytes(b"updater archive")
                 package.with_name(package.name + ".sig").write_text("signed fixture")
 
-    def assert_checksums(self):
-        lines = (self.output / "SHA256SUMS").read_text().splitlines()
-        self.assertEqual(len(lines), len(list(self.output.iterdir())) - 1)
-        for line in lines:
-            digest, name = line.split("  ", 1)
-            self.assertEqual(digest, hashlib.sha256((self.output / name).read_bytes()).hexdigest())
+    def assert_update_packages(self):
+        updater = release.read_json(self.output / "latest.json")
+        for package in updater["platforms"].values():
+            file = self.output / package["url"].rsplit("/", 1)[1]
+            self.assertEqual(package["sha256"], hashlib.sha256(file.read_bytes()).hexdigest())
+            self.assertEqual(package["size"], file.stat().st_size)
+            self.assertEqual(package["signature"], file.with_name(file.name + ".sig").read_text().strip())
 
     def test_manual_version_is_read_from_source_without_tag(self):
         self.assertEqual(release.check(root=self.root), "0.1.0")
@@ -121,46 +121,44 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "tauri.conf.json"):
             release.check(root=self.root)
 
-    def test_all_architectures_signatures_manifest_and_checksums(self):
+    def test_all_architectures_and_signed_update_manifest(self):
         release.set_version("0.1.1", self.root)
         self.seed_artifacts("1,2,3")
-        release.collect("v0.1.1", self.commit, self.artifacts, self.output, self.root, tiers="1,2,3")
-        self.assertEqual(len(list(self.output.iterdir())), 30)
-        manifest = json.loads((self.output / "release-manifest.json").read_text())
-        self.assertEqual(manifest["commit"], self.commit)
-        self.assertFalse(manifest["prerelease"])
+        release.collect("v0.1.1", self.artifacts, self.output, self.root, tiers="1,2,3")
+        self.assertEqual(len(list(self.output.iterdir())), 28)
+        self.assertEqual([file.name for file in self.output.glob("*.json")], ["latest.json"])
         updater = json.loads((self.output / "latest.json").read_text())
         self.assertEqual(updater["version"], "0.1.1")
         self.assertEqual(len(updater["platforms"]), 12)
         self.assertIn("linux-aarch64-deb", updater["platforms"])
         self.assertIn("android-armv7", updater["platforms"])
-        self.assert_checksums()
+        self.assert_update_packages()
         notes = self.root / "notes.json"
         notes.write_text(json.dumps({"notes": "Release notes", "pub_date": "2026-10-30T00:00:00Z", "version": "9.0.0"}))
         release.finalize(notes, self.output)
         finalized = json.loads((self.output / "latest.json").read_text())
         self.assertEqual(finalized["notes"], "Release notes")
         self.assertEqual(finalized["version"], "0.1.1")
-        self.assert_checksums()
+        self.assert_update_packages()
 
-    def test_prerelease_metadata(self):
+    def test_prerelease_update_version(self):
         release.set_version("1.0.0-rc.1", self.root)
         self.seed_artifacts()
-        release.collect("v1.0.0-rc.1", self.commit, self.artifacts, self.output, self.root)
-        self.assertTrue(json.loads((self.output / "release-manifest.json").read_text())["prerelease"])
+        release.collect("v1.0.0-rc.1", self.artifacts, self.output, self.root)
+        self.assertEqual(release.read_json(self.output / "latest.json")["version"], "1.0.0-rc.1")
 
     def test_missing_architecture_never_creates_output(self):
         self.seed_artifacts()
         (self.artifacts / "Foliver-android-arm64/installer.apk").unlink()
         with self.assertRaisesRegex(ValueError, "android-arm64"):
-            release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root)
+            release.collect("v0.1.0", self.artifacts, self.output, self.root)
         self.assertFalse(self.output.exists())
 
     def test_missing_signature_never_creates_output(self):
         self.seed_artifacts()
         (self.artifacts / "Foliver-linux-x64/installer.deb.sig").unlink()
         with self.assertRaisesRegex(ValueError, "Missing updater signature"):
-            release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root)
+            release.collect("v0.1.0", self.artifacts, self.output, self.root)
         self.assertFalse(self.output.exists())
 
     def test_tiers_select_independent_device_groups(self):
@@ -188,17 +186,21 @@ class ReleaseTests(unittest.TestCase):
                 self.artifacts = self.root / f"artifacts-{tiers}"
                 self.output = self.root / f"output-{tiers}"
                 self.seed_artifacts(tiers)
-                release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root, tiers=tiers)
+                release.collect("v0.1.0", self.artifacts, self.output, self.root, tiers=tiers)
                 targets = release.selected_targets(tiers)
-                manifest = release.read_json(self.output / "release-manifest.json")
-                self.assertEqual(set(manifest["targets"]), {target["id"] for target in targets})
-                self.assertEqual(manifest["tiers"], [int(tier) for tier in tiers.split(",")])
-                self.assertEqual({asset["target"] for asset in manifest["assets"]}, set(manifest["targets"]))
+                expected = {"latest.json"}
+                for target in targets:
+                    for extension in target["packages"]:
+                        expected.add(f"Foliver-v0.1.0-{target['id']}{extension}")
+                    for extension in target["updates"]:
+                        name = f"Foliver-v0.1.0-{target['id']}{extension}"
+                        expected.update((name, name + ".sig"))
+                self.assertEqual({file.name for file in self.output.iterdir()}, expected)
                 updater = release.read_json(self.output / "latest.json")
                 self.assertEqual(set(updater["platforms"]), {key for target in targets for key in target["updates"].values()})
                 for package in updater["platforms"].values():
                     self.assertTrue((self.output / package["url"].rsplit("/", 1)[1]).is_file())
-                self.assert_checksums()
+                self.assert_update_packages()
 
     def test_platform_filter_and_invalid_tiers(self):
         self.assertEqual([target["id"] for target in release.selected_targets("2", "android")], ["android-armv7"])
@@ -212,7 +214,7 @@ class ReleaseTests(unittest.TestCase):
         self.seed_artifacts()
         (self.artifacts / "Foliver-windows-x64/duplicate.exe").write_bytes(b"duplicate")
         with self.assertRaisesRegex(ValueError, "windows-x64"):
-            release.collect("v0.1.0", self.commit, self.artifacts, self.output, self.root)
+            release.collect("v0.1.0", self.artifacts, self.output, self.root)
         self.assertFalse(self.output.exists())
 
 

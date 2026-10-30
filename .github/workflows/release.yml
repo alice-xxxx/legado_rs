@@ -121,14 +121,14 @@ jobs:
           pattern: Foliver-*
           path: artifacts
       - name: Validate all packages and generate update manifest
-        run: python scripts/release.py collect "$RELEASE_TAG" "$RELEASE_COMMIT" --tiers "$RELEASE_TIERS"
+        run: python scripts/release.py collect "$RELEASE_TAG" --tiers "$RELEASE_TIERS"
       - name: Create release tag and stage draft
         id: draft
         uses: actions/github-script@v8
         with:
           script: |
             await require('./.github/scripts/release.cjs').stage({ github, context, core });
-      - name: Add release notes and finalize checksums
+      - name: Add release notes to update manifest
         run: python scripts/release.py finalize "$RUNNER_TEMP/foliver-release-notes.json"
       - name: Upload release assets
         run: gh release upload "$RELEASE_TAG" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"

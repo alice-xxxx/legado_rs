@@ -122,7 +122,7 @@ Android 的 ABI 列表由 `android.abis` 配置。单独准备某个 ABI 的 AAR
 
 Release 工作流在开始时检查这些配置和 `TAURI_SIGNING_PRIVATE_KEY` 是否齐全。只有最后汇总发布的 job 获得 `contents: write`。Windows/macOS 尚未配置系统证书签名，iOS IPA 需自行签名后安装，当前不自动提交应用商店。
 
-所选任务全部成功后，CI 汇总并校验对应安装包及签名更新包，统一命名为 `Foliver-v版本-平台-架构.扩展名`，同时生成 `SHA256SUMS`、`release-manifest.json` 和 `latest.json`。manifest 包含所选级别与目标、源码提交、构建链接、预发布标记、文件大小与 SHA-256；校验文件也覆盖两个 manifest 和签名文件。缺少任意所选架构、安装包或更新签名即停止，不创建标签或 Release。
+所选任务全部成功后，CI 汇总并校验对应安装包及签名更新包，统一命名为 `Foliver-v版本-平台-架构.扩展名`，只额外生成应用自动更新所需的 `latest.json`。附件的 SHA-256 使用 GitHub 自带的 `digest`，发布前逐个与本地文件重新计算的哈希比较，不再上传独立校验文件或额外构建记录。缺少任意所选架构、安装包或更新签名即停止，不创建标签或 Release。
 
 附件完整后创建标签和暂存草稿，生成更新说明，上传并校验附件数量、状态、大小以及 GitHub 返回的 SHA-256。全部通过后才公开发布；中途失败会保留草稿，重新运行失败的 job 可继续上传，保留编辑过的说明并清理过期附件。公开版本不会被修改。
 
@@ -146,4 +146,4 @@ Release 工作流在开始时检查这些配置和 `TAURI_SIGNING_PRIVATE_KEY` �
 
 更新公钥在 `tauri.conf.json`；对应私钥保存在本地被 Git 忽略的 `.signing/updater.key`，CI 使用 Actions Secret `TAURI_SIGNING_PRIVATE_KEY`。当前密钥无密码，`TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 可为空；若以后换用带密码的密钥，设置对应 Secret。私钥必须另外备份，后续版本保持使用同一密钥，避免已安装客户端无法验证更新。
 
-更新清单只包含本次选择的目标；默认一级生成 6 个安装包、1 个 macOS 更新归档、5 个签名和 3 个清单/校验文件，共 15 个附件。选择全部三级时为 13 个安装包、2 个 macOS 更新归档、12 个签名和 3 个清单/校验文件，共 30 个附件。未包含在最新稳定版中的架构没有对应自动更新包，需要在发版时选择该级别。CI 在草稿生成后把更新说明写入 `latest.json`，再重新计算校验值；手工修改草稿说明后，可重跑 Release 汇总 job 同步更新清单。是否公开由 `draft` 参数决定。
+更新清单只包含本次选择的目标；默认一级生成 6 个安装包、1 个 macOS 更新归档、5 个签名和 1 个 `latest.json`，共 13 个附件。选择全部三级时为 13 个安装包、2 个 macOS 更新归档、12 个签名和 1 个 `latest.json`，共 28 个附件。未包含在最新稳定版中的架构没有对应自动更新包，需要在发版时选择该级别。CI 在草稿生成后把更新说明写入 `latest.json`；手工修改草稿说明后，可重跑 Release 汇总 job 同步更新清单。是否公开由 `draft` 参数决定。

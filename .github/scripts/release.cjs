@@ -1,5 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 async function tagCommit(github, repo, tag) {
   let object;
@@ -45,7 +46,7 @@ async function stage({ github, context, core }, env = process.env) {
       prerelease: env.RELEASE_PRERELEASE === 'true',
       make_latest: 'false',
       generate_release_notes: true,
-      body: '安装包按平台和架构分别提供。Android APK 已签名；Windows/macOS 安装包未配置系统证书签名，iOS IPA 需自行签名后安装。\n\n`SHA256SUMS` 提供文件校验值；`release-manifest.json` 记录源码提交与构建链接。\n\n',
+      body: '安装包按平台和架构分别提供。Android APK 已签名；Windows/macOS 安装包未配置系统证书签名，iOS IPA 需自行签名后安装。\n\n',
     }));
   }
   const names = new Set(fs.readdirSync('release-assets'));
@@ -80,16 +81,16 @@ async function publish({ github, context, core }, env = process.env) {
   const assets = await github.paginate(github.rest.repos.listReleaseAssets, { ...context.repo, release_id, per_page: 100 });
   const expected = fs.readdirSync('release-assets');
   if (assets.length !== expected.length) throw new Error('Release asset count does not match the complete package set');
-  const hashes = new Map(fs.readFileSync('release-assets/SHA256SUMS', 'utf8').trim().split('\n').map(line => {
-    const [hash, name] = line.split('  '); return [name, hash];
-  }));
   for (const name of expected) {
     const asset = assets.find(item => item.name === name);
-    if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(path.join('release-assets', name)).size) {
+    const file = path.join('release-assets', name);
+    if (!asset || asset.state !== 'uploaded' || asset.size !== fs.statSync(file).size) {
       throw new Error(`Missing or incomplete release asset: ${name}`);
     }
-    if (asset.digest && hashes.has(name) && asset.digest !== `sha256:${hashes.get(name)}`) {
-      throw new Error(`Uploaded asset checksum mismatch: ${name}`);
+    if (asset.digest) {
+      const hash = crypto.createHash('sha256');
+      for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+      if (asset.digest !== `sha256:${hash.digest('hex')}`) throw new Error(`Uploaded asset checksum mismatch: ${name}`);
     }
   }
   const draft = env.RELEASE_DRAFT === 'true';

@@ -17,13 +17,14 @@ beforeEach(() => {
   process.chdir(temporary);
   fs.mkdirSync('release-assets');
   fs.writeFileSync('release-assets/package.exe', 'installer');
-  const hash = crypto.createHash('sha256').update('installer').digest('hex');
-  fs.writeFileSync('release-assets/SHA256SUMS', `${hash}  package.exe\n`);
+  fs.writeFileSync('release-assets/latest.json', JSON.stringify({ version: '0.1.1', platforms: {} }));
   env = { RELEASE_TAG: 'v0.1.1', RELEASE_COMMIT: 'a'.repeat(40), RELEASE_PRERELEASE: 'false', RELEASE_DRAFT: 'false', RELEASE_ID: '7', RUNNER_TEMP: temporary };
-  state = { tag: null, releases: [], deleted: [], created: [], published: [], assets: [
-    { id: 1, name: 'package.exe', size: 9, state: 'uploaded', digest: `sha256:${hash}` },
-    { id: 2, name: 'SHA256SUMS', size: fs.statSync('release-assets/SHA256SUMS').size, state: 'uploaded' },
-  ] };
+  state = { tag: null, releases: [], deleted: [], created: [], published: [], assets:
+    ['package.exe', 'latest.json'].map((name, index) => ({ id: index + 1, name,
+      size: fs.statSync(path.join('release-assets', name)).size, state: 'uploaded',
+      digest: `sha256:${crypto.createHash('sha256').update(fs.readFileSync(path.join('release-assets', name))).digest('hex')}`,
+    })),
+  };
   outputs = {};
   const repos = {
     listReleases() {}, listReleaseAssets() {},
@@ -143,6 +144,13 @@ test('missing and corrupt uploaded packages never publish', async () => {
   await assert.rejects(publish(api, env), /checksum mismatch/);
   state.assets.pop();
   await assert.rejects(publish(api, env), /asset count/);
+  assert.equal(state.published.length, 0);
+});
+
+test('uploaded update manifest digest is verified without an extra checksum file', async () => {
+  await stage(api, env);
+  state.assets[1].digest = 'sha256:wrong';
+  await assert.rejects(publish(api, env), /checksum mismatch: latest.json/);
   assert.equal(state.published.length, 0);
 });
 

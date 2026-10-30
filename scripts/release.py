@@ -136,17 +136,15 @@ def artifact_files(target, directory, updater=True):
     return files
 
 
-def collect(tag, commit, source, output, root=ROOT, tiers="1"):
+def collect(tag, source, output, root=ROOT, tiers="1"):
     version = check(tag, root)
-    if not re.fullmatch(r"[0-9a-f]{40}", commit):
-        raise ValueError("Expected a full source commit SHA")
     targets = selected_targets(tiers)
     artifacts = {target["id"]: artifact_files(target, source / f"Foliver-{target['id']}") for target in targets}
     packages = {target["id"]: target["packages"] for target in targets}
     selected = []
     for target, extensions in packages.items():
         for extension in extensions:
-            selected.append((target, artifacts[target][extension], f"Foliver-{tag}-{target}{extension}"))
+            selected.append((artifacts[target][extension], f"Foliver-{tag}-{target}{extension}"))
     platforms = {}
     repository = os.environ.get("GITHUB_REPOSITORY", "alice-xxxx/legado_rs")
     server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
@@ -158,8 +156,8 @@ def collect(tag, commit, source, output, root=ROOT, tiers="1"):
             signature_file = file.with_name(file.name + ".sig")
             name = f"Foliver-{tag}-{target}{extension}"
             if extension not in packages[target]:
-                selected.append((target, file, name))
-            selected.append((target, signature_file, name + ".sig"))
+                selected.append((file, name))
+            selected.append((signature_file, name + ".sig"))
             with file.open("rb") as stream:
                 digest = hashlib.file_digest(stream, "sha256").hexdigest()
             platforms[key] = {"url": f"{base_url}/{name}", "signature": signature_file.read_text(encoding="utf-8").strip(),
@@ -167,37 +165,11 @@ def collect(tag, commit, source, output, root=ROOT, tiers="1"):
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise ValueError("Release output directory must be empty")
-    assets = []
-    for target, source_file, name in selected:
-        destination = output / name
-        shutil.copyfile(source_file, destination)
-        with destination.open("rb") as stream:
-            digest = hashlib.file_digest(stream, "sha256").hexdigest()
-        assets.append({"name": name, "target": target, "bytes": destination.stat().st_size, "sha256": digest})
-    run_id = os.environ.get("GITHUB_RUN_ID")
-    manifest = {
-        "version": version,
-        "tag": tag,
-        "commit": commit,
-        "tiers": sorted({target["tier"] for target in targets}),
-        "targets": [target["id"] for target in targets],
-        "prerelease": bool(VERSION.fullmatch(version)[4]),
-        "build": f"{server}/{repository}/actions/runs/{run_id}" if run_id else None,
-        "assets": assets,
-    }
-    (output / "release-manifest.json").write_text(json_text(manifest), encoding="utf-8")
+    for source_file, name in selected:
+        shutil.copyfile(source_file, output / name)
     updater = {"version": version, "notes": "", "pub_date": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"), "platforms": platforms}
     (output / "latest.json").write_text(json_text(updater), encoding="utf-8")
-    checksums(output)
     print(f"Collected {sum(map(len, packages.values()))} installers and {len(platforms)} updater entries for {tag}")
-
-
-def checksums(output):
-    sums = []
-    for file in sorted(file for file in output.iterdir() if file.name != "SHA256SUMS"):
-        with file.open("rb") as stream:
-            sums.append(f"{hashlib.file_digest(stream, 'sha256').hexdigest()}  {file.name}\n")
-    (output / "SHA256SUMS").write_text("".join(sums), encoding="utf-8")
 
 
 def finalize(notes, output):
@@ -206,7 +178,6 @@ def finalize(notes, output):
     updater["notes"] = release["notes"]
     updater["pub_date"] = release["pub_date"]
     (output / "latest.json").write_text(json_text(updater), encoding="utf-8")
-    checksums(output)
 
 
 def main():
@@ -224,7 +195,6 @@ def main():
     verify.add_argument("--updater", action="store_true")
     assets = commands.add_parser("collect")
     assets.add_argument("tag")
-    assets.add_argument("commit")
     assets.add_argument("--input", type=Path, default=Path("artifacts"))
     assets.add_argument("--output", type=Path, default=Path("release-assets"))
     assets.add_argument("--tiers", default="1")
@@ -250,7 +220,7 @@ def main():
         files = artifact_files(target, args.directory, args.updater)
         print(f"Verified {args.target}: " + ", ".join(file.name for file in files.values()))
     elif args.command == "collect":
-        collect(args.tag, args.commit, args.input, args.output, tiers=args.tiers)
+        collect(args.tag, args.input, args.output, tiers=args.tiers)
     else:
         finalize(args.notes, args.output)
 
