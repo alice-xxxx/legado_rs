@@ -761,14 +761,7 @@ int JavaObjectClass::hasProperty(JSContext *ctx, JSValueConst obj, JSAtom prop) 
         return -1;
     }
 
-    const char *name = atomToCString(ctx, prop);
-    if (!name) {
-        JS_ThrowInternalError(ctx, "atom to string failed in hasProperty");
-        return -1;
-    }
-
-    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
-    JS_FreeCString(ctx, name);
+    jstring jname = JniValueConvert::atomToJavaString(ctx, env, prop);
     if (!jname) {
         env->ExceptionClear();
         JS_ThrowOutOfMemory(ctx);
@@ -869,17 +862,7 @@ JSValue JavaObjectClass::getProperty(JSContext *ctx, JSValueConst obj, JSAtom at
         // 非 List/Array 的整数索引 (罕见): 落慢路径, 让 Kotlin 侧决定 (通常返回 null)
     }
 
-    const char *name = atomToCString(ctx, atom);
-    if (!name) {
-        // JS_AtomToCString 失败 (通常 OOM) 时 quickjs 已设过 ctx 异常,
-        // 这里若返回 JS_UNDEFINED, 调用方拿到"undefined + ctx 有异常"的
-        // 矛盾状态, 后续 JS_GetException 拿到的就是这条 stale 异常,
-        // 触发 ref_count 错乱。propagate 异常更安全。
-        return JS_EXCEPTION;
-    }
-
-    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
-    JS_FreeCString(ctx, name);
+    jstring jname = JniValueConvert::atomToJavaString(ctx, env, atom);
     if (!jname) {
         env->ExceptionClear();
         return JS_ThrowOutOfMemory(ctx);
@@ -973,14 +956,7 @@ int JavaObjectClass::setProperty(JSContext *ctx, JSValueConst obj, JSAtom atom,
         return -1;
     }
 
-    const char *name = atomToCString(ctx, atom);
-    if (!name) {
-        JS_ThrowInternalError(ctx, "atom to string failed in setProperty");
-        return -1;
-    }
-
-    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
-    JS_FreeCString(ctx, name);
+    jstring jname = JniValueConvert::atomToJavaString(ctx, env, atom);
     if (!jname) {
         env->ExceptionClear();
         JS_ThrowOutOfMemory(ctx);
@@ -1051,13 +1027,7 @@ int JavaObjectClass::getOwnProperty(JSContext *ctx, JSPropertyDescriptor *desc,
     jobject javaObj = getJavaObject(ctx, obj);
     if (!javaObj) return 0;
 
-    const char *name = atomToCString(ctx, prop);
-    if (!name) {
-        // JS_AtomToCString 失败 (通常 OOM) 时 ctx 异常已设
-        return -1;
-    }
-    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
-    JS_FreeCString(ctx, name);
+    jstring jname = JniValueConvert::atomToJavaString(ctx, env, prop);
     if (!jname) {
         env->ExceptionClear();
         JS_ThrowOutOfMemory(ctx);

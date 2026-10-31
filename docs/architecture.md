@@ -29,6 +29,14 @@
 
 App 通过插件的 `search`、`detail`、`chapters`、`content` 等具名 API 传递请求和结果类型。执行上下文提供数据目录、取消信号和类型化存储接口；插件不引用 App 模块。App 的 `database/source_state.rs` 实现持久化，原生请求格式只在插件内部解码。源规则和脚本仍兼容原协议，序列化仅用于跨语言边界和源协议数据。KMP 不依赖应用数据库、配置、路由和弹窗；目录和正文解析不保存章节或修改阅读进度。公共宿主服务仅有一份，JVM 与 Android 复用 `jvmAndAndroidMain`，平台源集保留各自的系统实现。
 
+三端共享规则主体和 QuickJS 内核；字符串与属性名按 UTF-16 单元传输，保留嵌入 NUL 和代理项。正则的替换串展开、JS 动态替换及同步超时检查由 `DeadlineRegexReplacer` 统一实现，匹配仍使用各平台的 Kotlin `Regex`。JVM/Android 通过反射提供 Java API；iOS 使用 `JavaClassCompat` 映射 DOM、集合和加密类，并支持 Comparator、Runnable、Callable 及常用函数式接口的同步 JavaAdapter 回调，支持范围以映射表为准。回调只允许在所属上下文的执行线程内调用，关闭上下文后失效。
+
+脚本库下载、编译缓存、按源隔离、版本失效和 LRU 淘汰由 `SharedLibraryScopes` 共用，平台仅提供线程缓存存储。执行上下文归所属线程独占，淘汰项在脚本执行栈退出后回收。字符集探测共用 ICU 频率表；MD5、SHA-256、gzip 使用 Okio，UUID 使用 Kotlin 标准库。Android 与桌面共用同一份 JNI 入口。
+
+字符集编解码使用 Fleeksoft Charset 扩展库，输入流与关闭接口使用 Fleeksoft IO；库未提供的 Native GB18030 保留系统适配。Base64 使用 Okio，公共兼容层保留混合字母表、忽略杂字符和宽松 padding 的既有行为。HTTP 文本解码共用显式字符集、响应头、内容探测的优先级；无效显式字符集报错，无效探测结果回退 UTF-8。
+
+时间计算使用 Kotlin 标准时钟和 kotlinx-datetime，共用本地日期、前一天及日初换算；AppConst 的数字日期格式也共用库实现，保留固定两位年份前缀。历史日期按目标时刻的时区规则计算，跨平台统一到 ISO 公历。网络的百分号编码检查和 IP 校验共用一份兼容规则，URL 解析及公共后缀查询仍保留各平台适配。
+
 `src-tauri/src/sources` 按职责提供源定义导入、目录快照与失效、登录会话及展示数据。配置入口只分派导入类型，源协议的解析和兼容转换归源模块；搜索、正文、发现和 RSS 直接调用插件的类型化引擎 API。
 
 源模块只能调用数据库公开的类型化接口。SQL、表结构、连接、事务及引擎键值存储归 `database`；`fe_db` 继续承接前端写入，持久化成功后通知源目录失效，失败时不更新快照。源模块不创建数据库连接，也不直接读写数据库文件。

@@ -6,7 +6,7 @@ import com.fleeksoft.ksoup.Ksoup
  * 自动获取文件/字节的编码。
  *
  * 主体下沉 commonMain: [getHtmlEncode]/[getEncode](ByteArray) 均为纯 Kotlin + Ksoup
- * (KMP 库, commonMain 可见) + [detectCharsetName] expect/actual (底层 icu4j CharsetDetector 留 JVM)。
+ * (KMP 库, commonMain 可见) + 公共 ICU 字符集识别算法。
  *
  * File 重载 (依赖 java.io.File) 仍在 jvmAndAndroidMain 端以扩展函数形式提供
  * (见 EncodingDetectFileExt.kt), 跨模块同包名同签名扩展自动合并, 消费方 import 零改动。

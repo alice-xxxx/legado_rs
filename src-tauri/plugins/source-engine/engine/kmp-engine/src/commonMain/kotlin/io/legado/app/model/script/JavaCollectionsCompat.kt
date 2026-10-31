@@ -2,7 +2,7 @@ package io.legado.app.model.script
 
 /** Java 集合接口复用 Kotlin 集合；Map 的 keys/values 保持为原集合的视图。 */
 internal object JavaCollectionsCompat {
-    val classes = listOf("java.util.ArrayList", "java.util.HashMap", "java.util.LinkedHashMap")
+    val classes = listOf("java.util.ArrayList", "java.util.HashMap", "java.util.LinkedHashMap", "java.util.Collections")
     sealed interface Value
     class Items(val values: MutableCollection<Any?>) : Value
     private class Entries(val values: MutableMap<Any?, Any?>) : Value
@@ -35,6 +35,15 @@ internal object JavaCollectionsCompat {
         return map.entries.associate { (key, item) -> (key as String) to (item as String) }
     }
 
+    fun callStatic(method: String, args: List<Any?>): Any? = when (method) {
+        "sort" -> call(args[0] as Items, "sort", listOf(args.getOrNull(1)))
+        "reverse" -> { ((args[0] as Items).values as MutableList<Any?>).reverse(); null }
+        else -> error("Unsupported Collections method: $method")
+    }
+
+    private fun callback(value: Any?, method: String, vararg args: Any?): Any? =
+        (value as JavaClassCompat.Callback).call(method, args.toList())
+
     fun call(value: Any, method: String, args: List<Any?>): Any? = when (value) {
         is Items -> with(value.values) {
             when (method) {
@@ -48,6 +57,20 @@ internal object JavaCollectionsCompat {
                 "remove" -> if (this is MutableList<*> && args[0] is Number) removeAt(args.int(0)) else remove(args[0])
                 "clear" -> { clear(); null }
                 "iterator" -> Cursor(iterator())
+                "forEach" -> { forEach { callback(args[0], "accept", it) }; null }
+                "removeIf" -> removeAll { callback(args[0], "test", it) == true }
+                "replaceAll" -> {
+                    val list = this as MutableList<Any?>
+                    list.indices.forEach { list[it] = callback(args[0], "apply", list[it]) }
+                    null
+                }
+                "sort" -> {
+                    (this as MutableList<Any?>).sortWith(Comparator { left, right ->
+                        if (args.firstOrNull() == null) (left as Comparable<Any?>).compareTo(right)
+                        else (callback(args[0], "compare", left, right) as Number).toInt()
+                    })
+                    null
+                }
                 "toArray", "toJSON" -> toList()
                 "toString" -> toString()
                 else -> error("Unsupported collection method: $method")
@@ -66,6 +89,8 @@ internal object JavaCollectionsCompat {
                 "keySet" -> Items(keys)
                 "values" -> Items(values)
                 "entrySet" -> Items(entries as MutableCollection<Any?>)
+                "forEach" -> { forEach { (key, item) -> callback(args[0], "accept", key, item) }; null }
+                "replaceAll" -> { entries.forEach { it.setValue(callback(args[0], "apply", it.key, it.value)) }; null }
                 "toJSON" -> entries.associate { it.key.toString() to it.value }
                 "toString" -> toString()
                 else -> error("Unsupported map method: $method")

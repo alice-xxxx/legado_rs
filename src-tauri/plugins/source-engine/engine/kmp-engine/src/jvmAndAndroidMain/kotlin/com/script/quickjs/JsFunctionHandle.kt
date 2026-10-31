@@ -47,7 +47,7 @@ class JsFunctionHandle private constructor(
         }
         val jsArgs = args.joinToString(",") { javaArgToJsExpr(it) }
         QuickJsNative.nativeEval(ctxPtr,
-            "(function(){return ($jsObjectExpr && $jsObjectExpr.$methodName && $jsObjectExpr.$methodName($jsArgs));})();")
+            "(function(){var impl=$jsObjectExpr;return typeof impl==='function'?impl($jsArgs):(impl && impl.$methodName && impl.$methodName($jsArgs));})();")
     } catch (error: Throwable) {
         logQuickJsWarn(TAG, "invokeJsMethod failed: $jsObjectExpr.$methodName", error)
         null

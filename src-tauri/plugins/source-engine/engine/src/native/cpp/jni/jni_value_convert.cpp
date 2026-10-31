@@ -153,6 +153,13 @@ jstring JniValueConvert::utf8ToJavaString(JSContext *ctx, JNIEnv *env, const cha
     return result;
 }
 
+jstring JniValueConvert::atomToJavaString(JSContext *ctx, JNIEnv *env, JSAtom atom) {
+    JSValue key = JS_AtomToString(ctx, atom);
+    auto result = static_cast<jstring>(toJavaObject(ctx, env, key));
+    JS_FreeValue(ctx, key);
+    return result;
+}
+
 jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value) {
     if (env->ExceptionCheck()) return nullptr;
     ensureClassCache(env);
@@ -349,7 +356,6 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
                 return nullptr;
             }
             for (uint32_t i = 0; i < plen; i++) {
-                const char *key = JS_AtomToCString(ctx, ptab[i].atom);
                 JSValue val = JS_GetProperty(ctx, value, ptab[i].atom);
                 jobject valObj = toJavaObject(ctx, env, val);
                 JS_FreeValue(ctx, val);
@@ -358,7 +364,6 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
                 // 继续 NewStringUTF / CallObjectMethod / DeleteLocalRef 会污染 JNI 状态,
                 // 最终堆上其它 JSString header 被随机改写 -> 远处 JS_ToCString -> strv abort。
                 if (env->ExceptionCheck()) {
-                    JS_FreeCString(ctx, key);
                     JS_FreeAtom(ctx, ptab[i].atom);
                     if (valObj) env->DeleteLocalRef(valObj);
                     // 后续 atom 也要释放, 否则 ctx 持续泄漏 atom
@@ -367,8 +372,7 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
                     env->DeleteLocalRef(map);
                     return nullptr;
                 }
-                jstring keyStr = utf8ToJavaString(ctx, env, key ? key : "");
-                JS_FreeCString(ctx, key);
+                jstring keyStr = atomToJavaString(ctx, env, ptab[i].atom);
                 jobject previous = keyStr ? env->CallObjectMethod(map, g_NativeObjectPut, keyStr, valObj) : nullptr;
                 if (previous) env->DeleteLocalRef(previous);
                 env->DeleteLocalRef(keyStr);

@@ -9,7 +9,7 @@ internal object HostRuntime{
     @Volatile private var installed=false
     fun install(){
         if(installed)return
-        installFiles();installStores();registerNativeJsEngines(NativeImages(::image));RegexReplacers.register(NativeRegexReplacer)
+        installFiles();installStores();registerNativeJsEngines(NativeImages(::image));RegexReplacers.register(DeadlineRegexReplacer)
         HostHttpClient.install()
         installed=true
     }

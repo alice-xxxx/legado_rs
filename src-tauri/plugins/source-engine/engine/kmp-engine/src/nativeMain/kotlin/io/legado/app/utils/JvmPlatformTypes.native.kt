@@ -5,18 +5,6 @@ import okio.FileSystem
 import okio.Path
 import okio.Path.Companion.toPath
 
-/**
- * JVM 专属类型的 iOS/鸿蒙 actual 实现。
- *
- * 详见 commonMain/utils/JvmPlatformTypes.kt expect 注释。
- * 纯 Kotlin 包装: 不依赖 platform.* 框架, iOS/鸿蒙代码完全一致。
- *
- * - [URL] 内部用 String 字段保存 URL 文本
- * - [InputStream] 纯 Kotlin ByteArrayInputStream 风格 (内存数据源)
- * - [Closeable] 纯 Kotlin 接口, close() 默认空实现
- *
- * [toInputStream]: ByteArray 内存 ByteArrayInputStream 风格 (与 JVM ByteArrayInputStream 行为对齐)。
- */
 actual class URL actual constructor(val url: String) {
     actual override fun toString(): String = url
 
@@ -26,41 +14,6 @@ actual class URL actual constructor(val url: String) {
 
 actual fun URL.urlQuery(): String? =
     url.substringAfter('?', "").substringBefore('#').takeIf { it.isNotEmpty() }
-
-actual abstract class InputStream actual constructor() {
-    actual abstract fun read(): Int
-
-    actual open fun read(b: ByteArray): Int = read(b, 0, b.size)
-
-    actual open fun read(b: ByteArray, off: Int, len: Int): Int {
-        var i = 0
-        while (i < len) {
-            val v = read()
-            if (v == -1) break
-            b[off + i] = v.toByte()
-            i++
-        }
-        return if (i == 0) -1 else i
-    }
-
-    // java.io.InputStream.skip 语义: 读取丢弃, 返回实际跳过字节数
-    actual open fun skip(n: Long): Long {
-        if (n <= 0) return 0
-        var remaining = n
-        val buf = ByteArray(minOf(remaining, 8192L).toInt())
-        while (remaining > 0) {
-            val r = read(buf, 0, minOf(remaining, buf.size.toLong()).toInt())
-            if (r < 0) break
-            remaining -= r
-        }
-        return n - remaining
-    }
-
-    // java.io.InputStream.available 基类默认 0, 子类按剩余量 override
-    actual open fun available(): Int = 0
-
-    actual open fun close() {}
-}
 
 /**
  * java.io.File 的 native actual: 用 okio [FileSystem.SYSTEM] 实现真实文件操作。
@@ -222,44 +175,6 @@ actual class File actual constructor(val path: String) {
     override fun equals(other: Any?): Boolean = other is File && other.path == path
 
     override fun hashCode(): Int = path.hashCode()
-}
-
-actual interface Closeable {
-    actual fun close()
-}
-
-/**
- * ByteArray → InputStream 转换: 内存 ByteArrayInputStream 风格。
- * actual: 纯 Kotlin 包装, 内部 pos 计数, 与 JVM ByteArrayInputStream 行为对齐。
- */
-actual fun ByteArray.toInputStream(): InputStream = ByteArrayInputStream(this)
-
-/** 纯 Kotlin ByteArrayInputStream 风格, 用于 toInputStream。 */
-private class ByteArrayInputStream(
-    private val buffer: ByteArray,
-    private var pos: Int = 0,
-    private val count: Int = buffer.size,
-) : InputStream() {
-    override fun read(): Int {
-        return if (pos >= count) -1 else (buffer[pos++].toInt() and 0xFF)
-    }
-
-    override fun read(b: ByteArray, off: Int, len: Int): Int {
-        if (pos >= count) return -1
-        val n = minOf(len, count - pos)
-        buffer.copyInto(b, off, pos, pos + n)
-        pos += n
-        return n
-    }
-
-    // 与 JVM ByteArrayInputStream.skip/available 语义一致
-    override fun skip(n: Long): Long {
-        val k = minOf(n.coerceAtLeast(0), (count - pos).toLong())
-        pos += k.toInt()
-        return k
-    }
-
-    override fun available(): Int = count - pos
 }
 
 actual fun Throwable.isSecurityException(): Boolean =

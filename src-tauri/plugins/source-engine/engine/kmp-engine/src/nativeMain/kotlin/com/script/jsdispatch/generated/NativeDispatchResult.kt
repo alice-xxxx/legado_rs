@@ -6,7 +6,7 @@ package com.script.jsdispatch.generated
  *
  * 生成物为纯 Kotlin (无 cinterop 依赖), 不能在 nativeMain 引用 JSValue;
  * 返回值统一包装为本密封类, 由 NativeJsExtensionsBridge.nativeResultToJs 转 JSValue
- * (与手写分支同层转换语义: Str→qjs_NewString, Int→qjs_NewInt32, Bytes→JS Array 等)。
+ * (与手写分支同层转换语义: Str→UTF-16 字符串, Int→qjs_NewInt32, Bytes→JS Array 等)。
  *
  * [NONE] 表示"本表未处理" (methodId 不在生成表), 桥落手写分支。
  * [UNIT] 表示方法已调用且无返回值 (对应 Kotlin Unit 返回)。

@@ -24,7 +24,6 @@ import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
 import io.legado.app.napi.quickjs.qjs_NewBool
 import io.legado.app.napi.quickjs.qjs_NewFloat64
 import io.legado.app.napi.quickjs.qjs_NewInt32
-import io.legado.app.napi.quickjs.qjs_NewString
 import io.legado.app.utils.GSON
 import io.legado.app.utils.toJson
 import kotlinx.cinterop.CPointer
@@ -793,7 +792,7 @@ function __createElementObj(handle) { return __createJavaCompatObj(handle, false
     // ============ 工具方法: JSValue 构造 ============
 
     private fun stringToJsValue(ctx: CPointer<JSContext>, s: String?): CValue<JSValue> =
-        if (s == null) jsNull() else qjs_NewString(ctx, s)
+        if (s == null) jsNull() else nativeJsString(ctx, s)
 
     private fun boolOrNullToJsValue(ctx: CPointer<JSContext>, b: Boolean?): CValue<JSValue> =
         b?.let { qjs_NewBool(ctx, if (it) 1 else 0) } ?: jsNull()
@@ -841,7 +840,7 @@ function __createElementObj(handle) { return __createJavaCompatObj(handle, false
     private fun stringListToJsArray(ctx: CPointer<JSContext>, list: List<String>): CValue<JSValue> {
         val arr = JS_NewArray(ctx)
         list.forEachIndexed { i, s ->
-            JS_SetPropertyUint32(ctx, arr, i.toUInt(), qjs_NewString(ctx, s))
+            JS_SetPropertyUint32(ctx, arr, i.toUInt(), nativeJsString(ctx, s))
         }
         return arr
     }

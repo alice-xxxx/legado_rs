@@ -1,71 +1,8 @@
 ﻿// 源平台来源：data/src/nativeMain/kotlin/io/legado/app/help/http/OkHttpUtilsExt.native.kt。此 actual 已复制进提取模块，构建不读取源平台目录。
 package io.legado.app.help.http
 
-import io.legado.app.utils.EncodingDetect
-import io.legado.app.utils.Utf8BomUtils
-import io.legado.app.utils.textCharsetCodec
 import io.legado.app.utils.systemCurrentTimeMillis
 
-/**
- * OkHttp 工具扩展 nativeMain Actual 实现 (基于 KmpHttpTypes.native.kt 真实 HTTP 层)。
- *
- * 由 iosMain / ohosMain 共用 (nativeMain 中间源集下沉, 原 iosMain/ohosMain actual 完全一致,
- * 仅 Ios/Ohos 类前缀与 boundary 字符串差异, 统一改为 Native 前缀 + legado-native-boundary-)。
- *
- * 详见 commonMain/kotlin/io/legado/app/help/http/OkHttpUtilsExt.kt expect 注释。
- *
- * ## 实现方式
- * - [newCallStrResponse]: 委托 commonMain 的 [newCallResponse] (suspend) + [text] (charset 检测)
- *   与 jvmAndAndroidMain 行为一致, 仅多一层 Ktor 替代 OkHttp 的间接;
- * - [text]: UTF-8 BOM 移除 + contentType charset + EncodingDetect 三级回退, 与 jvm 行为对齐;
- * - [decompressed]: nativeMain 端无 java.util.zip, 不支持 application/zip 解压, **返回原 body 不解压**
- *   (与 jvmAndAndroidMain 行为不同; 调用方在 iOS/鸿蒙端不依赖此功能, AnalyzeUrlCore 解压链走 stub)
- * - [postMultipart]: 手动构造 multipart/form-data body (boundary + 字段分隔符), 与 OkHttp MultipartBody 字节级对齐
- *
- * ## 与 jvmAndAndroidMain 行为差异
- * - decompressed: jvm 端用 ZipInputStream 解 application/zip 响应, nativeMain 端无 zip 库, 直接返回原 body;
- *   调用方在 iOS/鸿蒙端不依赖此功能 (DecompressPlatform.native.kt 是 stub, decompressBody 返回 null)
- * - postMultipart: jvm 端用 okhttp3.MultipartBody.Builder, nativeMain 端手动拼字节 (功能等价)
- * - charset 解析: jvm 端用 `Charset.forName(name)` 支持任意 JVM charset, nativeMain 端走
- *   commonMain [textCharsetCodec] 门面 (UTF-8/UTF-16 系/UTF-32 系/ISO-8859-1/US-ASCII + GBK/Big5 分端下沉),
- *   其余 charset 降级为 UTF-8
- */
-actual suspend fun KmpHttpClient.newCallStrResponse(
-    retry: Int,
-    builder: KmpRequestBuilder.() -> Unit
-): StrResponse {
-    return newCallResponse(retry, builder).let {
-        StrResponse(it, it.body.text())
-    }
-}
-
-actual fun KmpResponseBody.text(encode: String?): String {
-    val responseBytes = Utf8BomUtils.removeUTF8BOM(this.bytes())
-
-    // 1. 显式指定的 encode 优先 (调用方传入); 不支持的字符集降级 UTF-8
-    encode?.let {
-        return decodeOrNull(responseBytes, it) ?: responseBytes.decodeToString()
-    }
-
-    // 2. 根据 HTTP 头 contentType 中的 charset 判断; 不支持时继续按内容判断
-    this.contentType()?.charsetName()?.let { name ->
-        decodeOrNull(responseBytes, name)?.let { return it }
-    }
-
-    // 3. 根据内容判断 (EncodingDetect 已下沉 commonMain, 用 Ksoup 解析 meta charset)
-    val detected = EncodingDetect.getHtmlEncode(responseBytes)
-    return decodeOrNull(responseBytes, detected) ?: responseBytes.decodeToString()
-}
-
-/**
- * nativeMain 端 [decompressed] 实现: 不支持 application/zip 解压 (无 java.util.zip)。
- *
- * 与 jvmAndAndroidMain 行为不同 (jvm 端用 ZipInputStream 解压),
- * nativeMain 端 DecompressPlatform.native.kt 是 stub (decompressBody 返回 null),
- * AnalyzeUrlCore 解压链不会调用此函数, 这里返回原 body 兜底。
- *
- * 返回 this (不解压) 而非抛异常, 避免 commonMain 调用链在 iOS/鸿蒙端意外崩溃。
- */
 actual fun KmpResponseBody.decompressed(): KmpResponseBody {
     // 检查 contentType 是否是 application/zip (与 jvmAndAndroidMain 判断一致)
     val contentType = this.contentType()?.toString()
@@ -176,15 +113,3 @@ actual fun KmpMediaType.charsetName(): String? {
     }
     return charsetStr.takeIf { it.isNotEmpty() }
 }
-
-/**
- * 按 charset 名解码字节 (委托 commonMain [textCharsetCodec] 门面)。
- *
- * Kotlin/Native 无 `Charset.forName(name)` (JVM-only); textCharsetCodec 覆盖
- * UTF-8/UTF-16 系/UTF-32 系/ISO-8859-1/US-ASCII, GBK/Big5 走分端平台实现。
- * 不支持的 charset 返回 null (调用方降级 UTF-8)。
- */
-private fun decodeOrNull(bytes: ByteArray, charsetName: String): String? =
-    runCatching { textCharsetCodec(charsetName).decode(bytes) }.getOrNull()
-
-// endregion

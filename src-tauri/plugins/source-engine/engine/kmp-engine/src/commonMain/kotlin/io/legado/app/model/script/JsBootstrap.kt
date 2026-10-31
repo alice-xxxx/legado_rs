@@ -131,7 +131,7 @@ function __wrapClass(classHandle, path) {
         },
         construct: function(target, args) {
             if (args.length === 1
-                && typeof args[0] === 'object' && args[0] !== null
+                && (typeof args[0] === 'function' || (typeof args[0] === 'object' && args[0] !== null))
                 && args[0].__classHandle__ === undefined
                 && __isInterface(classHandle, dangerousApi)) {
                 return JavaAdapter(proxy, args[0]);

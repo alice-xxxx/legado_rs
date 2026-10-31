@@ -36,7 +36,6 @@ import io.legado.app.napi.quickjs.JSValue
 import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
 import io.legado.app.napi.quickjs.JS_TAG_NULL
 import io.legado.app.napi.quickjs.JS_TAG_UNDEFINED
-import io.legado.app.napi.quickjs.qjs_FreeCString
 import io.legado.app.napi.quickjs.JS_FreeValue
 import io.legado.app.napi.quickjs.JS_GetLength
 import io.legado.app.napi.quickjs.JS_GetPropertyUint32
@@ -54,9 +53,7 @@ import io.legado.app.napi.quickjs.qjs_IsUndefined
 import io.legado.app.napi.quickjs.qjs_NewBool
 import io.legado.app.napi.quickjs.qjs_NewFloat64
 import io.legado.app.napi.quickjs.qjs_NewInt32
-import io.legado.app.napi.quickjs.qjs_NewString
 import io.legado.app.napi.quickjs.qjs_ValueGetBool
-import io.legado.app.napi.quickjs.qjs_ToCString
 import io.legado.app.napi.quickjs.qjs_ValueGetFloat64
 import io.legado.app.napi.quickjs.qjs_ValueGetInt
 import kotlinx.cinterop.CPointer
@@ -70,7 +67,6 @@ import kotlinx.cinterop.memScoped
 import kotlinx.cinterop.ptr
 import kotlinx.cinterop.readValue
 import kotlinx.cinterop.staticCFunction
-import kotlinx.cinterop.toKString
 import kotlinx.cinterop.value
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
@@ -131,7 +127,7 @@ import kotlinx.atomicfu.locks.synchronized
  * - 2200+: 带参分派 (NativeJsPropertyBridge.dispatchWithArgs): 2300-2399 book 变量/方法面 |
  *   2400-2499 chapter 变量/方法面 | 2500-2599 cookie (SourceNetworkProvider) |
  *   2600-2699 cache (SourceCacheProvider) | 2700-3199 属性写 (setterId = getterId + 1000) |
- *   3400-3404 JavaClassCompat (类加载、构造、静态成员、对象方法) |
+ *   3400-3406 JavaClassCompat (类加载、构造、静态成员、对象方法、接口回调) |
  *   3301-3308 ImageOps stateless PNG byte-array bridge (decode/encode/split/stitch/crop/rotate/flip/size)
  * - 5000+: KSP 生成表 (NativeGeneratedDispatch, JsApiProcessor 按 jsapi.nativeTargets 目标类生成;
  *   dispatch 顶部查表优先, JS 闭包按工厂分区注入 `// @@methods:<factory>@@` 标记处)
@@ -282,7 +278,7 @@ object NativeJsExtensionsBridge {
             val handle = qjs_ValueGetFloat64(argv[0L].readValue()).toLong()
             val methodId = qjs_ValueGetInt(argv[1L].readValue())
             val argsArray = argv[2L].readValue()
-            javaCompatDispatch = methodId in 3400..3404
+            javaCompatDispatch = methodId in 3400..3406
             if (javaCompatDispatch) {
                 val args = jsArrayToList(ctxNotNull, argsArray)
                 val result = when (methodId) {
@@ -290,6 +286,8 @@ object NativeJsExtensionsBridge {
                     3401 -> JavaClassCompat.construct((args[0] as Number).toInt(), args[1] as List<Any?>)
                     3402 -> JavaClassCompat.callStatic((args[0] as Number).toInt(), args.getString(1), args[2] as List<Any?>)
                     3404 -> JavaClassCompat.field((args[0] as Number).toInt(), args.getString(1))
+                    3405 -> JavaClassCompat.newAdapter((args[0] as Number).toInt(), args[1] as JavaClassCompat.Callback)
+                    3406 -> JavaClassCompat.isInterface((args[0] as Number).toInt())
                     else -> {
                         JavaClassCompat.call(getObject(handle) ?: error("Java object was released"), args.getString(0), args[1] as List<Any?>)
                     }
@@ -313,7 +311,7 @@ object NativeJsExtensionsBridge {
                 // Image decode/transform failures must reach the rule's try/catch instead of
                 // becoming `undefined` and failing later at an unrelated operation.
                 val message = t.message?.take(512) ?: "Image operation failed"
-                return JS_Throw(ctxNotNull, qjs_NewString(ctxNotNull, message))
+                return JS_Throw(ctxNotNull, nativeJsString(ctxNotNull, message))
             }
             // 桥接异常返回 undefined, 避免 JS 引擎崩溃 (与 Android 端 exotic trap 行为一致)
             return jsUndefined()
@@ -1429,20 +1427,15 @@ function __createJsUrlObj(handle) {
         return arr
     }
 
-    /** String → JSValue (qjs_NewString, 直接传 Kotlin String, cinterop 内部转 C 字符串) */
+    /** String → JSValue，按 UTF-16 单元传输。 */
     private fun stringToJsValue(ctx: CPointer<JSContext>, s: String?): CValue<JSValue> {
         if (s == null) return jsNull()
-        return qjs_NewString(ctx, s)
+        return nativeJsString(ctx, s)
     }
 
-    /** JSValue → String (qjs_ToCString + qjs_FreeCString) */
+    /** JSValue → String，按 UTF-16 单元传输。 */
     private fun jsValueToString(ctx: CPointer<JSContext>, v: CValue<JSValue>): String {
-        val cstr = qjs_ToCString(ctx, v) ?: return ""
-        return try {
-            cstr.toKString()
-        } finally {
-            qjs_FreeCString(ctx, cstr)
-        }
+        return nativeStringOrNull(ctx, v).orEmpty()
     }
 
     /** JSValue → Kotlin 值 (基本类型 + Array + String; null/undefined → null, boolean → Boolean) */

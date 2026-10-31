@@ -10,11 +10,21 @@ import kotlin.test.*
 class NativeJavaCompatibilityTest {
     class Bridge {
         private val objects = mutableMapOf<Int, Any>()
+        private val callbacks = mutableMapOf<Int, JavaClassCompat.Callback>()
+        fun registerCallback(function: Long): Int {
+            val handle = callbacks.size + 1
+            callbacks[handle] = JavaClassCompat.Callback { _, args -> com.script.quickjs.QuickJsNative.nativeCallJsHandle(function, args.toTypedArray()) }
+            return handle
+        }
         fun dispatch(handle: Int, method: Int, json: String): String {
             fun decode(value: JsonElement): Any? = when (value) {
                 JsonNull -> null
                 is JsonArray -> value.map { decode(it) }
-                is JsonObject -> if ("ref" in value) objects.getValue(value.getValue("ref").jsonPrimitive.int) else value.mapValues { decode(it.value) }
+                is JsonObject -> when {
+                    "ref" in value -> objects.getValue(value.getValue("ref").jsonPrimitive.int)
+                    "callback" in value -> callbacks.getValue(value.getValue("callback").jsonPrimitive.int)
+                    else -> value.mapValues { decode(it.value) }
+                }
                 is JsonPrimitive -> if (value.isString) value.content else value.booleanOrNull ?: value.double
             }
             fun encode(value: Any?): JsonElement = when {
@@ -38,6 +48,8 @@ class NativeJavaCompatibilityTest {
                 3401 -> JavaClassCompat.construct((args[0] as Number).toInt(), args[1] as List<Any?>)
                 3402 -> JavaClassCompat.callStatic((args[0] as Number).toInt(), args[1] as String, args[2] as List<Any?>)
                 3404 -> JavaClassCompat.field((args[0] as Number).toInt(), args[1] as String)
+                3405 -> JavaClassCompat.newAdapter((args[0] as Number).toInt(), args[1] as JavaClassCompat.Callback)
+                3406 -> JavaClassCompat.isInterface((args[0] as Number).toInt())
                 else -> JavaClassCompat.call(objects.getValue(handle), args[0] as String, args[1] as List<Any?>)
             }
             return encode(value).toString()
@@ -52,6 +64,7 @@ class NativeJavaCompatibilityTest {
         val transport = """
             function __nativeDispatch(handle, method, args) {
                 function pack(v) {
+                    if (typeof v === 'function') return {callback:bridge.registerCallback(v)};
                     if (v && typeof v.__javaCompatHandle__ === 'number') return {ref:v.__javaCompatHandle__};
                     return Array.isArray(v) ? v.map(pack) : v;
                 }
@@ -143,5 +156,32 @@ class NativeJavaCompatibilityTest {
         assertEquals("{\"X-Test\":\"verified\"}",eval("var m=new java.util.HashMap();m.put('X-Test','verified');JSON.stringify(m);"))
         assertEquals("b:1",eval("var a=new java.util.ArrayList(['a','b']);var i=a.iterator();i.next();i.remove();i.next()+':'+a.size();"))
         assertEquals("New:0",eval("var m=new java.util.HashMap();m.put('a','Old');var es=m.entrySet();es.iterator().next().setValue('New');var text=m.get('a');es.clear();text+':'+m.size();"))
+    }
+
+    @Test fun interfaceAdaptersAndFunctionalCollectionsMatchJvm() {
+        assertEquals("1,2,3:called", eval("""
+            var values = new java.util.ArrayList([3,1,2]);
+            java.util.Collections.sort(values, new JavaAdapter(java.util.Comparator, {
+                direction: 1,
+                compare: function(a,b) { return (a-b)*this.direction; }
+            }));
+            var state = '';
+            new java.lang.Runnable({run:function(){state='called';}}).run();
+            values.toArray().join(',') + ':' + state;
+        """))
+        assertEquals("6,4:10", eval("""
+            var values = new java.util.ArrayList([3,1,2]);
+            values.sort((a,b)=>b-a);
+            values.removeIf(x=>x===1);
+            values.replaceAll(x=>x*2);
+            var sum=0;
+            values.forEach(new java.util.function.Consumer(x=>{sum+=x;}));
+            values.toArray().join(',')+':'+sum;
+        """))
+        assertEquals("a2b3", eval("""
+            var values=new java.util.LinkedHashMap();values.put('a',1);values.put('b',2);
+            values.replaceAll((key,value)=>value+1);
+            var text='';values.forEach((key,value)=>{text+=key+value;});text;
+        """))
     }
 }

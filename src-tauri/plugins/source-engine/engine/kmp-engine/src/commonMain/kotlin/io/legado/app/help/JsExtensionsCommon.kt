@@ -1172,7 +1172,6 @@ interface JsExtensionsCommon {
         return try {
             // 流式写入 (对齐原版 getInputStream().copyTo, 大文件不整块缓冲): 失败直接抛,
             // 不静默回退全量缓冲 —— 原版流式失败即失败, JS 侧要能看到异常。
-            // 注: commonMain expect InputStream 未实现 Closeable, use{} 不可用, 手动 try-finally
             val input = analyzeUrl.getInputStream()
             try {
                 FileUtilsCommon.copyToFile(path, input)

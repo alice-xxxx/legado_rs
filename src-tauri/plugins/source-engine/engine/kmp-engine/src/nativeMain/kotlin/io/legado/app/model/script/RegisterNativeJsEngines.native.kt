@@ -28,7 +28,7 @@ actual fun registerNativeJsEngines(imageOps: ImageOps) {
     // 未注册时 SharedJsScope.getScope/remove 抛 IllegalStateException, 书源 jsLib 求值全挂
     SharedJsScope.registerProviders { type ->
         when (type) {
-            JsEngineType.QUICKJS -> NativeQuickJsSharedJsScopeProvider
+            JsEngineType.QUICKJS -> SharedLibraryScopes
         }
     }
 

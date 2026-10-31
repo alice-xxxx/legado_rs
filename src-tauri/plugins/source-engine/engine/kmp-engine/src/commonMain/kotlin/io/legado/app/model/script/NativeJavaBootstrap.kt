@@ -5,7 +5,7 @@ internal const val NATIVE_JAVA_BOOTSTRAP = """
 function __getDangerousApi() { return false; }
 function __loadJavaClass(name) { return __nativeDispatch(0, 3400, [name]); }
 function __classExists(name) { return __loadJavaClass(name) > 0; }
-function __isInterface() { return false; }
+function __isInterface(handle) { return __nativeDispatch(0, 3406, [handle]); }
 function __newJavaInstance(handle, args) {
     var value = __nativeDispatch(0, 3401, [handle, args]);
     return typeof value === 'string' ? Object(value) : value;
@@ -13,8 +13,15 @@ function __newJavaInstance(handle, args) {
 function __callStaticMethod(handle, method, args) { return __nativeDispatch(0, 3402, [handle, method, args]); }
 function __getStaticField(handle, name) { return __nativeDispatch(0, 3404, [handle, name]); }
 function __setStaticField() { throw new Error('Java static fields are read-only on native'); }
-function __registerJsFunctionNative() { throw new Error('JavaAdapter is not supported on native'); }
-function __newJavaAdapter() { throw new Error('JavaAdapter is not supported on native'); }
+function __registerJsFunctionNative(name) { return name; }
+function __newJavaAdapter(handle, name) {
+    var implementation = globalThis[name];
+    return __nativeDispatch(0, 3405, [handle, function(method, args) {
+        var fn = typeof implementation === 'function' ? implementation : implementation[method];
+        if (typeof fn !== 'function') throw new Error('Missing JavaAdapter method: ' + method);
+        return fn.apply(implementation, args);
+    }]);
+}
 
 function __createJavaCompatObj(handle, collection) {
     if (!handle) return null;
@@ -32,9 +39,6 @@ function __createJavaCompatObj(handle, collection) {
             for (var i = 0; i < call('size', []); i++) yield call('get', [i]);
         };
         if (collection && /^(0|[1-9][0-9]*)$/.test(String(key))) return call('get', [Number(key)]);
-        if (collection && key === 'forEach') return function(fn, self) {
-            for (var i = 0; i < call('size', []); i++) fn.call(self, call('get', [i]), i);
-        };
         if (typeof key !== 'string') return undefined;
         return function() { return call(key, Array.prototype.slice.call(arguments)); };
     }});

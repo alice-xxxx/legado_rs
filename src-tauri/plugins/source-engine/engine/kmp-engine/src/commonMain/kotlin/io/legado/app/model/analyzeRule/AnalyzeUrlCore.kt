@@ -730,25 +730,7 @@ open class AnalyzeUrlCore(
 /**
  * URL 参数编码器 (RFC3986 unreserved + query 段保留字符)。
  *
- * 从原 AnalyzeUrlCore companion object 的 private val queryEncoder 下沉为 top-level internal val,
- * 供 [encodeUrlParams] actual 实现 (jvmAndAndroidMain) 使用。commonMain 不直接使用。
+ * 供公共 [encodeUrlParams] 实现使用。
  */
 internal val urlQueryEncoder: PercentCodec =
     PercentCodec.UNRESERVED.orNew(PercentCodec.of("!$%&()*+,/:;=?@[\\]^`{|}"))
-
-/**
- * URL 参数编码 (Charset 相关逻辑下沉 jvmAndAndroidMain)。
- *
- * commonMain 无 kotlin.text.Charset expect class (Kotlin 2.3 stdlib), 原 encodeParams/encodeOne
- * 依赖 `Charsets.UTF_8` / `charset(name)` / `URLEncoder.encode(value, charset)`, 均 JVM-only。
- * 故把整个 encodeParams + encodeOne 下沉为 top-level expect fun, actual 在 jvmAndAndroidMain
- * 直接调用 java.net.URLEncoder.encode + java.nio.charset.Charset。
- *
- * 行为与原 private fun encodeParams 完全一致:
- * - charset 空 → UTF-8 编码
- * - charset == "escape" → EncoderUtils.escape (不 URL 编码)
- * - 其他 → 用指定 charset URL 编码
- * - isQuery=true 且非 escape: 整段用 urlQueryEncoder 编码 (若已 encoded 则原样返回)
- * - isQuery=false: 按 '&' 分段, 每段按 '=' 分 key/value, 分别 encodeOne
- */
-internal expect fun encodeUrlParams(params: String, charset: String?, isQuery: Boolean): String

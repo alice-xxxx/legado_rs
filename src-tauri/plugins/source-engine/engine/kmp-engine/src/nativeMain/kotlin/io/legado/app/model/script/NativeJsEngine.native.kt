@@ -29,7 +29,6 @@ import io.legado.app.napi.quickjs.JS_EvalFunction
 import io.legado.app.napi.quickjs.JS_GetLength
 import io.legado.app.napi.quickjs.JS_GetPropertyStr
 import io.legado.app.napi.quickjs.JS_FreeContext
-import io.legado.app.napi.quickjs.qjs_FreeCString
 import io.legado.app.napi.quickjs.JS_FreePropertyEnum
 import io.legado.app.napi.quickjs.JS_FreeRuntime
 import io.legado.app.napi.quickjs.JS_FreeValue
@@ -46,6 +45,7 @@ import io.legado.app.napi.quickjs.qjs_NewUint8ArrayCopy
 import io.legado.app.napi.quickjs.JS_IsArray
 import io.legado.app.napi.quickjs.JS_IsArrayBuffer
 import io.legado.app.napi.quickjs.JS_IsError
+import io.legado.app.napi.quickjs.JS_IsFunction
 import io.legado.app.napi.quickjs.JS_NewArray
 import io.legado.app.napi.quickjs.JS_NewContext
 import io.legado.app.napi.quickjs.JS_NewObject
@@ -63,7 +63,7 @@ import io.legado.app.napi.quickjs.JS_HasExecutionTimedOut
 import io.legado.app.napi.quickjs.JS_ToBool
 import io.legado.app.napi.quickjs.JS_ToFloat64
 import io.legado.app.napi.quickjs.JS_ToInt32
-import io.legado.app.napi.quickjs.qjs_AtomToCString
+import io.legado.app.napi.quickjs.JS_AtomToValue
 import io.legado.app.napi.quickjs.qjs_EvalFlagCompileOnly
 import io.legado.app.napi.quickjs.qjs_FreeBytecodeBuf
 import io.legado.app.napi.quickjs.qjs_ReadBytecode
@@ -79,8 +79,6 @@ import io.legado.app.napi.quickjs.qjs_NewBool
 import io.legado.app.napi.quickjs.qjs_NewCFunction
 import io.legado.app.napi.quickjs.qjs_NewFloat64
 import io.legado.app.napi.quickjs.qjs_NewInt32
-import io.legado.app.napi.quickjs.qjs_NewString
-import io.legado.app.napi.quickjs.qjs_ToCString
 import io.legado.app.napi.quickjs.qjs_ValueGetBool
 import io.legado.app.napi.quickjs.qjs_ValueGetFloat64
 import io.legado.app.napi.quickjs.qjs_ValueGetInt
@@ -112,7 +110,6 @@ import kotlinx.cinterop.refTo
 import kotlinx.cinterop.reinterpret
 import kotlinx.cinterop.sizeOf
 import kotlinx.cinterop.toCPointer
-import kotlinx.cinterop.toKString
 import kotlinx.cinterop.useContents
 import kotlinx.cinterop.value
 import kotlinx.atomicfu.locks.SynchronizedObject
@@ -509,7 +506,7 @@ object NativeJsEngine : JsEngine {
                         if (!isValidVarName(key)) continue
                         val jsValue = toJsValue(ctx, value) ?: continue
                         // JS_SetPropertyStr 转移 jsValue 所有权, 不需要 JS_FreeValue(jsValue)
-                        JS_SetPropertyStr(ctx, global, key, jsValue)
+                        nativeSetProperty(ctx, global, key, jsValue)
                         injectedKeys.add(key)
                     }
                     if ("java" in injectedKeys) {
@@ -775,11 +772,8 @@ object NativeJsEngine : JsEngine {
                             exc
                         )
                         if (qjs_IsString(stackVal) != 0 || qjs_IsUndefined(stackVal) == 0) {
-                            val stackCstrVal = qjs_ToCString(ctx, stackVal)
-                            if (stackCstrVal != null) {
-                                val s = stackCstrVal.toKString()
-                                qjs_FreeCString(ctx, stackCstrVal)
-                                return@memScoped s.ifEmpty { jsValueToString(ctx, exc) }
+                            nativeStringOrNull(ctx, stackVal)?.let { text ->
+                                return@memScoped text.ifEmpty { jsValueToString(ctx, exc) }
                             }
                         }
                         return@memScoped jsValueToString(ctx, exc)
@@ -794,20 +788,9 @@ object NativeJsEngine : JsEngine {
         }
     }
 
-    /** 把任意 JSValue 转为字符串 (通过 JS_ToString + qjs_ToCString)。 */
+    /** 按 UTF-16 单元转换；不可字符串化的异常值保留类型描述。 */
     private fun jsValueToString(ctx: CPointer<JSContext>, v: CValue<JSValue>): String {
-        // 用 qjs_ToCString 直接转 (quickjs 内部会调 JS_ToString)
-        val cstr = qjs_ToCString(ctx, v)
-        if (cstr != null) {
-            return try {
-                cstr.toKString()
-            } finally {
-                qjs_FreeCString(ctx, cstr)
-            }
-        }
-        // toString 失败 (抛出的值不可字符串化, 如无 toString/valueOf 的对象):
-        // 用纯 tag 判定给出类型描述 (对齐 Android 端 buildExceptionMessage),
-        // 避免只报裸 "JS exception" 让用户无法判断书源抛的是什么。
+        nativeStringOrNull(ctx, v)?.let { return it }
         return describeThrownValue(ctx, v)
     }
 
@@ -839,7 +822,7 @@ object NativeJsEngine : JsEngine {
      * - undefined/null → null
      * - boolean → Boolean (qjs_ValueGetBool)
      * - number → Int (JS_TAG_INT) 或 Double (JS_TAG_FLOAT64)
-     * - string → String (qjs_ToCString + qjs_FreeCString)
+     * - string → String (显式 UTF-16 长度)
      * - array → List (递归, JS_GetLength + JS_GetPropertyUint32)
      * - object → [NativeNativeObject] (递归, JS_GetOwnPropertyNames + JS_GetProperty)
      * - 其他 → null (fallback)
@@ -866,15 +849,9 @@ object NativeJsEngine : JsEngine {
                     if (JS_ToFloat64(ctx, pres.ptr, v) == 0) pres.value else null
                 }
             }
-            if (qjs_IsString(v) != 0) {
-                val cstr = qjs_ToCString(ctx, v) ?: return ""
-                return try {
-                    cstr.toKString()
-                } finally {
-                    qjs_FreeCString(ctx, cstr)
-                }
-            }
+            if (qjs_IsString(v) != 0) return nativeStringOrNull(ctx, v)
             if (qjs_IsObject(v) != 0) {
+                if (JS_IsFunction(ctx, v)) return NativeJsFunction.capture(ctx, v)
                 compatObject(ctx, v)?.let { return it }
                 // Uint8Array/TypedArray (解密脚本返回值): 直接拷回 ByteArray,
                 // ImageUtils.decode 的 is ByteArray 分支直接消费, 无需 List 中间态
@@ -886,12 +863,7 @@ object NativeJsEngine : JsEngine {
                 return fromJsObject(ctx, v)
             }
             // 其他类型 (symbol/bigint/function 等) fallback 到字符串
-            val cstr = qjs_ToCString(ctx, v) ?: return null
-            return try {
-                cstr.toKString()
-            } finally {
-                qjs_FreeCString(ctx, cstr)
-            }
+            return nativeStringOrNull(ctx, v)
         }
     }
 
@@ -932,8 +904,9 @@ object NativeJsEngine : JsEngine {
                 require(pLen.value <= 1000000u) { "Source result object is too large" }
                 for (i in 0 until pLen.value.toInt()) {
                     val atom = tab[i.toLong()].atom
-                    val keyCstr = qjs_AtomToCString(ctx, atom) ?: continue
-                    val key = try { keyCstr.toKString() } finally { qjs_FreeCString(ctx, keyCstr) }
+                    val keyValue = JS_AtomToValue(ctx, atom)
+                    val key = try { nativeStringOrNull(ctx, keyValue) ?: error("Invalid JS property name") }
+                    finally { JS_FreeValue(ctx, keyValue) }
                     val value = JS_GetProperty(ctx, obj, atom)
                     try { result[key] = fromJsValue(ctx, value) }
                     finally { JS_FreeValue(ctx, value) }
@@ -952,7 +925,7 @@ object NativeJsEngine : JsEngine {
      * - Boolean → qjs_NewBool
      * - Int/Short/Byte → qjs_NewInt32
      * - Long/Float/Double/Number → qjs_NewFloat64
-     * - String → qjs_NewString (cstr 在 memScope 内分配)
+     * - String → JS_NewStringUTF16
      * - Map<String,Any?> → JS_NewObject + 递归 JS_SetPropertyStr
      * - List<Any?> → JS_NewArray + 递归 JS_SetPropertyUint32
      * - ByteArray → Uint8Array (1 次 memcpy + JS_NewUint8Array, 见 [byteArrayToJsUint8Array];
@@ -973,6 +946,7 @@ object NativeJsEngine : JsEngine {
     internal fun toJsValue(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue>? {
         return convertingValue {
             val converted = JsValueConverters.convertAll(value)
+            if (converted is NativeJsFunction) return converted.toJsValue(ctx)
             if (JavaClassCompat.supports(converted)) {
                 val scope = currentNativeJsScope ?: return null
                 return NativeJsExtensionsBridge.createJsObject(ctx, converted!!, scope)
@@ -983,14 +957,14 @@ object NativeJsEngine : JsEngine {
                 is Int, is Short, is Byte -> qjs_NewInt32(ctx, converted.toInt())
                 is Long, is Float, is Double -> {
                     val d = (converted as Number).toDouble()
-                    if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
+                    qjs_NewFloat64(ctx, d)
                 }
                 is Number -> {
                     val d = converted.toDouble()
-                    if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
+                    qjs_NewFloat64(ctx, d)
                 }
                 is String -> {
-                    qjs_NewString(ctx, converted)
+                    nativeJsString(ctx, converted)
                 }
                 is Map<*, *> -> {
                     @Suppress("UNCHECKED_CAST")
@@ -1032,7 +1006,7 @@ object NativeJsEngine : JsEngine {
                 for ((keyStr, v) in map) {
                     val jsV = toJsValue(ctx, v) ?: continue
                     // JS_SetPropertyStr 转移 jsV 所有权, 不需要 JS_FreeValue(jsV)
-                    JS_SetPropertyStr(ctx, obj, keyStr, jsV)
+                    nativeSetProperty(ctx, obj, keyStr, jsV)
                 }
             }
             return obj
@@ -1195,7 +1169,7 @@ object NativeJsEngine : JsEngine {
                                 val argv = allocArray<JSValue>(argc)
                                 var i = 0
                                 for ((key, value) in kvs) {
-                                    val keyVal = qjs_NewString(ctx, key)
+                                    val keyVal = nativeJsString(ctx, key)
                                     keyVal.useContents {
                                         memcpy(
                                             interpretCPointer<ByteVar>(argv[i.toLong()].rawPtr),
@@ -1376,12 +1350,17 @@ object NativeJsEngine : JsEngine {
  */
 class NativeJsScope(
     /** quickjs JSRuntime 指针 (CPointer<JSRuntime>), 由 JS_NewRuntime 创建。null = 已 close。 */
-    val rt: CPointer<JSRuntime>?,
+    rt: CPointer<JSRuntime>?,
     /** quickjs JSContext 指针 (CPointer<JSContext>), 由 JS_NewContext 创建。null = 已 close。 */
-    val ctx: CPointer<JSContext>?,
+    ctx: CPointer<JSContext>?,
     /** native 上 dangerousApi 语义为 no-op (无 Java 反射可旁路), 保留字段仅为接口对齐 */
     var dangerousApi: Boolean = false
 ) : JsScope {
+    var rt: CPointer<JSRuntime>? = rt
+        private set
+    var ctx: CPointer<JSContext>? = ctx
+        private set
+    internal val functions = mutableListOf<CValue<JSValue>>()
 
     override var coroutineContext: CoroutineContext? = null
     override var allowScriptRun: Boolean = false
@@ -1421,7 +1400,11 @@ class NativeJsScope(
     override fun close() {
         val localCtx = ctx
         val localRt = rt
+        ctx = null
+        rt = null
         if (localCtx != null) {
+            functions.forEach { JS_FreeValue(localCtx, it) }
+            functions.clear()
             JS_FreeContext(localCtx)
         }
         if (localRt != null) {
@@ -1432,8 +1415,6 @@ class NativeJsScope(
             NativeJsExtensionsBridge.unregisterObject(handle)
         }
         handles.clear()
-        // 注: rt/ctx 是 val 不能置 null, 但 close 后不应再使用;
-        // evalInternal 等方法用 ctx!! 强制非空, close 后调用会 NPE (符合预期, 调用方应避免)
     }
 
     private companion object {

@@ -29,10 +29,3 @@ internal actual fun createWordCountFormatter(): (Double) -> String = { value ->
         }
     }
 }
-
-internal actual fun gzipAndBase64Encode(str: String): String {
-    // 降级: 直接对 UTF-8 字节做 Base64 标准编码 (无 gzip 压缩)。
-    // 与 jvmAndAndroidMain 的 GZIP+Base64 不兼容, 但功能不崩, 仅压缩效果缺失。
-    // kotlin.io.encoding.Base64 (KMP stable, Kotlin 2.0+) 等价 java Base64.defaultEncoder()
-    return kotlin.io.encoding.Base64.Default.encode(str.encodeToByteArray())
-}

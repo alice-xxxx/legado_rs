@@ -27,8 +27,7 @@ interface RegexReplacer {
  * 仅多一层 provider 间接。
  *
  * Android 端经 [io.legado.app.model.webBook.registerAndroidWebBookProviders]
- * 注册 WebBookProvidersImpl (其 replace 委托 [RegexReplacerImpl]);
- * 桌面端直接注册 [RegexReplacerImpl]。
+ * 各平台注册 [DeadlineRegexReplacer]，共享替换与超时处理。
  */
 object RegexReplacers {
     @Volatile

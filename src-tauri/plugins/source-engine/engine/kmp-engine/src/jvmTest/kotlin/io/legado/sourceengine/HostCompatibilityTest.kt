@@ -3,6 +3,7 @@ package io.legado.sourceengine
 import io.legado.app.model.analyzeRule.AnalyzeRuleCore
 import io.legado.app.model.analyzeRule.AnalyzeUrlCore
 import io.legado.app.utils.KS_JSON
+import io.legado.app.utils.readAllAndClose
 import io.legado.app.help.source.SourceNetworkProviders
 import io.legado.sourceengine.host.*
 import io.legado.sourceengine.api.NativeCodec
@@ -57,6 +58,8 @@ class HostCompatibilityTest {
         val rule=AnalyzeUrlCore("""https://example.org/,{"bodyJs":"result.toUpperCase()"}""",coroutineContext=SourceEngineHostContext(host))
         val response=withoutStoredCookies { rule.getStrResponse() }
         assertEquals("ORIGINAL",response.body)
+        val stream = withoutStoredCookies { rule.getInputStream() }
+        assertEquals("original", stream.readAllAndClose().decodeToString())
         assertEquals("inline; filename=\"流媒体.json\"",response.headers()["Content-Disposition"])
         assertEquals(200,response.code())
     }

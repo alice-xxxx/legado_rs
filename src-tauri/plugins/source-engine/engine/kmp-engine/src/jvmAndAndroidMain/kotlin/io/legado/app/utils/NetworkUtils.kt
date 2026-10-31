@@ -9,7 +9,6 @@ import java.net.InetAddress
 import java.net.NetworkInterface
 import java.net.SocketException
 import java.net.URL
-import java.util.BitSet
 import java.util.Enumeration
 
 /**
@@ -28,113 +27,9 @@ import java.util.Enumeration
  */
 actual object NetworkUtils {
 
-    private val notNeedEncodingQuery: BitSet by lazy {
-        val bitSet = BitSet(256)
-        for (i in 'a'.code..'z'.code) {
-            bitSet.set(i)
-        }
-        for (i in 'A'.code..'Z'.code) {
-            bitSet.set(i)
-        }
-        for (i in '0'.code..'9'.code) {
-            bitSet.set(i)
-        }
-        for (char in "!$&()*+,-./:;=?@[\\]^_`{|}~") {
-            bitSet.set(char.code)
-        }
-        return@lazy bitSet
-    }
+    actual fun encodedQuery(str: String): Boolean = NetworkValueChecks.encodedQuery(str)
+    actual fun encodedForm(str: String): Boolean = NetworkValueChecks.encodedForm(str)
 
-    private val notNeedEncodingForm: BitSet by lazy {
-        val bitSet = BitSet(256)
-        for (i in 'a'.code..'z'.code) {
-            bitSet.set(i)
-        }
-        for (i in 'A'.code..'Z'.code) {
-            bitSet.set(i)
-        }
-        for (i in '0'.code..'9'.code) {
-            bitSet.set(i)
-        }
-        for (char in "*-._") {
-            bitSet.set(char.code)
-        }
-        return@lazy bitSet
-    }
-
-    /**
-     * 支持JAVA的URLEncoder.encode出来的string做判断。 即: 将' '转成'+'
-     * 0-9a-zA-Z保留 <br></br>
-     * ! * ' ( ) ; : @ & = + $ , / ? # [ ] 保留
-     * 其他字符转成%XX的格式，X是16进制的大写字符，范围是[0-9A-F]
-     */
-    actual fun encodedQuery(str: String): Boolean {
-        var needEncode = false
-        var i = 0
-        while (i < str.length) {
-            val c = str[i]
-            if (notNeedEncodingQuery.get(c.code)) {
-                i++
-                continue
-            }
-            if (c == '%' && i + 2 < str.length) {
-                // 判断是否符合urlEncode规范
-                val c1 = str[++i]
-                val c2 = str[++i]
-                if (isDigit16Char(c1) && isDigit16Char(c2)) {
-                    i++
-                    continue
-                }
-            }
-            // 其他字符，肯定需要urlEncode
-            needEncode = true
-            break
-        }
-
-        return !needEncode
-    }
-
-    actual fun encodedForm(str: String): Boolean {
-        var needEncode = false
-        var i = 0
-        while (i < str.length) {
-            val c = str[i]
-            if (notNeedEncodingForm.get(c.code)) {
-                i++
-                continue
-            }
-            if (c == '%' && i + 2 < str.length) {
-                // 判断是否符合urlEncode规范
-                val c1 = str[++i]
-                val c2 = str[++i]
-                if (isDigit16Char(c1) && isDigit16Char(c2)) {
-                    i++
-                    continue
-                }
-            }
-            // 其他字符，肯定需要urlEncode
-            needEncode = true
-            break
-        }
-
-        return !needEncode
-    }
-
-    /**
-     * 判断c是否是16进制的字符
-     */
-    private fun isDigit16Char(c: Char): Boolean {
-        return c in '0'..'9' || c in 'A'..'F' || c in 'a'..'f'
-    }
-
-    /**
-     * 获取绝对地址
-     *
-     * baseURL 为 data url 时不做相对拼接 (JDK URL 不支持 data 协议, 且逗号截断会切掉 payload),
-     * 直接返回 relativePath.trim()。
-     *
-     * 沿用已弃用的 URL 构造: 书源里大量未转义的中文/空格路径会让 URI 直接抛异常拼不出地址。
-     */
     @Suppress("DEPRECATION")
     actual fun getAbsoluteURL(baseURL: String?, relativePath: String): String {
         if (baseURL.isNullOrEmpty() || baseURL.isDataUrl()) return relativePath.trim()
@@ -257,45 +152,7 @@ actual object NetworkUtils {
     }
 
     // 与 hutool RegexPool.IPV4/IPV6 相同的正则，Validator.isIpv4/isIpv6 行为对齐
-    private val ipv4Regex = Regex(
-        "^(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\.(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\." +
-            "(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\.(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)$"
-    )
-    private val ipv6Regex = Regex(
-        "(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|" +
-            "([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|" +
-            "([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|" +
-            "([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|" +
-            ":((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]+|" +
-            "::(ffff(:0{1,4})?:)?((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9])|" +
-            "([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9]))"
-    )
-
-    /**
-     * Check if valid IPV4 address.
-     *
-     * @param input the address string to check for validity.
-     * @return True if the input parameter is a valid IPv4 address.
-     */
-    actual fun isIPv4Address(input: String?): Boolean {
-        return !input.isNullOrEmpty()
-                && input[0] in '1'..'9'
-                && input.count { it == '.' } == 3
-                && ipv4Regex.matches(input)
-    }
-
-    /**
-     * Check if valid IPV6 address.
-     */
-    actual fun isIPv6Address(input: String?): Boolean {
-        return input != null && input.contains(":") && ipv6Regex.matches(input)
-    }
-
-    /**
-     * Check if valid IP address.
-     */
-    actual fun isIPAddress(input: String?): Boolean {
-        return isIPv4Address(input) || isIPv6Address(input)
-    }
-
+    actual fun isIPv4Address(input: String?): Boolean = NetworkValueChecks.isIPv4Address(input)
+    actual fun isIPv6Address(input: String?): Boolean = NetworkValueChecks.isIPv6Address(input)
+    actual fun isIPAddress(input: String?): Boolean = NetworkValueChecks.isIPAddress(input)
 }

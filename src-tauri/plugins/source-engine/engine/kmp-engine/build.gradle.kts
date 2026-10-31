@@ -371,9 +371,12 @@ kotlin {
             // 这些版本取自原平台 data/foundation 公共源集的版本目录，避免用 JVM JAR 代替 KMP 依赖。
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.11.0")
             implementation("org.jetbrains.kotlinx:atomicfu:0.33.0")
+            implementation("org.jetbrains.kotlinx:kotlinx-datetime:0.7.1")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
             implementation("com.squareup.okio:okio:3.18.1")
             implementation("com.fleeksoft.ksoup:ksoup:0.2.6")
+            implementation("com.fleeksoft.charset:charset-ext:0.0.8")
+            api("com.fleeksoft.io:io-core:0.0.8")
         }
         commonTest.dependencies { implementation(kotlin("test")) }
     }

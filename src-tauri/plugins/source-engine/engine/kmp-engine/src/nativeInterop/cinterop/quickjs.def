@@ -21,7 +21,6 @@ headers = quickjs.h
 JSValue qjs_NewBool(JSContext *ctx, int val) { return JS_NewBool(ctx, val != 0); }
 JSValue qjs_NewInt32(JSContext *ctx, int32_t val) { return JS_NewInt32(ctx, val); }
 JSValue qjs_NewFloat64(JSContext *ctx, double val) { return JS_NewFloat64(ctx, val); }
-JSValue qjs_NewString(JSContext *ctx, const char *str) { return JS_NewString(ctx, str); }
 JSValue qjs_NewCFunction(JSContext *ctx, JSCFunction *func, const char *name, int length) {
     return JS_NewCFunction(ctx, func, name, length);
 }
@@ -41,16 +40,6 @@ int qjs_ValueGetTag(JSValueConst v) { return (int)JS_VALUE_GET_TAG(v); }
 int32_t qjs_ValueGetInt(JSValueConst v) { return (int32_t)JS_VALUE_GET_INT(v); }
 int32_t qjs_ValueGetBool(JSValueConst v) { return (int32_t)JS_VALUE_GET_BOOL(v); }
 double qjs_ValueGetFloat64(JSValueConst v) { return (double)JS_VALUE_GET_FLOAT64(v); }
-
-// ---- JSValue 字符串转换 (quickjs.h 中为 static inline, 调用 JS_ToCStringLen2) ----
-const char *qjs_ToCString(JSContext *ctx, JSValueConst val) { return JS_ToCString(ctx, val); }
-
-// ---- JSAtom 转字符串 (quickjs.h 中为 static inline, 调用 JS_AtomToCStringLen) ----
-const char *qjs_AtomToCString(JSContext *ctx, JSAtom atom) { return JS_AtomToCString(ctx, atom); }
-
-// ---- JS_FreeCString 适配: 其 const char* 参数被 cinterop 映射为 String?, 无法接收
-// qjs_ToCString/qjs_AtomToCString 返回的 CPointer<ByteVar>?, 改走 void* 参数 (COpaquePointer?) ----
-void qjs_FreeCString(JSContext *ctx, void *ptr) { JS_FreeCString(ctx, (const char *)ptr); }
 
 // ---- Uint8Array/ArrayBuffer 指针传参适配: 各 target cinterop 对指针参数映射不一致
 // (iOS=CPointer<Var>/COpaquePointer, ohos=NativePtr/Long), 统一走 uintptr_t 整数传指针

@@ -13,72 +13,8 @@ package io.legado.app.utils
  */
 actual object NetworkUtils {
 
-    private val notNeedEncodingQuery: BooleanArray by lazy {
-        val arr = BooleanArray(256)
-        for (i in 'a'.code..'z'.code) arr[i] = true
-        for (i in 'A'.code..'Z'.code) arr[i] = true
-        for (i in '0'.code..'9'.code) arr[i] = true
-        for (c in "!*\$&()*+,-./:;=?@[\\]^_`{|}~") arr[c.code] = true
-        arr
-    }
-
-    private val notNeedEncodingForm: BooleanArray by lazy {
-        val arr = BooleanArray(256)
-        for (i in 'a'.code..'z'.code) arr[i] = true
-        for (i in 'A'.code..'Z'.code) arr[i] = true
-        for (i in '0'.code..'9'.code) arr[i] = true
-        for (c in "*-._") arr[c.code] = true
-        arr
-    }
-
-    actual fun encodedQuery(str: String): Boolean {
-        var needEncode = false
-        var i = 0
-        while (i < str.length) {
-            val c = str[i]
-            if (c.code < 256 && notNeedEncodingQuery[c.code]) {
-                i++
-                continue
-            }
-            if (c == '%' && i + 2 < str.length) {
-                val c1 = str[++i]
-                val c2 = str[++i]
-                if (isDigit16Char(c1) && isDigit16Char(c2)) {
-                    i++
-                    continue
-                }
-            }
-            needEncode = true
-            break
-        }
-        return !needEncode
-    }
-
-    actual fun encodedForm(str: String): Boolean {
-        var needEncode = false
-        var i = 0
-        while (i < str.length) {
-            val c = str[i]
-            if (c.code < 256 && notNeedEncodingForm[c.code]) {
-                i++
-                continue
-            }
-            if (c == '%' && i + 2 < str.length) {
-                val c1 = str[++i]
-                val c2 = str[++i]
-                if (isDigit16Char(c1) && isDigit16Char(c2)) {
-                    i++
-                    continue
-                }
-            }
-            needEncode = true
-            break
-        }
-        return !needEncode
-    }
-
-    private fun isDigit16Char(c: Char): Boolean =
-        c in '0'..'9' || c in 'A'..'F' || c in 'a'..'f'
+    actual fun encodedQuery(str: String): Boolean = NetworkValueChecks.encodedQuery(str)
+    actual fun encodedForm(str: String): Boolean = NetworkValueChecks.encodedForm(str)
 
     actual fun getAbsoluteURL(baseURL: String?, relativePath: String): String {
         if (baseURL.isNullOrEmpty() || baseURL.isDataUrl()) return relativePath.trim()
@@ -161,32 +97,7 @@ actual object NetworkUtils {
     }
 
     // 与 hutool RegexPool.IPV4/IPV6 相同的正则, Validator.isIpv4/isIpv6 行为对齐
-    private val ipv4Regex = Regex(
-        "^(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\.(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\." +
-            "(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)\\.(25[0-5]|2[0-4]\\d|[0-1]?\\d?\\d)$"
-    )
-    private val ipv6Regex = Regex(
-        "(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|" +
-            "([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|" +
-            "([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|" +
-            "([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|" +
-            ":((:[0-9a-fA-F]{1,4}){1,7}|:)|fe80:(:[0-9a-fA-F]{0,4}){0,4}%[0-9a-zA-Z]+|" +
-            "::(ffff(:0{1,4})?:)?((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9])|" +
-            "([0-9a-fA-F]{1,4}:){1,4}:((25[0-5]|(2[0-4]|1?[0-9])?[0-9])\\.){3}(25[0-5]|(2[0-4]|1?[0-9])?[0-9]))"
-    )
-
-    actual fun isIPv4Address(input: String?): Boolean {
-        return !input.isNullOrEmpty()
-                && input[0] in '1'..'9'
-                && input.count { it == '.' } == 3
-                && ipv4Regex.matches(input)
-    }
-
-    actual fun isIPv6Address(input: String?): Boolean {
-        return input != null && input.contains(":") && ipv6Regex.matches(input)
-    }
-
-    actual fun isIPAddress(input: String?): Boolean {
-        return isIPv4Address(input) || isIPv6Address(input)
-    }
+    actual fun isIPv4Address(input: String?): Boolean = NetworkValueChecks.isIPv4Address(input)
+    actual fun isIPv6Address(input: String?): Boolean = NetworkValueChecks.isIPv6Address(input)
+    actual fun isIPAddress(input: String?): Boolean = NetworkValueChecks.isIPAddress(input)
 }

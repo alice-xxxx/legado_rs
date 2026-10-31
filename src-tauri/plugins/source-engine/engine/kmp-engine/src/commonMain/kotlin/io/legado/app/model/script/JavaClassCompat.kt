@@ -11,13 +11,43 @@ import org.jsoup.Jsoup
 
 /** Native 无 JVM 反射；仅将书源使用的类委托给已有 KMP 实现。 */
 object JavaClassCompat {
+    fun interface Callback { fun call(method: String, args: List<Any?>): Any? }
+
+    private val interfaces = setOf(
+        "java.lang.Runnable", "java.util.concurrent.Callable", "java.util.Comparator",
+        "java.util.function.Consumer", "java.util.function.BiConsumer",
+        "java.util.function.Function", "java.util.function.BiFunction",
+        "java.util.function.Predicate", "java.util.function.BiPredicate",
+        "java.util.function.Supplier", "java.util.function.UnaryOperator", "java.util.function.BinaryOperator"
+    )
     private val classes = listOf(
         "org.jsoup.Jsoup", "org.jsoup.nodes.Element", "org.jsoup.select.Elements",
         "org.jsoup.parser.Parser", "java.lang.String", "java.lang.StringBuilder",
         "org.jsoup.Connection", "org.jsoup.Connection\$Method", "java.lang.Thread"
-    ) + JavaCryptoCompat.classes + JavaCollectionsCompat.classes
+    ) + JavaCryptoCompat.classes + JavaCollectionsCompat.classes + interfaces
 
     fun loadClass(name: String): Int = classes.indexOf(name) + 1
+
+    fun isInterface(handle: Int): Boolean = name(handle) in interfaces
+
+    fun newAdapter(handle: Int, implementation: Callback): Callback {
+        require(isInterface(handle)) { "JavaAdapter requires a supported interface" }
+        return object : Callback {
+            override fun call(method: String, args: List<Any?>): Any? = when (method) {
+                "toString" -> "JavaAdapter(${name(handle)})"
+                "hashCode" -> hashCode()
+                "equals" -> this === args.firstOrNull()
+                else -> {
+                    val result = try { implementation.call("invoke", listOf(method, args)) } catch (_: Throwable) { null }
+                    result ?: when (name(handle) to method) {
+                        "java.util.Comparator" to "compare" -> 0
+                        "java.util.function.Predicate" to "test", "java.util.function.BiPredicate" to "test" -> false
+                        else -> null
+                    }
+                }
+            }
+        }
+    }
 
     fun construct(handle: Int, args: List<Any?>): Any = when (name(handle)) {
         "org.jsoup.nodes.Element" -> Element(args.string(0))
@@ -57,17 +87,19 @@ object JavaClassCompat {
             io.legado.app.utils.platformSleep(millis)
             null
         }
-        else -> JavaCryptoCompat.callStatic(name(handle), method, args)
+        else -> if (name(handle) == "java.util.Collections") JavaCollectionsCompat.callStatic(method, args)
+        else JavaCryptoCompat.callStatic(name(handle), method, args)
     }
 
     fun field(handle: Int, field: String): Any? = if (name(handle) == "org.jsoup.Connection\$Method") {
         Connection.Method.entries.firstOrNull { it.name == field }
     } else JavaCryptoCompat.field(name(handle), field)
 
-    fun supports(value: Any?): Boolean = value is Node || value is Elements || value is StringBuilder || value is Connection || value is Connection.Response || value is Connection.Method || value is JavaCryptoCompat.Value || JavaCollectionsCompat.supports(value)
+    fun supports(value: Any?): Boolean = value is Callback || value is Node || value is Elements || value is StringBuilder || value is Connection || value is Connection.Response || value is Connection.Method || value is JavaCryptoCompat.Value || JavaCollectionsCompat.supports(value)
     fun isCollection(value: Any?): Boolean = value is Elements || value is JavaCollectionsCompat.Items
 
     fun call(value: Any, method: String, args: List<Any?>): Any? {
+        if (value is Callback) return value.call(method, args)
         if (value is JavaCryptoCompat.Value) return JavaCryptoCompat.call(value, method, args)
         if (JavaCollectionsCompat.supports(value)) return JavaCollectionsCompat.call(value, method, args)
         if (value is Connection.Method) return when (method) {
@@ -92,6 +124,7 @@ object JavaClassCompat {
             "remove" -> value.remove()
             "clear" -> { value.deselectAll(); null }
             "toArray", "toJSON" -> value.map { if (method == "toJSON") it.outerHtml() else it }
+            "forEach" -> { value.forEach { (args[0] as Callback).call("accept", listOf(it)) }; null }
             else -> error("Unsupported Elements method: $method")
         }
         if (value is Node) return when (method) {
