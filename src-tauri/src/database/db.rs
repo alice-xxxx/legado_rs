@@ -112,7 +112,7 @@ pub(super) fn write<T: Send + 'static>(
                     }
                     *connection = Some((root, opened));
                 }
-                let connection = &mut connection.as_mut().unwrap().1;
+                let connection = &mut connection.as_mut().ok_or_else(|| ResourceError::new("数据库连接未打开"))?.1;
                 if matches!(mode, WriteMode::Connection) {
                     return action(&Session(Some(connection)));
                 }

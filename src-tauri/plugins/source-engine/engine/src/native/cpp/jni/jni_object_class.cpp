@@ -101,6 +101,7 @@ namespace {
             if (!local) {
                 LOGE("JavaObjectBridgeNative class not found");
                 env->ExceptionClear();
+                pthread_mutex_unlock(&g_bridgeInitMutex);
                 return;
             }
             g_bridgeCls = (jclass) env->NewGlobalRef(local);
@@ -186,12 +187,12 @@ namespace {
                     g_bridgeCls, "getNullFieldMarker", "()Ljava/lang/Object;");
             if (getMethodMarker && getNullFieldMarker) {
                 jobject methodLocal = env->CallStaticObjectMethod(g_bridgeCls, getMethodMarker);
-                if (methodLocal) {
+                if (!env->ExceptionCheck() && methodLocal) {
                     g_methodMarker = env->NewGlobalRef(methodLocal);
                     env->DeleteLocalRef(methodLocal);
                 }
-                jobject nullLocal = env->CallStaticObjectMethod(g_bridgeCls, getNullFieldMarker);
-                if (nullLocal) {
+                jobject nullLocal = !env->ExceptionCheck() ? env->CallStaticObjectMethod(g_bridgeCls, getNullFieldMarker) : nullptr;
+                if (!env->ExceptionCheck() && nullLocal) {
                     g_nullFieldMarker = env->NewGlobalRef(nullLocal);
                     env->DeleteLocalRef(nullLocal);
                 }
@@ -766,8 +767,13 @@ int JavaObjectClass::hasProperty(JSContext *ctx, JSValueConst obj, JSAtom prop) 
         return -1;
     }
 
-    jstring jname = env->NewStringUTF(name);
+    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
     JS_FreeCString(ctx, name);
+    if (!jname) {
+        env->ExceptionClear();
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
 
     bool dangerousApi = getDangerousApi(ctx);
     jboolean result = env->CallStaticBooleanMethod(g_bridgeCls, g_hasProperty,
@@ -872,8 +878,12 @@ JSValue JavaObjectClass::getProperty(JSContext *ctx, JSValueConst obj, JSAtom at
         return JS_EXCEPTION;
     }
 
-    jstring jname = env->NewStringUTF(name);
+    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
     JS_FreeCString(ctx, name);
+    if (!jname) {
+        env->ExceptionClear();
+        return JS_ThrowOutOfMemory(ctx);
+    }
 
     bool dangerousApi = getDangerousApi(ctx);
     // getPropertyInfo 返回单个 Any? (哨兵协议):
@@ -969,8 +979,13 @@ int JavaObjectClass::setProperty(JSContext *ctx, JSValueConst obj, JSAtom atom,
         return -1;
     }
 
-    jstring jname = env->NewStringUTF(name);
+    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
     JS_FreeCString(ctx, name);
+    if (!jname) {
+        env->ExceptionClear();
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
 
     // JSValue -> jobject (基本类型直接转,对象走 wrap 或句柄)
     jobject javaValue = JniValueConvert::toJavaObject(ctx, env, value);
@@ -1041,8 +1056,13 @@ int JavaObjectClass::getOwnProperty(JSContext *ctx, JSPropertyDescriptor *desc,
         // JS_AtomToCString 失败 (通常 OOM) 时 ctx 异常已设
         return -1;
     }
-    jstring jname = env->NewStringUTF(name);
+    jstring jname = JniValueConvert::utf8ToJavaString(ctx, env, name);
     JS_FreeCString(ctx, name);
+    if (!jname) {
+        env->ExceptionClear();
+        JS_ThrowOutOfMemory(ctx);
+        return -1;
+    }
 
     bool dangerousApi = getDangerousApi(ctx);
     // 哨兵协议: 同 getProperty 描述。
@@ -1162,31 +1182,26 @@ int JavaObjectClass::getOwnPropertyNames(JSContext *ctx, JSPropertyEnum **ptab,
         // js_malloc 失败时 quickjs 内部已抛 OOM 异常, 这里无需再 throw
         return -1;
     }
-    *plen = len;
-
-    // PushLocalFrame 批量回收循环内 GetObjectArrayElement 产生的 local ref,
-    // 省掉每轮 DeleteLocalRef 调用; +16 冗余给 GetStringUTFChars 内部可能产生的
-    // 短周期 local ref (Android JNI 实现细节, 保守值)
-    if (len > 0 && env->PushLocalFrame(len + 16) == 0) {
-        for (jsize i = 0; i < len; i++) {
-            auto name = (jstring) env->GetObjectArrayElement(names, i);
-            const char *cname = env->GetStringUTFChars(name, nullptr);
-            (*ptab)[i].atom = JS_NewAtom(ctx, cname ? cname : "");
-            (*ptab)[i].is_enumerable = true;
-            env->ReleaseStringUTFChars(name, cname);
+    for (jsize i = 0; i < len; i++) {
+        auto name = (jstring) env->GetObjectArrayElement(names, i);
+        JSValue key = name ? JniValueConvert::fromJavaObject(ctx, env, name) : JS_EXCEPTION;
+        JSAtom atom = !env->ExceptionCheck() && !JS_IsException(key) ? JS_ValueToAtom(ctx, key) : JS_ATOM_NULL;
+        JS_FreeValue(ctx, key);
+        if (name) env->DeleteLocalRef(name);
+        if (atom == JS_ATOM_NULL || env->ExceptionCheck()) {
+            if (atom != JS_ATOM_NULL) JS_FreeAtom(ctx, atom);
+            if (env->ExceptionCheck()) env->ExceptionClear();
+            JS_FreePropertyEnum(ctx, *ptab, (uint32_t) i);
+            *ptab = nullptr;
+            *plen = 0;
+            env->DeleteLocalRef(names);
+            JS_ThrowInternalError(ctx, "Java property name conversion failed");
+            return -1;
         }
-        env->PopLocalFrame(nullptr);
-    } else {
-        // PushLocalFrame 失败退化到逐个 DeleteLocalRef (保持原语义)
-        for (jsize i = 0; i < len; i++) {
-            auto name = (jstring) env->GetObjectArrayElement(names, i);
-            const char *cname = env->GetStringUTFChars(name, nullptr);
-            (*ptab)[i].atom = JS_NewAtom(ctx, cname ? cname : "");
-            (*ptab)[i].is_enumerable = true;
-            env->ReleaseStringUTFChars(name, cname);
-            env->DeleteLocalRef(name);
-        }
+        (*ptab)[i].atom = atom;
+        (*ptab)[i].is_enumerable = true;
     }
+    *plen = len;
     env->DeleteLocalRef(names);
     return 0;
 }

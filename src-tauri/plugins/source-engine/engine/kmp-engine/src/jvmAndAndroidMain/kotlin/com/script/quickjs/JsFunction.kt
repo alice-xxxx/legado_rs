@@ -11,9 +11,7 @@ package com.script.quickjs
  * - 持有 [context] (QuickJsContext), 通过 [QuickJsNative.nativeEval] 执行 JS
  * - 不再依赖 quickjs-kt 的 QuickJs (已移除)
  *
- * 线程模型: [call] 在调用方线程同步执行 nativeEval,
- * 并在调用前设置 [QuickJsContext.threadLocalContext],
- * 保证 binding handler 中 [quickJsContext] 可用。
+ * [call] 仅在当前线程持有活跃的 [context] 时同步执行。
  */
 class JsFunction(
     val context: QuickJsContext,
@@ -34,29 +32,20 @@ class JsFunction(
      *   - Java 对象由 native 层 toJavaObject 解包为原始 Java 对象返回
      *   - null/undefined 返回 null
      */
-    fun call(vararg args: Any?): Any? {
-        val jsArgs = args.joinToString(",") { argToJsExpr(it) }
-        val jsCode = "($functionExpr)($jsArgs)"
-        return try {
-            // 设置 ThreadLocalContext, 让 binding handler 能访问到当前 context
-            val previous = QuickJsContext.threadLocalContext.get()
-            QuickJsContext.threadLocalContext.set(context)
-            try {
-                // 同步 dangerousApi 到 native ctx opaque, 由 __getDangerousApi binding 从 opaque 读取,
-                // 不再往 JS globalThis 挂 __dangerousApi__ (旧路径, bootstrap 已改走 binding)
-                context.dangerousApi = dangerousApi
-                if (context.lastSyncedDangerousApi != dangerousApi) {
-                    QuickJsNative.nativeSetDangerousApi(ctxPtr, dangerousApi)
-                    context.lastSyncedDangerousApi = dangerousApi
-                }
-                QuickJsNative.nativeEval(ctxPtr, jsCode)
-            } finally {
-                QuickJsContext.threadLocalContext.set(previous)
-            }
-        } catch (e: Throwable) {
-            logQuickJsWarn(TAG, "call failed: $functionExpr", e)
-            null
+    fun call(vararg args: Any?): Any? = try {
+        check(QuickJsContext.threadLocalContext.get() === context && QuickJsContext.findByCtxPtr(ctxPtr) === context) {
+            "Source callback context was released or belongs to another thread"
         }
+        val jsArgs = args.joinToString(",") { argToJsExpr(it) }
+        context.dangerousApi = dangerousApi
+        if (context.lastSyncedDangerousApi != dangerousApi) {
+            QuickJsNative.nativeSetDangerousApi(ctxPtr, dangerousApi)
+            context.lastSyncedDangerousApi = dangerousApi
+        }
+        QuickJsNative.nativeEval(ctxPtr, "($functionExpr)($jsArgs)")
+    } catch (error: Throwable) {
+        logQuickJsWarn(TAG, "call failed: $functionExpr", error)
+        null
     }
 
     /**

@@ -23,6 +23,12 @@ jclass g_LongCls = nullptr;
 jmethodID g_LongValueOf = nullptr;
 
 namespace {
+    thread_local unsigned conversionDepth = 0, conversionNodes = 0;
+    struct ConversionGuard {
+        ConversionGuard() { if (conversionDepth++ == 0) conversionNodes = 0; }
+        ~ConversionGuard() { --conversionDepth; }
+        bool exceeded() const { return conversionDepth > 128 || ++conversionNodes > 1000000; }
+    };
     jclass g_BooleanCls = nullptr;
     jclass g_IntegerCls = nullptr;
     jclass g_DoubleCls = nullptr;
@@ -124,8 +130,42 @@ namespace {
 // JNI_OnLoad 提前一次性完成初始化。
 void initJniValueConvertCache(JNIEnv *env) { doInitClassCache(env); }
 
+jstring JniValueConvert::utf8ToJavaString(JSContext *ctx, JNIEnv *env, const char *text) {
+    if (!text || env->ExceptionCheck()) return nullptr;
+    const unsigned char *p = reinterpret_cast<const unsigned char *>(text);
+    while (*p && *p < 0x80) ++p;
+    if (!*p) return env->NewStringUTF(text);
+    JSValue value = JS_NewString(ctx, text);
+    size_t length = 0;
+    const uint16_t *chars = JS_IsException(value) ? nullptr : JS_ToCStringLenUTF16(ctx, &length, value);
+    jstring result = chars ? env->NewString(reinterpret_cast<const jchar *>(chars), (jsize) length) : nullptr;
+    if (chars) JS_FreeCStringUTF16(ctx, chars);
+    JS_FreeValue(ctx, value);
+    if (!chars && !env->ExceptionCheck()) {
+        JSValue error = JS_GetException(ctx);
+        JS_FreeValue(ctx, error);
+        jclass errorClass = env->FindClass("java/lang/OutOfMemoryError");
+        if (errorClass) {
+            env->ThrowNew(errorClass, "Source string conversion failed");
+            env->DeleteLocalRef(errorClass);
+        }
+    }
+    return result;
+}
+
 jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value) {
+    if (env->ExceptionCheck()) return nullptr;
     ensureClassCache(env);
+    if (env->ExceptionCheck()) return nullptr;
+    ConversionGuard guard;
+    if (guard.exceeded()) {
+        jclass error = env->FindClass("java/lang/IllegalArgumentException");
+        if (error) {
+            env->ThrowNew(error, "Source result is cyclic, too deep or too large");
+            env->DeleteLocalRef(error);
+        }
+        return nullptr;
+    }
 
     // 异常: 抛出 JsNativeException,返回 null
     if (JS_IsException(value)) {
@@ -189,16 +229,27 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
     // 必须在 JS_IsObject 之前判断, 否则 array 会被当成 plain object
     if (JS_IsArray(value)) {
         int64_t len64 = 0;
-        JS_GetLength(ctx, value, &len64);
+        if (JS_GetLength(ctx, value, &len64) < 0 || len64 < 0 || len64 > 1000000) {
+            JSValue error = JS_GetException(ctx);
+            JS_FreeValue(ctx, error);
+            error = JS_ThrowRangeError(ctx, "Source result array is too large or has invalid length");
+            return toJavaObject(ctx, env, error);
+        }
         jclass arrayListCls = env->FindClass("java/util/ArrayList");
-        jobject list = env->NewObject(arrayListCls,
-                                      env->GetMethodID(arrayListCls, "<init>", "(I)V"),
-                                      (jint) len64);
+        if (!arrayListCls) return nullptr;
+        jmethodID constructor = env->GetMethodID(arrayListCls, "<init>", "(I)V");
+        if (!constructor) { env->DeleteLocalRef(arrayListCls); return nullptr; }
+        jobject list = env->NewObject(arrayListCls, constructor, (jint) len64);
         if (!list) {
             env->DeleteLocalRef(arrayListCls);
             return nullptr;
         }
         jmethodID addMethod = env->GetMethodID(arrayListCls, "add", "(Ljava/lang/Object;)Z");
+        if (!addMethod) {
+            env->DeleteLocalRef(list);
+            env->DeleteLocalRef(arrayListCls);
+            return nullptr;
+        }
         for (int64_t i = 0; i < len64; i++) {
             JSValue elem = JS_GetPropertyUint32(ctx, value, (uint32_t) i);
             jobject elemObj = toJavaObject(ctx, env, elem);
@@ -219,6 +270,11 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
             // 注意: null 元素也要 add (List 允许 null), 不能跳过
             env->CallBooleanMethod(list, addMethod, elemObj);
             if (elemObj) env->DeleteLocalRef(elemObj);
+            if (env->ExceptionCheck()) {
+                env->DeleteLocalRef(arrayListCls);
+                env->DeleteLocalRef(list);
+                return nullptr;
+            }
         }
         env->DeleteLocalRef(arrayListCls);
         return list;
@@ -259,9 +315,11 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
                 return nullptr;
             }
             jstring keyStr = env->NewStringUTF(kErrKey);
-            env->CallObjectMethod(map, g_NativeObjectPut, keyStr, valObj);
+            jobject previous = keyStr ? env->CallObjectMethod(map, g_NativeObjectPut, keyStr, valObj) : nullptr;
+            if (previous) env->DeleteLocalRef(previous);
             env->DeleteLocalRef(keyStr);
             if (valObj) env->DeleteLocalRef(valObj);
+            if (env->ExceptionCheck()) { env->DeleteLocalRef(map); return nullptr; }
         }
         return map;
     }
@@ -277,6 +335,11 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
         int ret = JS_GetOwnPropertyNames(ctx, &ptab, &plen, value,
                                          JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY);
         if (ret == 0) {
+            if (plen > 1000000) {
+                for (uint32_t i = 0; i < plen; i++) JS_FreeAtom(ctx, ptab[i].atom);
+                js_free(ctx, ptab);
+                return toJavaObject(ctx, env, JS_ThrowRangeError(ctx, "Source result object is too large"));
+            }
             jobject map = env->NewObject(g_NativeObjectCls, g_NativeObjectInitI, (jint) plen);
             // NewObject 失败时 map 是 NULL 且有 pending JNI 异常, 继续调用任何 JNI
             // 函数都是 UB。先释放 ptab 把 ctx 资源退出, 再让上层看到异常。
@@ -304,12 +367,19 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
                     env->DeleteLocalRef(map);
                     return nullptr;
                 }
-                jstring keyStr = env->NewStringUTF(key ? key : "");
+                jstring keyStr = utf8ToJavaString(ctx, env, key ? key : "");
                 JS_FreeCString(ctx, key);
-                env->CallObjectMethod(map, g_NativeObjectPut, keyStr, valObj);
+                jobject previous = keyStr ? env->CallObjectMethod(map, g_NativeObjectPut, keyStr, valObj) : nullptr;
+                if (previous) env->DeleteLocalRef(previous);
                 env->DeleteLocalRef(keyStr);
                 if (valObj) env->DeleteLocalRef(valObj);
                 JS_FreeAtom(ctx, ptab[i].atom);
+                if (env->ExceptionCheck()) {
+                    for (uint32_t j = i + 1; j < plen; j++) JS_FreeAtom(ctx, ptab[j].atom);
+                    js_free(ctx, ptab);
+                    env->DeleteLocalRef(map);
+                    return nullptr;
+                }
             }
             js_free(ctx, ptab);
             return map;
@@ -326,13 +396,14 @@ jobject JniValueConvert::toJavaObject(JSContext *ctx, JNIEnv *env, JSValue value
 
     // 兜底: 转 string
     const char *str = JS_ToCString(ctx, value);
-    jstring jstr = env->NewStringUTF(str ? str : "");
+    jstring jstr = utf8ToJavaString(ctx, env, str ? str : "");
     JS_FreeCString(ctx, str);
     return jstr;
 }
 
 // Java 集合中的字符串保留 Java 方法，普通返回值仍转换成 JS 字符串。
 JSValue JniValueConvert::fromCollectionElement(JSContext *ctx, JNIEnv *env, jobject javaObj) {
+    if (env->ExceptionCheck()) return JS_EXCEPTION;
     ensureClassCache(env);
     if (javaObj && env->IsInstanceOf(javaObj, g_StringCls)) return JavaObjectClass::wrap(ctx, env, javaObj);
     return fromJavaObject(ctx, env, javaObj);
@@ -340,6 +411,7 @@ JSValue JniValueConvert::fromCollectionElement(JSContext *ctx, JNIEnv *env, jobj
 
 JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject javaObj,
                                       JSValueConst receiver) {
+    if (env->ExceptionCheck()) return JS_EXCEPTION;
     ensureClassCache(env);
 
     if (javaObj == nullptr) {
@@ -349,6 +421,7 @@ JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject jav
     // GetObjectClass 一次 + IsSameObject 指针比较, boxed 都是 final 所以与 IsInstanceOf 等价,
     // 但省掉 ART 每次的 class 层次比对; wrap 分支 miss 时也不会走 8 遍 hierarchy。
     jclass cls = env->GetObjectClass(javaObj);
+    if (!cls) return JS_EXCEPTION;
 
     // String (热路径最前, 书源大量返回字符串; UTF-16 路径见旧注释保留在下方 String 分支内)
     if (env->IsSameObject(cls, g_StringCls)) {
@@ -373,42 +446,49 @@ JSValue JniValueConvert::fromJavaObject(JSContext *ctx, JNIEnv *env, jobject jav
     if (env->IsSameObject(cls, g_IntegerCls)) {
         env->DeleteLocalRef(cls);
         jint v = env->CallIntMethod(javaObj, g_IntegerValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewInt32(ctx, v);
     }
     // Boolean
     if (env->IsSameObject(cls, g_BooleanCls)) {
         env->DeleteLocalRef(cls);
         jboolean b = env->CallBooleanMethod(javaObj, g_BooleanValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewBool(ctx, b == JNI_TRUE);
     }
     // Double
     if (env->IsSameObject(cls, g_DoubleCls)) {
         env->DeleteLocalRef(cls);
         jdouble v = env->CallDoubleMethod(javaObj, g_DoubleValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewFloat64(ctx, v);
     }
     // Long -> JS Number (float64 避免溢出, binding 返回的 handle 可能超过 int32)
     if (env->IsSameObject(cls, g_LongCls)) {
         env->DeleteLocalRef(cls);
         jlong v = env->CallLongMethod(javaObj, g_LongValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewFloat64(ctx, (double) v);
     }
     // Float
     if (env->IsSameObject(cls, g_FloatCls)) {
         env->DeleteLocalRef(cls);
         jfloat v = env->CallFloatMethod(javaObj, g_FloatValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewFloat64(ctx, (double) v);
     }
     // Byte (byte[] 元素访问)
     if (env->IsSameObject(cls, g_ByteCls)) {
         env->DeleteLocalRef(cls);
         jbyte v = env->CallByteMethod(javaObj, g_ByteValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewInt32(ctx, (int32_t) v);
     }
     // Short
     if (env->IsSameObject(cls, g_ShortCls)) {
         env->DeleteLocalRef(cls);
         jshort v = env->CallShortMethod(javaObj, g_ShortValue);
+        if (env->ExceptionCheck()) return JS_EXCEPTION;
         return JS_NewInt32(ctx, (int32_t) v);
     }
     env->DeleteLocalRef(cls);
@@ -576,6 +656,7 @@ static size_t trimTrailingWrapperFrames(const char *s, size_t n) {
 }
 
 void throwJsNativeException(JSContext *ctx, JNIEnv *env, JSValue exc, const char *fallbackMsg) {
+    if (env->ExceptionCheck()) return;
     char *msgStr = JniValueConvert::buildExceptionMessage(ctx, exc);
 
     // 从 trimmed stack 首帧解析 fileName/lineNumber/columnNumber
@@ -601,9 +682,9 @@ void throwJsNativeException(JSContext *ctx, JNIEnv *env, JSValue exc, const char
         jmethodID ctor = env->GetMethodID(excCls, "<init>",
                                           "(Ljava/lang/String;Ljava/lang/String;II)V");
         if (ctor) {
-            jstring msgJstr = env->NewStringUTF(msgStr ? msgStr : fallbackMsg);
-            jstring fnJstr = parsedFileName ? env->NewStringUTF(parsedFileName) : nullptr;
-            jobject excObj = env->NewObject(excCls, ctor, msgJstr, fnJstr, parsedLine, parsedCol);
+            jstring msgJstr = JniValueConvert::utf8ToJavaString(ctx, env, msgStr ? msgStr : fallbackMsg);
+            jstring fnJstr = !env->ExceptionCheck() && parsedFileName ? JniValueConvert::utf8ToJavaString(ctx, env, parsedFileName) : nullptr;
+            jobject excObj = !env->ExceptionCheck() ? env->NewObject(excCls, ctor, msgJstr, fnJstr, parsedLine, parsedCol) : nullptr;
             if (msgJstr) env->DeleteLocalRef(msgJstr);
             if (fnJstr) env->DeleteLocalRef(fnJstr);
             if (excObj) {
@@ -666,7 +747,7 @@ static char *buildObjectPropsText(JSContext *ctx, JSValue obj) {
         size_t valLen = std::strlen(valSafe);
         size_t need = keyLen + 2 + valLen + 8; // "key: value" + 分隔/收尾 + 尾部余量(ellipsis/}/NUL)
         if (pos + need > cap) {
-            size_t newCap = cap * 2;
+            size_t newCap = pos + need > cap * 2 ? pos + need : cap * 2;
             char *grown = (char *) std::realloc(out, newCap);
             if (!grown) {
                 JS_FreeCString(ctx, key);

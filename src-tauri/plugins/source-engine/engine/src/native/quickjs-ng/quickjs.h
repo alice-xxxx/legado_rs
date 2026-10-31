@@ -532,6 +532,8 @@ JS_EXTERN void JS_RunGC(JSRuntime *rt);
 JS_EXTERN bool JS_IsLiveObject(JSRuntime *rt, JSValueConst obj);
 
 JS_EXTERN JSContext *JS_NewContext(JSRuntime *rt);
+/* Preserve Rhino's last evaluated expression across empty control statements. */
+JS_EXTERN void JS_SetLegacyEvalCompletion(JSContext *ctx, bool enabled);
 JS_EXTERN void JS_FreeContext(JSContext *s);
 JS_EXTERN JSContext *JS_DupContext(JSContext *ctx);
 JS_EXTERN void *JS_GetContextOpaque(JSContext *ctx);
@@ -1178,7 +1180,8 @@ JS_EXTERN void JS_SetHostPromiseRejectionTracker(JSRuntime *rt, JSHostPromiseRej
 /* return != 0 if the JS code needs to be interrupted */
 typedef int JSInterruptHandler(JSRuntime *rt, void *opaque);
 JS_EXTERN void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque);
-/* Push/pop nested synchronous script deadlines. Timeout is monotonic wall time in ms. */
+/* Push/pop nested script CPU deadlines in ms; exclude blocking host waits.
+   Platforms without a thread CPU clock fall back to monotonic wall time. */
 JS_EXTERN void JS_SetExecutionTimeLimit(JSRuntime *rt, uint32_t timeout_ms);
 /* Host interrupt handlers can compose cancellation with the existing deadline. */
 JS_EXTERN int JS_CheckExecutionTimeLimit(JSRuntime *rt);

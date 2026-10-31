@@ -11,13 +11,13 @@ object Engine {
         HostRuntime.install()
         block()
     }
-    @Throws(Exception::class) suspend fun search(request:SearchRequest,directory:String,id:String):SearchPage=call(directory,id){ReaderSource.search(request)}
-    @Throws(Exception::class) suspend fun exploreKinds(request:SourceRequest,directory:String,id:String):ExploreKinds=call(directory,id){ReaderSource.exploreKinds(request)}
-    @Throws(Exception::class) suspend fun explore(request:ExploreRequest,directory:String,id:String):SearchPage=call(directory,id){ReaderSource.explore(request)}
-    @Throws(Exception::class) suspend fun detail(request:BookRequest,directory:String,id:String):Book=call(directory,id){ReaderSource.detail(request)}
-    @Throws(Exception::class) suspend fun chapters(request:BookRequest,directory:String,id:String):ChapterList=call(directory,id){ReaderSource.chapters(request)}
-    @Throws(Exception::class) suspend fun content(request:ContentRequest,directory:String,id:String):ChapterContent=call(directory,id){ReaderSource.content(request)}
-    @Throws(Exception::class) suspend fun resolveMedia(request:MediaRequest,directory:String,id:String):MediaLocation=call(directory,id){ReaderSource.resolveMedia(request)}
-    @Throws(Exception::class) suspend fun httpTtsAudio(request:TtsRequest,directory:String,id:String):AudioData=call(directory,id){ReaderSource.httpTtsAudio(request)}
-    @Throws(Exception::class) suspend fun login(request:LoginRequest,directory:String,id:String):LoginState=call(directory,id){SourceLogin.login(request)}
+    @Throws(Throwable::class) suspend fun search(request:SearchRequest,directory:String,id:String):SearchPage=call(directory,id){ReaderSource.search(request)}
+    @Throws(Throwable::class) suspend fun exploreKinds(request:SourceRequest,directory:String,id:String):ExploreKinds=call(directory,id){ReaderSource.exploreKinds(request)}
+    @Throws(Throwable::class) suspend fun explore(request:ExploreRequest,directory:String,id:String):SearchPage=call(directory,id){ReaderSource.explore(request)}
+    @Throws(Throwable::class) suspend fun detail(request:BookRequest,directory:String,id:String):Book=call(directory,id){ReaderSource.detail(request)}
+    @Throws(Throwable::class) suspend fun chapters(request:BookRequest,directory:String,id:String):ChapterList=call(directory,id){ReaderSource.chapters(request)}
+    @Throws(Throwable::class) suspend fun content(request:ContentRequest,directory:String,id:String):ChapterContent=call(directory,id){ReaderSource.content(request)}
+    @Throws(Throwable::class) suspend fun resolveMedia(request:MediaRequest,directory:String,id:String):MediaLocation=call(directory,id){ReaderSource.resolveMedia(request)}
+    @Throws(Throwable::class) suspend fun httpTtsAudio(request:TtsRequest,directory:String,id:String):AudioData=call(directory,id){ReaderSource.httpTtsAudio(request)}
+    @Throws(Throwable::class) suspend fun login(request:LoginRequest,directory:String,id:String):LoginState=call(directory,id){SourceLogin.login(request)}
 }

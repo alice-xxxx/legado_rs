@@ -312,7 +312,7 @@ open class AnalyzeUrlCore(
         //   保证 jsLib 自由函数 (如 lk) 能命中 cache/book 等 binding。
         return if (sharedScope == null) {
             val scope = JsEngines.get().getRuntimeScope(bindings)
-            val wrappedJs = JsEngines.get().wrapJsForEval(jsStr)
+            val wrappedJs = io.legado.app.model.script.RhinoSyntax.wrapForEval(jsStr,isolate=false)
             try {
                 JsEngines.get().eval(wrappedJs, scope, coroutineContext)
             } finally {

@@ -358,9 +358,9 @@ internal class NativeKmpCall(
             try {
                 val response = executeHost()
                 responseCallback.onResponse(this@NativeKmpCall, response)
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 val ioException = if (e is okio.IOException) e else okio.IOException(e.message, e)
-                responseCallback.onFailure(this@NativeKmpCall, ioException)
+                runCatching { responseCallback.onFailure(this@NativeKmpCall, ioException) }
             }
         }
     }

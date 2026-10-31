@@ -1133,6 +1133,7 @@ function __createJavaObj(handle) {
     obj.desEncodeToBase64String = function(data, key, transformation, iv) {
         return obj.createSymmetricCrypto(transformation, key, iv || null).encryptBase64(data);
     };
+    obj.aesEncodeToBase64String = obj.desEncodeToBase64String;
     obj.createAsymmetricCrypto = function(transformation) {
         var cryptoHandle = __nativeDispatch(handle, 202, [transformation]);
         return __createAsymCryptoObj(cryptoHandle);
@@ -1398,6 +1399,7 @@ function __createJsUrlObj(handle) {
         memScoped {
             val pLen = alloc<LongVar>()
             if (JS_GetLength(ctx, arr, pLen.ptr) != 0) return@memScoped
+            require(pLen.value in 0L..1000000L) { "Source argument array is too large" }
             val count = pLen.value.toInt()
             for (i in 0 until count) {
                 val elem = JS_GetPropertyUint32(ctx, arr, i.toUInt())

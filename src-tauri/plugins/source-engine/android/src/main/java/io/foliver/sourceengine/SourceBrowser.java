@@ -25,7 +25,7 @@ final class SourceBrowser {
                     // Loaded profiles can only be deleted after the process restarts.
                     try{store.deleteProfile(name);}catch(IllegalStateException loaded){}
                 }
-            }catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理旧书源浏览器失败",failure);}
+            }catch(Throwable failure){android.util.Log.w("FoliverSource","清理旧书源浏览器失败",failure);}
         });
     }
     void destroy(){activity.runOnUiThread(()->{for(Page page:new ArrayList<>(pages))page.close("浏览器已销毁");});}
@@ -76,11 +76,10 @@ final class SourceBrowser {
         final java.util.regex.Pattern overrideUrl;
         boolean returned=false,closed=false,evaluated=false;
         final Runnable timeout=()->close("浏览器请求超时");
-        final Runnable cancellation=new Runnable(){public void run(){
-            if(closed)return;
+        final Runnable cancellation=new Runnable(){public void run(){Page.this.run(()->{
             if(!input.optString("executionId").isEmpty()&&"true".equals(NativeCalls.cancelled(input.optString("executionId")))){close("浏览器请求已取消");return;}
             handler.postDelayed(this,100);
-        }};
+        });}};
         Page(JSONObject input,Invoke invoke,boolean login)throws Exception{
             this.input=input;this.invoke=invoke;this.login=login;
             target=url(input.getString(login?"loginUrl":"baseUrl"));offline=!login&&"OFFLINE_SNAPSHOT".equals(input.getString("mode"));interactive=login||"INTERACTIVE_PAGE".equals(input.optString("mode"));
@@ -101,33 +100,35 @@ final class SourceBrowser {
                     if(!main||closed)return;
                     try{JSONObject value=new JSONObject(message.getData());if(value.has("error")){close(value.getString("error"));return;}
                         resolve(response(value.getString("body"),offline?target:value.getString("finalUrl")));close(null);
-                    }catch(Exception error){close(error.toString());}
+                    }catch(Throwable error){close(error.toString());}
                 });
             }
             view.setTag(bridge);
             view.setWebViewClient(new WebViewClient(){
                 @Override public boolean shouldOverrideUrlLoading(WebView web,WebResourceRequest request){
-                    String target=request.getUrl().toString(),scheme=request.getUrl().getScheme();
-                    if(!offline&&overrideUrl!=null&&overrideUrl.matcher(target).matches()){
-                        handler.post(()->{if(!closed){resolve(response(target,target));close(null);}});return true;
-                    }
-                    return offline||!("http".equals(scheme)||"https".equals(scheme));
+                    try{
+                        String target=request.getUrl().toString(),scheme=request.getUrl().getScheme();
+                        if(!offline&&overrideUrl!=null&&overrideUrl.matcher(target).matches()){
+                            handler.post(()->run(()->{resolve(response(target,target));close(null);}));return true;
+                        }
+                        return offline||!("http".equals(scheme)||"https".equals(scheme));
+                    }catch(Throwable error){close(error.toString());return true;}
                 }
                 @Override public void onPageFinished(WebView web,String url){if(!login&&!interactive)evaluate();}
-                @Override public void onReceivedError(WebView web,WebResourceRequest request,WebResourceError error){if(request.isForMainFrame())close(error.getDescription().toString());}
+                @Override public void onReceivedError(WebView web,WebResourceRequest request,WebResourceError error){run(()->{if(request.isForMainFrame())close(error.getDescription().toString());});}
                 @Override public boolean onRenderProcessGone(WebView web,RenderProcessGoneDetail detail){close("浏览器渲染进程已结束");return true;}
             });
             pages.add(this);handler.postDelayed(timeout,login||!input.optBoolean("waitForResult",true)?600000:45000);if(!login&&input.optBoolean("waitForResult",true))handler.post(cancellation);
         }
-        void evaluate(){
+        void evaluate(){run(()->{
             if(evaluated||closed)return;evaluated=true;
             String script=input.optString("javaScript"),bridge=(String)view.getTag();long delay=input.optLong("delayTimeMs");
             String capture=overrideUrl==null?"window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({body:String(value??''),finalUrl:location.href}));":"";
             String js="(async()=>{try{await new Promise(r=>setTimeout(r,"+delay+"));let value="+JSONObject.quote(script)+"?await(0,eval)("+JSONObject.quote(script)+"):document.documentElement.outerHTML;"+capture+"}catch(e){window["+JSONObject.quote(bridge)+"].postMessage(JSON.stringify({error:String(e)}));}})()";
-            run(()->view.evaluateJavascript(js,null));
-        }
+            view.evaluateJavascript(js,null);
+        });}
         // CookieManager 回调与 WebView 回调不经过插件命令的异常边界。
-        void run(Runnable action){if(closed)return;try{action.run();}catch(Exception error){close(error.toString());}}
+        void run(Runnable action){if(closed)return;try{action.run();}catch(Throwable error){close(error.toString());}}
         void seed(String header,Runnable next){
             List<String> values=new ArrayList<>();for(String pair:header.split(";"))if(pair.trim().contains("="))values.add(pair.trim()+"; Path=/");
             seed(values,0,next);
@@ -141,7 +142,7 @@ final class SourceBrowser {
             if(login)sessions.remove(input.optString("sessionId"));
             if(!returned){returned=true;invoke.reject(error==null?"浏览器会话已结束":error);}
             for(Runnable cleanup:new Runnable[]{dialog::dismiss,view::stopLoading,()->cookies.removeAllCookies(null),()->WebViewCompat.getProfile(view).getWebStorage().deleteAllData(),()->view.clearCache(true),view::destroy}){
-                try{cleanup.run();}catch(RuntimeException failure){android.util.Log.w("FoliverSource","清理书源浏览器失败",failure);}
+                try{cleanup.run();}catch(Throwable failure){android.util.Log.w("FoliverSource","清理书源浏览器失败",failure);}
             }
         }
     }

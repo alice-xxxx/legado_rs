@@ -67,6 +67,15 @@ class HostCompatibilityTest {
         assertFailsWith<IOException> { withoutStoredCookies { rule.getStrResponse() } }
     }
 
+    @Test fun hostErrorsRemainRequestFailures() {
+        val host=Host().apply { beforeHttp={throw AssertionError("fixture")} }
+        val rule=AnalyzeUrlCore("https://example.org/",coroutineContext=SourceEngineHostContext(host))
+        val error=assertFailsWith<IOException> { withoutStoredCookies { rule.getStrResponse() } }
+        assertTrue(generateSequence<Throwable>(error) { it.cause }.any { it is AssertionError })
+        host.beforeHttp=null
+        assertEquals("original",withoutStoredCookies { rule.getStrResponse() }.body)
+    }
+
     @Test fun webRulesUseBrowserResultsAndPreserveJsonTypes() {
         val host=Host()
         val rule=AnalyzeRuleCore().setContent("<audio></audio>","https://example.org/chapter")
@@ -140,13 +149,35 @@ class HostCompatibilityTest {
         val entered=CountDownLatch(1);val release=CountDownLatch(1)
         val firstHost=Host(content="first").apply { beforeHttp={entered.countDown();check(release.await(10,TimeUnit.SECONDS))} }
         val secondHost=Host(content="second")
-        fun request()=NativeCodec.decodeSourceRequest("""{"source":{"bookSourceUrl":"https://host.invalid/","exploreUrl":"@js:JSON.stringify([{title:java.ajax('https://host.invalid/'),url:'https://host.invalid/'}]);"}}""")
-        val first=async(Dispatchers.Default) { SourceEngineHostRegistry.withHost(firstHost) { ReaderSource.exploreKinds(request()) } }
+        fun request(origin:String)=NativeCodec.decodeSourceRequest("""{"source":{"bookSourceUrl":"$origin","exploreUrl":"@js:JSON.stringify([{title:java.ajax('https://host.invalid/'),url:'https://host.invalid/'}]);"}}""")
+        val first=async(Dispatchers.Default) { SourceEngineHostRegistry.withHost(firstHost) { ReaderSource.exploreKinds(request("https://first.host.invalid/")) } }
         try {
             assertTrue(entered.await(5,TimeUnit.SECONDS))
-            val second=withTimeout(5000) { SourceEngineHostRegistry.withHost(secondHost) { ReaderSource.exploreKinds(request()) } }
+            val second=withTimeout(5000) { SourceEngineHostRegistry.withHost(secondHost) { ReaderSource.exploreKinds(request("https://second.host.invalid/")) } }
             assertEquals("second",second.categories.single().title)
         } finally { release.countDown() }
         assertEquals("first",first.await().categories.single().title)
+    }
+
+    @Test fun detailInitializationPreservesVariablesForTheCatalogUrl() = runBlocking {
+        val host=Host(content="""{"data":[{"original_book_name":"fixture","book_id":"12345"}]}""")
+        val request=NativeCodec.decodeBookRequest("""{"source":{"bookSourceUrl":"https://detail.invalid/","ruleBookInfo":{"init":"data[0]","name":"original_book_name@put:{book_id:book_id}","tocUrl":"https://detail.invalid/catalog?bookId=@get:{book_id}"}},"book":{"bookUrl":"https://detail.invalid/book","name":"search name"}}""")
+        SourceEngineHostRegistry.withHost(host) {
+            val detail=ReaderSource.detail(request)
+            assertEquals("https://detail.invalid/catalog?bookId=12345",detail.tocUrl)
+            val restored=NativeCodec.decodeBookRequest("""{"source":{"bookSourceUrl":"https://detail.invalid/"},"book":${NativeCodec.encodeBook(detail)}}""")
+            assertEquals("12345",restored.book.getVariable("book_id"))
+        }
+    }
+
+    @Test fun sourceQuotaDoesNotAllowAnExtraRequest() = runBlocking {
+        for (allowed in 1..3) {
+            val source=io.legado.app.data.entities.BookSource(bookSourceUrl="https://quota-fixture.invalid/$allowed",concurrentRate="$allowed/60000")
+            val limiter=io.legado.app.help.coroutine.ConcurrentRateLimiter(source)
+            repeat(allowed) { limiter.getConcurrentRecord() }
+            val next=async(start=CoroutineStart.UNDISPATCHED) { limiter.getConcurrentRecord() }
+            try { assertFalse(next.isCompleted,"Quota $allowed allowed an extra request") }
+            finally { next.cancelAndJoin() }
+        }
     }
 }

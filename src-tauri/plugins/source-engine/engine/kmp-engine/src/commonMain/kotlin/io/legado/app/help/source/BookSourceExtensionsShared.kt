@@ -16,10 +16,13 @@ import io.legado.app.utils.isJsonArray
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import io.legado.app.utils.concurrent.newConcurrentMap
+import kotlinx.atomicfu.locks.SynchronizedObject
+import kotlinx.atomicfu.locks.synchronized
 
 // 发现分类及缓存沿用引擎入口的宿主和协程通道。
 
 private val mutexMap by lazy { hashMapOf<String, Mutex>() }
+private val mutexMapLock = SynchronizedObject()
 
 internal val exploreKindsMap by lazy { newConcurrentMap<String, List<ExploreKind>>() }
 
@@ -34,7 +37,7 @@ suspend fun BookSource.exploreKinds(): List<ExploreKind> {
     if (exploreUrl.isNullOrBlank()) {
         return emptyList()
     }
-    val mutex = mutexMap[bookSourceUrl] ?: Mutex().apply { mutexMap[bookSourceUrl] = this }
+    val mutex = synchronized(mutexMapLock) { mutexMap.getOrPut(bookSourceUrl) { Mutex() } }
     mutex.withLock {
         exploreKindsMap[exploreKindsKey]?.let { return it }
         val kinds = arrayListOf<ExploreKind>()

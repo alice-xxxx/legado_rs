@@ -12,6 +12,9 @@ import io.legado.app.help.image.ImageOps
 import io.legado.app.help.source.SourceCacheProvider
 import io.legado.app.help.source.SourceNetworkProvider
 import io.legado.app.napi.quickjs.JSContext
+import io.legado.app.napi.quickjs.JS_SetLegacyEvalCompletion
+import io.legado.app.napi.quickjs.JS_SetMemoryLimit
+import io.legado.app.napi.quickjs.JS_SetMaxStackSize
 import io.legado.app.napi.quickjs.JSPropertyEnum
 import io.legado.app.napi.quickjs.JSRuntime
 import io.legado.app.napi.quickjs.JSValue
@@ -23,7 +26,6 @@ import io.legado.app.napi.quickjs.qjs_EvalTypeGlobal
 import io.legado.app.napi.quickjs.JS_Call
 import io.legado.app.napi.quickjs.JS_Eval
 import io.legado.app.napi.quickjs.JS_EvalFunction
-import io.legado.app.napi.quickjs.JS_FreeAtom
 import io.legado.app.napi.quickjs.JS_GetLength
 import io.legado.app.napi.quickjs.JS_GetPropertyStr
 import io.legado.app.napi.quickjs.JS_FreeContext
@@ -113,7 +115,6 @@ import kotlinx.cinterop.toCPointer
 import kotlinx.cinterop.toKString
 import kotlinx.cinterop.useContents
 import kotlinx.cinterop.value
-import kotlinx.atomicfu.atomic
 import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cinterop.readBytes
@@ -122,6 +123,21 @@ import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import platform.posix.memcpy
+
+@kotlin.native.concurrent.ThreadLocal
+private var currentNativeJsScope: NativeJsScope? = null
+
+@kotlin.native.concurrent.ThreadLocal
+private var conversionDepth = 0
+@kotlin.native.concurrent.ThreadLocal
+private var conversionNodes = 0
+
+private inline fun <T> convertingValue(block: () -> T): T {
+    if (conversionDepth == 0) conversionNodes = 0
+    require(conversionDepth < 128 && ++conversionNodes <= 1000000) { "Source value is cyclic, too deep or too large" }
+    conversionDepth++
+    return try { block() } finally { conversionDepth-- }
+}
 
 /**
  * JS_Eval 的 UTF-8 安全封装 (compile / evalInternal / bridge 工厂 eval 共用)。
@@ -168,9 +184,6 @@ object NativeJsEngine : JsEngine {
     /** 引擎类型, 复用 QUICKJS ([JsEngines.type] 硬编码 QUICKJS, 切换入口已撤)。 */
     override val type: JsEngineType = JsEngineType.QUICKJS
 
-    /** 当前线程的 JS 执行上下文 (ThreadLocal), 对应 quickjs 的 QuickJsContext.threadLocalContext。 */
-    private val threadLocalScope = atomic<NativeJsScope?>(null)
-
     /** JS 递归深度上限, 对齐 QuickJsContext.MAX_RECURSION。 */
     private const val MAX_RECURSION = 10
     private const val SCRIPT_EXECUTION_TIMEOUT_MS = 10_000
@@ -201,36 +214,43 @@ object NativeJsEngine : JsEngine {
 
     // ============ scope 创建/复用 ============
 
-    /**
-     * 创建运行时 scope: 新建 JSRuntime + JSContext + 注入 bootstrap + 注入 bindings 变量。
-     *
-     * 对应 QuickJsEngine.getRuntimeScope: createNativeCtx + bootstrap + injectBindings。
-     * 每个独立 scope 独立 JSRuntime (与原 IosJsEngine/OhosJsEngine 每 JSContext/JSVM_VM 独立一致),
-     * quickjs 单线程模型, runtime 间互不影响。
-     */
-    override fun getRuntimeScope(bindings: JsBindings): JsScope {
+    private fun newContext(): Pair<CPointer<JSRuntime>, CPointer<JSContext>> {
         val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        // 注入共用包入口和 Native 方法分派。
-        evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
-        // 注册 native 分派函数 __nativeDispatch 到 globalThis (供 JsExtensions 桥接 JS 层回调)
-        registerNativeDispatch(ctx)
-        val scope = NativeJsScope(rt, ctx).apply {
-            dangerousApi = bindings.dangerousApi
+        JS_SetMemoryLimit(rt, 268435456uL)
+        JS_SetMaxStackSize(rt, 262144uL)
+        val ctx = JS_NewContext(rt) ?: run {
+            JS_FreeRuntime(rt)
+            error("JS_NewContext() returned null")
         }
-        // 注入 bindings 变量到 globalThis
-        injectBindings(scope, bindings)
-        return scope
+        JS_SetLegacyEvalCompletion(ctx, true)
+        return rt to ctx
+    }
+
+    /** 创建独立 runtime，注入 bootstrap 和 bindings；QuickJS 不跨线程共享。 */
+    override fun getRuntimeScope(bindings: JsBindings): JsScope {
+        val (rt, ctx) = newContext()
+        val scope = NativeJsScope(rt, ctx).apply { dangerousApi = bindings.dangerousApi }
+        try {
+            // 注入共用包入口和 Native 方法分派。
+            evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
+            // 注册 native 分派函数 __nativeDispatch 到 globalThis (供 JsExtensions 桥接 JS 层回调)
+            registerNativeDispatch(ctx)
+            // 注入 bindings 变量到 globalThis
+            injectBindings(scope, bindings)
+            return scope
+        } catch (error: Throwable) { scope.close(); throw error }
     }
 
     /** 创建独立 scope, 不与 SharedJsScope 共享。 */
     override fun createStandaloneScope(): JsScope {
-        val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
-        evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
-        // 独立 scope 也需注册 __nativeDispatch (可能注入 java 变量)
-        registerNativeDispatch(ctx)
-        return NativeJsScope(rt, ctx)
+        val (rt, ctx) = newContext()
+        val scope = NativeJsScope(rt, ctx)
+        try {
+            evalInternal(ctx, BOOTSTRAP_CODE, "<bootstrap>", checkException = true)
+            // 独立 scope 也需注册 __nativeDispatch (可能注入 java 变量)
+            registerNativeDispatch(ctx)
+            return scope
+        } catch (error: Throwable) { scope.close(); throw error }
     }
 
     /**
@@ -290,8 +310,7 @@ object NativeJsEngine : JsEngine {
      */
     private fun getCompilerCtx(): CPointer<JSContext> {
         compilerCtx?.let { return it }
-        val rt = JS_NewRuntime() ?: error("JS_NewRuntime() returned null")
-        val ctx = JS_NewContext(rt) ?: error("JS_NewContext() returned null")
+        val (_, ctx) = newContext()
         compilerCtx = ctx
         return ctx
     }
@@ -381,15 +400,15 @@ object NativeJsEngine : JsEngine {
         val nativeCtx = nativeScope.ctx!!
         // 同步 dangerousApi (native 上语义为 no-op, 保留字段对齐)
         nativeScope.dangerousApi = bindings.dangerousApi
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = nativeScope
+        val prevScope = currentNativeJsScope
+        currentNativeJsScope = nativeScope
         nativeScope.coroutineContext = coroutineContext
         nativeScope.recursiveCount++
         try {
             nativeScope.checkRecursive()
             // 快照 handle 数: eval 后释放本次注入新增的 handle (对齐 JVM releaseNewHandles)
             val handleSnapshot = nativeScope.handles.size
-            // 构造 kvs (须在压栈后: toJsValue 的 JsExtensionsCommon/BookLike 分支依赖 threadLocalScope)
+            // 构造 kvs (须在压栈后: toJsValue 的 JsExtensionsCommon/BookLike 分支依赖 currentNativeJsScope)
             val kvs = buildBindingKvsValues(nativeCtx, bindings)
             try {
                 // 进入子 scope: JS_Call 值参数压栈 bindings (免字符串 eval)
@@ -410,7 +429,7 @@ object NativeJsEngine : JsEngine {
         } finally {
             nativeScope.recursiveCount--
             nativeScope.coroutineContext = null
-            threadLocalScope.value = prevScope
+            currentNativeJsScope = prevScope
         }
     }
 
@@ -479,8 +498,8 @@ object NativeJsEngine : JsEngine {
             ?: error("NativeJsEngine.injectBindings requires NativeJsScope, got ${scope::class}")
         nativeScope.dangerousApi = bindings.dangerousApi
         val injectedKeys = mutableListOf<String>()
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = nativeScope
+        val prevScope = currentNativeJsScope
+        currentNativeJsScope = nativeScope
         val ctx = nativeScope.ctx!!
         try {
             val global = JS_GetGlobalObject(ctx)
@@ -501,7 +520,7 @@ object NativeJsEngine : JsEngine {
                 JS_FreeValue(ctx, global)
             }
         } finally {
-            threadLocalScope.value = prevScope
+            currentNativeJsScope = prevScope
         }
         return injectedKeys
     }
@@ -543,16 +562,15 @@ object NativeJsEngine : JsEngine {
 
     // ============ 当前线程 JS 执行上下文 ============
 
-    /** 当前线程的 JS 执行上下文 (可空), 包装为 [NativeJsScope]。 */
-    override fun currentContext(): JsScope? =
-        threadLocalScope.value?.let { NativeJsScope(it.rt, it.ctx) }
+    /** 借用当前线程的 JS 执行上下文。 */
+    override fun currentContext(): JsScope? = currentNativeJsScope
 
     /** 当前线程的 JS 执行上下文 (非空), 无上下文时抛 [IllegalStateException]。 */
     override fun currentContextNonNull(): JsScope =
-        threadLocalScope.value ?: error("No NativeJsScope on current thread")
+        currentNativeJsScope ?: error("No NativeJsScope on current thread")
 
     /** 当前线程的 JS scope (可空), 供桥接层 (NativeJsPropertyBridge) 登记嵌套 handle。 */
-    internal fun currentScope(): NativeJsScope? = threadLocalScope.value
+    internal fun currentScope(): NativeJsScope? = currentNativeJsScope
 
     /**
      * 在当前 JS 执行上下文上设 coroutineContext 后执行 block (不创建新 scope)。
@@ -560,7 +578,7 @@ object NativeJsEngine : JsEngine {
      * 对应 quickjs 的 runScriptWithContext(context, block)。
      */
     override fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T {
-        val scope = threadLocalScope.value
+        val scope = currentNativeJsScope
         val prevCtx = scope?.coroutineContext
         if (scope != null) scope.coroutineContext = context
         return try {
@@ -576,7 +594,7 @@ object NativeJsEngine : JsEngine {
      * minusKey(ContinuationInterceptor) 不把调度器存进 scope (与 JVM 端实现一致)。
      */
     override suspend fun <T> runScriptWithContext(block: () -> T): T {
-        val scope = threadLocalScope.value
+        val scope = currentNativeJsScope
         val prevCtx = scope?.coroutineContext
         scope?.coroutineContext = coroutineContext.minusKey(ContinuationInterceptor)
         return try {
@@ -830,43 +848,50 @@ object NativeJsEngine : JsEngine {
      * 但本函数内部创建的临时 JSValue (如 array 元素、object 属性值) 会即时 JS_FreeValue。
      */
     internal fun fromJsValue(ctx: CPointer<JSContext>, v: CValue<JSValue>): Any? {
-        if (qjs_IsUndefined(v) != 0 || qjs_IsNull(v) != 0) return null
-        if (qjs_IsBool(v) != 0) return qjs_ValueGetBool(v) != 0
-        if (qjs_IsNumber(v) != 0) {
-            val tag = qjs_ValueGetTag(v)
-            if (tag == JS_TAG_INT) return qjs_ValueGetInt(v)
-            if (tag == JS_TAG_FLOAT64) return qjs_ValueGetFloat64(v)
-            // 其他 number tag (如 JS_TAG_BIG_INT), fallback 用 JS_ToFloat64
-            return memScoped {
-                val pres = alloc<DoubleVar>()
-                if (JS_ToFloat64(ctx, pres.ptr, v) == 0) pres.value else null
+        return convertingValue {
+            if (qjs_IsException(v) != 0) {
+                val error = JS_GetException(ctx)
+                try { throw NativeScriptException(exceptionToString(ctx, error)) }
+                finally { JS_FreeValue(ctx, error) }
             }
-        }
-        if (qjs_IsString(v) != 0) {
-            val cstr = qjs_ToCString(ctx, v) ?: return ""
+            if (qjs_IsUndefined(v) != 0 || qjs_IsNull(v) != 0) return null
+            if (qjs_IsBool(v) != 0) return qjs_ValueGetBool(v) != 0
+            if (qjs_IsNumber(v) != 0) {
+                val tag = qjs_ValueGetTag(v)
+                if (tag == JS_TAG_INT) return qjs_ValueGetInt(v)
+                if (tag == JS_TAG_FLOAT64) return qjs_ValueGetFloat64(v)
+                // 其他 number tag (如 JS_TAG_BIG_INT), fallback 用 JS_ToFloat64
+                return memScoped {
+                    val pres = alloc<DoubleVar>()
+                    if (JS_ToFloat64(ctx, pres.ptr, v) == 0) pres.value else null
+                }
+            }
+            if (qjs_IsString(v) != 0) {
+                val cstr = qjs_ToCString(ctx, v) ?: return ""
+                return try {
+                    cstr.toKString()
+                } finally {
+                    qjs_FreeCString(ctx, cstr)
+                }
+            }
+            if (qjs_IsObject(v) != 0) {
+                compatObject(ctx, v)?.let { return it }
+                // Uint8Array/TypedArray (解密脚本返回值): 直接拷回 ByteArray,
+                // ImageUtils.decode 的 is ByteArray 分支直接消费, 无需 List 中间态
+                tryGetUint8ArrayBytes(ctx, v)?.let { return it }
+                // 判断 array 还是 plain object
+                if (JS_IsArray(v)) {
+                    return fromJsArray(ctx, v)
+                }
+                return fromJsObject(ctx, v)
+            }
+            // 其他类型 (symbol/bigint/function 等) fallback 到字符串
+            val cstr = qjs_ToCString(ctx, v) ?: return null
             return try {
                 cstr.toKString()
             } finally {
                 qjs_FreeCString(ctx, cstr)
             }
-        }
-        if (qjs_IsObject(v) != 0) {
-            compatObject(ctx, v)?.let { return it }
-            // Uint8Array/TypedArray (解密脚本返回值): 直接拷回 ByteArray,
-            // ImageUtils.decode 的 is ByteArray 分支直接消费, 无需 List 中间态
-            tryGetUint8ArrayBytes(ctx, v)?.let { return it }
-            // 判断 array 还是 plain object
-            if (JS_IsArray(v)) {
-                return fromJsArray(ctx, v)
-            }
-            return fromJsObject(ctx, v)
-        }
-        // 其他类型 (symbol/bigint/function 等) fallback 到字符串
-        val cstr = qjs_ToCString(ctx, v) ?: return null
-        return try {
-            cstr.toKString()
-        } finally {
-            qjs_FreeCString(ctx, cstr)
         }
     }
 
@@ -875,6 +900,7 @@ object NativeJsEngine : JsEngine {
         return memScoped {
             val pLen = alloc<LongVar>()
             if (JS_GetLength(ctx, arr, pLen.ptr) != 0) return@memScoped emptyList<Any?>()
+            require(pLen.value in 0L..1000000L) { "Source result array is too large" }
             val count = pLen.value.toInt()
             if (count <= 0) return@memScoped emptyList<Any?>()
             val result = ArrayList<Any?>(count)
@@ -896,33 +922,24 @@ object NativeJsEngine : JsEngine {
         memScoped {
             val pTab = alloc<CPointerVar<JSPropertyEnum>>()
             val pLen = alloc<UIntVar>()
-            // JS_GPN_STRING_MASK: 仅字符串 key; JS_GPN_ENUM_ONLY: 仅可枚举属性
-            val flags = 1 or 16  // JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY
-            if (JS_GetOwnPropertyNames(ctx, pTab.ptr, pLen.ptr, obj, flags) != 0) return@memScoped
-            val count = pLen.value.toInt()
+            if (JS_GetOwnPropertyNames(ctx, pTab.ptr, pLen.ptr, obj, 1 or 16) != 0) {
+                val error = JS_GetException(ctx)
+                try { throw NativeScriptException(exceptionToString(ctx, error)) }
+                finally { JS_FreeValue(ctx, error) }
+            }
             val tab = pTab.value ?: return@memScoped
             try {
-                for (i in 0 until count) {
+                require(pLen.value <= 1000000u) { "Source result object is too large" }
+                for (i in 0 until pLen.value.toInt()) {
                     val atom = tab[i.toLong()].atom
-                    try {
-                        val keyCstr = qjs_AtomToCString(ctx, atom)
-                        if (keyCstr != null) {
-                            val key = keyCstr.toKString()
-                            qjs_FreeCString(ctx, keyCstr)
-                            // 用 atom 取属性值 (避免再次通过 C 字符串解析)
-                            val value = JS_GetProperty(ctx, obj, atom)
-                            try {
-                                result[key] = fromJsValue(ctx, value)
-                            } finally {
-                                JS_FreeValue(ctx, value)
-                            }
-                        }
-                    } finally {
-                        JS_FreeAtom(ctx, atom)
-                    }
+                    val keyCstr = qjs_AtomToCString(ctx, atom) ?: continue
+                    val key = try { keyCstr.toKString() } finally { qjs_FreeCString(ctx, keyCstr) }
+                    val value = JS_GetProperty(ctx, obj, atom)
+                    try { result[key] = fromJsValue(ctx, value) }
+                    finally { JS_FreeValue(ctx, value) }
                 }
             } finally {
-                JS_FreePropertyEnum(ctx, tab, count.toUInt())
+                JS_FreePropertyEnum(ctx, tab, pLen.value)
             }
         }
         return result
@@ -954,39 +971,41 @@ object NativeJsEngine : JsEngine {
      * @return JSValue, 或 null 表示跳过此 binding (复杂对象不桥接)
      */
     internal fun toJsValue(ctx: CPointer<JSContext>, value: Any?): CValue<JSValue>? {
-        val converted = JsValueConverters.convertAll(value)
-        if (JavaClassCompat.supports(converted)) {
-            val scope = threadLocalScope.value ?: return null
-            return NativeJsExtensionsBridge.createJsObject(ctx, converted!!, scope)
-        }
-        return when (converted) {
-            null -> jsNullValue()
-            is Boolean -> qjs_NewBool(ctx, if (converted) 1 else 0)
-            is Int, is Short, is Byte -> qjs_NewInt32(ctx, converted.toInt())
-            is Long, is Float, is Double -> {
-                val d = (converted as Number).toDouble()
-                if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
+        return convertingValue {
+            val converted = JsValueConverters.convertAll(value)
+            if (JavaClassCompat.supports(converted)) {
+                val scope = currentNativeJsScope ?: return null
+                return NativeJsExtensionsBridge.createJsObject(ctx, converted!!, scope)
             }
-            is Number -> {
-                val d = converted.toDouble()
-                if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
-            }
-            is String -> {
-                qjs_NewString(ctx, converted)
-            }
-            is Map<*, *> -> {
-                @Suppress("UNCHECKED_CAST")
-                mapToJsObject(ctx, converted as Map<String, Any?>)
-            }
+            return when (converted) {
+                null -> jsNullValue()
+                is Boolean -> qjs_NewBool(ctx, if (converted) 1 else 0)
+                is Int, is Short, is Byte -> qjs_NewInt32(ctx, converted.toInt())
+                is Long, is Float, is Double -> {
+                    val d = (converted as Number).toDouble()
+                    if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
+                }
+                is Number -> {
+                    val d = converted.toDouble()
+                    if (d.isNaN() || d.isInfinite()) jsNullValue() else qjs_NewFloat64(ctx, d)
+                }
+                is String -> {
+                    qjs_NewString(ctx, converted)
+                }
+                is Map<*, *> -> {
+                    @Suppress("UNCHECKED_CAST")
+                    mapToJsObject(ctx, converted as Map<String, Any?>)
+                }
 
-            is List<*> -> listToJsArray(ctx, converted)
-            is ByteArray -> byteArrayToJsUint8Array(ctx, converted)
-            is JsExtensionsCommon, is ImageOps, is BookLike, is BookChapterLike,
-            is SourceNetworkProvider, is SourceCacheProvider -> {
-                val scope = threadLocalScope.value ?: return null
-                NativeJsExtensionsBridge.createJsObject(ctx, converted, scope)
+                is List<*> -> listToJsArray(ctx, converted)
+                is ByteArray -> byteArrayToJsUint8Array(ctx, converted)
+                is JsExtensionsCommon, is ImageOps, is BookLike, is BookChapterLike,
+                is SourceNetworkProvider, is SourceCacheProvider -> {
+                    val scope = currentNativeJsScope ?: return null
+                    NativeJsExtensionsBridge.createJsObject(ctx, converted, scope)
+                }
+                else -> null  // 真·未知类型跳过注入 (调用方 continue), 不注册 handle 不泄漏
             }
-            else -> null  // 真·未知类型跳过注入 (调用方 continue), 不注册 handle 不泄漏
         }
     }
 
@@ -1008,25 +1027,29 @@ object NativeJsEngine : JsEngine {
     /** Map 递归转 JS object (供 JS_SetPropertyStr 注入)。 */
     private fun mapToJsObject(ctx: CPointer<JSContext>, map: Map<String, Any?>): CValue<JSValue> {
         val obj = JS_NewObject(ctx)
-        memScoped {
-            for ((keyStr, v) in map) {
-                val jsV = toJsValue(ctx, v) ?: continue
-                // JS_SetPropertyStr 转移 jsV 所有权, 不需要 JS_FreeValue(jsV)
-                JS_SetPropertyStr(ctx, obj, keyStr, jsV)
+        try {
+            memScoped {
+                for ((keyStr, v) in map) {
+                    val jsV = toJsValue(ctx, v) ?: continue
+                    // JS_SetPropertyStr 转移 jsV 所有权, 不需要 JS_FreeValue(jsV)
+                    JS_SetPropertyStr(ctx, obj, keyStr, jsV)
+                }
             }
-        }
-        return obj
+            return obj
+        } catch (error: Throwable) { JS_FreeValue(ctx, obj); throw error }
     }
 
     /** List 递归转 JS array (供 JS_SetPropertyStr 注入)。 */
     private fun listToJsArray(ctx: CPointer<JSContext>, list: List<*>): CValue<JSValue> {
         val arr = JS_NewArray(ctx)
-        list.forEachIndexed { i, item ->
-            val jsItem = toJsValue(ctx, item) ?: return@forEachIndexed
-            // JS_SetPropertyUint32 转移 jsItem 所有权, 不需要 JS_FreeValue(jsItem)
-            JS_SetPropertyUint32(ctx, arr, i.toUInt(), jsItem)
-        }
-        return arr
+        try {
+            list.forEachIndexed { i, item ->
+                val jsItem = toJsValue(ctx, item) ?: return@forEachIndexed
+                // JS_SetPropertyUint32 转移 jsItem 所有权, 不需要 JS_FreeValue(jsItem)
+                JS_SetPropertyUint32(ctx, arr, i.toUInt(), jsItem)
+            }
+            return arr
+        } catch (error: Throwable) { JS_FreeValue(ctx, arr); throw error }
     }
 
     /**
@@ -1267,8 +1290,8 @@ object NativeJsEngine : JsEngine {
         coroutineContext: CoroutineContext?,
         crossinline block: () -> T
     ): T {
-        val prevScope = threadLocalScope.value
-        threadLocalScope.value = scope
+        val prevScope = currentNativeJsScope
+        currentNativeJsScope = scope
         val prevCoroutineContext = scope.coroutineContext
         val prevAllowScriptRun = scope.allowScriptRun
         if (coroutineContext != null) {
@@ -1283,7 +1306,7 @@ object NativeJsEngine : JsEngine {
             scope.coroutineContext = prevCoroutineContext
             scope.allowScriptRun = prevAllowScriptRun
             scope.recursiveCount--
-            threadLocalScope.value = prevScope
+            currentNativeJsScope = prevScope
         }
     }
 

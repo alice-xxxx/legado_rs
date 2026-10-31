@@ -37,7 +37,7 @@ async fn media(
 }
 
 fn image_urls(body: &str, base: Option<&str>) -> Result<Vec<String>, String> {
-    let images = regex::Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
+    let images = regex::Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).map_err(|e| e.to_string())?;
     let html = crate::support::looks_like_html(body);
     let urls: Vec<_> = if html {
         images
@@ -89,8 +89,9 @@ pub(crate) async fn chapter_content(
         .or_else(|| context.chapter.extra.get("chapterUrl").and_then(Value::as_str).map(str::to_owned))
         .or_else(|| context.book.book_url.clone().filter(|url| !url.trim().is_empty()))
         .or_else(|| context.book.extra.get("url").and_then(Value::as_str).map(str::to_owned));
+    let fields = chapter.as_object_mut().ok_or("章节数据不是对象")?;
     for key in ["resource", "url", "pages", "sources", "protocol", "files"] {
-        chapter.as_object_mut().unwrap().remove(key);
+        fields.remove(key);
     }
     let kind = crate::sources::content_type(context.source.as_value());
     let (reference, format) = match kind {
@@ -122,7 +123,7 @@ pub(crate) async fn chapter_content(
             for (index, source) in sources.iter_mut().enumerate() {
                 source["selected"] = json!(index == selected);
             }
-            let reference = ResourceRef::new(sources[selected]["src"].as_str().unwrap())
+            let reference = ResourceRef::new(sources[selected]["src"].as_str().ok_or("媒体地址无效")?)
                 .map_err(|e| e.to_string())?;
             chapter["protocol"] = sources[selected]["format"].clone();
             chapter["sources"] = if kind == "video" {
@@ -147,9 +148,9 @@ pub(crate) async fn chapter_content(
                 false,
             )
             .map_err(|e| e.to_string())?;
-            let mut markup = document["markup"].as_str().unwrap().to_owned();
+            let mut markup = document["markup"].as_str().ok_or("HTML 正文数据无效")?.to_owned();
             let images =
-                regex::Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).unwrap();
+                regex::Regex::new(r#"(?i)<img\b[^>]*\bsrc\s*=\s*["']([^"']+)["']"#).map_err(|e| e.to_string())?;
             let urls = images
                 .captures_iter(&markup)
                 .map(|c| c[1].to_owned())
@@ -278,7 +279,7 @@ pub(crate) async fn cache_chapter_files(
                 .await
                 .map_err(|e| e.to_string())?;
             let body = document["markup"].as_str().unwrap_or_default().to_owned();
-            let pattern = regex::Regex::new(r#"resource://proxy/[^\s"'<>]+"#).unwrap();
+            let pattern = regex::Regex::new(r#"resource://proxy/[^\s"'<>]+"#).map_err(|e| e.to_string())?;
             roots.extend(pattern.find_iter(&body).map(|v| v.as_str().to_owned()));
             markup = Some(body);
         }
@@ -299,7 +300,7 @@ pub(crate) async fn cache_chapter_files(
             queue.push_back(url);
         }
     }
-    let links = regex::Regex::new(r#"(?m)^[^#\r\n][^\r\n]*|URI="([^"]+)""#).unwrap();
+    let links = regex::Regex::new(r#"(?m)^[^#\r\n][^\r\n]*|URI="([^"]+)""#).map_err(|e| e.to_string())?;
     let mut playlists = Vec::new();
     let mut files = Vec::new();
     while let Some(url) = queue.pop_front() {
@@ -368,8 +369,8 @@ pub(crate) async fn cache_chapter_files(
             for capture in links.captures_iter(&body) {
                 let raw = capture
                     .get(1)
-                    .unwrap_or_else(|| capture.get(0).unwrap())
-                    .as_str()
+                    .or_else(|| capture.get(0))
+                    .map(|value| value.as_str()).unwrap_or_default()
                     .trim();
                 if raw.is_empty() {
                     continue;

@@ -76,7 +76,7 @@ impl Information {
                 .ok_or("Invalid book context")?
                 .extend(
                     info.as_object()
-                        .unwrap()
+                        .ok_or("Invalid book details")?
                         .iter()
                         .filter(|(_, value)| !value.is_null())
                         .map(|(key, value)| (key.clone(), value.clone())),

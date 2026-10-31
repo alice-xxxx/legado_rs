@@ -26,7 +26,7 @@ impl Cache {
         bytes: &[u8],
     ) -> Result<ResourceRef, ResourceError> {
         let reference = Self::reference(kind, owner, name)?;
-        self.write_file(reference.path().strip_prefix("cache/").unwrap(), bytes)
+        self.write_file(Self::name(&reference)?, bytes)
             .await?;
         Ok(reference)
     }

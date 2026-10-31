@@ -109,6 +109,10 @@ tauri-plugin-single-instance = { version = "2", optional = true }
 [patch.crates-io]
 swift-rs = { git = "https://github.com/IIK3D/swift-rs", rev = "a1bd3b5439aeaacc3bd26624aa611a5e5eee831e" }
 
+[profile.dev.package.foliver]
+# Keep line-number backtraces while reducing this large crate's build memory.
+debug = 1
+
 # Prefer runtime performance with moderate release build/link times.
 [profile.release]
 codegen-units = 16

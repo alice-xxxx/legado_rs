@@ -116,7 +116,7 @@ fn vm(context: &EngineContext) -> Result<&'static JavaVM> {
     })
     .map_err(|e| e.to_string())?;
     VM.set(vm).map_err(|_| "JVM 重复初始化")?;
-    Ok(VM.get().unwrap())
+    VM.get().ok_or_else(|| "JVM initialization did not complete".into())
 }
 fn invoke(
     env: &mut Env<'_>,

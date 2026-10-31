@@ -20,7 +20,7 @@ use std::{
 static TIMEOUT: AtomicU64 = AtomicU64::new(30);
 static JARS: LazyLock<Mutex<HashMap<String, Arc<Jar>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-static IO: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+static IO: OnceLock<Result<tokio::runtime::Runtime>> = OnceLock::new();
 pub fn set_network_timeout_seconds(seconds: u64) {
     TIMEOUT.store(seconds.clamp(1, 300), Ordering::Relaxed);
 }
@@ -172,8 +172,8 @@ pub(crate) fn blocking<T: Send + 'static>(
             .enable_all()
             .thread_name("source-http")
             .build()
-            .expect("创建 HTTP 运行时")
-    });
+            .map_err(|e| format!("创建 HTTP 运行时失败: {e}"))
+    }).as_ref().map_err(Clone::clone)?;
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     runtime.spawn(async move {
         let _ = tx.send(future.await);

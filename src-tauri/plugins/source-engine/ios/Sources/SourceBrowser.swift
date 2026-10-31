@@ -12,7 +12,10 @@ private struct BrowserRequest:Decodable{
 }
 private func failure(_ text:String)->NSError{NSError(domain:"FoliverSource",code:1,userInfo:[NSLocalizedDescriptionKey:text])}
 private func pageURL(_ text:String)throws->Foundation.URL{guard let url=Foundation.URL(string:text),["http","https"].contains(url.scheme ?? ""),url.host != nil,url.user == nil,url.password == nil else{throw failure("浏览器地址无效")};return url}
-private func quoted(_ text:String)->String{String(data:try! JSONSerialization.data(withJSONObject:[text]),encoding:.utf8)!.dropFirst().dropLast().description}
+private func quoted(_ text:String)->String{
+    guard let data=try? JSONSerialization.data(withJSONObject:[text]),let value=String(data:data,encoding:.utf8) else{return "\"\""}
+    return String(value.dropFirst().dropLast())
+}
 
 /** 页面只持有自己的非持久化 WKWebsiteDataStore。 */
 final class SourceBrowser {
@@ -92,7 +95,7 @@ private final class SourcePage:UIViewController,WKNavigationDelegate,WKScriptMes
             poll=Timer.scheduledTimer(withTimeInterval:0.1,repeats:true){[weak self] _ in if Engine.shared.isCancelled(id:execution){self?.close("浏览器请求已取消")}}
         }
     }
-    required init?(coder:NSCoder){fatalError("不支持归档初始化")}
+    required init?(coder:NSCoder){return nil}
     override func loadView(){view=web}
     func show(){
         guard let scene=UIApplication.shared.connectedScenes.compactMap({$0 as? UIWindowScene}).first(where:{$0.activationState == .foregroundActive}),var presenter=scene.windows.first(where:{$0.isKeyWindow})?.rootViewController else{close("没有可显示浏览器的活动窗口");return}

@@ -71,10 +71,10 @@ impl From<std::io::Error> for ResourceError {
 }
 
 pub(super) fn html_urls(html: &str, base: &str) -> Result<String, ResourceError> {
-    static LINKS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static LINKS: std::sync::OnceLock<Result<regex::Regex, regex::Error>> = std::sync::OnceLock::new();
     let links = LINKS.get_or_init(|| {
-        regex::Regex::new(r#"(?i)\b(src|href|poster)\s*=\s*(["'])(resource://[^"']+)["']"#).unwrap()
-    });
+        regex::Regex::new(r#"(?i)\b(src|href|poster)\s*=\s*(["'])(resource://[^"']+)["']"#)
+    }).as_ref().map_err(|error| ResourceError::new(error.to_string()))?;
     let mut error = None;
     let result = links.replace_all(
         html,

@@ -41,7 +41,7 @@ impl Tts {
             content_type,
         });
         let id = uuid::Uuid::new_v4().simple().to_string();
-        self.0.lock().unwrap().insert(id.clone(), audio.clone());
+        self.0.lock().unwrap_or_else(|error| error.into_inner()).insert(id.clone(), audio.clone());
         Ok(Writer {
             id,
             audio,
@@ -50,7 +50,7 @@ impl Tts {
     }
 
     pub(crate) fn release(&self, id: &str) -> bool {
-        let Some(audio) = self.0.lock().unwrap().remove(id) else {
+        let Some(audio) = self.0.lock().unwrap_or_else(|error| error.into_inner()).remove(id) else {
             return false;
         };
         audio.progress.send_modify(|state| state.cancelled = true);
@@ -58,7 +58,7 @@ impl Tts {
     }
 
     pub(crate) fn clear(&self) {
-        for (_, audio) in self.0.lock().unwrap().drain() {
+        for (_, audio) in self.0.lock().unwrap_or_else(|error| error.into_inner()).drain() {
             audio.progress.send_modify(|state| state.cancelled = true);
         }
     }
@@ -105,7 +105,7 @@ async fn read(
     let audio = tts
         .0
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .get(&id)
         .cloned()
         .ok_or(StatusCode::NOT_FOUND)?;

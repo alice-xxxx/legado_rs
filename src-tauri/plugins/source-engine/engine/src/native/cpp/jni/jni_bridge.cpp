@@ -56,6 +56,7 @@ static void throwSourceScriptTimeout(JNIEnv *env) {
     jmethodID ctor = env->GetMethodID(excCls, "<init>", "(Ljava/lang/String;Ljava/lang/String;II)V");
     if (ctor) {
         jstring msg = env->NewStringUTF(message);
+        if (!msg) { env->DeleteLocalRef(excCls); return; }
         jobject exc = env->NewObject(excCls, ctor, msg, nullptr, -1, -1);
         if (msg) env->DeleteLocalRef(msg);
         if (exc) {
@@ -112,9 +113,9 @@ Java_com_script_quickjs_QuickJsNative_nativeCreateRuntime(JNIEnv *env, jobject c
         LOGE("JS_NewRuntime failed");
         return 0;
     }
-    // 设置内存限制 (256MB) 和栈大小 (1MB),防止恶意 JS OOM
+    // 留出 JNI/Java 调用栈空间，避免脚本先耗尽系统线程栈。
     JS_SetMemoryLimit(rt, 256 * 1024 * 1024);
-    JS_SetMaxStackSize(rt, 1024 * 1024);
+    JS_SetMaxStackSize(rt, 256 * 1024);
     return (jlong) rt;
 }
 
@@ -137,6 +138,7 @@ Java_com_script_quickjs_QuickJsNative_nativeCreateContext(JNIEnv *env, jobject c
         LOGE("JS_NewContext failed");
         return 0;
     }
+    JS_SetLegacyEvalCompletion(ctx, true);
 
     // 初始化 JavaObject 自定义类 (每个 runtime 一次)
 
@@ -526,6 +528,7 @@ Java_com_script_quickjs_QuickJsNative_nativeCallFunction(JNIEnv *env, jobject cl
     }
     if (argHandles && argCount > 0) {
         jlong *handles = env->GetLongArrayElements(argHandles, nullptr);
+        if (!handles) { std::free(heapArgs); return nullptr; }
         for (jsize i = 0; i < argCount; i++) {
             args[i] = JsHandleTable::instance().get(handles[i]);
         }
@@ -657,7 +660,7 @@ Java_com_script_quickjs_QuickJsNative_nativeCompile(JNIEnv *env, jobject clazz,
     if (!buf) return nullptr;
 
     jbyteArray result = env->NewByteArray((jsize) outLen);
-    env->SetByteArrayRegion(result, 0, (jsize) outLen, (jbyte *) buf);
+    if (result) env->SetByteArrayRegion(result, 0, (jsize) outLen, (jbyte *) buf);
     js_free(ctx, buf);
     return result;
 }
@@ -670,6 +673,7 @@ Java_com_script_quickjs_QuickJsNative_nativeEvalBytecode(JNIEnv *env, jobject cl
 
     jsize len = env->GetArrayLength(bytecode);
     jbyte *data = env->GetByteArrayElements(bytecode, nullptr);
+    if (!data) return nullptr;
 
     // 反序列化 bytecode (用 JS_ReadObject + JS_READ_OBJ_BYTECODE flag)
     JSValue funVal = JS_ReadObject(ctx, (uint8_t *) data, len, JS_READ_OBJ_BYTECODE);

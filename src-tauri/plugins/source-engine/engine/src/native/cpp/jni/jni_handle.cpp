@@ -35,7 +35,7 @@ uint32_t JsHandleTable::probeLocked(int64_t key, bool *outFound) const {
     const uint32_t mask = size - 1;
     uint32_t idx = hashKey(key) & mask;
     uint32_t firstTomb = UINT32_MAX;
-    for (;;) {
+    for (uint32_t probes = 0; probes < size; ++probes) {
         const Entry &e = hash[idx];
         if (e.state == kEmpty) {
             *outFound = false;
@@ -48,9 +48,12 @@ uint32_t JsHandleTable::probeLocked(int64_t key, bool *outFound) const {
         if (e.state == kTomb && firstTomb == UINT32_MAX) firstTomb = idx;
         idx = (idx + 1) & mask;
     }
+    *outFound = false;
+    return firstTomb;
 }
 
 void JsHandleTable::rehashLocked(uint32_t newSize) {
+    if (newSize <= used) return;
     Entry *oldHash = hash;
     uint32_t oldSize = size;
     Entry *nb = (Entry *) std::calloc(newSize, sizeof(Entry));
@@ -78,6 +81,8 @@ int64_t JsHandleTable::store(JSContext *ctx, JSValue value) {
         rehashLocked(kInitSize);
         if (!hash) {
             pthread_mutex_unlock(&mutex);
+            JS_FreeValue(ctx, value);
+            JS_ThrowOutOfMemory(ctx);
             return 0;
         }
     }
@@ -88,6 +93,12 @@ int64_t JsHandleTable::store(JSContext *ctx, JSValue value) {
     int64_t handle = nextHandle++;
     bool found;
     uint32_t idx = probeLocked(handle, &found);
+    if (idx == UINT32_MAX) {
+        pthread_mutex_unlock(&mutex);
+        JS_FreeValue(ctx, value);
+        JS_ThrowOutOfMemory(ctx);
+        return 0;
+    }
     if (hash[idx].state == kTomb) tombstones--;
     hash[idx] = {handle, ctx, value, kUsed};
     used++;

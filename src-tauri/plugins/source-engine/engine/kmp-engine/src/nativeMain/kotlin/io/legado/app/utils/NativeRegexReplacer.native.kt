@@ -48,10 +48,10 @@ object NativeRegexReplacer : RegexReplacer {
                                 // isJs 路径: 循环外创建共享 scope + 预编译, 逐匹配注入 result 求值
                                 val bindings = JsBindings().apply { this["result"] = "" }
                                 val scope = JsEngines.get().getRuntimeScope(bindings)
-                                val compiled = JsEngines.get().compile(
-                                    JsEngines.get().wrapJsForEval(replacement1), scope
-                                )
                                 try {
+                                    val compiled = JsEngines.get().compile(
+                                        JsEngines.get().wrapJsForEval(replacement1), scope
+                                    )
                                     regex.replace(source) { match ->
                                         val b = JsBindings().apply {
                                             this["result"] = match.value
@@ -69,7 +69,7 @@ object NativeRegexReplacer : RegexReplacer {
                                 regex.replace(source, replacement1)
                             }
                             block.resume(result)
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
                             block.resumeWithException(e)
                         }
                     }
@@ -77,19 +77,14 @@ object NativeRegexReplacer : RegexReplacer {
                         job.onJoin {}
                         onTimeout(timeout) {
                             val timeoutMsg =
-                                "替换超时,3秒后还未结束将重启应用\n替换规则$regex\n替换内容:$source"
+                                "替换超时\n替换规则$regex\n替换内容:$source"
                             val exception = RegexTimeoutException(timeoutMsg)
                             block.cancel(exception)
                             // Android 专属副作用经 RegexErrorHandler 注入; native 端未注册时静默跳过
                             val handler = RegexErrorHandlers.getOrNull()
                             handler?.onTimeoutToast(timeoutMsg)
                             handler?.saveCrashInfo(exception)
-                            select {
-                                job.onJoin {}
-                                onTimeout(3000) {
-                                    handler?.restartApp()
-                                }
-                            }
+                            job.cancel()
                         }
                     }
                 }

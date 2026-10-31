@@ -109,7 +109,7 @@ pub(crate) async fn html(
     let (reference, document) = html_document(kind, book, chapter, body, base, local)?;
     resources
         .cache
-        .save_content(&reference, document["markup"].as_str().unwrap())
+        .save_content(&reference, document["markup"].as_str().ok_or_else(|| ResourceError::new("正文 markup 必须是字符串"))?)
         .await?;
     Ok(reference)
 }

@@ -39,7 +39,7 @@ internal object HostHttpClient:OkHttpClientProvider,OkHttpProxyClientProvider {
                     val request=if(cookies)bridge?.loadRequest(builder.build())?:builder.build() else builder.build()
                     chain.proceed(request).also{if(cookies)bridge?.saveResponse(it)}
                 }
-            }catch(error:Exception){
+            }catch(error:Throwable){
                 // OkHttp 会重抛非 IOException，必须在整个宿主请求链的边界转换。
                 throw if(error is IOException)error else IOException(error.message,error)
             }}

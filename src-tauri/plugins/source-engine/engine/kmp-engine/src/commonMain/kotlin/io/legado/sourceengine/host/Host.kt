@@ -16,15 +16,14 @@ interface SourceEngineHost {
 internal class SourceEngineHostContext(val host:SourceEngineHost):AbstractCoroutineContextElement(Key) {
     companion object Key:CoroutineContext.Key<SourceEngineHostContext>
 }
-/** 只保护脚本线程状态；HTTP 挂起时释放通道。 */
+/** 请求宿主随协程恢复，隔离不同书源的线程状态。 */
 object SourceEngineHostRegistry {
-    private val lane=IoDispatcher.limitedParallelism(1)
     fun current():SourceEngineHost?=currentHost()
     @kotlin.jvm.JvmStatic fun executionCancelled()=current()?.isCancelled?:false
     internal fun <T> onThread(host:SourceEngineHost,block:()->T):T {
         val old=currentHost();setHost(host);return try{block()}finally{setHost(old)}
     }
-    internal suspend fun <T> withHost(host:NativeHost,block:suspend()->T):T=withContext(hostContext(host,lane)+SourceEngineHostContext(host)){try{block()}finally{host.imageScope.close()}}
+    internal suspend fun <T> withHost(host:NativeHost,block:suspend()->T):T=withContext(hostContext(host,IoDispatcher)+SourceEngineHostContext(host)){try{block()}finally{host.imageScope.close()}}
 }
 internal expect fun currentHost():SourceEngineHost?
 internal expect fun setHost(host:SourceEngineHost?)

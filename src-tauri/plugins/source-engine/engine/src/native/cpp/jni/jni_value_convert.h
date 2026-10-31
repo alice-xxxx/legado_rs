@@ -16,6 +16,7 @@
  */
 class JniValueConvert {
 public:
+    static jstring utf8ToJavaString(JSContext *ctx, JNIEnv *env, const char *text);
     /**
      * JSValue 转 jobject (供 JNI 返回给 Java)。
      *

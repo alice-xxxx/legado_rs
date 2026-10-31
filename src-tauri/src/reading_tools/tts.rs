@@ -78,7 +78,7 @@ impl Tts {
         if system.is_none() {
             *system = Some(SystemTts::new().map_err(|error| error.to_string())?);
         }
-        Ok(system.as_ref().unwrap().clone())
+        system.as_ref().cloned().ok_or_else(|| "系统朗读未初始化".into())
     }
 
     fn tts_progress(&self, progress: Value) {
@@ -573,7 +573,7 @@ impl Tts {
                     }
                 },
                 _ = async {}, if !paused && !pending.is_empty() && utterances.len() < 2 => {
-                    let item = pending.pop_front().unwrap();
+                    let Some(item) = pending.pop_front() else { continue };
                     let id = player.speak(&item, append)?;
                     utterances.insert(id, item);
                     append = true;

@@ -84,7 +84,7 @@ class ConcurrentRateLimiter(val source: BaseSource?) {
                         return@synchronized 0
                     }
                     val cs = concurrentRate.take(rateIndex)
-                    if (fetchRecord.frequency > cs.toInt()) {
+                    if (fetchRecord.frequency >= cs.toInt()) {
                         return@synchronized (nextTime - Clock.System.now().toEpochMilliseconds()).toInt()
                     } else {
                         fetchRecord.frequency += 1

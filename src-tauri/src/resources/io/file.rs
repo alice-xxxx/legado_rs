@@ -76,7 +76,7 @@ impl Files {
         tokio::task::spawn_blocking(move || {
             // 等待方取消后，实际写入继续持有锁，直到原子替换完成。
             let _writing = writing;
-            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::create_dir_all(path.parent().ok_or_else(|| io::Error::other("资源路径缺少父目录"))?)?;
             atomicwrites::AtomicFile::new(&path, atomicwrites::AllowOverwrite)
                 .write(|file| {
                     write(file)?;
@@ -124,7 +124,7 @@ impl Files {
         self.0
             .locks
             .lock()
-            .unwrap()
+            .unwrap_or_else(|error| error.into_inner())
             .entry(path.to_owned())
             .or_default()
             .clone()

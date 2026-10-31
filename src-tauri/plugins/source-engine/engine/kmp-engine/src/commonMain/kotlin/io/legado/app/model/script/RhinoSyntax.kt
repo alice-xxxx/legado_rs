@@ -76,8 +76,8 @@ object RhinoSyntax {
         edits.sortedByDescending{it.start}.forEach{result.setRange(it.start,it.end,it.text)}
         return result.toString()
     }
-    /** Rhino 允许脚本顶层 return；普通脚本仍用 eval 保留末尾表达式的完成值。 */
-    fun wrapForEval(source:String):String {
+    /** Rhino 顶层 return 兼容；只有复用 scope 才包装隔离，独立 scope 保留全局 var 语义。 */
+    fun wrapForEval(source:String,isolate:Boolean=true):String {
         val normalized=normalize(source)
         val scanner=Scan(normalized)
         val tokens=generateSequence{scanner.next()}.toList()
@@ -110,7 +110,7 @@ object RhinoSyntax {
         val statement=setOf("var","let","const","if","else","for","while","do","switch","try","class","function","return","throw","break","continue",";",".","?.")
         val body=if(hasReturn&&tail!=null&&tail.text !in statement)normalized.substring(0,tail.start)+"return "+normalized.substring(tail.start) else normalized
         val script=if(hasReturn)"(function(){\n$body\n}).call(this)" else normalized
-        return "(function(){with(__currentBindings()){return eval(${KS_JSON.encodeToString(script)});}})()"
+        return if(isolate) "(function(){with(__currentBindings()){return eval(${KS_JSON.encodeToString(script)});}})()" else script
     }
     fun normalize(source:String):String {
         val scanner=Scan(source)

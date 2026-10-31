@@ -16,6 +16,138 @@ class SourceCompatibilityTest {
     }
     private fun eval(js:String) = AnalyzeRuleCore().evalJS(js)?.toString()
 
+    @Test fun unicodePropertiesAndErrorsCrossJniSafely() {
+        assertEquals("value:true",eval("var key='中文😀';var map=new Packages.java.util.LinkedHashMap();map.put(key,'value');String(map[key])+':'+Object.keys(map).includes(key)"))
+        val error=assertFails { eval("throw new Error('中文😀')") }
+        assertTrue(error.message?.contains("中文😀")==true,"Unicode exception text was not preserved")
+        assertEquals("42",eval("6*7"))
+    }
+
+    @Test fun thrownObjectDiagnosticsHandleLongProperties() {
+        for (script in listOf(
+            "throw {detail:'x'.repeat(100000)+'fixture-end'}",
+            "throw {['x'.repeat(100000)+'fixture-end']:'value'}"
+        )) {
+            val error=assertFails { eval(script) }
+            assertTrue(error.message?.contains("fixture-end")==true,"Long thrown property was not preserved")
+        }
+        assertEquals("42",eval("6*7"))
+    }
+
+    @Test fun sourceResultConversionIsBounded() {
+        for (script in listOf(
+            "var a={};a.self=a;a",
+            "var a=[];a.push(a);a",
+            "var a={};for(var i=0;i<256;i++)a={child:a};a",
+            "new Array(2147483648)",
+            "({get value(){throw new Error('getter fixture')}})",
+            "function recurse(){return recurse()}recurse()"
+        )) {
+            assertFails(script) { eval(script) }
+        }
+        assertEquals("42",eval("6*7"))
+        assertNotNull(AnalyzeRuleCore().evalJS("({value:[1,2,3]})"))
+    }
+
+    @Test fun sourceFailuresDoNotPoisonTheEngine() {
+        for (script in listOf("function(", "throw new Error('fixture')", "throw null", "JSON.parse('{')", "new RegExp('[')", "null.value", "throw new Packages.java.lang.AssertionError('fixture')")) {
+            assertFails(script) { eval(script) }
+        }
+        assertEquals("42",eval("6*7"))
+    }
+
+    @Test fun processTerminationCannotBeEnabledByASource() {
+        for (enabled in listOf(false,true)) {
+            for (name in listOf("com.script.quickjs.QuickJsNative", "com.script.quickjs.QuickJsContext", "cn.hutool.core.util.RuntimeUtil", "cn.hutool.core.util.ReflectUtil", "libcore.io.Os")) {
+                assertFalse(com.script.quickjs.JsSecurityPolicy.isClassVisible(name,enabled),name)
+            }
+            val source=BookSource(bookSourceUrl="https://process-fixture.invalid/$enabled",enableDangerousApi=enabled)
+            for (script in listOf("Packages.java.lang.System.exit(0)", "Packages.java.lang.Runtime.getRuntime().halt(1)", "Packages.java.lang.Class.forName('java.lang.Runtime').getRuntime().exit(0)", "new Packages.java.lang.Thread().start()")) {
+                assertFails(script) { source.evalJS(script) }
+            }
+            assertEquals("42",source.evalJS("42")?.toString())
+        }
+    }
+
+    @Test fun callbacksCannotUseReleasedOrForeignContexts() {
+        val scope=io.legado.app.model.script.quickjs.QuickJsJsEngine.createStandaloneScope() as io.legado.app.model.script.quickjs.QuickJsJsScope
+        val handle=com.script.quickjs.JsFunctionHandle.register(scope.ctx.ctxPtr,"({run:function(){return 42;}})",false)
+        val callback=assertNotNull(com.script.quickjs.JsFunctionHandle.get(handle))
+        val function=com.script.quickjs.JsFunction(scope.ctx,"function(){return 42}")
+        try {
+            assertNull(callback.invokeJsMethod("run",emptyArray()))
+            assertNull(function.call())
+        } finally { scope.close() }
+        assertNull(callback.invokeJsMethod("run",emptyArray()))
+        assertNull(function.call())
+        val predicate=com.script.quickjs.JsSamAdapter.wrapAsSam(0L,java.util.function.Predicate::class.java) as java.util.function.Predicate<Any>
+        assertFalse(predicate.test("fixture"))
+        assertEquals("1",eval("var list=new Packages.java.util.ArrayList();list.add(2);list.add(1);list.sort((a,b)=>a-b);list.get(0)"))
+    }
+
+    @Test fun failedPrimitiveCallbacksDoNotUnboxNull() {
+        assertEquals("2",eval("var list=new Packages.java.util.ArrayList();list.add('b');list.add('a');list.sort(new JavaAdapter(Packages.java.util.Comparator,{compare:function(){throw new Error('fixture')}}));list.size();"))
+        assertEquals("0",eval("var a=new Packages.java.util.ArrayList();a.add('x');var b=new Packages.java.util.ArrayList();var list=new Packages.java.util.ArrayList();list.add(a);list.add(b);list.sort(new JavaAdapter(Packages.java.util.Comparator,{compare:function(a,b){return a.size()-b.size()}}));list.get(0).size();"))
+    }
+
+    @Test fun legacyStatementCompletionMatchesRhino181() {
+        // Golden values evaluated by the reference project's Rhino 1.8.1.
+        val scripts=mapOf(
+            "42;if(false){}" to "42",
+            "var result='initial';result='content';if(result.length<3){result='hint'}" to "content",
+            "var result='content';if(result.length<3){result='hint'}" to null,
+            "42;if(true){undefined}" to null,
+            "42;while(false){}" to "42",
+            "42;for(var i=0;i<0;i++){}" to "42",
+            "42;do{}while(false)" to "42",
+            "42;switch(0){case 1:1;break}" to "42",
+            "42;try{}catch(e){}" to "42",
+            "42;try{throw 1}catch(e){}" to "42",
+            "42;try{7}finally{8}" to "8",
+            "42;if(true){var x=1}" to "42",
+            "42;if(true){7}else{8}" to "7",
+            "42;for(var i=0;i<2;i++){if(i===0)7}" to "7",
+            "42;try{throw 1}catch(e){9}" to "9",
+            "42;try{}finally{}" to "42"
+        )
+        scripts.forEach { (script,expected)->assertEquals(expected,eval(script),script) }
+    }
+
+    @Test fun standaloneScriptsExposeVarDeclarationsOnTheirGlobalObject() {
+        val script="var window=this;var document={documentElement:{nodeName:'HTML'}};window.document.documentElement.nodeName;"
+        val rule=AnalyzeUrlCore("https://example.org/")
+        val previous=rule.evalJS("typeof document")
+        assertEquals("HTML",rule.evalJS(script))
+        assertEquals(previous,rule.evalJS("typeof document"))
+        val source=BookSource(bookSourceUrl="https://standalone.invalid/")
+        val sourcePrevious=source.evalJS("typeof document")
+        assertEquals("HTML",source.evalJS(script))
+        assertEquals(sourcePrevious,source.evalJS("typeof document"))
+    }
+
+    @Test fun blockingJavaCallsDoNotSpendTheScriptCpuBudget() {
+        assertEquals("100000",eval("Packages.java.lang.Thread.sleep(11000);var count=0;for(var i=0;i<100000;i++)count++;count;"))
+    }
+
+    @Test fun busyScriptsTimeOutAndLeaveTheEngineUsable() {
+        val error=assertFails { eval("for(;;){}") }
+        assertTrue(error.message.orEmpty().contains("10 秒"))
+        assertEquals("42",eval("42"))
+    }
+
+    @Test fun legacyAesEncryptionSupportsCbcAndEmptyIvForEcb() {
+        val key="I6bWc9iRWbpZsxaWrAqah8XLy7N4Lv4W"
+        val data="""{"id":"42","page":1,"keyword":"系统"}"""
+        for ((algorithm,iv) in listOf("AES/CBC/PKCS5Padding" to "1337325401748205","AES/ECB/PKCS5Padding" to "")) {
+            val cipher=javax.crypto.Cipher.getInstance(algorithm)
+            val secret=javax.crypto.spec.SecretKeySpec(key.toByteArray(),"AES")
+            if (iv.isEmpty()) cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,secret)
+            else cipher.init(javax.crypto.Cipher.ENCRYPT_MODE,secret,javax.crypto.spec.IvParameterSpec(iv.toByteArray()))
+            val expected=java.util.Base64.getEncoder().encodeToString(cipher.doFinal(data.toByteArray()))
+            assertEquals(expected,eval("java.aesEncodeToBase64String('$data','$key','$algorithm','$iv')"))
+        }
+    }
+
     @Test fun scriptCompletionAndTopLevelReturn() {
         assertEquals("42", eval("var n=40; n+2"))
         assertEquals("42", eval("if(true){return 42;} 'unused'"))

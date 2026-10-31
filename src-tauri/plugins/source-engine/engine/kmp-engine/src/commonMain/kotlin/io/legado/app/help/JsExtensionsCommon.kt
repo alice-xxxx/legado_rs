@@ -304,6 +304,9 @@ interface JsExtensionsCommon {
     fun desEncodeToBase64String(data: String, key: String, transformation: String, iv: String): String =
         createSymmetricCrypto(transformation, key, iv.takeIf { it.isNotEmpty() }).encryptBase64(data)
 
+    fun aesEncodeToBase64String(data: String, key: String, transformation: String, iv: String): String =
+        createSymmetricCrypto(transformation, key, iv.takeIf { it.isNotEmpty() }).encryptBase64(data)
+
     /* keys都为null时使用随机密钥 */
     fun createAsymmetricCrypto(
         transformation: String

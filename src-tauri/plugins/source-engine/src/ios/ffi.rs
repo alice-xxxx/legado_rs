@@ -11,8 +11,8 @@ fn read(input: *const c_char) -> crate::Result<String> {
 }
 fn output(value: String) -> *mut c_char {
     CString::new(value.replace('\0', "\\u0000"))
-        .expect("JSON 无未转义的空字节")
-        .into_raw()
+        .map(CString::into_raw)
+        .unwrap_or(std::ptr::null_mut())
 }
 macro_rules! endpoint {
     ($name:ident,$function:path) => {

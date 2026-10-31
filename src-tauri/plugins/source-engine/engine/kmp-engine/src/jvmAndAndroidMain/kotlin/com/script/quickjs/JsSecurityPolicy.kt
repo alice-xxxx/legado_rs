@@ -18,9 +18,22 @@ import java.util.Collections
  * 2. [protectedClasses]: isAssignableFrom 类型检查(黑名单)
  * 3. [systemClassProtectedName]: System 类特殊方法屏蔽(load/loadLibrary/exit)
  *
- * dangerousApi = true 时全部放行(由 BaseSource.enableDangerousApi 控制)。
+ * dangerousApi 不放行进程终止、原生代码加载及其反射绕过入口。
  */
 object JsSecurityPolicy {
+    private val processClasses = ClassNameMatcher(listOf(
+        "java.lang.Runtime", "java.lang.ProcessBuilder", "java.lang.ClassLoader",
+        "java.lang.reflect", "java.lang.invoke", "sun", "jdk.internal", "dalvik.system",
+        "android.os.Process", "android.system", "android.app.ActivityThread",
+        "android.app.AppGlobals", "kotlin.system", "libcore",
+        "com.script.quickjs.QuickJsNative", "com.script.quickjs.QuickJsContext",
+        "com.script.quickjs.QuickJsEngine", "com.script.quickjs.JavaObjectBridge",
+        "cn.hutool.core.util.RuntimeUtil", "cn.hutool.core.util.ClassLoaderUtil",
+        "cn.hutool.core.util.ReflectUtil", "cn.hutool.core.util.ClassUtil",
+        "cn.hutool.core.util.SerializeUtil", "cn.hutool.core.lang.JarClassLoader"
+    ))
+    private fun processClass(clazz: Class<*>) = processClasses.match(clazz.name) ||
+        ClassLoader::class.java.isAssignableFrom(clazz) || Member::class.java.isAssignableFrom(clazz)
 
     /**
      * android.content.Context 类引用 (跨平台): Android 端存在, 桌面 JVM 不存在。
@@ -180,6 +193,7 @@ object JsSecurityPolicy {
      * @param dangerousApi 是否旁路安全名单
      */
     fun isClassVisible(fullClassName: String, dangerousApi: Boolean): Boolean {
+        if (processClasses.match(fullClassName)) return false
         if (dangerousApi) return true
         return !protectedClassNamesMatcher.match(fullClassName)
     }
@@ -188,6 +202,7 @@ object JsSecurityPolicy {
      * 检查对象是否允许访问(综合类名 + 类型检查)。
      */
     fun isObjectVisible(obj: Any, dangerousApi: Boolean): Boolean {
+        if (processClass(obj.javaClass) || obj is Class<*> && processClass(obj)) return false
         if (dangerousApi) return true
         // NativeObject 是 JS 对象跨语言存活的载体(cache.putMemory / evalJS 返回值),
         // com.script 黑名单本意是防反射引擎内部,不该殃及数据。
@@ -213,6 +228,7 @@ object JsSecurityPolicy {
      * 检查 Class 是否允许访问(基于 isAssignableFrom 类型检查)。
      */
     fun isClassVisible(clazz: Class<*>, dangerousApi: Boolean): Boolean {
+        if (processClass(clazz)) return false
         if (dangerousApi) return true
         protectedClasses.forEach {
             if (it.isAssignableFrom(clazz)) {
@@ -226,10 +242,14 @@ object JsSecurityPolicy {
      * 检查方法是否允许调用(用于 System 类方法屏蔽)。
      */
     fun isMethodVisible(className: String, methodName: String, dangerousApi: Boolean): Boolean {
-        if (dangerousApi) return true
+        if (processClasses.match(className)) return false
         if (className == "java.lang.System" && methodName in systemClassProtectedName) {
             return false
         }
+        if (className == "java.lang.Thread" && methodName in setOf(
+            "start", "stop", "suspend", "resume", "setUncaughtExceptionHandler", "setDefaultUncaughtExceptionHandler"
+        )) return false
+        if (dangerousApi) return true
         if (className == "java.lang.Class" && methodName in classProtectedName) {
             return false
         }

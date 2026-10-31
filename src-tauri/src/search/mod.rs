@@ -178,9 +178,10 @@ impl Search {
                 break;
             }
             let mut update = json!({"searchId": search_id, "sourceId": source.id, "results": [], "hasMore": false});
+            let mut results = Vec::new();
             match response {
                 Ok(value) if value["books"].is_array() => {
-                    let books = value["books"].as_array().unwrap();
+                    let books = value["books"].as_array().map(Vec::as_slice).unwrap_or_default();
                     update["hasMore"] =
                         json!(value["hasNextPage"].as_bool().unwrap_or(!books.is_empty()));
                     for book in books {
@@ -200,7 +201,7 @@ impl Search {
                             continue;
                         }
                         let leaf = json!(leaf);
-                        update["results"].as_array_mut().unwrap().push(leaf.clone());
+                        results.push(leaf.clone());
                         // 暂存详情请求的引擎上下文；展示数据和可换来源由 Vue 管理。
                         registry.search_result_documents.insert(
                             result_id,
@@ -216,6 +217,7 @@ impl Search {
                     }))
                 }
             }
+            update["results"] = json!(results);
             drop(registry);
             emit(update);
         }

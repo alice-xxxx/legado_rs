@@ -43,11 +43,11 @@ fn collect(value: Value, output: &mut Vec<Value>) {
                 && !map.contains_key("sourceUrl")
                 && !map.contains_key("feedUrl")
             {
-                if let Some(key) = ["bookSource", "sources", "data"]
+                if let Some(nested) = ["bookSource", "sources", "data"]
                     .into_iter()
-                    .find(|key| map.contains_key(*key))
+                    .find_map(|key| map.remove(key))
                 {
-                    return collect(map.remove(key).unwrap(), output);
+                    return collect(nested, output);
                 }
             }
             output.push(Value::Object(map));
@@ -160,7 +160,7 @@ pub(crate) fn normalize(mut value: Value) -> Result<Value, String> {
     }
     if is_legacy_rss_source(&value) {
         let original = value.clone();
-        let map = value.as_object_mut().unwrap();
+        let map = value.as_object_mut().ok_or("源定义必须是 JSON 对象")?;
         for (old, new) in [
             ("sourceUrl", "bookSourceUrl"),
             ("sourceName", "bookSourceName"),

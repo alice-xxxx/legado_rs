@@ -1222,7 +1222,7 @@ object JavaObjectBridge {
         // 走 method callable → 此方法, 需用 lookupClass 查到内部类的静态方法。
         val lookupClass = if (obj is Class<*>) obj else obj.javaClass
         if (!JsSecurityPolicy.isMethodVisible(lookupClass.name, methodName, dangerousApi)) {
-            return null
+            throw SecurityException("Source cannot call ${lookupClass.name}.$methodName")
         }
         // 热点类型快速路径 — callHotTypeMethod 内部走 javaToJsResult 会把 Java 对象包成
         // {__java_handle__: h} 句柄 Map, native 侧拿到还得再解包一次。此处直接反解, 让
@@ -1434,7 +1434,9 @@ object JavaObjectBridge {
     ): Any? {
         val clazz = getClass(classHandle) ?: return null
         if (!JsSecurityPolicy.isClassVisible(clazz, dangerousApi)) return null
-        if (!JsSecurityPolicy.isMethodVisible(clazz.name, methodName, dangerousApi)) return null
+        if (!JsSecurityPolicy.isMethodVisible(clazz.name, methodName, dangerousApi)) {
+            throw SecurityException("Source cannot call ${clazz.name}.$methodName")
+        }
         // 异常不 catch: 传播到 native 层, 对齐 rhino (见 callInstanceMethodRaw 注释)
         val javaArgs = jsToJavaArgs(args)
         // 对齐 rhino NativeJavaClass.get: 找不到静态成员时 throw reportMemberNotFound。
@@ -1735,7 +1737,7 @@ object JavaObjectBridge {
                 }
             }
             // 调用 JS 侧的方法
-            jsHandler.invokeJsMethod(method.name, args ?: emptyArray())
+            jsHandler.invokeJsMethod(method.name, args ?: emptyArray()) ?: callbackDefaultValue(method.returnType)
         }
         val proxy = Proxy.newProxyInstance(
             this.javaClass.classLoader,

@@ -40,37 +40,17 @@ class JsFunctionHandle private constructor(
      * @param args Java 方法参数, 会通过 [javaArgToJsExpr] 转换为 JS 表达式
      * @return JS function 返回值 (基本类型 / Java 对象包装为 JavaObject / null)
      */
-    fun invokeJsMethod(methodName: String, args: Array<Any?>): Any? {
-        val jsArgs = args.joinToString(",") { javaArgToJsExpr(it) }
-        // 用 IIFE 包裹避免污染全局作用域, 并捕获异常记录日志
-        // null/undefined 经 nativeEval 返回 Java null
-        val jsCode =
-            "(function(){return ($jsObjectExpr && $jsObjectExpr.$methodName && $jsObjectExpr.$methodName($jsArgs));})();"
-        return try {
-            // 设置 ThreadLocalContext, 让 binding handler 能访问到当前 ctx
-            // (JavaAdapter 回调可能来自非 JS 执行线程, 需要确保 ThreadLocal 有效)
-            val ctx = QuickJsContext.threadLocalContext.get()
-            val previousCtx = if (ctx?.ctxPtr == ctxPtr) null else run {
-                // 当前线程没有 context 或不是本 handle 对应的 ctx,
-                // 需要临时设置 (用于 binding handler 调用)
-                val ownerCtx = findOwnerCtx()
-                if (ownerCtx != null) {
-                    val prev = QuickJsContext.threadLocalContext.get()
-                    QuickJsContext.threadLocalContext.set(ownerCtx)
-                    prev
-                } else null
-            }
-            try {
-                QuickJsNative.nativeEval(ctxPtr, jsCode)
-            } finally {
-                if (previousCtx != null) {
-                    QuickJsContext.threadLocalContext.set(previousCtx)
-                }
-            }
-        } catch (e: Throwable) {
-            logQuickJsWarn(TAG, "invokeJsMethod failed: $jsObjectExpr.$methodName", e)
-            null
+    fun invokeJsMethod(methodName: String, args: Array<Any?>): Any? = try {
+        val owner = findOwnerCtx()
+        check(owner != null && QuickJsContext.threadLocalContext.get() === owner) {
+            "Source callback context was released or belongs to another thread"
         }
+        val jsArgs = args.joinToString(",") { javaArgToJsExpr(it) }
+        QuickJsNative.nativeEval(ctxPtr,
+            "(function(){return ($jsObjectExpr && $jsObjectExpr.$methodName && $jsObjectExpr.$methodName($jsArgs));})();")
+    } catch (error: Throwable) {
+        logQuickJsWarn(TAG, "invokeJsMethod failed: $jsObjectExpr.$methodName", error)
+        null
     }
 
     /**
@@ -101,18 +81,18 @@ class JsFunctionHandle private constructor(
         if (arg is ByteArray) {
             // ByteArray 通过句柄注入 (JavaObject trap 支持 length/索引访问)
             val handle = JavaObjectBridge.registerObject(arg)
-            return "__wrapJavaHandle(${handle}L)"
+            return "__wrapJavaHandle($handle)"
         }
         // Java 对象通过句柄包装
         if (!JsSecurityPolicy.isObjectVisible(arg, dangerousApi)) return "null"
         val handle = JavaObjectBridge.registerObject(arg)
         // 通过 bootstrap 提供的 __wrapJavaHandle(handle) 包装为 JavaObject
-        return "__wrapJavaHandle(${handle}L)"
+        return "__wrapJavaHandle($handle)"
     }
 
     /**
      * 在 ctxPtrToCtxMap 中查找当前 ctxPtr 对应的 QuickJsContext。
-     * 用于 JavaAdapter 回调时设置 ThreadLocal。
+     * 用于确认 JavaAdapter 回调仍在持有此上下文的线程中。
      */
     private fun findOwnerCtx(): QuickJsContext? {
         // 简单实现: 遍历所有活跃 scope 查找

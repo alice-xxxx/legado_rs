@@ -17,15 +17,15 @@ public final class SourceEnginePlugin extends Plugin {
     private final SourceBrowser browser;
     public SourceEnginePlugin(Activity activity){super(activity);this.activity=activity;browser=new SourceBrowser(activity);}
     @Override public void onDestroy(AppCompatActivity activity){browser.destroy();workers.shutdownNow();}
-    private interface Decode<Q>{Q run(String json)throws Exception;}
-    private interface Run<Q,T>{T run(Q request,String directory,String id)throws Exception;}
-    private interface Encode<T>{String run(T result)throws Exception;}
+    private interface Decode<Q>{Q run(String json)throws Throwable;}
+    private interface Run<Q,T>{T run(Q request,String directory,String id)throws Throwable;}
+    private interface Encode<T>{String run(T result)throws Throwable;}
     private <Q,T> void call(Invoke invoke,Decode<Q> decode,Run<Q,T> run,Encode<T> encode){
-        workers.execute(()->{try{
+        try{workers.execute(()->{try{
             JSONObject input=new JSONObject(invoke.getRawArgs());
             T result=run.run(decode.run(input.toString()),input.getString("dataDirectory"),input.getString("executionId"));
             invoke.resolve(new JSObject(encode.run(result)));
-        }catch(Exception error){invoke.reject(error.toString());}});
+        }catch(Throwable error){invoke.reject(error.toString());}});}catch(Throwable error){invoke.reject(error.toString());}
     }
     @Command public void search(Invoke invoke){call(invoke,NativeCodec::decodeSearchRequest,Engine::search,NativeCodec::encodeSearchPage);}
     @Command public void exploreKinds(Invoke invoke){call(invoke,NativeCodec::decodeSourceRequest,Engine::exploreKinds,NativeCodec::encodeExploreKinds);}
@@ -36,8 +36,8 @@ public final class SourceEnginePlugin extends Plugin {
     @Command public void resolveMedia(Invoke invoke){call(invoke,NativeCodec::decodeMediaRequest,Engine::resolveMedia,NativeCodec::encodeMediaLocation);}
     @Command public void httpTtsAudio(Invoke invoke){call(invoke,NativeCodec::decodeTtsRequest,Engine::httpTtsAudio,NativeCodec::encodeAudioData);}
     @Command public void login(Invoke invoke){call(invoke,NativeCodec::decodeLoginRequest,Engine::login,NativeCodec::encodeLoginState);}
-    @Command public void renderBrowser(Invoke invoke){activity.runOnUiThread(()->{try{browser.render(invoke);}catch(Exception error){invoke.reject(error.toString());}});}
-    @Command public void startWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.start(invoke);}catch(Exception error){invoke.reject(error.toString());}});}
-    @Command public void completeWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.complete(invoke);}catch(Exception error){invoke.reject(error.toString());}});}
-    @Command public void cancelWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.cancel(invoke);}catch(Exception error){invoke.reject(error.toString());}});}
+    @Command public void renderBrowser(Invoke invoke){activity.runOnUiThread(()->{try{browser.render(invoke);}catch(Throwable error){invoke.reject(error.toString());}});}
+    @Command public void startWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.start(invoke);}catch(Throwable error){invoke.reject(error.toString());}});}
+    @Command public void completeWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.complete(invoke);}catch(Throwable error){invoke.reject(error.toString());}});}
+    @Command public void cancelWebLogin(Invoke invoke){activity.runOnUiThread(()->{try{browser.cancel(invoke);}catch(Throwable error){invoke.reject(error.toString());}});}
 }

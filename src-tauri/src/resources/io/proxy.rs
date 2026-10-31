@@ -44,7 +44,7 @@ impl Proxy {
     }
 
     pub(crate) fn contains(&self, id: &str) -> bool {
-        self.targets.lock().unwrap().entries.contains_key(id)
+        self.targets.lock().unwrap_or_else(|error| error.into_inner()).entries.contains_key(id)
     }
 
     pub(crate) fn register_with_id(
@@ -71,7 +71,7 @@ impl Proxy {
         for value in headers.values_mut() {
             value.set_sensitive(true);
         }
-        self.targets.lock().unwrap().entries.insert(
+        self.targets.lock().unwrap_or_else(|error| error.into_inner()).entries.insert(
             id.to_owned(),
             Arc::new(Target {
                 url,
@@ -83,7 +83,7 @@ impl Proxy {
     }
 
     pub(crate) fn clear(&self) {
-        *self.targets.lock().unwrap() = Targets::default();
+        *self.targets.lock().unwrap_or_else(|error| error.into_inner()) = Targets::default();
     }
 
     pub(super) fn routes(&self) -> Router {
@@ -102,7 +102,7 @@ impl Proxy {
         {
             return Err(StatusCode::BAD_GATEWAY);
         }
-        let mut targets = self.targets.lock().unwrap();
+        let mut targets = self.targets.lock().unwrap_or_else(|error| error.into_inner());
         if !targets.entries.contains_key(&parent.owner) {
             return Err(StatusCode::NOT_FOUND);
         }
@@ -133,15 +133,16 @@ impl Proxy {
         if !text.trim_start().starts_with("#EXTM3U") {
             return Err(StatusCode::BAD_GATEWAY);
         }
-        static LINKS: OnceLock<regex::Regex> = OnceLock::new();
+        static LINKS: OnceLock<Result<regex::Regex, regex::Error>> = OnceLock::new();
         let links = LINKS
-            .get_or_init(|| regex::Regex::new(r#"(?m)^[^#\r\n][^\r\n]*|URI="([^"]+)""#).unwrap());
+            .get_or_init(|| regex::Regex::new(r#"(?m)^[^#\r\n][^\r\n]*|URI="([^"]+)""#))
+            .as_ref().map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
         let mut failure = None;
         let result = links.replace_all(text, |capture: &regex::Captures<'_>| {
             let value = capture
                 .get(1)
-                .unwrap_or_else(|| capture.get(0).unwrap())
-                .as_str();
+                .or_else(|| capture.get(0))
+                .map(|value| value.as_str()).unwrap_or_default();
             if value.trim().is_empty() {
                 return value.to_owned();
             }
@@ -189,7 +190,7 @@ async fn read(
     let target = proxy
         .targets
         .lock()
-        .unwrap()
+        .unwrap_or_else(|error| error.into_inner())
         .entries
         .get(&id)
         .cloned()

@@ -92,7 +92,7 @@ pub(crate) fn start(request: SourceLoginWebStart) -> Result<SourceLoginWebStarte
     let window = WebviewWindowBuilder::new(
         app()?,
         format!("source-login-{}", uuid::Uuid::new_v4().simple()),
-        WebviewUrl::External("about:blank".parse().unwrap()),
+        WebviewUrl::External(reqwest::Url::parse("about:blank").map_err(|e| e.to_string())?),
     )
     .title("书源登录")
     .incognito(true)
@@ -327,7 +327,7 @@ pub(crate) fn render(request: Request) -> Result<Response> {
     );
     let html = serde_json::to_string(&document).map_err(|e| e.to_string())?;
     let script = serde_json::to_string(&request.java_script).map_err(|e| e.to_string())?;
-    let callback_js = serde_json::to_string(&callback).unwrap();
+    let callback_js = serde_json::to_string(&callback).map_err(|e| e.to_string())?;
     let delay = request.delay_time_ms;
     let capture = if redirect.is_some() {
         format!("if({script})await(0,eval)({script});")
@@ -355,7 +355,7 @@ pub(crate) fn render(request: Request) -> Result<Response> {
     let mut builder = WebviewWindowBuilder::new(
         app()?,
         format!("source-browser-{}", uuid::Uuid::new_v4().simple()),
-        WebviewUrl::External("about:blank".parse().unwrap()),
+        WebviewUrl::External(reqwest::Url::parse("about:blank").map_err(|e| e.to_string())?),
     )
     .title(if request.title.is_empty() {
         "书源页面"

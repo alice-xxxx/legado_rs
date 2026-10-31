@@ -38,6 +38,7 @@
 #endif
 #if defined(_WIN32)
 #include <intrin.h>
+#include <windows.h>
 #endif
 #include <time.h>
 #include <math.h>
@@ -562,6 +563,7 @@ enum {
 struct JSContext {
     JSGCObjectHeader header; /* must come first */
     JSRuntime *rt;
+    bool legacy_eval_completion;
     struct list_head link;
 
     uint16_t binary_object_count;
@@ -2483,6 +2485,23 @@ void JS_SetInterruptHandler(JSRuntime *rt, JSInterruptHandler *cb, void *opaque)
     rt->interrupt_opaque = opaque;
 }
 
+static uint64_t js_execution_time_ns(void)
+{
+#if defined(_WIN32)
+    FILETIME created, exited, kernel, user;
+    if (GetThreadTimes(GetCurrentThread(), &created, &exited, &kernel, &user)) {
+        uint64_t kernel_time = ((uint64_t)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime;
+        uint64_t user_time = ((uint64_t)user.dwHighDateTime << 32) | user.dwLowDateTime;
+        return (kernel_time + user_time) * 100;
+    }
+#elif defined(CLOCK_THREAD_CPUTIME_ID)
+    struct timespec now;
+    if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &now) == 0)
+        return (uint64_t)now.tv_sec * 1000000000 + now.tv_nsec;
+#endif
+    return js__hrtime_ns();
+}
+
 int JS_CheckExecutionTimeLimit(JSRuntime *rt)
 {
     uint64_t now;
@@ -2490,7 +2509,7 @@ int JS_CheckExecutionTimeLimit(JSRuntime *rt)
         return 1;
     if (rt->execution_deadline_depth == 0)
         return 0;
-    now = js__hrtime_ns();
+    now = js_execution_time_ns();
     if (now >= rt->execution_deadlines_ns[rt->execution_deadline_depth - 1]) {
         rt->execution_timed_out = true;
         return 1;
@@ -2516,7 +2535,7 @@ void JS_SetExecutionTimeLimit(JSRuntime *rt, uint32_t timeout_ms)
         rt->execution_timed_out = true;
         return;
     }
-    deadline_ns = js__hrtime_ns() + (uint64_t)timeout_ms * 1000000;
+    deadline_ns = js_execution_time_ns() + (uint64_t)timeout_ms * 1000000;
     if (rt->execution_deadline_depth > 0 &&
         rt->execution_deadlines_ns[rt->execution_deadline_depth - 1] < deadline_ns) {
         deadline_ns = rt->execution_deadlines_ns[rt->execution_deadline_depth - 1];
@@ -2991,6 +3010,11 @@ void *JS_GetContextOpaque(JSContext *ctx)
 void JS_SetContextOpaque(JSContext *ctx, void *opaque)
 {
     ctx->user_opaque = opaque;
+}
+
+void JS_SetLegacyEvalCompletion(JSContext *ctx, bool enabled)
+{
+    ctx->legacy_eval_completion = enabled;
 }
 
 /* set the new value and free the old value after (freeing the value
@@ -29399,7 +29423,7 @@ static __exception int js_parse_for_in_of(JSParseState *s, int label_name,
 
 static void set_eval_ret_undefined(JSParseState *s)
 {
-    if (s->cur_func->eval_ret_idx >= 0) {
+    if (s->cur_func->eval_ret_idx >= 0 && !s->ctx->legacy_eval_completion) {
         emit_op(s, OP_undefined);
         emit_op(s, OP_put_loc);
         emit_u16(s, s->cur_func->eval_ret_idx);
@@ -30138,7 +30162,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                 push_break_entry(s->cur_func, &block_env, JS_ATOM_NULL,
                                  -1, -1, 2);
 
-                if (s->cur_func->eval_ret_idx >= 0) {
+                if (s->cur_func->eval_ret_idx >= 0 && !ctx->legacy_eval_completion) {
                     /* 'finally' updates eval_ret only if not a normal
                        termination */
                     saved_eval_ret_idx =
@@ -30155,7 +30179,7 @@ static __exception int js_parse_statement_or_decl(JSParseState *s,
                 if (js_parse_block(s))
                     goto fail;
 
-                if (s->cur_func->eval_ret_idx >= 0) {
+                if (s->cur_func->eval_ret_idx >= 0 && !ctx->legacy_eval_completion) {
                     emit_op(s, OP_get_loc);
                     emit_u16(s, saved_eval_ret_idx);
                     emit_op(s, OP_put_loc);

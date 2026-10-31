@@ -27,6 +27,7 @@ import java.lang.reflect.Proxy
  * - 异常经 method.invoke 包装为 InvocationTargetException, JS catch 拿到的是包装异常 (非原始 JS Error)
  */
 class JsSamAdapter(private val jsFunctionHandle: Long) : InvocationHandler {
+    private val context = QuickJsContext.threadLocalContext.get()
 
     override fun invoke(proxy: Any, method: Method, args: Array<Any?>?): Any? {
         // Object 方法直接处理 (对齐 JavaObjectBridge.newJavaAdapter 第 1568-1574 行)
@@ -50,7 +51,10 @@ class JsSamAdapter(private val jsFunctionHandle: Long) : InvocationHandler {
         // 不 catch JsNativeException (对齐"不吞异常"原则, 见 project_memory):
         // 异常传播到 jsMethodCallable 的 ExceptionCheck 分支, 由 JavaObjectClass::wrap
         // 包装为 JS 异常供 JS try-catch 捕获
+        if (context == null || QuickJsContext.threadLocalContext.get() !== context ||
+            QuickJsContext.findByCtxPtr(context.ctxPtr) !== context) return callbackDefaultValue(method.returnType)
         return QuickJsNative.nativeCallJsHandle(jsFunctionHandle, args ?: emptyArray())
+            ?: callbackDefaultValue(method.returnType)
     }
 
     companion object {
@@ -69,4 +73,16 @@ class JsSamAdapter(private val jsFunctionHandle: Long) : InvocationHandler {
             )
         }
     }
+}
+
+internal fun callbackDefaultValue(type: Class<*>): Any? = when (type) {
+    java.lang.Boolean.TYPE -> false
+    java.lang.Character.TYPE -> '\u0000'
+    java.lang.Byte.TYPE -> 0.toByte()
+    java.lang.Short.TYPE -> 0.toShort()
+    java.lang.Integer.TYPE -> 0
+    java.lang.Long.TYPE -> 0L
+    java.lang.Float.TYPE -> 0f
+    java.lang.Double.TYPE -> 0.0
+    else -> null
 }

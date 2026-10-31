@@ -169,6 +169,7 @@ namespace {
             if (arg) {
                 env->SetObjectArrayElement(args, i, arg);
                 env->DeleteLocalRef(arg);
+                if (env->ExceptionCheck()) return args;
             }
         }
         return args;
@@ -271,7 +272,13 @@ static JSValue jsMethodCallable(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "JNI exception while converting JS args");
     }
 
-    jstring jMethodName = env->NewStringUTF(methodName);
+    jstring jMethodName = JniValueConvert::utf8ToJavaString(ctx, env, methodName);
+    if (!jMethodName) {
+        env->ExceptionClear();
+        if (javaArgs) env->DeleteLocalRef(javaArgs);
+        JS_FreeCString(ctx, methodName);
+        return JS_ThrowOutOfMemory(ctx);
+    }
 
     jobject result = env->CallStaticObjectMethod(
             g_bridgeNativeCls, g_callMethodByObj,
@@ -308,7 +315,7 @@ static uint32_t methodCacheProbe(const MethodCallableEntry *hash, uint32_t hashS
                                  JSAtom key, bool *outFound) {
     const uint32_t mask = hashSize - 1;
     uint32_t idx = hashAtom(key) & mask;
-    for (;;) {
+    for (uint32_t probes = 0; probes < hashSize; ++probes) {
         const MethodCallableEntry &e = hash[idx];
         if (e.state == kMethodEmpty) {
             *outFound = false;
@@ -320,10 +327,13 @@ static uint32_t methodCacheProbe(const MethodCallableEntry *hash, uint32_t hashS
         }
         idx = (idx + 1) & mask;
     }
+    *outFound = false;
+    return UINT32_MAX;
 }
 
 // newSize 必须是 2 的幂。
 static void methodCacheRehash(CtxOpaqueData *opq, uint32_t newSize) {
+    if (newSize <= opq->methodCallableUsed) return;
     MethodCallableEntry *oldH = opq->methodCallableHash;
     uint32_t oldSize = opq->methodCallableSize;
     auto *nb = (MethodCallableEntry *) std::calloc(newSize, sizeof(MethodCallableEntry));
@@ -362,6 +372,7 @@ JSValue getOrCreateMethodCallable(JSContext *ctx, JSAtom atom) {
     JSValue data[1];
     data[0] = JS_NewString(ctx, methodName);
     JS_FreeCString(ctx, methodName);
+    if (JS_IsException(data[0])) return JS_EXCEPTION;
     JSValue fn = JS_NewCFunctionData(ctx, jsMethodCallable, 0, 0, 1, data);
 
     JS_FreeValue(ctx, data[0]);
@@ -377,7 +388,7 @@ JSValue getOrCreateMethodCallable(JSContext *ctx, JSAtom atom) {
             bool found;
             uint32_t idx = methodCacheProbe(opq->methodCallableHash,
                                             opq->methodCallableSize, atom, &found);
-            if (!found) {
+            if (!found && idx != UINT32_MAX) {
                 MethodCallableEntry &e = opq->methodCallableHash[idx];
                 e.key = JS_DupAtom(ctx, atom);
                 e.value = JS_DupValue(ctx, fn);
@@ -430,7 +441,13 @@ static JSValue jsBindingCall(JSContext *ctx, JSValueConst this_val,
         return JS_ThrowInternalError(ctx, "JNI exception while converting binding args");
     }
 
-    jstring jName = env->NewStringUTF(name);
+    jstring jName = JniValueConvert::utf8ToJavaString(ctx, env, name);
+    if (!jName) {
+        env->ExceptionClear();
+        if (javaArgs) env->DeleteLocalRef(javaArgs);
+        JS_FreeCString(ctx, name);
+        return JS_ThrowOutOfMemory(ctx);
+    }
     jobject result = env->CallStaticObjectMethod(g_bindingHandlerCls, g_bindingCall,
                                                  jName, javaArgs);
     env->DeleteLocalRef(jName);
@@ -473,6 +490,7 @@ bool defineBinding(JSContext *ctx, const char *name) {
     // func_data 存 binding name
     JSValue data[1];
     data[0] = JS_NewString(ctx, name);
+    if (JS_IsException(data[0])) return false;
 
     JSValue fn = JS_NewCFunctionData(ctx, jsBindingCall, 0, 0, 1, data);
     JS_FreeValue(ctx, data[0]); // JS_NewCFunctionData 内部 DupValue
