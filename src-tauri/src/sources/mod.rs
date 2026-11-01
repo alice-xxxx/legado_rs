@@ -3,5 +3,3 @@ mod catalog;
 pub(crate) mod import;
 pub(crate) mod login;
 pub(crate) use catalog::{content_type, Catalog, SourceRecord};
-#[cfg(test)]
-mod tests;

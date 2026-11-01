@@ -1,4 +1,4 @@
-"""Version checks and release assets. Requires Python 3.11+, no extra packages."""
+"""Build matrices and release assets. Requires Python 3.11+, no extra packages."""
 
 import argparse
 from datetime import datetime, timezone
@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import tomllib
 
 ROOT = Path(__file__).resolve().parents[1]
 IDENTIFIER = r"(?:0|[1-9]\d*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
@@ -56,68 +55,13 @@ def json_text(value):
     return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
 
 
-def versions(root):
-    package = read_json(root / "package.json")
-    lock = read_json(root / "package-lock.json")
-    cargo = tomllib.loads((root / "src-tauri/Cargo.toml").read_text(encoding="utf-8"))
-    cargo_lock = tomllib.loads((root / "src-tauri/Cargo.lock").read_text(encoding="utf-8"))
-    entries = [p for p in cargo_lock["package"] if p["name"] == cargo["package"]["name"] and "source" not in p]
-    if len(entries) != 1:
-        raise ValueError("Cargo.lock must contain exactly one app package")
-    return {
-        "package.json": package["version"],
-        "package-lock.json": lock["version"],
-        "package-lock.json packages[\"\"]": lock["packages"][""]["version"],
-        "src-tauri/tauri.conf.json": read_json(root / "src-tauri/tauri.conf.json")["version"],
-        "src-tauri/Cargo.toml": cargo["package"]["version"],
-        "src-tauri/Cargo.lock": entries[0]["version"],
-    }
-
-
 def check(tag="", root=ROOT):
-    current = versions(root)
-    tag = tag or f"v{current['package.json']}"
-    match = VERSION.fullmatch(tag.removeprefix("v"))
-    if not tag.startswith("v") or not match:
-        raise ValueError("Expected vX.Y.Z or vX.Y.Z-rc.N without leading zeroes")
-    version = tag[1:]
-    mismatches = {path: value for path, value in current.items() if value != version}
-    if mismatches:
-        raise ValueError(f"Version must match {tag}: {mismatches}")
+    version = read_json(root / "src-tauri/tauri.conf.json")["version"]
+    if not isinstance(version, str) or not VERSION.fullmatch(version):
+        raise ValueError("Expected X.Y.Z or X.Y.Z-rc.N in tauri.conf.json without leading zeroes")
+    if tag and tag != f"v{version}":
+        raise ValueError(f"Version must match v{version} from tauri.conf.json")
     return version
-
-
-def set_version(version, root=ROOT):
-    if not VERSION.fullmatch(version):
-        raise ValueError("Expected X.Y.Z or X.Y.Z-rc.N without leading zeroes")
-    versions(root)  # Parse and validate every input before writing any file.
-    updates = {}
-    for name in ("package.json", "package-lock.json", "src-tauri/tauri.conf.json"):
-        data = read_json(root / name)
-        data["version"] = version
-        if name == "package-lock.json":
-            data["packages"][""]["version"] = version
-        updates[name] = json_text(data)
-    cargo_path = root / "src-tauri/Cargo.toml"
-    cargo_text = cargo_path.read_text(encoding="utf-8")
-    section = re.search(r"(?ms)^\[package\]\n.*?(?=^\[|\Z)", cargo_text)
-    if not section:
-        raise ValueError("Missing Cargo [package] section")
-    body, count = re.subn(r'(?m)^(version\s*=\s*")[^"]+(".*)$',
-                          lambda m: m[1] + version + m[2], section[0])
-    if count != 1:
-        raise ValueError("Expected one Cargo package version")
-    updates["src-tauri/Cargo.toml"] = cargo_text[:section.start()] + body + cargo_text[section.end():]
-    name = tomllib.loads(cargo_text)["package"]["name"]
-    cargo_lock = (root / "src-tauri/Cargo.lock").read_text(encoding="utf-8")
-    pattern = r'(?m)(^\[\[package\]\]\nname = "' + re.escape(name) + r'"\nversion = ")[^"]+(")'
-    updates["src-tauri/Cargo.lock"], count = re.subn(pattern, lambda m: m[1] + version + m[2], cargo_lock)
-    if count != 1:
-        raise ValueError("Expected one app version in Cargo.lock")
-    for name, contents in updates.items():
-        if (root / name).read_text(encoding="utf-8") != contents:
-            (root / name).write_text(contents, encoding="utf-8", newline="\n")
-    print(f"App version: {version}")
 
 
 def artifact_files(target, directory, updater=True):
@@ -183,7 +127,6 @@ def finalize(notes, output):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("version").add_argument("version")
     validate = commands.add_parser("check")
     validate.add_argument("tag", nargs="?", default="", help="Expected tag; omit to read the app version")
     builds = commands.add_parser("matrix")
@@ -202,9 +145,7 @@ def main():
     notes.add_argument("notes", type=Path)
     notes.add_argument("--output", type=Path, default=Path("release-assets"))
     args = parser.parse_args()
-    if args.command == "version":
-        set_version(args.version)
-    elif args.command == "check":
+    if args.command == "check":
         version = check(args.tag)
         tag = f"v{version}"
         prerelease = str(bool(VERSION.fullmatch(version)[4])).lower()

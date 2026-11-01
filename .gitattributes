@@ -1,3 +1,0 @@
-# Preserve document offsets and archive bytes across platforms.
-*.pdf binary
-*.cbz binary

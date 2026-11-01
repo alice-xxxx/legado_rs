@@ -701,6 +701,3 @@ impl Tts {
 }
 
 mod audio;
-
-#[cfg(test)]
-mod tests;

@@ -47,6 +47,7 @@ internal abstract class CharsetRecog_mbcs : CharsetRecognizer() {
      * bits 8-15: The match reason, an enum-like value.
      */
     fun match(det: CharsetDetector, commonChars: IntArray?): Int {
+        val commonCharList = commonChars?.asList()
         @Suppress("unused") var singleByteCharCount = 0 //TODO Do we really need this?
         var doubleByteCharCount = 0
         var commonCharCount = 0
@@ -69,9 +70,9 @@ internal abstract class CharsetRecog_mbcs : CharsetRecognizer() {
                         singleByteCharCount++
                     } else {
                         doubleByteCharCount++
-                        if (commonChars != null) {
+                        if (commonCharList != null) {
                             // NOTE: This assumes that there are no 4-byte common chars.
-                            if (commonChars.binarySearch(cv.toInt()) >= 0) {
+                            if (commonCharList.binarySearch(cv.toInt()) >= 0) {
                                 commonCharCount++
                             }
                         }

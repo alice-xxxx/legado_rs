@@ -1,5 +1,15 @@
 name: Package Foliver
 
+env:
+  JAVA_VERSION: '21'
+  ANDROID_SDK_PLATFORM: '37.0'
+  ANDROID_CHANNEL: '3'
+  ANDROID_BUILDTOOLS: '36.0.0'
+  ANDROID_NDK: '30.0.14904198'
+  ANDROID_CMAKE: '3.31.1'
+  ANDROID_PLATFORM: android-26
+  IPHONEOS_DEPLOYMENT_TARGET: '15.0'
+
 on:
   workflow_call:
     inputs:
@@ -92,8 +102,6 @@ jobs:
         with:
           name: frontend-dist
           path: dist
-      - name: Read toolchain versions
-        run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -193,8 +201,6 @@ jobs:
         with:
           name: frontend-dist
           path: dist
-      - name: Read toolchain versions
-        run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24
@@ -229,8 +235,6 @@ jobs:
       - run: npm ci
       - run: npm run tauri -- android init --ci
       - run: npm run icons
-      - name: Configure native Android app
-        run: node src-tauri/android/configure.mjs
       - name: Restore release signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.FOLIVER_ANDROID_KEYSTORE_BASE64 }}
@@ -332,8 +336,6 @@ jobs:
         with:
           name: frontend-dist
           path: dist
-      - name: Read toolchain versions
-        run: node src-tauri/toolchain.mjs --github-env
       - uses: actions/setup-node@v7
         with:
           node-version: 24

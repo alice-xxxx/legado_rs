@@ -742,7 +742,7 @@ object NativeJsExtensionsBridge {
             obj is JsExtensionsCommon && methodId == 501 -> {
                 // queryTTF(data[, useCache]) → QueryTTF handle (null → 0, JS 层转 null)
                 val data = args.getDataArgOrNull(0)
-                val useCache = args.getOrNull(1) as? Boolean
+                val useCache = (args.getOrNull(1) as? Boolean) ?: true
                 val ttf = obj.queryTTF(data, useCache)
                 qjs_NewFloat64(ctx, (ttf?.let { registerObject(it) } ?: 0L).toDouble())
             }

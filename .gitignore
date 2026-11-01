@@ -29,9 +29,5 @@ dist-ssr
 /src-tauri/plugins/source-engine/engine/native/
 source-snapshot/
 
-# Local Android signing identity; publish only through Actions Secrets.
 .signing/
-*.keystore
-*.jks
-*.p12
 /tmp/

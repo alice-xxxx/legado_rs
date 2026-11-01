@@ -631,7 +631,6 @@ object QuickJsEngine {
      * - IIFE 隔离 `let`/`const`/`var`, 不污染 topScope (避免 "redeclaration")。
      * - eval + return: 返回末尾表达式值 (对齐 rhino script.exec)。完成值是 eval/script 目标
      *   特有语义, 函数调用只认显式 return, 故源码无法逐字嵌入函数体 (会丢末尾表达式值,
-     *   jvmTest testWrapJsForEvalPreservesReturnValue 实证)。
      * - Rhino 顶层 return 由共用语法适配器识别，按函数体执行。
      *
      * 用于复用 sharedScope 的场景; jsLib 本身在 topScope 上定义, 不需要包裹。

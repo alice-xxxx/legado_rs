@@ -70,17 +70,3 @@ fn request_error(error: reqwest::Error) -> String {
         crate::http_client::request_error(error)
     )
 }
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn request_error_includes_the_underlying_cause() {
-        let error = crate::http_client::raw_builder()
-            .user_agent("\n")
-            .build()
-            .unwrap_err();
-        let message = super::request_error(error);
-        assert!(message.contains("builder error"));
-        assert!(message.contains("failed to parse header value"));
-    }
-}

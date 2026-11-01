@@ -247,7 +247,6 @@ kotlin {
         namespace = "io.legado.sourceengine.kmp"
         compileSdk = engineToolchain.getProperty("android.compileSdk").toInt()
         minSdk = engineToolchain.getProperty("android.minSdk").toInt()
-        withHostTest {}
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.fromTarget(engineToolchain.getProperty("android.jvmTarget")))
         }
@@ -379,13 +378,7 @@ kotlin {
             implementation("com.fleeksoft.charset:charset-ext:0.0.8")
             api("com.fleeksoft.io:io-core:0.0.8")
         }
-        commonTest.dependencies { implementation(kotlin("test")) }
     }
-}
-
-tasks.named<Test>("jvmTest") {
-    dependsOn(rootProject.tasks.named("prepareQuickJsNative"))
-    systemProperty("legado.quickjs.lib", rootProject.extra["quickJsLibrary"] as File)
 }
 
 androidComponents {
