@@ -11,11 +11,8 @@ import io.legado.app.data.entities.BaseSource
 import io.legado.app.data.entities.BookChapterLike
 import io.legado.app.help.JsExtensionsCommon
 import io.legado.app.help.crypto.AsymmetricCrypto
-import io.legado.app.help.crypto.NativeAsymmetricCrypto
-import io.legado.app.help.crypto.NativeSign
 import io.legado.app.help.crypto.Sign
 import io.legado.app.help.crypto.SymmetricCrypto
-import io.legado.app.help.crypto.NativeSymmetricCrypto
 import io.legado.app.help.http.StrResponse
 import io.legado.app.help.image.ImageOps
 import io.legado.app.help.source.SourceCacheProvider
@@ -132,10 +129,7 @@ import kotlinx.atomicfu.locks.synchronized
  * - 5000+: KSP 生成表 (NativeGeneratedDispatch, JsApiProcessor 按 jsapi.nativeTargets 目标类生成;
  *   dispatch 顶部查表优先, JS 闭包按工厂分区注入 `// @@methods:<factory>@@` 标记处)
  *
- * 注: AnalyzeUrlCore/AnalyzeRuleCore 不实现 JsEncodeUtilsDefaults (JS 加解密面由 JsExtensionsCommon
- * 默认方法承载), 100-199 摘要段走 JsCryptoProviders 注册的平台实现,
- * 保证书源 java.md5Encode 等与 Android 端同结果; createSymmetricCrypto 等工厂方法直接调用
- * native 端 [NativeSymmetricCrypto], 不依赖 JsEncodeUtilsDefaults。
+ * 100-199 摘要段使用 JsCryptoProvider 的公共文本转换；平台只提供字节算法。
  *
  * 注: cookie/cache binding 注入依赖 [NativeJsEngine.toJsValue] 识别 SourceNetworkProvider /
  * SourceCacheProvider (NativeJsEngine.native.kt, 需并行修改方生效; 工厂与分派段已在本文件就绪)。
@@ -462,7 +456,7 @@ object NativeJsExtensionsBridge {
             }
 
             // ============ JsCryptoProviders 摘要/HMAC 面 (100-199) ============
-            // 平台实现在 registerNativeJsEngines 注册 (JsCryptoProviderNative, 复用 MD5Utils /
+            // 平台实现在 HostRuntime 注册 (JsCryptoProviderNative, 复用 MD5Utils /
             // NativeDigestOps/NativeHmacOps), 与 JsExtensionsCommon 默认方法同源, 保证 java.md5Encode 等与 Android 端同结果
             methodId in 101..106 -> {
                 val enc = JsCryptoProviders.get()
@@ -479,37 +473,21 @@ object NativeJsExtensionsBridge {
 
             // ============ 工厂方法 (200-299) → 返回 handle (Float64) ============
             obj is JsExtensionsCommon && methodId == 201 -> {
-                // createSymmetricCrypto(transformation, key, iv) → cryptoHandle (key/iv 支持 Utf8String|ByteArray)
-                val transformation = args.getString(0)
-                val key = args.getOrNull(1).toBytesOrNull()
-                val iv = args.getOrNull(2).toBytesOrNull()
-                val crypto = NativeSymmetricCrypto(transformation, key)
-                if (iv != null && iv.isNotEmpty()) crypto.setIv(iv)
-                val handle = registerObject(crypto)
-                // registerObject 统一登记到当前 scope。
-                // crypto 对象生命周期与 JS 引用绑定, handle 泄漏量可控 (每次调用一个)
-                qjs_NewFloat64(ctx, handle.toDouble())
+                val crypto = obj.createSymmetricCrypto(
+                    args.getString(0), args.getOrNull(1).toBytesOrNull(), args.getOrNull(2).toBytesOrNull()
+                )
+                qjs_NewFloat64(ctx, registerObject(crypto).toDouble())
             }
-            obj is JsExtensionsCommon && methodId == 202 -> {
-                // createAsymmetricCrypto(transformation) → cryptoHandle (iOS Security.framework / 鸿蒙 napi 桥接)
-                val transformation = args.getString(0)
-                val crypto = NativeAsymmetricCrypto(transformation)
-                val handle = registerObject(crypto)
-                qjs_NewFloat64(ctx, handle.toDouble())
-            }
-            obj is JsExtensionsCommon && methodId == 203 -> {
-                // createSign(algorithm) → signHandle (iOS Security.framework / 鸿蒙 napi 桥接)
-                val algorithm = args.getString(0)
-                val sign = NativeSign(algorithm)
-                val handle = registerObject(sign)
-                qjs_NewFloat64(ctx, handle.toDouble())
-            }
+            obj is JsExtensionsCommon && methodId == 202 ->
+                qjs_NewFloat64(ctx, registerObject(obj.createAsymmetricCrypto(args.getString(0))).toDouble())
+            obj is JsExtensionsCommon && methodId == 203 ->
+                qjs_NewFloat64(ctx, registerObject(obj.createSign(args.getString(0))).toDouble())
 
             // ============ SymmetricCrypto 对象方法 (1000-1099) ============
             obj is SymmetricCrypto && methodId == 1001 -> {
                 // encryptBase64(data) — data 支持 Utf8String|ByteArray
                 when (val data = args.getOrNull(0)) {
-                    is String -> stringToJsValue(ctx, obj.encryptBase64(data))
+                    is String -> stringToJsValue(ctx, if (args.size > 1) obj.encryptBase64(data, args.getOrNull(1) as? String) else obj.encryptBase64(data))
                     else -> stringToJsValue(ctx, obj.encryptBase64(data.toBytesOrNull() ?: ByteArray(0)))
                 }
             }
@@ -523,7 +501,7 @@ object NativeJsExtensionsBridge {
                 val data = args.getString(0)
                 byteArrayToJsArray(ctx, obj.decrypt(data))
             }
-            obj is NativeSymmetricCrypto && methodId == 1004 -> {
+            obj is SymmetricCrypto && methodId == 1004 -> {
                 // setIv(iv) → 真实存 IV (iv 支持 Utf8String|ByteArray); JS 层返回 this
                 args.getOrNull(0).toBytesOrNull()?.let { obj.setIv(it) }
                 jsUndefined()
@@ -546,52 +524,52 @@ object NativeJsExtensionsBridge {
             // ============ AsymmetricCrypto 对象方法 (1100-1199, iOS Security.framework / 鸿蒙 napi 桥接) ============
             obj is AsymmetricCrypto && methodId == 1101 -> {
                 // setPrivateKey(key) → this
-                obj.setPrivateKey(args.getString(0))
+                obj.setPrivateKey(requireNotNull(args.getOrNull(0).toBytesOrNull()))
                 qjs_NewFloat64(ctx, 1.0) // JS 层返回 this, 此处不实际使用
             }
             obj is AsymmetricCrypto && methodId == 1102 -> {
                 // setPublicKey(key) → this
-                obj.setPublicKey(args.getString(0))
+                obj.setPublicKey(requireNotNull(args.getOrNull(0).toBytesOrNull()))
                 qjs_NewFloat64(ctx, 1.0)
             }
             obj is AsymmetricCrypto && methodId == 1103 -> {
                 // decrypt(data, usePublicKey) → ByteArray (iOS 真实 / 鸿蒙抛异常)
-                val usePublicKey = (args.getOrNull(1) as? Boolean) ?: true
+                val usePublicKey = args.getOrNull(1) as? Boolean
                 byteArrayToJsArray(ctx, obj.decrypt(args.getDataArg(0), usePublicKey))
             }
             obj is AsymmetricCrypto && methodId == 1104 -> {
                 // encrypt(data, usePublicKey) → ByteArray (iOS 真实 / 鸿蒙抛异常)
-                val usePublicKey = (args.getOrNull(1) as? Boolean) ?: true
+                val usePublicKey = args.getOrNull(1) as? Boolean
                 byteArrayToJsArray(ctx, obj.encrypt(args.getDataArg(0), usePublicKey))
             }
             obj is AsymmetricCrypto && methodId == 1105 -> {
                 // decryptStr(data, usePublicKey) — data String 走 hex 优先否则 base64 (hutool SecureUtil.decode)
-                val usePublicKey = (args.getOrNull(1) as? Boolean) ?: true
+                val usePublicKey = args.getOrNull(1) as? Boolean
                 stringToJsValue(ctx, obj.decryptStr(args.getDataArg(0), usePublicKey))
             }
             obj is AsymmetricCrypto && methodId == 1106 -> {
                 // encryptHex(data, usePublicKey)
-                val usePublicKey = (args.getOrNull(1) as? Boolean) ?: true
+                val usePublicKey = args.getOrNull(1) as? Boolean
                 stringToJsValue(ctx, obj.encryptHex(args.getDataArg(0), usePublicKey))
             }
             obj is AsymmetricCrypto && methodId == 1107 -> {
                 // encryptBase64(data, usePublicKey)
-                val usePublicKey = (args.getOrNull(1) as? Boolean) ?: true
+                val usePublicKey = args.getOrNull(1) as? Boolean
                 stringToJsValue(ctx, obj.encryptBase64(args.getDataArg(0), usePublicKey))
             }
 
             // ============ Sign 对象方法 (1200-1299, iOS Security.framework 真实 / 鸿蒙 napi) ============
             obj is Sign && methodId == 1201 -> {
                 // setPrivateKey(key) → this
-                obj.setPrivateKey(args.getString(0))
+                obj.setPrivateKey(requireNotNull(args.getOrNull(0).toBytesOrNull()))
                 qjs_NewFloat64(ctx, 1.0)
             }
             obj is Sign && methodId == 1202 -> {
                 // setPublicKey(key) → this
-                obj.setPublicKey(args.getString(0))
+                obj.setPublicKey(requireNotNull(args.getOrNull(0).toBytesOrNull()))
                 qjs_NewFloat64(ctx, 1.0)
             }
-            obj is NativeSign && methodId == 1203 -> {
+            obj is Sign && methodId == 1203 -> {
                 // sign(data) → ByteArray → JS Array — data 支持 Utf8String|ByteArray
                 when (val data = args.getDataArg(0)) {
                     is String -> byteArrayToJsArray(ctx, obj.sign(data))
@@ -599,7 +577,7 @@ object NativeJsExtensionsBridge {
                     else -> jsUndefined()
                 }
             }
-            obj is NativeSign && methodId == 1204 -> {
+            obj is Sign && methodId == 1204 -> {
                 // signHex(data) — 小写 hex (对齐 hutool HexUtil.encodeHexStr)
                 when (val data = args.getDataArg(0)) {
                     is String -> stringToJsValue(ctx, obj.signHex(data))
@@ -607,7 +585,7 @@ object NativeJsExtensionsBridge {
                     else -> jsUndefined()
                 }
             }
-            obj is NativeSign && methodId == 1205 -> {
+            obj is Sign && methodId == 1205 -> {
                 // verify(data, sign) → Boolean
                 val sig = args.getOrNull(1).toBytesOrNull() ?: ByteArray(0)
                 val result = when (val data = args.getDataArg(0)) {
@@ -764,7 +742,7 @@ object NativeJsExtensionsBridge {
             obj is JsExtensionsCommon && methodId == 501 -> {
                 // queryTTF(data[, useCache]) → QueryTTF handle (null → 0, JS 层转 null)
                 val data = args.getDataArgOrNull(0)
-                val useCache = (args.getOrNull(1) as? Boolean) ?: true
+                val useCache = args.getOrNull(1) as? Boolean
                 val ttf = obj.queryTTF(data, useCache)
                 qjs_NewFloat64(ctx, (ttf?.let { registerObject(it) } ?: 0L).toDouble())
             }
@@ -1045,328 +1023,7 @@ object NativeJsExtensionsBridge {
 
     // ============ JS 工厂代码 (注入 bootstrap) ============
 
-    /**
-     * JS 工厂函数源码, 注入 bootstrap。
-     *
-     * - `__createJavaObj(handle)`: 创建 java 对象 JS 包装, 每个方法调 `__nativeDispatch(handle, methodId, args)`;
-     * - `__createCryptoObj(handle)`: 创建 SymmetricCrypto 对象 JS 包装;
-     * - `__createAsymCryptoObj(handle)`: 创建 AsymmetricCrypto 对象 JS 包装;
-     * - `__createSignObj(handle)`: 创建 Sign 对象 JS 包装。
-     *
-     * JS 层用闭包捕获 handle, 避免在 C 层面传递上下文。
-     *
-     * KSP 生成表闭包按工厂分区注入: 每个工厂函数体内 `return obj;` 前有唯一标记注释
-     * `// @@methods:<factory>@@`, 下方 val 声明的 `.let {}` 拼装块按
-     * [NativeGeneratedDispatch.JS_METHOD_TABLES] 逐工厂替换 (见 JS_FACTORY_CODE 尾部)。
-     *
-     * 注: iOS/鸿蒙两端 JS 工厂代码完全一致 (JS 层行为相同), 下沉到 nativeMain 共用。
-     */
-    val JS_FACTORY_CODE: String = """
-// ============ JsExtensions 桥接工厂 (handle → JS 对象) ============
-
-function __createImageOpsObj(handle) {
-    // ImageRef is an opaque QuickJS object. Normalized PNG Uint8Arrays stay in this
-    // scope-local WeakMap and never become Rust/global handles or WebView resources.
-    var refs = new WeakMap();
-    function wrap(bytes) {
-        var ref = {};
-        refs.set(ref, bytes);
-        return ref;
-    }
-    function unwrap(ref) {
-        if (!ref || typeof ref !== 'object' || !refs.has(ref)) {
-            throw new TypeError('image: argument is not an image.* result');
-        }
-        return refs.get(ref);
-    }
-    var obj = {};
-    obj.decode = function(value) {
-        return wrap(__nativeDispatch(handle, 3301, [value]));
-    };
-    obj.encode = function(img, format, quality) {
-        return __nativeDispatch(handle, 3302, [unwrap(img), format, quality]);
-    };
-    obj.split = function(img, rows, cols) {
-        return __nativeDispatch(handle, 3303, [unwrap(img), rows, cols]).map(wrap);
-    };
-    obj.stitch = function(imgs, direction) {
-        if (!Array.isArray(imgs)) throw new TypeError('image.stitch expects an array');
-        return wrap(__nativeDispatch(handle, 3304, [imgs.map(unwrap), direction]));
-    };
-    obj.crop = function(img, x, y, w, h) {
-        return wrap(__nativeDispatch(handle, 3305, [unwrap(img), x, y, w, h]));
-    };
-    obj.rotate = function(img, deg) {
-        return wrap(__nativeDispatch(handle, 3306, [unwrap(img), deg]));
-    };
-    obj.flip = function(img, direction) {
-        return wrap(__nativeDispatch(handle, 3307, [unwrap(img), direction]));
-    };
-    obj.size = function(img) {
-        return __nativeDispatch(handle, 3308, [unwrap(img)]);
-    };
-    return obj;
-}
-
-function __createJavaObj(handle) {
-    var obj = {};
-    // JsExtensionsCommon 纯函数面 (1-99)
-    obj.base64Encode = function(str) { return __nativeDispatch(handle, 1, [str]); };
-    obj.base64Decode = function(str) { return __nativeDispatch(handle, 2, [str]); };
-    obj.strToBytes = function(str) { return __nativeDispatch(handle, 3, [str]); };
-    obj.bytesToStr = function(bytes) { return __nativeDispatch(handle, 4, bytes); };
-    obj.encodeURI = function(str) { return __nativeDispatch(handle, 7, [str]); };
-    // JsCryptoProviders 摘要/HMAC 面 (100-199)
-    obj.md5Encode = function(str) { return __nativeDispatch(handle, 101, [str]); };
-    obj.md5Encode16 = function(str) { return __nativeDispatch(handle, 102, [str]); };
-    obj.digestHex = function(data, algorithm) { return __nativeDispatch(handle, 103, [data, algorithm]); };
-    obj.digestBase64Str = function(data, algorithm) { return __nativeDispatch(handle, 104, [data, algorithm]); };
-    obj.HMacHex = function(data, algorithm, key) { return __nativeDispatch(handle, 105, [data, algorithm, key]); };
-    obj.HMacBase64 = function(data, algorithm, key) { return __nativeDispatch(handle, 106, [data, algorithm, key]); };
-    // 工厂方法 (200-299) → 返回 handle, 用 __createCryptoObj 包装
-    obj.createSymmetricCrypto = function(transformation, key, iv) {
-        var cryptoHandle = __nativeDispatch(handle, 201, [transformation, key, iv]);
-        return __createCryptoObj(cryptoHandle);
-    };
-    obj.desEncodeToBase64String = function(data, key, transformation, iv) {
-        return obj.createSymmetricCrypto(transformation, key, iv || null).encryptBase64(data);
-    };
-    obj.aesEncodeToBase64String = obj.desEncodeToBase64String;
-    obj.createAsymmetricCrypto = function(transformation) {
-        var cryptoHandle = __nativeDispatch(handle, 202, [transformation]);
-        return __createAsymCryptoObj(cryptoHandle);
-    };
-    obj.createSign = function(algorithm) {
-        var signHandle = __nativeDispatch(handle, 203, [algorithm]);
-        return __createSignObj(signHandle);
-    };
-    // ============ 重载覆盖 (新定义覆盖上方单参版; 单参路径仍走原 methodId, 行为不变) ============
-    obj.strToBytes = function(str, charset) {
-        return arguments.length >= 2 ? __nativeDispatch(handle, 13, [str, charset]) : __nativeDispatch(handle, 3, [str]);
-    };
-    obj.bytesToStr = function(bytes, charset) {
-        return arguments.length >= 2 ? __nativeDispatch(handle, 14, [bytes, charset]) : __nativeDispatch(handle, 4, bytes);
-    };
-    obj.base64Decode = function(str, second) {
-        return arguments.length >= 2 ? __nativeDispatch(handle, 15, [str, second]) : __nativeDispatch(handle, 2, [str]);
-    };
-    obj.base64Encode = function(str, flags) {
-        return arguments.length >= 2 ? __nativeDispatch(handle, 17, [str, flags]) : __nativeDispatch(handle, 1, [str]);
-    };
-    obj.encodeURI = function(str, enc) {
-        return arguments.length >= 2 ? __nativeDispatch(handle, 19, [str, enc]) : __nativeDispatch(handle, 7, [str]);
-    };
-    // ============ 编解码补齐 (13-29) ============
-    obj.base64DecodeToByteArray = function(str, flags) { return __nativeDispatch(handle, 16, [str, flags]); };
-    obj.toURL = function(url, baseUrl) { return __createJsUrlObj(__nativeDispatch(handle, 22, [url, baseUrl])); };
-    // ============ 规则引擎核心补齐 (23-28, 对齐 JVM @JsApi 分派表) ============
-    obj.getSource = function() { var h = __nativeDispatch(handle, 23, []); return h ? __createBaseSourceObj(h) : null; };
-    obj.put = function(key, value) { return __nativeDispatch(handle, 24, [key, value]); };
-    obj.get = function(key) { return __nativeDispatch(handle, 25, [key]); };
-    obj.evalJS = function(jsStr) { return __nativeDispatch(handle, 26, [jsStr]); };
-    obj.getString = function(rule, content, isUrl) { return __nativeDispatch(handle, 27, [rule, content, isUrl]); };
-    obj.getStringList = function(rule, content, isUrl) { return __nativeDispatch(handle, 28, [rule, content, isUrl]); };
-    // ============ 网络族 (300-399) ============
-    obj.ajax = function(url, timeoutMs) {
-        return __nativeDispatch(handle, 301, arguments.length >= 2 ? [url, timeoutMs] : [url]);
-    };
-    obj.ajaxAll = function(urlList) {
-        var hs = __nativeDispatch(handle, 302, [urlList]);
-        if (!hs) return [];
-        var out = [];
-        for (var i = 0; i < hs.length; i++) out.push(__createStrResponseObj(hs[i]));
-        return out;
-    };
-    obj.connect = function(urlStr, header) { return __createStrResponseObj(__nativeDispatch(handle, 303, [urlStr, header])); };
-    obj.webView = function(...args) { return __nativeDispatch(handle, 304, args); };
-    obj.webViewGetSource = function(...args) { return __nativeDispatch(handle, 305, args); };
-    obj.webViewGetOverrideUrl = function(...args) { return __nativeDispatch(handle, 306, args); };
-    obj.getCookie = function(tag, key) { return __nativeDispatch(handle, 307, [tag, key]); };
-    // java.get 重载: 单参 = 变量读取 (25), 双/三参 = 网络 GET (309)。
-    obj.get = function(a, b, timeoutMs) {
-        if (arguments.length >= 2) {
-            var h = (typeof b === 'string') ? b : JSON.stringify(b);
-            var params = arguments.length >= 3 ? [a, h, timeoutMs] : [a, h];
-            return __createRespObj(__nativeDispatch(handle, 309, params));
-        }
-        return __nativeDispatch(handle, 25, [a]);
-    };
-    obj.head = function(urlStr, headers) {
-        var h = (typeof headers === 'string') ? headers : JSON.stringify(headers);
-        return __createRespObj(__nativeDispatch(handle, 310, [urlStr, h]));
-    };
-    obj.post = function(urlStr, body, headers, timeoutMs) {
-        var h = (typeof headers === 'string') ? headers : JSON.stringify(headers);
-        var params = arguments.length >= 4 ? [urlStr, body, h, timeoutMs] : [urlStr, body, h];
-        return __createRespObj(__nativeDispatch(handle, 311, params));
-    };
-    // ============ UI/杂项 (400-499) ============
-    obj.log = function(msg) { __nativeDispatch(handle, 402, [msg]); return msg; };
-    obj.logType = function(any) { __nativeDispatch(handle, 403, [any]); };
-    obj.openUrl = function(url, mimeType) { __nativeDispatch(handle, 407, [url, mimeType]); };
-    obj.deviceID = function() { return __nativeDispatch(handle, 414, []); };
-    obj.refreshExplore = function() { __nativeDispatch(handle, 415, []); };
-    obj.upLoginData = function(data) { __nativeDispatch(handle, 416, [JSON.stringify(data)]); };
-    obj.reLoginView = function(deltaUp) { __nativeDispatch(handle, 417, [deltaUp]); };
-    obj.startBrowser = function(url, title) { __nativeDispatch(handle, 408, [url, title]); };
-    obj.startBrowserAwait = function(url, title, refetchAfterSuccess) {
-        return __createStrResponseObj(__nativeDispatch(handle, 409, [url, title, refetchAfterSuccess]));
-    };
-    // ============ 字体族 (500-599) ============
-    obj.queryTTF = function(data, useCache) { return __createQueryTTFObj(__nativeDispatch(handle, 501, [data, useCache])); };
-    obj.queryBase64TTF = function(data) { return __createQueryTTFObj(__nativeDispatch(handle, 502, [data])); };
-    obj.replaceFont = function(text, errorQueryTTF, correctQueryTTF, filter) {
-        var e = errorQueryTTF ? errorQueryTTF.__h : null;
-        var c = correctQueryTTF ? correctQueryTTF.__h : null;
-        return __nativeDispatch(handle, 503, [text, e, c, filter === true]);
-    };
-    // ============ 文件/压缩族 (600-699) ============
-    obj.readTxtFile = function(path, charsetName) { return __nativeDispatch(handle, 603, [path, charsetName]); };
-    obj.getZipStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 610, [url, path, charsetName]); };
-    obj.getRarStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 611, [url, path, charsetName]); };
-    obj.get7zStringContent = function(url, path, charsetName) { return __nativeDispatch(handle, 612, [url, path, charsetName]); };
-    obj.downloadFile = function(a, b) { return __nativeDispatch(handle, 616, [a, b]); };
-    obj.cacheFile = function(urlStr, saveTime) { return __nativeDispatch(handle, 617, [urlStr, saveTime]); };
-    // @@methods:__createJavaObj@@
-    return obj;
-}
-
-function __createCryptoObj(handle) {
-    var obj = {};
-    obj.encryptBase64 = function(data) { return __nativeDispatch(handle, 1001, [data]); };
-    obj.decryptStr = function(data) { return __nativeDispatch(handle, 1002, [data]); };
-    obj.decrypt = function(data) { return __nativeDispatch(handle, 1003, [data]); };
-    obj.setIv = function(iv) { __nativeDispatch(handle, 1004, [iv]); return obj; };
-    obj.encrypt = function(data) { return __nativeDispatch(handle, 1005, [data]); };
-    obj.encryptHex = function(data) { return __nativeDispatch(handle, 1006, [data]); };
-    // @@methods:__createCryptoObj@@
-    return obj;
-}
-
-function __createAsymCryptoObj(handle) {
-    var obj = {};
-    obj.setPrivateKey = function(key) { __nativeDispatch(handle, 1101, [key]); return obj; };
-    obj.setPublicKey = function(key) { __nativeDispatch(handle, 1102, [key]); return obj; };
-    obj.decrypt = function(data, usePublicKey) { return __nativeDispatch(handle, 1103, [data, usePublicKey]); };
-    obj.encrypt = function(data, usePublicKey) { return __nativeDispatch(handle, 1104, [data, usePublicKey]); };
-    obj.decryptStr = function(data, usePublicKey) { return __nativeDispatch(handle, 1105, [data, usePublicKey]); };
-    obj.encryptHex = function(data, usePublicKey) { return __nativeDispatch(handle, 1106, [data, usePublicKey]); };
-    obj.encryptBase64 = function(data, usePublicKey) { return __nativeDispatch(handle, 1107, [data, usePublicKey]); };
-    // @@methods:__createAsymCryptoObj@@
-    return obj;
-}
-
-function __createSignObj(handle) {
-    var obj = {};
-    obj.setPrivateKey = function(key) { __nativeDispatch(handle, 1201, [key]); return obj; };
-    obj.setPublicKey = function(key) { __nativeDispatch(handle, 1202, [key]); return obj; };
-    obj.sign = function(data) { return __nativeDispatch(handle, 1203, [data]); };
-    obj.signHex = function(data) { return __nativeDispatch(handle, 1204, [data]); };
-    obj.verify = function(data, sign) { return __nativeDispatch(handle, 1205, [data, sign]); };
-    // @@methods:__createSignObj@@
-    return obj;
-}
-
-function __createQueryTTFObj(handle) {
-    if (!handle || handle <= 0) return null;
-    var obj = {};
-    obj.__h = handle; // replaceFont 回传句柄用
-    // getGlyfById 等规整函数手写闭包 (生成表注入点在下方 @@methods 标记处, 位于其后,
-    // 同名定义以生成为准); 映射表属性: 首次访问时 JSON 反序列化并缓存 (生成器只收集函数)
-    obj.getGlyfById = function(glyfId) { return __nativeDispatch(handle, 1301, [glyfId]); };
-    obj.getGlyfIdByUnicode = function(unicode) { return __nativeDispatch(handle, 1302, [unicode]); };
-    obj.getGlyfByUnicode = function(unicode) { return __nativeDispatch(handle, 1303, [unicode]); };
-    obj.getUnicodeByGlyf = function(glyph) { return __nativeDispatch(handle, 1304, [glyph]); };
-    obj.isBlankUnicode = function(unicode) { return __nativeDispatch(handle, 1305, [unicode]); };
-    // 映射表属性: 首次访问时 JSON 反序列化并缓存
-    [["unicodeToGlyph", 1306], ["glyphToUnicode", 1307], ["unicodeToGlyphId", 1308]].forEach(function(m) {
-        var cache = null;
-        Object.defineProperty(obj, m[0], {
-            get: function() {
-                if (cache === null) cache = JSON.parse(__nativeDispatch(handle, m[1], []) || "{}");
-                return cache;
-            }
-        });
-    });
-    // @@methods:__createQueryTTFObj@@
-    return obj;
-}
-
-function __createStrResponseObj(handle) {
-    if (!handle || handle <= 0) return null;
-    var obj = {};
-    obj.__h = handle;
-    // 规整方法 (body/url/code/message/isSuccessful) 由生成表注入 (下方标记处)
-    obj.headers = function() { return __nativeDispatch(handle, 1406, []); };
-    // @@methods:__createStrResponseObj@@
-    return obj;
-}
-
-function __createRespObj(handle) {
-    if (!handle || handle <= 0) return null;
-    var obj = {};
-    obj.__h = handle;
-    // Connection.Response 方法面: 规整方法由生成表注入 (下方标记处);
-    // 手写方法：704 url()、712 method() 及 Connection.Base 的请求头/cookie 重载
-    obj.url = function() { return __nativeDispatch(handle, 704, []); };
-    obj.method = function() { return __nativeDispatch(handle, 712, []); };
-    // @@methods:__createRespObj@@
-    // 手动分派全部重载，避免 KSP 把 nullable setter 当成不可生成的重载。
-    obj.header = function(name, value) {
-        if (arguments.length < 2) return __nativeDispatch(handle, 718, [name]);
-        __nativeDispatch(handle, 713, [name, value]);
-        return obj;
-    };
-    obj.addHeader = function(name, value) {
-        __nativeDispatch(handle, 714, [name, value]);
-        return obj;
-    };
-    obj.removeHeader = function(name) {
-        __nativeDispatch(handle, 715, [name]);
-        return obj;
-    };
-    obj.cookie = function(name, value) {
-        if (arguments.length < 2) return __nativeDispatch(handle, 719, [name]);
-        __nativeDispatch(handle, 716, [name, value]);
-        return obj;
-    };
-    obj.removeCookie = function(name) {
-        __nativeDispatch(handle, 717, [name]);
-        return obj;
-    };
-    return obj;
-}
-
-function __createJsUrlObj(handle) {
-    if (!handle || handle <= 0) return null;
-    var obj = {};
-    obj.__h = handle;
-    Object.defineProperty(obj, "host", { get: function() { return __nativeDispatch(handle, 1501, []); } });
-    Object.defineProperty(obj, "origin", { get: function() { return __nativeDispatch(handle, 1502, []); } });
-    Object.defineProperty(obj, "pathname", { get: function() { return __nativeDispatch(handle, 1503, []); } });
-    Object.defineProperty(obj, "searchParams", { get: function() {
-        var s = __nativeDispatch(handle, 1504, []);
-        return (s === null || s === undefined) ? null : JSON.parse(s);
-    } });
-    // @@methods:__createJsUrlObj@@
-    return obj;
-}
-    """.trimIndent()
-        .let { base ->
-            // KSP 生成表闭包按 JS 工厂分区注入: 每个工厂函数体内 `return obj;` 前有唯一标记注释
-            // `// @@methods:<factory>@@` (4 空格缩进), 对应 [NativeGeneratedDispatch.JS_METHOD_TABLES]
-            // 的同名键替换之 (空表/未生成键的标记原样保留, 是合法 JS 注释)。
-            // 生成物是 obj.xxx = function 裸语句, 必须注入工厂函数体内才有局部 obj/handle,
-            // 拼在全局作用域会 ReferenceError。先拼接属性桥串再替换: __createBaseSourceObj/
-            // __createElementObj 等工厂在 NativeJsPropertyBridge 的串里, 标记同样生效。
-            var code = base + "\n" + NativeJsPropertyBridge.JS_PROPERTY_FACTORY_CODE
-            for ((factory, table) in NativeGeneratedDispatch.JS_METHOD_TABLES) {
-                val marker = "    // @@methods:$factory@@"
-                // trim('\n') 只去首尾换行, 保留行内 4 空格缩进 (与标记行对齐)
-                if (marker in code) code = code.replace(marker, table.trim('\n'))
-            }
-            code
-        }
+    val JS_FACTORY_CODE = nativeBindingFactories(NativeGeneratedDispatch.JS_METHOD_TABLES)
 
     // ============ 工具方法: JSValue ↔ Kotlin 转换 ============
 

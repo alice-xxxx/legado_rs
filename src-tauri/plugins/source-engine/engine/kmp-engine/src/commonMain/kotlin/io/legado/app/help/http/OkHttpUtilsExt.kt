@@ -18,6 +18,3 @@ fun KmpResponseBody.text(encode: String? = null): String {
     return runCatching { textCharsetCodec(EncodingDetect.getHtmlEncode(bytes)).decode(bytes) }
         .getOrElse { bytes.decodeToString() }
 }
-
-expect fun KmpResponseBody.decompressed(): KmpResponseBody
-expect fun KmpRequestBuilder.postMultipart(type: String?, form: Map<String, Any>)

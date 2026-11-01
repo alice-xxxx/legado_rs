@@ -15,6 +15,8 @@
 
 package io.legado.app.model.script
 
+import kotlinx.coroutines.currentCoroutineContext
+import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -24,22 +26,8 @@ import kotlin.coroutines.CoroutineContext
  */
 enum class JsEngineType { QUICKJS }
 
-/**
- * 统一的 JS 变量绑定容器。
- *
- * 不继承任何引擎类型（rhino 的 ScriptBindings 继承 NativeObject、quickjs 的继承 LinkedHashMap），
- * 纯 Map 实现。各引擎实现负责在 [JsEngine.getRuntimeScope] / [JsEngine.eval] 入口
- * 把 entries 转换为对应引擎的 ScriptBindings。
- *
- * [dangerousApi] 控制是否旁路引擎安全名单（由 BaseSource.enableDangerousApi 控制）。
- *
- * 构造时统一注入 platform/image，覆盖全部 JsBindings 构造点
- * （buildScriptBindings / 引擎 bindingsConfig eval / RegexExtensions / FileBook）。
- * 两个值均为常量/单例引用，零额外分配；平台渗漏集中在 [JsBindingInjector]（宿主启动注册）。
- */
-class JsBindings : MutableMap<String, Any?> by LinkedHashMap() {
-    var dangerousApi: Boolean = false
-
+/** Source bindings share the engine container and inject platform/image defaults. */
+class JsBindings : com.script.quickjs.ScriptBindings() {
     init {
         this["platform"] = JsBindingInjector.platform
         this["image"] = JsBindingInjector.image
@@ -72,7 +60,7 @@ inline fun buildScriptBindings(block: (JsBindings) -> Unit): JsBindings {
  *
  * - rhino 实现 `RhinoJsScope`（app）: 持 `org.mozilla.javascript.Scriptable` (sharedScope, 已 sealObject)
  *   + 通过 `Context.getCurrentContext() as? RhinoContext` 动态访问协程上下文
- * - quickjs 实现 `QuickJsJsScope`（app）: 持 `com.script.quickjs.QuickJsContext` (线程独占, 持 native 指针)
+ * - quickjs 实现 `QuickJsContext`（app）: 持 `com.script.quickjs.QuickJsContext` (线程独占, 持 native 指针)
  *
  * 业务层 (AnalyzeRule/BaseSource/AnalyzeUrl) 通过本接口持有 scope,
  * 不再直接依赖 QuickJsContext 或 Scriptable。
@@ -273,7 +261,8 @@ interface JsEngine {
      *
      * 对应 app 顶层 `runScriptWithContext(context, block)`。
      */
-    fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T
+    fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T =
+        currentContext().withCoroutineContext(context, block)
 
     /**
      * 在 JS 执行上下文中运行 block（suspend 版，自动取当前协程上下文）。
@@ -283,6 +272,7 @@ interface JsEngine {
      *
      * 对应 app 顶层 `runScriptWithContext(block)`。
      */
-    suspend fun <T> runScriptWithContext(block: () -> T): T
+    suspend fun <T> runScriptWithContext(block: () -> T): T =
+        currentContext().withCoroutineContext(currentCoroutineContext().minusKey(ContinuationInterceptor), block)
 
 }

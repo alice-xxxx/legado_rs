@@ -354,6 +354,9 @@ class JsApiProcessor(
         sb.appendLine()
         sb.appendLine("import com.script.jsdispatch.JsApiDispatcher")
         sb.appendLine("import $COERCE")
+        sb.appendLine("import com.script.jsdispatch.invokeTarget")
+        sb.appendLine("import com.script.jsdispatch.toMapArg")
+        sb.appendLine("import com.script.jsdispatch.scoreStringArray")
         sb.appendLine("import $REGISTRY")
         sb.appendLine()
         sb.appendLine("/** [$fqn] 的编译期静态分派表 (KSP 生成, 勿手改)。 */")
@@ -908,6 +911,7 @@ class JsApiProcessor(
         sb.appendLine()
         sb.appendLine("package $GEN_PKG")
         sb.appendLine()
+        sb.appendLine("import $COERCE")
         sb.appendLine("import io.legado.app.utils.GSON")
         sb.appendLine("import io.legado.app.utils.toJson")
         sb.appendLine()
@@ -994,14 +998,15 @@ class JsApiProcessor(
     /** native 参数表达式: List<Any?> 取第 [index] 个并转换。 */
     private fun nativeParamExpr(listName: String, index: Int, p: ParamModel): String {
         val a = "$listName.getOrNull($index)"
+        fun number(method: String) = "JsCoerce." + method + (if (p.nullable) "OrNull" else "") + "(" + a + " as? Number)"
         return when (val c = p.cat) {
             Cat.STRING -> if (p.nullable) "$a as? String" else "($a as? String) ?: \"\""
-            Cat.INT -> if (p.nullable) "($a as? Number)?.toInt()" else "($a as? Number)?.toInt() ?: 0"
-            Cat.LONG -> if (p.nullable) "($a as? Number)?.toLong()" else "($a as? Number)?.toLong() ?: 0L"
-            Cat.SHORT -> if (p.nullable) "($a as? Number)?.toShort()" else "($a as? Number)?.toShort() ?: 0"
-            Cat.BYTEP -> if (p.nullable) "($a as? Number)?.toByte()" else "($a as? Number)?.toByte() ?: 0"
-            Cat.FLOAT -> if (p.nullable) "($a as? Number)?.toFloat()" else "($a as? Number)?.toFloat() ?: 0f"
-            Cat.DOUBLE -> if (p.nullable) "($a as? Number)?.toDouble()" else "($a as? Number)?.toDouble() ?: 0.0"
+            Cat.INT -> number("toInt")
+            Cat.LONG -> number("toLong")
+            Cat.SHORT -> number("toShort")
+            Cat.BYTEP -> number("toByte")
+            Cat.FLOAT -> number("toFloat")
+            Cat.DOUBLE -> number("toDouble")
             Cat.BOOLEAN -> if (p.nullable) "$a as? Boolean" else "($a as? Boolean) ?: false"
             Cat.CHAR -> if (p.nullable) "$a as? Char" else "($a as? Char) ?: ' '"
             Cat.ANY -> a

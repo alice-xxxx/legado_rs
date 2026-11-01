@@ -1,5 +1,7 @@
 package com.script.quickjs
 
+import io.legado.app.model.script.JsObject
+
 /**
  * QuickJS JS Object 在 Kotlin 侧的标记类型,对齐 rhino 的 NativeObject。
  *
@@ -12,7 +14,7 @@ package com.script.quickjs
  * 注意: 与 rhino 的 `org.mozilla.javascript.NativeObject` 同名但不同包,
  * 仅作为类型标记,不实现 rhino 的 Scriptable 接口。
  */
-class NativeObject : LinkedHashMap<String, Any?> {
+class NativeObject : LinkedHashMap<String, Any?>, JsObject {
 
     constructor() : super()
 

@@ -39,7 +39,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import io.legado.app.utils.NetworkUtils
 import io.legado.app.utils.URL
 import io.legado.app.utils.decodeStringMapOrNull
-import io.legado.app.utils.formatDoubleNoDecimal
+import io.legado.app.utils.formatIntegralDouble
 import io.legado.app.utils.getOrPutLimit
 import io.legado.app.utils.isDataUrl
 import io.legado.app.utils.isJson
@@ -63,7 +63,7 @@ import kotlin.coroutines.EmptyCoroutineContext
  * **commonMain 下沉说明**:
  * - JVM 专属类型 (URL/Closeable) 经 expect/actual 包装, 详见 commonMain/utils/JvmPlatformTypes.kt。
  * - Pattern → kotlin.text.Regex (commonMain 原生), matcher 循环改 findAll/find, 行为等价。
- * - String.format(Locale.ROOT, "%.0f", value) → formatDoubleNoDecimal (expect/actual 包装)。
+ * - 整数 Double 结果由公共 formatIntegralDouble 转为普通十进制文本。
  */
 // 原 @Keep (androidx.annotation.Keep 无 common 变体), 改由 app/proguard-rules.pro 按类名 keep
 @Suppress("unused", "RegExpRedundantEscape")
@@ -751,7 +751,7 @@ open class AnalyzeRuleCore(
                                     is String -> infoVal.insert(0, jsEval)
                                     is Double if jsEval % 1.0 == 0.0 -> infoVal.insert(
                                         0,
-                                        formatDoubleNoDecimal(jsEval)
+                                        formatIntegralDouble(jsEval)
                                     )
 
                                     else -> infoVal.insert(0, jsEval.toString())

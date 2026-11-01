@@ -2,6 +2,7 @@ package io.legado.app.model.script
 
 import io.legado.app.help.JsCryptoProviders
 import io.legado.app.utils.EncoderUtils
+import io.legado.app.utils.randomUUIDString
 import io.legado.app.utils.toHexLower
 
 /** Java 类签名的薄适配；加密、摘要、随机数仍由宿主的同一套实现完成。 */
@@ -76,11 +77,7 @@ internal object JavaCryptoCompat {
         }
         "java.util.UUID" -> {
             require(method == "randomUUID")
-            val bytes = JsCryptoProviders.get().randomBytes(16)
-            bytes[6] = ((bytes[6].toInt() and 15) or 64).toByte()
-            bytes[8] = ((bytes[8].toInt() and 63) or 128).toByte()
-            val hex = bytes.toHexLower()
-            listOf(hex.take(8), hex.substring(8,12), hex.substring(12,16), hex.substring(16,20), hex.substring(20)).joinToString("-")
+            randomUUIDString()
         }
         else -> error("Unsupported Java static method: $name.$method")
     }

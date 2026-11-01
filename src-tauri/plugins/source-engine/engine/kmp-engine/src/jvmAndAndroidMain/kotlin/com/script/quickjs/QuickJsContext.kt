@@ -2,6 +2,7 @@ package com.script.quickjs
 
 import com.script.quickjs.QuickJsContext.Companion.findByCtxPtr
 import com.script.quickjs.QuickJsContext.Companion.threadLocalContext
+import io.legado.app.model.script.JsScope
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ensureActive
 import java.lang.ref.PhantomReference
@@ -47,11 +48,11 @@ class QuickJsContext(
     val rtPtr: Long,
     /** native JSContext 指针, 所有 JS 操作通过此句柄调用 QuickJsNative */
     val ctxPtr: Long,
-    var coroutineContext: CoroutineContext? = null,
+    override var coroutineContext: CoroutineContext? = null,
     var dangerousApi: Boolean = false,
-    var allowScriptRun: Boolean = false,
-    var recursiveCount: Int = 0
-) : AutoCloseable {
+    override var allowScriptRun: Boolean = false,
+    override var recursiveCount: Int = 0
+) : JsScope {
 
     /**
      * 本 context 的唯一标识,用于 [JavaObjectBridge] / [JsFunctionHandle] 按范围释放句柄。
@@ -148,7 +149,7 @@ class QuickJsContext(
      * 在 binding handler 中由业务层 ([JsExtensions]) 调用。
      */
     @Throws(CancellationException::class)
-    fun ensureActive() {
+    override fun ensureActive() {
         coroutineContext?.ensureActive()
     }
 
@@ -156,7 +157,7 @@ class QuickJsContext(
      * 递归深度检查，防止 JS 递归调用导致栈溢出。
      */
     @Throws(ScriptException::class)
-    fun checkRecursive() {
+    override fun checkRecursive() {
         if (recursiveCount >= MAX_RECURSION) {
             throw ScriptException("Maximum recursion depth ($MAX_RECURSION) exceeded")
         }

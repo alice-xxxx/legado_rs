@@ -158,10 +158,6 @@ actual fun <T : Any> KmpRequestBuilder.tagKmp(tagClass: KClass<T>, tag: T?): Kmp
 
 actual fun <T : Any> KmpRequest.tagKmp(tagClass: KClass<T>): T? = this.tag(tagClass)
 
-actual fun Any?.asKmpResponseBody(contentType: KmpMediaType?, length: Long): KmpResponseBody {
-    // actual 端 this 是 okio.BufferedSource (DecompressInterceptor 中 decompressBody 返回),
-    // 委托 okhttp3.ResponseBody.Companion.asResponseBody 扩展。
-    val source = this as BufferedSource
-    return source.asResponseBody(contentType, length)
-}
+internal actual fun BufferedSource.asKmpResponseBody(contentType: KmpMediaType?, length: Long): KmpResponseBody =
+    asResponseBody(contentType, length)
 // endregion

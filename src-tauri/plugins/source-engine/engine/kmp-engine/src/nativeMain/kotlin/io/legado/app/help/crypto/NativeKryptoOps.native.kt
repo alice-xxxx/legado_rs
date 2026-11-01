@@ -10,7 +10,7 @@ package io.legado.app.help.crypto
  *
  * # 存在意义
  * 平台差异 (napi 桥能力窄) 收敛在 actual 层, nativeMain 5 个消费方
- * (CryptoHelper / BackupAES / NativeSymmetricCrypto / JsEncodeUtils / JsExtensionsPlatform)
+ * (CryptoHelper / BackupAES / NativeSymmetricCrypto / JsCryptoProvider / JsExtensionsPlatform)
  * 仅调用 expect 接口。
  *
  * # 算法归一化

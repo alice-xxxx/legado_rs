@@ -11,7 +11,7 @@ import kotlin.text.CharCategory
  * 放 nativeMain (非 .native.kt, 不参与 nativeInterop stage), 对 iosMain/ohosMain/leaf 均可见;
  * 与 NativeJsEngine 同包, 使用处无需显式 import。
  */
-internal fun Char.isJavaIdentifierStart(): Boolean {
+internal actual fun Char.isBindingIdentifierStart(): Boolean {
     if (this == '_' || this == '$') return true
     return when (category) {
         CharCategory.UPPERCASE_LETTER, CharCategory.LOWERCASE_LETTER,
@@ -22,8 +22,8 @@ internal fun Char.isJavaIdentifierStart(): Boolean {
     }
 }
 
-internal fun Char.isJavaIdentifierPart(): Boolean {
-    if (isJavaIdentifierStart()) return true
+internal actual fun Char.isBindingIdentifierPart(): Boolean {
+    if (isBindingIdentifierStart()) return true
     return when (category) {
         CharCategory.DECIMAL_DIGIT_NUMBER, CharCategory.LETTER_NUMBER,
         CharCategory.OTHER_NUMBER, CharCategory.CONNECTOR_PUNCTUATION,

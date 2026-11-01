@@ -70,10 +70,10 @@ class SourceCompatibilityTest {
     }
 
     @Test fun callbacksCannotUseReleasedOrForeignContexts() {
-        val scope=io.legado.app.model.script.quickjs.QuickJsJsEngine.createStandaloneScope() as io.legado.app.model.script.quickjs.QuickJsJsScope
-        val handle=com.script.quickjs.JsFunctionHandle.register(scope.ctx.ctxPtr,"({run:function(){return 42;}})",false)
+        val scope=io.legado.app.model.script.quickjs.QuickJsJsEngine.createStandaloneScope() as com.script.quickjs.QuickJsContext
+        val handle=com.script.quickjs.JsFunctionHandle.register(scope.ctxPtr,"({run:function(){return 42;}})",false)
         val callback=assertNotNull(com.script.quickjs.JsFunctionHandle.get(handle))
-        val function=com.script.quickjs.JsFunction(scope.ctx,"function(){return 42}")
+        val function=com.script.quickjs.JsFunction(scope,"function(){return 42}")
         try {
             assertNull(callback.invokeJsMethod("run",emptyArray()))
             assertNull(function.call())

@@ -8,7 +8,7 @@ import io.legado.sourceengine.host.*
 object Engine {
     fun isCancelled(id:String)=sourceExecutionCancelled(id)
     private suspend fun <T> call(directory:String,id:String,block:suspend()->T):T=SourceEngineHostRegistry.withHost(IosHost(id,directory)){
-        HostRuntime.install()
+        HostRuntime.install(::image)
         block()
     }
     @Throws(Throwable::class) suspend fun search(request:SearchRequest,directory:String,id:String):SearchPage=call(directory,id){ReaderSource.search(request)}

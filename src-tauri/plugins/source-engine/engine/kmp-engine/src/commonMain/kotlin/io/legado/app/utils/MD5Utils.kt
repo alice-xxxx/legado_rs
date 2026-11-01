@@ -1,6 +1,7 @@
 package io.legado.app.utils
 
-import okio.Buffer
+import okio.buffer
+import okio.use
 import okio.HashingSink
 import okio.blackholeSink
 import okio.ByteString.Companion.toByteString
@@ -12,14 +13,7 @@ object MD5Utils {
 
     fun md5Encode(inputStream: InputStream): String {
         val digest = HashingSink.md5(blackholeSink())
-        val buffer = Buffer()
-        val bytes = ByteArray(8192)
-        while (true) {
-            val count = inputStream.read(bytes)
-            if (count == -1) break
-            buffer.write(bytes, 0, count)
-            digest.write(buffer, count.toLong())
-        }
+        digest.buffer().use { it.writeAll(inputStream.asSource()) }
         return digest.hash.hex()
     }
 

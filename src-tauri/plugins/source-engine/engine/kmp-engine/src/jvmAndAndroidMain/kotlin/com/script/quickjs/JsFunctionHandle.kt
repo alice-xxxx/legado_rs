@@ -45,7 +45,7 @@ class JsFunctionHandle private constructor(
         check(owner != null && QuickJsContext.threadLocalContext.get() === owner) {
             "Source callback context was released or belongs to another thread"
         }
-        val jsArgs = args.joinToString(",") { javaArgToJsExpr(it) }
+        val jsArgs = args.joinToString(",") { scriptArgument(it, dangerousApi) }
         QuickJsNative.nativeEval(ctxPtr,
             "(function(){var impl=$jsObjectExpr;return typeof impl==='function'?impl($jsArgs):(impl && impl.$methodName && impl.$methodName($jsArgs));})();")
     } catch (error: Throwable) {
@@ -53,42 +53,6 @@ class JsFunctionHandle private constructor(
         null
     }
 
-    /**
-     * 把 Java 参数转为 JS 表达式字符串。
-     *
-     * - null/基本类型直接拼字面量
-     * - Java 对象通过 [JavaObjectBridge.registerObject] 注册句柄,
-     *   用 nativeWrapJavaObject 包装为 JS JavaObject (走 native trap)
-     *
-     * 注意: 不能用 nativeWrapJavaObject 因为它是同步 JNI 调用,
-     * 这里通过 evaluate JS 表达式实现: 先在 native 层注册句柄,
-     * JS 侧通过 binding 函数 __wrapJavaObjectNative(handle) 获取包装后的 JavaObject。
-     * 但 bootstrap 中已无 __wrapJavaObjectNative, 改为直接 evaluate 一段 JS 表达式
-     * 让 native 层通过 injectVariable 机制注入。
-     *
-     * 简化方案: 直接调用 QuickJsNative.nativeWrapJavaObject 拿到 JSValue 句柄,
-     * 然后用 nativeSetProperty 设置到一个临时全局变量, JS 代码引用这个变量名。
-     *
-     * 但更简单: nativeEval 时直接传 JS 表达式, 对 Java 对象用一个特殊函数
-     * __javaObj(handle) 由 native 层解释。这里采取 evaluate + 句柄路径。
-     */
-    private fun javaArgToJsExpr(arg: Any?): String {
-        if (arg == null) return "null"
-        if (arg is String) return JsStringUtils.escape(arg)
-        if (arg is Number) return arg.toString()
-        if (arg is Boolean) return arg.toString()
-        if (arg is Char) return JsStringUtils.escape(arg.toString())
-        if (arg is ByteArray) {
-            // ByteArray 通过句柄注入 (JavaObject trap 支持 length/索引访问)
-            val handle = JavaObjectBridge.registerObject(arg)
-            return "__wrapJavaHandle($handle)"
-        }
-        // Java 对象通过句柄包装
-        if (!JsSecurityPolicy.isObjectVisible(arg, dangerousApi)) return "null"
-        val handle = JavaObjectBridge.registerObject(arg)
-        // 通过 bootstrap 提供的 __wrapJavaHandle(handle) 包装为 JavaObject
-        return "__wrapJavaHandle($handle)"
-    }
 
     /**
      * 在 ctxPtrToCtxMap 中查找当前 ctxPtr 对应的 QuickJsContext。
@@ -104,10 +68,10 @@ class JsFunctionHandle private constructor(
         private const val TAG = "JsFunctionHandle"
 
         private val handleCounter = AtomicLong(1L)
-        private val handleMap = LongSparseArrayCompat<JsFunctionHandle>()
+        private val handleMap = HashMap<Long, JsFunctionHandle>()
 
         /** scopeId -> 该 scope 注册的 JsFunctionHandle 句柄集合, close 时批量释放 */
-        private val scopeHandles = LongSparseArrayCompat<MutableSet<Long>>()
+        private val scopeHandles = HashMap<Long, MutableSet<Long>>()
         private val lock = Any()
 
         /**

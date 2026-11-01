@@ -1,5 +1,8 @@
 package com.script.quickjs
 
+import io.legado.app.model.script.withScriptExecution
+import io.legado.app.model.script.isValidBindingName
+
 import io.legado.app.model.script.JsBootstrap
 
 import com.script.jsdispatch.JsValueConverters
@@ -225,7 +228,7 @@ object QuickJsEngine {
         val dangerousApi = bindings.dangerousApi
         val out = ArrayList<Any?>(bindings.size * 2)
         for ((key, value) in bindings) {
-            if (!isValidVarName(key)) continue
+            if (!isValidBindingName(key)) continue
             // 统一转换入口: 与 injectVariable 对称, 子 scope 路径也做宿主→JS 值转换
             val converted = JsValueConverters.convertAll(value)
             if (converted != null && converted !is String && converted !is Boolean && converted !is Number) {
@@ -320,7 +323,7 @@ object QuickJsEngine {
      */
     fun cleanupBindings(scope: QuickJsContext, keys: List<String>) {
         if (keys.isEmpty()) return
-        val validKeys = keys.filter { isValidVarName(it) }
+        val validKeys = keys.filter { isValidBindingName(it) }
         if (validKeys.isEmpty()) return
         // 懒加载: 单次 eval 路径不调用 cleanup, 此处首次进入时才抓取 bootstrap globals 初值,
         // 避免 createNativeCtx 阶段对所有 ctx 都跑一遍 (省 ~25 次 JNI/ctx)。
@@ -580,7 +583,7 @@ object QuickJsEngine {
         value: Any?,
         dangerousApi: Boolean
     ): Boolean {
-        if (!isValidVarName(key)) return false
+        if (!isValidBindingName(key)) return false
         if (globalHandle == 0L) return false
         // 统一转换入口: bindings 注入前先把宿主对象转 JS 原生值
         // (JsonElement → String/Number/Boolean/Map/List, 详见 JsValueConverters)
@@ -608,15 +611,6 @@ object QuickJsEngine {
         return true
     }
 
-    private fun isValidVarName(name: String): Boolean {
-        if (name.isEmpty()) return false
-        val first = name[0]
-        if (!first.isJavaIdentifierStart()) return false
-        for (i in 1 until name.length) {
-            if (!name[i].isJavaIdentifierPart()) return false
-        }
-        return true
-    }
 
     /**
      * 同步 dangerousApi 到 native ctx opaque (仅当 scope.dangerousApi 与上次同步的值不同时)。
@@ -664,20 +658,9 @@ object QuickJsEngine {
     ): T {
         val previousThreadContext = QuickJsContext.threadLocalContext.get()
         QuickJsContext.threadLocalContext.set(scope)
-        val previousCoroutineContext = scope.coroutineContext
-        val previousAllowScriptRun = scope.allowScriptRun
-        if (coroutineContext != null) {
-            scope.coroutineContext = coroutineContext
-        }
-        scope.allowScriptRun = true
-        scope.recursiveCount++
         try {
-            scope.checkRecursive()
-            return block()
+            return scope.withScriptExecution(coroutineContext) { block() }
         } finally {
-            scope.coroutineContext = previousCoroutineContext
-            scope.allowScriptRun = previousAllowScriptRun
-            scope.recursiveCount--
             QuickJsContext.threadLocalContext.set(previousThreadContext)
         }
     }

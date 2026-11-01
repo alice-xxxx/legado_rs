@@ -3,6 +3,8 @@
 
 package io.legado.app.model.script
 
+import com.script.quickjs.JsStringUtils
+
 import com.script.jsdispatch.JsValueConverters
 
 import io.legado.app.data.entities.BookChapterLike
@@ -116,7 +118,6 @@ import kotlinx.atomicfu.locks.SynchronizedObject
 import kotlinx.atomicfu.locks.synchronized
 import kotlinx.cinterop.readBytes
 import kotlinx.coroutines.ensureActive
-import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.coroutineContext
 import platform.posix.memcpy
@@ -172,7 +173,7 @@ internal fun qjsEvalUtf8(
  * 未支持的类不能加载，未支持的方法抛出明确错误；
  * JavaAdapter 抛异常; 资源管理 = JS_FreeContext/JS_FreeRuntime。
  *
- * 注册: 宿主启动早期经 registerNativeJsEngines 注册到 [JsEngines]。
+ * 注册: 宿主启动早期由 HostRuntime 注册到 [JsEngines]。
  * 编译验证: ./gradlew :data:compileKotlinIosArm64 / compileKotlinIosSimulatorArm64 /
  * compileKotlinLinuxArm64 -PenableOhosTarget=true。
  */
@@ -503,7 +504,7 @@ object NativeJsEngine : JsEngine {
             try {
                 memScoped {
                     for ((key, value) in bindings) {
-                        if (!isValidVarName(key)) continue
+                        if (!isValidBindingName(key)) continue
                         val jsValue = toJsValue(ctx, value) ?: continue
                         // JS_SetPropertyStr 转移 jsValue 所有权, 不需要 JS_FreeValue(jsValue)
                         nativeSetProperty(ctx, global, key, jsValue)
@@ -532,13 +533,13 @@ object NativeJsEngine : JsEngine {
         val nativeScope = scope as? NativeJsScope
             ?: error("NativeJsEngine.cleanupBindings requires NativeJsScope, got ${scope::class}")
         if (keys.isEmpty()) return
-        val validKeys = keys.filter { isValidVarName(it) }
+        val validKeys = keys.filter { isValidBindingName(it) }
         if (validKeys.isEmpty()) return
         // 拼接 delete 语句 (一次性 JS_Eval, 避免逐 key 等价往返)
         val js = buildString(validKeys.sumOf { it.length + 24 }) {
             validKeys.forEach { key ->
                 append("try{delete globalThis[")
-                append(escapeJsString(key))
+                append(JsStringUtils.escape(key))
                 append("]}catch(e){};")
             }
         }
@@ -550,9 +551,9 @@ object NativeJsEngine : JsEngine {
     /** 判断对象是否为 native 端 JS Object ([NativeNativeObject])。 */
     override fun isJsObject(obj: Any?): Boolean = obj is NativeNativeObject
 
-    /** 把 [NativeNativeObject] 包装为 [NativeJsObject], 非 JS Object 返回 null。 */
+    /** 把 [NativeNativeObject], 非 JS Object 返回 null。 */
     override fun asJsObject(obj: Any?): JsObject? =
-        (obj as? NativeNativeObject)?.let { NativeJsObject(it) }
+        obj as? NativeNativeObject
 
     /** 判断是否为 JS 异常 — native 上 JS 异常通过 [NativeScriptException] 包装。 */
     override fun isJsException(t: Throwable): Boolean = t is NativeScriptException
@@ -569,37 +570,6 @@ object NativeJsEngine : JsEngine {
     /** 当前线程的 JS scope (可空), 供桥接层 (NativeJsPropertyBridge) 登记嵌套 handle。 */
     internal fun currentScope(): NativeJsScope? = currentNativeJsScope
 
-    /**
-     * 在当前 JS 执行上下文上设 coroutineContext 后执行 block (不创建新 scope)。
-     *
-     * 对应 quickjs 的 runScriptWithContext(context, block)。
-     */
-    override fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T {
-        val scope = currentNativeJsScope
-        val prevCtx = scope?.coroutineContext
-        if (scope != null) scope.coroutineContext = context
-        return try {
-            block()
-        } finally {
-            if (scope != null) scope.coroutineContext = prevCtx
-        }
-    }
-
-    /**
-     * suspend 版本, 取当前协程上下文传给 scope (对齐 JVM runScriptWithContext(block)):
-     * kotlin.coroutines.coroutineContext 在 suspend 函数内可取当前协程上下文;
-     * minusKey(ContinuationInterceptor) 不把调度器存进 scope (与 JVM 端实现一致)。
-     */
-    override suspend fun <T> runScriptWithContext(block: () -> T): T {
-        val scope = currentNativeJsScope
-        val prevCtx = scope?.coroutineContext
-        scope?.coroutineContext = coroutineContext.minusKey(ContinuationInterceptor)
-        return try {
-            block()
-        } finally {
-            scope?.coroutineContext = prevCtx
-        }
-    }
 
     // ============ private helper: JS eval / 异常处理 ============
 
@@ -1133,7 +1103,7 @@ object NativeJsEngine : JsEngine {
     ): List<Pair<String, CValue<JSValue>>> {
         val kvs = ArrayList<Pair<String, CValue<JSValue>>>(bindings.size)
         for ((key, value) in bindings) {
-            if (!isValidVarName(key)) continue
+            if (!isValidBindingName(key)) continue
             val jsValue = toJsValue(ctx, value) ?: continue
             kvs.add(key to jsValue)
         }
@@ -1266,67 +1236,13 @@ object NativeJsEngine : JsEngine {
     ): T {
         val prevScope = currentNativeJsScope
         currentNativeJsScope = scope
-        val prevCoroutineContext = scope.coroutineContext
-        val prevAllowScriptRun = scope.allowScriptRun
-        if (coroutineContext != null) {
-            scope.coroutineContext = coroutineContext
-        }
-        scope.allowScriptRun = true
-        scope.recursiveCount++
         return try {
-            scope.checkRecursive()
-            block()
+            scope.withScriptExecution(coroutineContext) { block() }
         } finally {
-            scope.coroutineContext = prevCoroutineContext
-            scope.allowScriptRun = prevAllowScriptRun
-            scope.recursiveCount--
             currentNativeJsScope = prevScope
         }
     }
 
-    /** 变量名合法性检查 (对齐 quickjs/iOS/鸿蒙的 isValidVarName)。 */
-    private fun isValidVarName(name: String): Boolean {
-        if (name.isEmpty()) return false
-        val first = name[0]
-        if (!first.isJavaIdentifierStart()) return false
-        for (i in 1 until name.length) {
-            if (!name[i].isJavaIdentifierPart()) return false
-        }
-        return true
-    }
-
-    /**
-     * 把 Kotlin 字符串转为 JS 字符串字面量 (含首尾双引号)。
-     *
-     * 对齐 quickjs/iOS/鸿蒙的 JsStringUtils.escape, 确保 \b / \f / \u0000-\u001F 等控制字符一致转义。
-     * (modules/quickjs 的 JsStringUtils 是 internal, native 端无法复用, 此处独立实现)
-     */
-    private fun escapeJsString(s: String): String {
-        val sb = StringBuilder(s.length + 2)
-        sb.append('"')
-        for (c in s) {
-            when (c) {
-                '\\' -> sb.append("\\\\")
-                '"' -> sb.append("\\\"")
-                '\n' -> sb.append("\\n")
-                '\r' -> sb.append("\\r")
-                '\t' -> sb.append("\\t")
-                '\u0008' -> sb.append("\\b")  // \b (U+0008)
-                '\u000C' -> sb.append("\\f")  // \f (U+000C)
-                else -> {
-                    if (c.code < 0x20) {
-                        // 纯 Kotlin 等价 "\\u%04x".format(c.code) (Native 无 String.format);
-                        // c.code < 0x20 恒为正, 小写 hex 左补零到 4 位
-                        sb.append("\\u").append(c.code.toString(16).padStart(4, '0'))
-                    } else {
-                        sb.append(c)
-                    }
-                }
-            }
-        }
-        sb.append('"')
-        return sb.toString()
-    }
 
     private val BOOTSTRAP_CODE = JsBootstrap.code + "\n" + NATIVE_JAVA_BOOTSTRAP + "\n" + NativeJsExtensionsBridge.JS_FACTORY_CODE
 
@@ -1335,7 +1251,7 @@ object NativeJsEngine : JsEngine {
 /**
  * native 端 (iOS/鸿蒙) JS 执行 scope, 持有 quickjs [JSRuntime] / [JSContext] 指针。
  *
- * 对应 quickjs 的 QuickJsJsScope (包装 QuickJsContext)。
+ * 对应 quickjs 的 QuickJsContext (包装 QuickJsContext)。
  * quickjs 单线程模型, 一个 [JSRuntime] + [JSContext] 对应一个 scope, 跨 scope 互不影响。
  *
  * # 资源管理
@@ -1425,7 +1341,7 @@ class NativeJsScope(
 /**
  * native 端 (iOS/鸿蒙) "编译"脚本包装 — 持 bytecode + 源码 (bytecode 读回失败时 fallback 源码 eval)。
  *
- * 对应 quickjs 的 QuickJsJsCompiledScript (持 CompiledScript(bytecode))。
+ * 对应 quickjs 的 CompiledScript (持 CompiledScript(bytecode))。
  * bytecode 由 compile/compileForSubScope 生成 (JS_WriteObject 序列化), 执行时
  * JS_ReadObject + JS_EvalFunction 跳过重新 parse (见 [NativeJsEngine.evalCompiledInContext])。
  * bytecode 自带 atom 表可跨 ctx/runtime 复用, AnalyzeRuleCore 的 scriptCache (LRU 16)
@@ -1457,17 +1373,8 @@ class NativeJsCompiledScript(val source: String, bytecode: ByteArray) : JsCompil
  * 注: 类名 NativeNativeObject 中第一个 Native 指 nativeMain 源集 (iOS/鸿蒙共用),
  * 第二个 Native 对齐 quickjs 的 NativeObject 命名 (JS 原生对象标记)。
  */
-class NativeNativeObject(initialCapacity: Int = 0) :
+class NativeNativeObject(initialCapacity: Int = 0) : JsObject,
     MutableMap<String, Any?> by LinkedHashMap(initialCapacity)
-
-/**
- * native 端 (iOS/鸿蒙) [NativeNativeObject] 的 [JsObject] 包装。
- *
- * 对应 quickjs 的 QuickJsJsObject (包装 NativeObject)。
- * 业务层 `jsObj[rule]` 走 Map 索引 (by delegate 到 [NativeNativeObject])。
- */
-class NativeJsObject(val delegate: NativeNativeObject) : JsObject,
-    MutableMap<String, Any?> by delegate
 
 /**
  * native 端 (iOS/鸿蒙) JS 执行异常。

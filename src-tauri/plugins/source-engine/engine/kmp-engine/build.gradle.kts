@@ -11,6 +11,7 @@ val engineToolchain = rootProject.extra["engineToolchain"] as Properties
 
 val isAppleHost = System.getProperty("os.name").startsWith("Mac", ignoreCase = true)
 val nativeInteropPatterns = listOf(
+    "io/legado/sourceengine/host/Runtime.native.kt",
     "io/legado/app/model/script/*.native.kt",
     "io/legado/app/help/crypto/MbedTls*.native.kt",
     "io/legado/app/help/crypto/MbedTlsOps.native.kt",

@@ -47,7 +47,7 @@ import io.legado.app.utils.PercentCodec
 import io.legado.app.utils.byteStreamAsInput
 import io.legado.app.utils.decodeAnyMapOrNull
 import io.legado.app.utils.decodeWithFallbackOrNull
-import io.legado.app.utils.formatDoubleNoDecimal
+import io.legado.app.utils.formatIntegralDouble
 import io.legado.app.utils.get
 import io.legado.app.utils.isDataUrl
 import io.legado.app.utils.isJson
@@ -218,7 +218,7 @@ open class AnalyzeUrlCore(
             val res = RuleAnalyzer(curRuleUrl).innerRule("{{", "}}") {
                 when (val jsEval = evalJS(it) ?: "") {
                     is String -> jsEval
-                    is Double if jsEval % 1.0 == 0.0 -> formatDoubleNoDecimal(jsEval)
+                    is Double if jsEval % 1.0 == 0.0 -> formatIntegralDouble(jsEval)
                     else -> jsEval.toString()
                 }
             }

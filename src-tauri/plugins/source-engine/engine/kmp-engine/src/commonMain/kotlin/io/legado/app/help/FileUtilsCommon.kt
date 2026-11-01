@@ -1,87 +1,115 @@
 package io.legado.app.help
 
+import io.legado.app.exception.SecurityException
+import io.legado.app.help.file.AppFilesDirs
 import io.legado.app.utils.InputStream
+import io.legado.app.utils.asSource
+import io.legado.app.utils.canonicalizeExistingPath
+import okio.FileSystem
+import okio.IOException
+import okio.Path
+import okio.Path.Companion.toPath
 
-/** 源脚本的文件 API；目录与文件访问由平台实现及宿主目录端口提供。 */
-expect object FileUtilsCommon {
+/** 源脚本文件 API。目录由当前宿主提供，文件操作统一使用 Okio。 */
+object FileUtilsCommon {
+    private val fs get() = FileSystem.SYSTEM
 
-    /** 当前源调用的私有缓存目录。 */
-    fun getCachePath(): String
+    fun getCachePath(): String = AppFilesDirs.get().cacheDir
 
-    /**
-     * 解析缓存相对路径为绝对路径, 含安全检查 (防路径穿越)。
-     *
-     * - path 以分隔符开头: cachePath + path
-     * - 否则: cachePath + separator + path
-     * - 校验解析后的 canonicalPath 必须以 cachePath 的父目录为前缀, 否则抛 SecurityException
-     *   (与原 app 端 JsExtensions.getFile 安全检查一致)
-     */
-    fun resolveCachePath(relativePath: String): String
+    /** 保留缓存父目录内的相对访问；检查真实目录边界，包括尚未创建的子路径。 */
+    fun resolveCachePath(relativePath: String): String {
+        val cache = getCachePath().toPath()
+        val root = canonicalizeExistingPath(cache.parent ?: cache)
+        val path = canonicalPath("$cache${Path.DIRECTORY_SEPARATOR}$relativePath".toPath())
+        if (path != root && generateSequence(path.parent) { it.parent }.none { it == root }) {
+            throw SecurityException("非法路径")
+        }
+        return path.toString()
+    }
 
-    /** 判断文件/目录是否存在。 */
-    fun exist(path: String): Boolean
+    // Okio canonicalize 要求路径已存在；逐段解析以覆盖新文件及符号链接后的 ..。
+    private fun canonicalPath(path: Path): Path {
+        val absolute = absolutePath(path)
+        return absolute.segments.fold(canonicalizeExistingPath(requireNotNull(absolute.root))) { parent, name ->
+            val child = parent.resolve(name, normalize = true)
+            if (fs.exists(child)) canonicalizeExistingPath(child) else child
+        }
+    }
 
-    /** 读取文件全部字节, 失败返回 null (与原 FileUtilsBase.readBytes 行为一致)。 */
-    fun readBytes(path: String): ByteArray?
+    private fun absolutePath(path: Path): Path =
+        if (path.isAbsolute) path else canonicalizeExistingPath(".".toPath()) / path
 
-    /** 写入字节到文件 (覆盖), 自动创建父目录, 成功返回 true。 */
-    fun writeBytes(path: String, data: ByteArray): Boolean
+    private fun metadata(path: Path) = try {
+        fs.metadataOrNull(canonicalizeExistingPath(path))
+    } catch (_: IOException) { null }
 
-    /**
-     * 从流写入文件 (流式分块, 不整块缓冲), 自动创建父目录, 成功返回 true。
-     *
-     * 对齐原 app 端 JsExtensions.downloadFile 的 `getInputStream().copyTo` 语义
-     * (大文件避免全量字节数组内存峰值)。
-     *
-     * IO 失败**直接抛出**, 不收成返回值 —— 原版流式失败即失败, 书源 JS 侧要能看到异常;
-     * 收成 Boolean 会让调用方只能造一个丢掉原始类型与堆栈的替代异常。
-     */
-    fun copyToFile(path: String, input: InputStream)
+    fun exist(path: String): Boolean = fs.exists(path.toPath())
 
-    /**
-     * 删除文件或目录。
-     * - 文件: 直接删除
-     * - 目录: 递归删除子项, deleteRootDir 控制是否删除目录本身
-     *
-     * 成功返回 true (与原 FileUtilsBase.delete 行为一致)。
-     */
-    fun delete(path: String, deleteRootDir: Boolean = true): Boolean
+    /** 读取失败返回 null，写入失败返回 false；下载流的 IO 异常直接交给调用方。 */
+    fun readBytes(path: String): ByteArray? = try {
+        fs.read(path.toPath()) { readByteArray() }
+    } catch (_: Exception) { null }
 
-    /**
-     * 列出目录下所有文件 (不含子目录) 的绝对路径。
-     * 非目录或不存在返回空列表 (与原 folder.listFiles 行为对齐)。
-     */
-    fun listFiles(path: String): List<String>
+    fun writeBytes(path: String, data: ByteArray): Boolean = try {
+        val target = path.toPath()
+        target.parent?.let { fs.createDirectories(it) }
+        fs.write(target) { write(data) }
+        true
+    } catch (_: Exception) { false }
 
-    /** 拼接路径, 用平台分隔符 (与原 FileUtilsBase.getPath(root, vararg) 行为一致)。 */
-    fun getPath(rootPath: String, vararg subDirFiles: String): String
+    /** 分块写入且只关闭输出，输入流的生命周期由调用方管理。 */
+    fun copyToFile(path: String, input: InputStream) {
+        val target = path.toPath()
+        target.parent?.let { fs.createDirectories(it) }
+        fs.write(target) { writeAll(input.asSource()) }
+    }
 
-    /** 创建文件夹 (含父目录), 已存在则不报错, 成功返回 true。 */
-    fun createFolderIfNotExist(path: String): Boolean
+    fun delete(path: String, deleteRootDir: Boolean = true): Boolean = try {
+        val target = path.toPath()
+        if (!fs.exists(target)) false else {
+            if (deleteRootDir || !fs.metadata(target).isDirectory) fs.deleteRecursively(target)
+            else fs.list(target).forEach { fs.deleteRecursively(it) }
+            true
+        }
+    } catch (_: Exception) { false }
 
-    /**
-     * 创建文件 (含父目录), 已存在则先删除再创建 (与原 File.createFileReplace 扩展行为一致)。
-     * 成功返回 true。
-     */
-    fun createFileReplace(path: String): Boolean
+    fun listFiles(path: String): List<String> = fs.listOrNull(absolutePath(path.toPath())).orEmpty()
+        .filter { metadata(it)?.isRegularFile == true }.map { it.toString() }
 
-    /**
-     * 列出目录下所有一级子目录的绝对路径 (不含文件)。
-     * 非目录或不存在返回空列表。
-     */
-    fun listSubDirs(path: String): List<String>
+    fun listSubDirs(path: String): List<String> = fs.listOrNull(absolutePath(path.toPath())).orEmpty()
+        .filter { metadata(it)?.isDirectory == true }.map { it.toString() }
 
-    /**
-     * 递归统计目录下所有普通文件的大小总和 (字节); 文件返回自身大小, 不存在返回 0。
-     */
-    fun getDirSize(path: String): Long
+    fun getPath(rootPath: String, vararg subDirFiles: String): String = buildString {
+        append(rootPath)
+        for (part in subDirFiles) if (part.isNotEmpty()) {
+            if (!endsWith(Path.DIRECTORY_SEPARATOR)) append(Path.DIRECTORY_SEPARATOR)
+            append(part)
+        }
+    }
 
-    /** 文件/目录的最后修改时间戳 (毫秒, epoch), 不存在返回 0。 */
-    fun lastModified(path: String): Long
+    fun createFolderIfNotExist(path: String): Boolean = try {
+        fs.createDirectories(path.toPath())
+        true
+    } catch (_: Exception) { false }
 
-    /**
-     * 取路径最后一段名称 (跨平台: 兼容 '/' 与 '\\' 分隔符, 纯字符串操作)。
-     * 尾部带分隔符的路径返回空串。
-     */
-    fun getName(path: String): String
+    fun createFileReplace(path: String): Boolean = try {
+        val target = path.toPath()
+        target.parent?.let { fs.createDirectories(it) }
+        fs.delete(target)
+        fs.write(target) { }
+        true
+    } catch (_: Exception) { false }
+
+    fun getDirSize(path: String): Long {
+        val target = path.toPath()
+        val metadata = fs.metadataOrNull(target) ?: return 0L
+        if (metadata.isRegularFile) return metadata.size ?: 0L
+        return fs.listRecursively(target).sumOf {
+            fs.metadataOrNull(it)?.takeIf { it.isRegularFile }?.size ?: 0L
+        }
+    }
+
+    fun lastModified(path: String): Long = fs.metadataOrNull(path.toPath())?.lastModifiedAtMillis ?: 0L
+
+    fun getName(path: String): String = path.substring(maxOf(path.lastIndexOf('/'), path.lastIndexOf('\\')) + 1)
 }

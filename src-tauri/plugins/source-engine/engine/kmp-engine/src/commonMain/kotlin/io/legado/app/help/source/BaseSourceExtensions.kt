@@ -11,7 +11,7 @@ import kotlin.coroutines.CoroutineContext
  *
  * 返回 [JsScope]（app 侧统一类型），由 [SharedJsScope] 按当前引擎分派到
  * rhino [io.legado.app.model.script.rhino.RhinoJsScope] 或
- * quickjs [io.legado.app.model.script.quickjs.QuickJsJsScope]。
+ * quickjs [com.script.quickjs.QuickJsContext]。
  */
 fun BaseSource.getShareScope(coroutineContext: CoroutineContext? = null): JsScope? {
     return SharedJsScope.getScope(jsLib, enableDangerousApi == true, coroutineContext)

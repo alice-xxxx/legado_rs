@@ -1,5 +1,7 @@
 package com.script.quickjs
 
+import io.legado.app.model.script.withCoroutineContext
+
 import kotlinx.coroutines.currentCoroutineContext
 import kotlin.coroutines.ContinuationInterceptor
 import kotlin.coroutines.CoroutineContext
@@ -27,14 +29,7 @@ val quickJsContextOrNull: QuickJsContext?
  * 对应 Rhino 的 runScriptWithContext(context, block)。
  */
 inline fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): T {
-    val ctx = quickJsContextOrNull
-    val previous = ctx?.coroutineContext
-    ctx?.coroutineContext = context.minusKey(ContinuationInterceptor)
-    try {
-        return block()
-    } finally {
-        ctx?.coroutineContext = previous
-    }
+    return quickJsContextOrNull.withCoroutineContext(context.minusKey(ContinuationInterceptor), block)
 }
 
 /**
@@ -43,12 +38,5 @@ inline fun <T> runScriptWithContext(context: CoroutineContext, block: () -> T): 
  * 对应 Rhino 的 runScriptWithContext(block)。
  */
 suspend inline fun <T> runScriptWithContext(block: () -> T): T {
-    val ctx = quickJsContextOrNull
-    val previous = ctx?.coroutineContext
-    ctx?.coroutineContext = currentCoroutineContext().minusKey(ContinuationInterceptor)
-    try {
-        return block()
-    } finally {
-        ctx?.coroutineContext = previous
-    }
+    return quickJsContextOrNull.withCoroutineContext(currentCoroutineContext().minusKey(ContinuationInterceptor), block)
 }

@@ -54,7 +54,7 @@ class SharedLibraryScopesTest {
             this["eviction"] = Eviction()
         }, null).toString())
         SharedLibraryScopes.clearAll()
-        val context = (owner as io.legado.app.model.script.quickjs.QuickJsJsScope).ctx
+        val context = owner as com.script.quickjs.QuickJsContext
         assertNull(com.script.quickjs.QuickJsContext.findByCtxPtr(context.ctxPtr))
         assertEquals("7", JsEngines.get().eval("7").toString())
     }

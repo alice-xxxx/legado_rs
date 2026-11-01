@@ -1,5 +1,7 @@
 package io.legado.app.utils
 
+import kotlin.math.roundToLong
+import kotlin.math.abs
 import okio.Buffer
 import okio.GzipSink
 import okio.buffer
@@ -20,4 +22,21 @@ internal fun gzipAndBase64Encode(str: String): String {
     val bytes = Buffer()
     GzipSink(bytes).buffer().use { it.writeUtf8(str) }
     return Base64Lenient.encodeToString(bytes.readByteArray())
+}
+
+/** Fixed decimal fallback; keep its original rounding and negative-zero behavior. */
+internal fun formatWordCountPlain(value: Double): String {
+    return if (value.isNaN() || value.isInfinite()) {
+        value.toString()
+    } else {
+        val scaled = (value * 10.0).roundToLong()
+        val intPart = scaled / 10
+        val fracPart = abs((scaled % 10).toInt())
+        val sign = if (value < 0 && intPart == 0L) "-" else ""
+        if (fracPart == 0) {
+            "$sign$intPart"
+        } else {
+            "$sign$intPart.$fracPart"
+        }
+    }
 }

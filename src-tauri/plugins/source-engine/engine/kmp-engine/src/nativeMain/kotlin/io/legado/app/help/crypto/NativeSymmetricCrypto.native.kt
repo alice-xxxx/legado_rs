@@ -1,9 +1,6 @@
 ﻿// 源平台来源：data/src/nativeMain/kotlin/io/legado/app/help/crypto/NativeSymmetricCrypto.native.kt。此 actual 已复制进提取模块，构建不读取源平台目录。
 package io.legado.app.help.crypto
 
-import io.legado.app.utils.Base64Lenient
-import io.legado.app.utils.textCharsetCodec
-import io.legado.app.utils.toHexLower
 
 /**
  * nativeMain: 对称加解密门面 [SymmetricCrypto] 实现 (iOS / 鸿蒙 两端共用壳)。
@@ -67,42 +64,14 @@ class NativeSymmetricCrypto(
     }
 
     /** 存 IV 并返回 this (对齐 hutool setIv 链式调用, 校验推迟到加解密时)。 */
-    fun setIv(iv: ByteArray): NativeSymmetricCrypto {
+    override fun setIv(iv: ByteArray): NativeSymmetricCrypto {
         this.iv = iv
         return this
     }
 
     override fun encrypt(data: ByteArray): ByteArray = doCrypt(encrypt = true, bytes = data)
 
-    override fun encrypt(data: String): ByteArray = encrypt(data.encodeToByteArray())
-
-    override fun encryptHex(data: ByteArray): String = encrypt(data).toHexLower()
-
-    override fun encryptHex(data: String): String = encrypt(data).toHexLower()
-
-    override fun encryptBase64(data: ByteArray): String = Base64Lenient.encodeToString(encrypt(data))
-
-    override fun encryptBase64(data: String, charset: String?): String {
-        // 对齐 hutool encrypt(data, charset) = StrUtil.bytes(data, charset);
-        // 走 textCharsetCodec (UTF-8/UTF-16 系/Latin1/GBK 系/Big5), 平台无该 codec 才点名抛异常
-        val bytes = if (charset.isNullOrBlank()) {
-            data.encodeToByteArray()
-        } else {
-            val codec = runCatching { textCharsetCodec(charset) }.getOrNull()
-                ?: throw UnsupportedOperationException(
-                    "NativeSymmetricCrypto: unsupported charset '$charset' on iOS/鸿蒙"
-                )
-            codec.encode(data)
-        }
-        return Base64Lenient.encodeToString(encrypt(bytes))
-    }
-
-    override fun encryptBase64(data: String): String = Base64Lenient.encodeToString(encrypt(data))
-
-    override fun decrypt(data: String): ByteArray {
-        val bytes = if (hexRegex.matches(data)) decodeHex(data) else Base64Lenient.decode(data)
-        return doCrypt(encrypt = false, bytes = bytes)
-    }
+    override fun decrypt(data: ByteArray): ByteArray = doCrypt(encrypt = false, bytes = data)
 
     /** AES 非 GCM 走 expect ops (mbedTLS 主 + 既有回落); 其余组合 mbedTLS 直连。 */
     private fun doCrypt(encrypt: Boolean, bytes: ByteArray): ByteArray {
@@ -127,16 +96,7 @@ class NativeSymmetricCrypto(
         return v
     }
 
-    private fun decodeHex(hex: String): ByteArray {
-        require(hex.length % 2 == 0) { "invalid hex length: ${hex.length}" }
-        return ByteArray(hex.length / 2) {
-            hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
-        }
-    }
-
     companion object {
-        private val hexRegex = Regex("^[a-fA-F0-9]+$")
-
         /** 白名单 (原 SUPPORTED_MODES 扩枚举: AES +GCM, DES/DESede 单列)。 */
         private val AES_MODES = setOf("ECB", "CBC", "PCBC", "CFB", "OFB", "CTR", "GCM")
         private val DES_MODES = setOf("ECB", "CBC")

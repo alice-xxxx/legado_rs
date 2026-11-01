@@ -20,9 +20,6 @@ import kotlinx.serialization.serializer
  *
  * 注意: 这是过渡兼容层, 新代码应直接使用 KS_JSON.encodeToString / decodeOrNull / decodeListWithFallbackOrNull。
  *
- * 本文件仅含纯 Kotlin / KMP 标准库依赖, 可下沉 commonMain;
- * 涉及 java.io.OutputStream/Reader/Writer 的流式重载在 jvmAndAndroidMain
- * (见 GsonStreamExtensions.kt)。
  */
 
 // GSON 别名, 让 `import io.legado.app.utils.GSON` + `GSON.xxx` 继续工作

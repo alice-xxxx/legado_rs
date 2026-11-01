@@ -3,37 +3,7 @@ package io.legado.app.help.http
 import io.legado.app.help.http.CookieStoreProviders.get
 import kotlin.concurrent.Volatile
 
-/**
- * Cookie 业务层 Provider 跨平台抽象 (KMP)。
- *
- * # 背景
- * app 端 [io.legado.app.help.http.CookieStore] / [io.legado.app.help.http.CookieManager]
- * 依赖 Android 专属资源 (appDb.cookieDao / CacheManager 内存缓存 / android.webkit.CookieManager),
- * 无法直接下沉 shared/commonMain。本接口把业务层 cookie 读写 API 抽象出来,
- * 让 desktop / iOS / 鸿蒙宿主注入实现后即可使用与 app 端等价的 cookie 管理能力。
- *
- * # 与已有下沉部分的关系
- * - **OkHttp 层** ([CookieJarBridge] / [CookieJarBridgeHolder]): 处理 HTTP 请求/响应的
- *   cookie 自动加载/保存 (loadRequest/saveResponse), 已在 commonMain 下沉, 各平台注册 Holder。
- *   本接口不重复 OkHttp 层 API, 仅覆盖业务层 (setCookie/getCookie/removeCookie 等)。
- * - **纯函数** ([cookieToMap] / [mapToCookie] / [mergeCookies] / [mergeCookiesToMap]):
- *   已在 [CookieUtils] 下沉 commonMain, 各平台共享, 本接口不重复声明。
- * - **Android 专属** (applyToWebView / WebView CookieManager 同步): 不在通用接口内,
- *   app 端 [io.legado.app.help.http.CookieManager] 保留 Android 专属方法不动。
- *
- * # 模式参考
- * - [io.legado.app.help.DirectLinkUploadStoreProviders] (interface + Registry 注入先例)
- * - [CookieJarBridgeHolder] (同包同模式, OkHttp 层注入)
- *
- * # 注册时机
- * 宿主启动早期注册一次 (任何 shared 业务代码调用之前):
- * - app 端: App.onCreate 中 `registerAndroidCookieStoreProvider()`;
- * - desktop: Main 中 `registerDefaultJvmCookieStoreProvider()`;
- * - iOS: `registerIosProviders()` 中 `registerDefaultIosCookieStoreProvider()`;
- * - 鸿蒙: `registerOhosProviders()` 中 `registerDefaultOhosCookieStoreProvider()`。
- *
- * 未注册时 [get] 返回 null, 调用方应处理 null (与 [CookieJarBridgeHolder.get] 一致)。
- */
+/** Host runtime installs SharedCookieStore before rule execution. */
 interface CookieStoreProvider {
 
     /**

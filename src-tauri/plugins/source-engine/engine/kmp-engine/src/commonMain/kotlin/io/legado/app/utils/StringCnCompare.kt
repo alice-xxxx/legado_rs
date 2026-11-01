@@ -8,6 +8,6 @@ package io.legado.app.utils
  *
  * - androidMain: `android.icu.text.Collator(SIMPLIFIED_CHINESE)`
  * - jvmMain: `java.text.Collator(Locale.CHINA)`
- * - nativeMain (iOS/鸿蒙): 无 ICU 可用, 退化为 Unicode 码点序 (见该 actual 注释)
+ * - nativeMain: 使用公共拼音后备；同音字及表外字符保留既有的码点回退。
  */
 expect fun String.cnCompare(other: String): Int

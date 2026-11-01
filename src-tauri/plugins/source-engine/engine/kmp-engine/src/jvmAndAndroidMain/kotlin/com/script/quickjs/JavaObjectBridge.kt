@@ -1,5 +1,7 @@
 package com.script.quickjs
 
+import com.script.jsdispatch.JsCoerce
+import com.script.jsdispatch.jsonStringToMap
 import com.script.jsdispatch.JsDispatchRegistry
 import com.script.quickjs.JavaObjectBridge.METHOD_MARKER
 import com.script.quickjs.JavaObjectBridge.NO_RESULT
@@ -22,8 +24,6 @@ import com.script.quickjs.JavaObjectBridge.loadJavaClass
 import com.script.quickjs.JavaObjectBridge.releaseNewHandles
 import com.script.quickjs.JavaObjectBridge.releaseScope
 import com.script.quickjs.JavaObjectBridge.setInstanceField
-import org.json.JSONException
-import org.json.JSONObject
 import java.lang.reflect.InvocationHandler
 import java.lang.reflect.Method
 import java.lang.reflect.Modifier
@@ -53,9 +53,9 @@ object JavaObjectBridge {
     private const val TAG = "JavaObjectBridge"
 
     private val handleCounter = AtomicLong(1L)
-    private val objectMap = LongSparseArrayCompat<Any>()  // handle -> Java 对象
-    private val classMap = LongSparseArrayCompat<Class<*>>()  // handle -> Class 对象
-    private val adapterMap = LongSparseArrayCompat<Any>()  // handle -> JavaAdapter 代理对象
+    private val objectMap = HashMap<Long, Any>()  // handle -> Java 对象
+    private val classMap = HashMap<Long, Class<*>>()  // handle -> Class 对象
+    private val adapterMap = HashMap<Long, Any>()  // handle -> JavaAdapter 代理对象
 
     /**
      * Class 身份去重缓存: Class -> 已注册的句柄。
@@ -69,7 +69,7 @@ object JavaObjectBridge {
     private val classIdentityCache = java.util.concurrent.ConcurrentHashMap<Class<*>, Long>()
 
     /** scopeId -> 该 scope 注册的句柄集合,close 时批量释放 */
-    private val scopeHandles = LongSparseArrayCompat<MutableSet<Long>>()
+    private val scopeHandles = HashMap<Long, MutableSet<Long>>()
     private val lock = Any()
 
     /**
@@ -168,13 +168,7 @@ object JavaObjectBridge {
     private fun trackHandle(handle: Long) {
         val scopeId = QuickJsContext.threadLocalContext.get()?.scopeId ?: return
         synchronized(lock) {
-            // LongSparseArray 无 getOrPut 扩展,手动实现
-            var set = scopeHandles.get(scopeId)
-            if (set == null) {
-                set = mutableSetOf()
-                scopeHandles.put(scopeId, set)
-            }
-            set.add(handle)
+            scopeHandles.getOrPut(scopeId) { mutableSetOf() }.add(handle)
         }
     }
 
@@ -923,7 +917,7 @@ object JavaObjectBridge {
             is String -> sb.append(value)
             is Boolean -> sb.append(value)
             is Number -> {
-                if (isIntegerNumber(value)) {
+                if (JsCoerce.isIntegerNumber(value)) {
                     val longVal = value.toLong()
                     if (longVal in Int.MIN_VALUE..Int.MAX_VALUE) {
                         sb.append(longVal.toInt())
@@ -946,7 +940,7 @@ object JavaObjectBridge {
             is String -> sb.append(value)
             is Boolean -> sb.append(value)
             is Number -> {
-                if (isIntegerNumber(value)) {
+                if (JsCoerce.isIntegerNumber(value)) {
                     val longVal = value.toLong()
                     if (longVal in Int.MIN_VALUE..Int.MAX_VALUE) {
                         sb.append(longVal.toInt())
@@ -1997,14 +1991,13 @@ object JavaObjectBridge {
         if (paramType.isArray && (arg is List<*> || arg.javaClass.isArray)) return 3
         // Number -> 数值基本类型:根据是否整数值优先匹配
         if (arg is Number && paramType.isPrimitive) {
-            val isIntValue = isIntegerNumber(arg)
             return when (paramType) {
-                Int::class.javaPrimitiveType, Long::class.javaPrimitiveType ->
-                    if (isIntValue) 2 else 4
-
-                Double::class.javaPrimitiveType, Float::class.javaPrimitiveType ->
-                    if (isIntValue) 3 else 2
-
+                Int::class.javaPrimitiveType -> JsCoerce.scoreIntPrim(arg)
+                Long::class.javaPrimitiveType -> JsCoerce.scoreLongPrim(arg)
+                Short::class.javaPrimitiveType -> JsCoerce.scoreShortPrim(arg)
+                Byte::class.javaPrimitiveType -> JsCoerce.scoreBytePrim(arg)
+                Float::class.javaPrimitiveType -> JsCoerce.scoreFloatPrim(arg)
+                Double::class.javaPrimitiveType -> JsCoerce.scoreDoublePrim(arg)
                 else -> 5
             }
         }
@@ -2026,14 +2019,6 @@ object JavaObjectBridge {
         }
     }
 
-    private fun isIntegerNumber(num: Number): Boolean {
-        return when (num) {
-            is Int, is Long, is Short, is Byte -> true
-            is Double -> num == num.toInt().toDouble()
-            is Float -> num == num.toInt().toFloat()
-            else -> false
-        }
-    }
 
     private fun collectMethods(clazz: Class<*>, name: String, out: MutableList<Method>) {
         val key = clazz to name
@@ -2387,39 +2372,26 @@ object JavaObjectBridge {
         }
         // 包装类 -> 基本类型
         return when (targetType) {
-            Int::class.javaPrimitiveType -> (value as Number).toInt()
-            Long::class.javaPrimitiveType -> (value as Number).toLong()
-            Short::class.javaPrimitiveType -> (value as Number).toShort()
-            Byte::class.javaPrimitiveType -> (value as Number).toByte()
-            Float::class.javaPrimitiveType -> (value as Number).toFloat()
-            Double::class.javaPrimitiveType -> (value as Number).toDouble()
+            Int::class.javaPrimitiveType -> JsCoerce.toInt(value)
+            Long::class.javaPrimitiveType -> JsCoerce.toLong(value)
+            Short::class.javaPrimitiveType -> JsCoerce.toShort(value)
+            Byte::class.javaPrimitiveType -> JsCoerce.toByte(value)
+            Float::class.javaPrimitiveType -> JsCoerce.toFloat(value)
+            Double::class.javaPrimitiveType -> JsCoerce.toDouble(value)
             Boolean::class.javaPrimitiveType -> value as Boolean
             Char::class.javaPrimitiveType -> value.toString().firstOrNull() ?: ' '
-            Int::class.java -> (value as Number).toInt()
-            Long::class.java -> (value as Number).toLong()
-            Short::class.java -> (value as Number).toShort()
-            Byte::class.java -> (value as Number).toByte()
-            Float::class.java -> (value as Number).toFloat()
-            Double::class.java -> (value as Number).toDouble()
+            Int::class.java -> JsCoerce.toInt(value)
+            Long::class.java -> JsCoerce.toLong(value)
+            Short::class.java -> JsCoerce.toShort(value)
+            Byte::class.java -> JsCoerce.toByte(value)
+            Float::class.java -> JsCoerce.toFloat(value)
+            Double::class.java -> JsCoerce.toDouble(value)
             String::class.java -> value.toString()
             // List/Array -> Java Array (如 ajaxAll(Array<String>) 接收 JS 数组)
             else -> coerceToArray(value, targetType)
         }
     }
 
-    /** JSON 对象字符串 -> LinkedHashMap; 非 JSON 对象 (含数组/纯量) 返回 null 交回原逻辑。 */
-    private fun jsonStringToMap(value: String): Map<String, String>? {
-        val trimmed = value.trim()
-        if (!trimmed.startsWith("{")) return null
-        return try {
-            val json = JSONObject(trimmed)
-            val map = LinkedHashMap<String, String>(json.length())
-            json.keys().forEach { key -> map[key] = json.get(key).toString() }
-            map
-        } catch (_: JSONException) {
-            null
-        }
-    }
 
     /**
      * List/Array 转 Java Array (如 ajaxAll(Array<String>) 接收 JS 数组)。

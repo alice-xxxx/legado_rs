@@ -1,6 +1,6 @@
 package io.legado.app.utils
 
-import okio.Buffer
+import okio.buffer
 
 expect class URL(url: String) {
     fun toExternalForm(): String
@@ -16,19 +16,9 @@ typealias Closeable = com.fleeksoft.io.Closeable
 fun ByteArray.toInputStream(): InputStream = com.fleeksoft.io.ByteArrayInputStream(this)
 
 fun InputStream.readAllAndClose(): ByteArray = try {
-    // Avoid InputStream.readAllBytes(), which requires a newer Android API.
-    val result = Buffer()
-    val bytes = ByteArray(8192)
-    while (true) {
-        val count = read(bytes)
-        if (count <= 0) break
-        result.write(bytes, 0, count)
-    }
-    result.readByteArray()
+    asSource().buffer().readByteArray()
 } finally {
     runCatching { close() }
 }
 
-expect class File(path: String)
-expect fun Throwable.isSecurityException(): Boolean
-expect fun String.platformIntern(): String
+fun Throwable.isSecurityException(): Boolean = this is io.legado.app.exception.SecurityException

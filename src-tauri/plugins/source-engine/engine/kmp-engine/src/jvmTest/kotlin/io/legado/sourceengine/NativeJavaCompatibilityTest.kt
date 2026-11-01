@@ -76,6 +76,16 @@ class NativeJavaCompatibilityTest {
         finally { scope.close() }
     }
 
+    @Test fun nativeUuidKeepsTheJavaVersionAndVariantContract() {
+        repeat(4) {
+            val value = eval("String(java.util.UUID.randomUUID());")
+            val uuid = java.util.UUID.fromString(value)
+            assertEquals(value, uuid.toString())
+            assertEquals(4, uuid.version())
+            assertEquals(2, uuid.variant())
+        }
+    }
+
     @Test fun nativePackagesConstructAndMutateCards() {
         assertEquals("我的小说:1:/book", eval("""
             var cards = new org.jsoup.select.Elements();
